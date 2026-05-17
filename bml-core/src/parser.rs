@@ -627,7 +627,11 @@ impl<'a> Parser<'a> {
 
     fn parse_import(&mut self) -> Option<ImportStmt> {
         self.advance(); // import
-        let module = self.parse_ident()?;
+
+        let mut module = vec![self.parse_ident()?];
+        while self.eat(&TokenKind::Dot) {
+            module.push(self.parse_ident()?);
+        }
 
         let imports = if self.eat(&TokenKind::LBrace) {
             let mut names = Vec::new();

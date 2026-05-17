@@ -5,7 +5,7 @@
 //
 // Uses the LED matrix: top-left LED is column P0.4 (low), row P0.13 (high).
 
-import gpio;
+import svd.gpio;
 
 const COL: u32 = 4;
 const ROW: u32 = 13;

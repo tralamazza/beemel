@@ -6,7 +6,7 @@
 // Flash:
 //   ./flash.sh   (adapt to use scroll.bml)
 
-import gpio;
+import svd.gpio;
 
 // 5-column display buffer: disp[x] = bitmask of illuminated rows (bit 0 = top)
 static disp: [u32; 5];

@@ -23,8 +23,8 @@ fn debug_tick() {
     semihost_write0(".");
 }
 
-import rcc;
-import gpioc;
+import svd.rcc;
+import svd.gpioc;
 
 // --- Delay constant ---
 const DELAY: u32 = 500000;

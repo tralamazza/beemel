@@ -402,7 +402,7 @@ pub enum StorageAnnotation {
 
 #[derive(Debug, Clone)]
 pub struct ImportStmt {
-    pub module: Ident,
+    pub module: Vec<Ident>,
     pub imports: ImportKind,
     pub alias: Option<Ident>,
 }

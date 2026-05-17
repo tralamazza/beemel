@@ -1,0 +1,5 @@
+import sub.mod { greet };
+
+fn main() @context(thread) {
+    var x = greet();
+}

@@ -52,14 +52,25 @@ impl ImportResolver {
         for item in program.items {
             match item {
                 Item::Import(import) => {
-                    let module_name = import.module.0.clone();
-                    let span = import.module.1;
+                    let module_name = import
+                        .module
+                        .iter()
+                        .map(|(name, _)| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    let span = import.module[0].1;
 
-                    let module_path = self.resolve_module_path(&module_name, parent_dir);
+                    let module_path = self.resolve_module_path(&import.module, parent_dir);
                     let Some(path) = module_path else {
                         self.diags.error(
                             format!(
-                                "module not found: `{module_name}` (expected `{module_name}.bml`)"
+                                "module not found: `{module_name}` (expected `{}.bml`)",
+                                import
+                                    .module
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("/"),
                             ),
                             "E501",
                             span,
@@ -125,9 +136,16 @@ impl ImportResolver {
         Program { items }
     }
 
-    fn resolve_module_path(&self, module_name: &str, parent_dir: &Path) -> Option<PathBuf> {
+    fn resolve_module_path(&self, segments: &[ast::Ident], parent_dir: &Path) -> Option<PathBuf> {
         let _ = self;
-        let candidate = parent_dir.join(format!("{module_name}.bml"));
+        let mut candidate = parent_dir.to_path_buf();
+        for (i, (seg, _)) in segments.iter().enumerate() {
+            if i == segments.len() - 1 {
+                candidate.push(format!("{seg}.bml"));
+            } else {
+                candidate.push(seg);
+            }
+        }
         candidate.exists().then_some(candidate)
     }
 

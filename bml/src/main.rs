@@ -246,7 +246,14 @@ fn check_file(path: &Path, stack_analysis: bool) {
             ast::Item::PeripheralDef(p) => {
                 println!("  peripheral {} at 0x{:08X}", p.name.0, p.base_addr);
             }
-            ast::Item::Import(i) => println!("  import {} (alias)", i.module.0),
+            ast::Item::Import(i) => println!(
+                "  import {} (alias)",
+                i.module
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(".")
+            ),
             ast::Item::Export(e) => println!("  export ({} items)", e.names.len()),
             ast::Item::ExternFnDef(e) => {
                 let ctx_str = if let Some(isr) = &e.isr {

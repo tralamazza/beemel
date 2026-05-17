@@ -11,8 +11,8 @@
 //   ./flash.sh --debug   debug build (-O0), DWARF debug info
 //   ./flash.sh --erase   erase flash only
 
-import rcc;
-import gpioc;
+import svd.rcc;
+import svd.gpioc;
 
 // --- Delay constant ---
 const DELAY: u32 = 500000;

@@ -457,6 +457,9 @@ Enum values are just integers of the underlying type:
 - No header files -- compiler reads `.bml` directly
 - Module-level items are unordered within a file; forward references are fine
 - Module resolution: `import foo` resolves to `foo.bml` in the same directory as the importing file
+- Path-based imports: `import sub.mod` resolves to `sub/mod.bml` relative to the importing file
+  - Intermediate segments become subdirectories; the last segment is the module name
+  - Works with all import forms: wildcard, selective, and aliased
 - Compilation model: all imported items are inlined into a flat merged program (single `.ll`/`.o` output)
 
 **Export syntax:**
