@@ -202,6 +202,7 @@ assert_pass!(
     test_peripheral_field_explicit_ty,
     "peripheral_field_explicit_ty.bml"
 );
+assert_pass!(test_peripheral_field_32bit, "peripheral_field_32bit.bml");
 assert_pass!(test_enum_basic, "enum_basic.bml");
 assert_pass!(test_enum_u8, "enum_u8.bml");
 assert_pass!(test_enum_autoincr, "enum_autoincr.bml");

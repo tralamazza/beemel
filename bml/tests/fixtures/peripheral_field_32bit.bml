@@ -1,0 +1,16 @@
+// Test: full-width 32-bit field (bit[0..31]) RMW to peripheral register
+// Covers bit_mask_shift overflow when width=32 (1u32 << 32 panic)
+
+peripheral SIO at 0xD0000000 {
+    reg GPIO_OE_SET offset 0x38 {
+        field GPIO_OE_SET: u32 bit[0..31]
+    }
+    reg GPIO_OUT_XOR offset 0x28 {
+        field GPIO_OUT_XOR: u32 bit[0..31]
+    }
+}
+
+fn main() @context(thread) {
+    SIO.GPIO_OE_SET.GPIO_OE_SET = 1 << 25;
+    SIO.GPIO_OUT_XOR.GPIO_OUT_XOR = 1 << 25;
+}

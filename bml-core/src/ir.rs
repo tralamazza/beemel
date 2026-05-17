@@ -121,7 +121,8 @@ fn bit_mask_shift(bits: &BitSpec) -> (u32, u32) {
             let lo = *lo as u32;
             let hi = *hi as u32;
             let width = hi - lo + 1;
-            (((1u32 << width) - 1) << lo, lo)
+            let mask = ((1u64 << width) - 1) as u32;
+            (mask << lo, lo)
         }
     }
 }
