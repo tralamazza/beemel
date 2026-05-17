@@ -1,0 +1,7 @@
+fn reset_handler() @context(thread) {
+    var x: u32 = 0;
+}
+
+fn main() @context(thread) {
+    var y: u32 = 1;
+}

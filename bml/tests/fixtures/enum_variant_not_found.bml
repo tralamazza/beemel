@@ -1,0 +1,8 @@
+// Test: E322 -- accessing non-existent enum variant
+enum State: u32 {
+    Idle = 0,
+}
+
+fn main() @context(thread) {
+    var s = State@Bogus;
+}

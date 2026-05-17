@@ -1,0 +1,16 @@
+enum State: u32 {
+    Idle,
+    Running,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    match s {
+        _ {
+            var x = 0;
+        }
+        _ {
+            var x = 1;
+        }
+    }
+}

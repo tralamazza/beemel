@@ -1,0 +1,6 @@
+fn main() @context(thread) {
+    asm {
+        nop
+    }
+    var x: u32 = 0;
+}

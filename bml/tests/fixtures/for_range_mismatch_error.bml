@@ -1,0 +1,7 @@
+// Error: for loop range types mismatch
+fn main() @context(thread) {
+    var i: u32 = 0;
+    for i in 0u8 .. 10u16 {  // E312: range types mismatch
+        var x = i;
+    }
+}

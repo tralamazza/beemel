@@ -1,0 +1,18 @@
+enum Mode: u32 {
+    A,
+    B,
+    C,
+    D,
+}
+
+fn main() @context(thread) {
+    var m = Mode@A;
+    match m {
+        Mode@A | Mode@B | Mode@C {
+            var x = 0;
+        }
+        Mode@D {
+            var x = 1;
+        }
+    }
+}

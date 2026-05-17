@@ -1,0 +1,15 @@
+[package]
+name = "bml-core"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lib]
+name = "bml_core"
+path = "src/lib.rs"
+
+[dependencies]
+codespan-reporting = "0.13"
+
+[lints]
+workspace = true

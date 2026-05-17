@@ -1,0 +1,4 @@
+/* unterminated block comment starts here but never closes
+
+fn main() @context(thread) {
+}

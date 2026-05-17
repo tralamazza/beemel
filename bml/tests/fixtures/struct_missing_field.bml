@@ -1,0 +1,9 @@
+// E320: missing field in struct initializer
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+fn main() @context(thread) {
+    var p = Point { x: 10 };  // E320: missing field `y`
+}

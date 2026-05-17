@@ -1,0 +1,5 @@
+// Error: cannot take &mut of immutable variable (val)
+fn main() @context(thread) {
+    val x: u32 = 42;
+    var p: *mut u32 = &mut x;  // E309: cannot take mutable address of immutable x
+}

@@ -1,0 +1,11 @@
+// Test: enum with u8 underlying type, sizeof check
+enum Color: u8 {
+    Red = 0,
+    Green = 1,
+    Blue,
+}
+
+fn main() @context(thread) {
+    var c: Color = Color@Blue;
+    var sz = sizeof(Color);
+}

@@ -1,0 +1,5 @@
+// Error: cannot dereference opaque pointer *void
+fn main() @context(thread) {
+    var p: *void = null;
+    var x = *p;  // E315: cannot dereference opaque pointer
+}

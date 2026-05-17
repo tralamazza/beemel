@@ -1,0 +1,5 @@
+// Error: dereference of non-pointer type
+fn main() @context(thread) {
+    var x: u32 = 42;
+    var y = *x;  // E315: dereference requires pointer type
+}

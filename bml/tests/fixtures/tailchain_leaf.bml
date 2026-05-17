@@ -1,0 +1,5 @@
+// Test: tailchain=true leaf ISR -- compiler emits bx lr
+fn leaf_isr() @isr("TIM2", priority=1, tailchain=true) {
+    var x: u32 = 42;
+    x = x + 1;
+}

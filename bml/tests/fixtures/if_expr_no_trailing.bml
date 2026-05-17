@@ -1,0 +1,5 @@
+// if expression -- branch has no trailing expression
+fn main() @context(thread) {
+    var a = true;
+    var x = if a { } else { 2u32 };
+}

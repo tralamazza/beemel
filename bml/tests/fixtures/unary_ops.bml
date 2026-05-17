@@ -1,0 +1,13 @@
+// Unary operators: -, !, ~
+fn main() @context(thread) {
+    var a: i32 = -5i32;
+    var b: u32 = 0;
+
+    if !(b == 0) {
+        var x: u32 = 1;
+    }
+
+    var c: u32 = 0xFF;
+    var d = ~c;
+    var e = -a;
+}

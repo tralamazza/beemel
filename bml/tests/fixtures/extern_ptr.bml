@@ -1,0 +1,9 @@
+// extern fn with pointer parameters (C interop)
+static buf: [u8; 256];
+static dst: [u8; 256];
+
+extern fn memcpy(dst: *mut u8, src: *u8, n: u32) -> *mut u8;
+
+fn main() @context(thread) {
+    memcpy(&mut dst[0], &buf[0], 256);
+}

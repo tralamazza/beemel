@@ -1,0 +1,4 @@
+// Test: @naked + @isr -- in vector table but no interrupt attribute
+fn naked_isr() @isr(priority=1) @naked {
+    loop {}
+}

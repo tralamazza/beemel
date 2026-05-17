@@ -1,0 +1,4 @@
+// Test: E323 -- discriminant exceeds underlying type range
+enum Bad: u8 {
+    X = 300,
+}

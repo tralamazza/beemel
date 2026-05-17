@@ -1,0 +1,12 @@
+fn double(x: i32) -> i32 {
+    return x * 2i32;
+}
+
+fn apply(op: fn(i32) -> i32, x: i32) -> i32 {
+    return op(x);
+}
+
+fn main() @context(thread) {
+    var fp = &double;
+    var result = apply(fp, 21i32);
+}

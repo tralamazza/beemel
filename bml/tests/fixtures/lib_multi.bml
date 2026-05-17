@@ -1,0 +1,10 @@
+export fn foo;
+export fn bar;
+
+fn foo() -> u32 @context(thread) {
+    return 1;
+}
+
+fn bar() -> u32 @context(thread) {
+    return 2;
+}

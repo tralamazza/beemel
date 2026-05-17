@@ -1,0 +1,8 @@
+import lib_struct;
+
+fn main() @context(thread) {
+    var p = Point {
+        x: 10,
+        y: 20
+    };
+}

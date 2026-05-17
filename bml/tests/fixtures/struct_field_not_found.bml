@@ -1,0 +1,10 @@
+// E318: struct field not found
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+fn main() @context(thread) {
+    var p = Point { x: 10, y: 20 };
+    var z = p.z;  // E318: no field `z` in Point
+}

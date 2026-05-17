@@ -1,0 +1,4 @@
+import circular_a;
+
+fn foo() @context(thread) {
+}

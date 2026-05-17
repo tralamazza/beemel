@@ -1,0 +1,7 @@
+// Error: unsuffixed float literal value out of range
+fn main() @context(thread) {
+    var f16_pos: f16 = 65505.0;  // E300: 65505 > 65504 (f16 max)
+    var f16_neg: f16 = -65505.0; // E300: -65505 < -65504 (f16 min)
+    var f32_pos: f32 = 3.5e38;   // E300: 3.5e38 > f32::MAX
+    var f32_neg: f32 = -3.5e38;  // E300: -3.5e38 < f32::MIN
+}

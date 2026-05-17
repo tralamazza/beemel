@@ -1,0 +1,13 @@
+// match as expression -- arm type mismatch
+enum State: u32 {
+    Idle,
+    Running = 1,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    var x: u32 = match s {
+        State@Idle { 0u32 }
+        State@Running { 1u8 }
+    };
+}

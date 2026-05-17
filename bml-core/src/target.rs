@@ -1,0 +1,239 @@
+use std::collections::HashMap;
+use std::fs;
+
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub arch: String,
+    pub priority_bits: u8,
+    pub has_fpu: bool,
+    pub has_bitband: bool,
+    pub has_mpu: bool,
+    pub flash_base: u64,
+    pub flash_size: u64,
+    pub ram_base: u64,
+    pub ram_size: u64,
+    pub vector_table_offset: u64,
+    pub interrupts: HashMap<String, u16>,
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Target {
+            arch: "armv7em".into(),
+            priority_bits: 4,
+            has_fpu: false,
+            has_bitband: true,
+            has_mpu: true,
+            flash_base: 0x0800_0000,
+            flash_size: 256 * 1024,
+            ram_base: 0x2000_0000,
+            ram_size: 64 * 1024,
+            vector_table_offset: 0x0800_0000,
+            interrupts: HashMap::new(),
+        }
+    }
+}
+
+impl Target {
+    /// Load target configuration from a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or contains invalid content.
+    pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Self::parse(&content)
+    }
+
+    /// Parse target configuration from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is malformed or contains unknown keys.
+    pub fn parse(input: &str) -> Result<Self, String> {
+        let mut target = Target::default();
+        let mut section: Option<&str> = None;
+
+        for (line_num, line) in input.lines().enumerate() {
+            let line = line.trim();
+            // Skip comments and blank lines
+            if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+                continue;
+            }
+            // Section header
+            if line.starts_with('[') && line.ends_with(']') {
+                section = Some(&line[1..line.len() - 1]);
+                continue;
+            }
+            // In [interrupts] section: name = slot
+            if section == Some("interrupts") {
+                let (label, slot) = line.split_once('=').ok_or_else(|| {
+                    format!(
+                        "line {}: expected `label = slot`, got `{line}`",
+                        line_num + 1
+                    )
+                })?;
+                let label = label.trim().to_string();
+                let slot: u16 = slot.trim().parse().map_err(|_| {
+                    format!("line {}: invalid interrupt slot `{slot}`", line_num + 1)
+                })?;
+                target.interrupts.insert(label, slot);
+                continue;
+            }
+            // Top-level key = value
+            let (key, val) = line.split_once('=').ok_or_else(|| {
+                format!(
+                    "line {}: expected `key = value`, got `{line}`",
+                    line_num + 1
+                )
+            })?;
+            let key = key.trim();
+            let val = val.trim();
+
+            match key {
+                "arch" => target.arch = val.to_string(),
+                "priority_bits" => {
+                    target.priority_bits = val.parse::<u8>().map_err(|_| {
+                        format!("line {}: invalid priority_bits: {val}", line_num + 1)
+                    })?;
+                }
+                "has_fpu" => target.has_fpu = parse_bool(val, key, line_num)?,
+                "has_bitband" => target.has_bitband = parse_bool(val, key, line_num)?,
+                "has_mpu" => target.has_mpu = parse_bool(val, key, line_num)?,
+                "flash_base" => {
+                    target.flash_base = parse_int(val)
+                        .map_err(|_| format!("line {}: invalid flash_base: {val}", line_num + 1))?;
+                }
+                "flash_size" => {
+                    target.flash_size = parse_int(val)
+                        .map_err(|_| format!("line {}: invalid flash_size: {val}", line_num + 1))?;
+                }
+                "ram_base" => {
+                    target.ram_base = parse_int(val)
+                        .map_err(|_| format!("line {}: invalid ram_base: {val}", line_num + 1))?;
+                }
+                "ram_size" => {
+                    target.ram_size = parse_int(val)
+                        .map_err(|_| format!("line {}: invalid ram_size: {val}", line_num + 1))?;
+                }
+                "vector_table_offset" => {
+                    target.vector_table_offset = parse_int(val).map_err(|_| {
+                        format!("line {}: invalid vector_table_offset: {val}", line_num + 1)
+                    })?;
+                }
+                _ => return Err(format!("line {}: unknown key `{key}`", line_num + 1)),
+            }
+        }
+        Ok(target)
+    }
+
+    #[must_use]
+    pub fn to_llvm_target_triple(&self) -> &str {
+        match self.arch.as_str() {
+            "armv6m" => "thumbv6m-none-unknown-eabi",
+            "armv7m" => "thumbv7m-none-unknown-eabi",
+            "armv7em" => "thumbv7em-none-unknown-eabi",
+            _ => "thumbv7em-none-unknown-eabi",
+        }
+    }
+
+    #[must_use]
+    pub fn generate_linker_script(&self) -> String {
+        let flash_base = format!("0x{:08X}", self.flash_base);
+        let flash_size = format_size(self.flash_size);
+        let ram_base = format!("0x{:08X}", self.ram_base);
+        let ram_size = format_size(self.ram_size);
+        let vt_offset = format!("0x{:08X}", self.vector_table_offset);
+
+        format!(
+            r"/* Auto-generated linker script for bml */
+MEMORY
+{{
+  FLASH (rx) : ORIGIN = {flash_base}, LENGTH = {flash_size}
+  RAM   (rwx) : ORIGIN = {ram_base}, LENGTH = {ram_size}
+}}
+
+ENTRY(reset_handler)
+
+SECTIONS
+{{
+  .vector_table {vt_offset} :
+  {{
+    KEEP(*(.vector_table))
+  }} > FLASH
+
+  .text :
+  {{
+    *(.text*)
+    *(.rodata*)
+  }} > FLASH
+
+  .data :
+  {{
+    _sdata = .;
+    *(.data*)
+    _edata = .;
+    _sidata = LOADADDR(.data);
+  }} > RAM AT > FLASH
+
+  .bss :
+  {{
+    _sbss = .;
+    *(.bss*)
+    _ebss = .;
+  }} > RAM
+
+  .stack (NOLOAD) :
+  {{
+    . = ALIGN(8);
+    _stack_bottom = .;
+    . = . + 0x800; /* 2KB stack */
+    _stack_top = .;
+  }} > RAM
+
+  /DISCARD/ :
+  {{
+    *(.ARM.exidx*)
+    *(.ARM.attributes*)
+  }}
+}}
+"
+        )
+    }
+}
+
+fn parse_bool(val: &str, key: &str, line: usize) -> Result<bool, String> {
+    match val {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!(
+            "line {}: {key} must be `true` or `false`, got `{val}`",
+            line + 1
+        )),
+    }
+}
+
+fn parse_int(val: &str) -> Result<u64, std::num::ParseIntError> {
+    if val.starts_with("0x") || val.starts_with("0X") {
+        u64::from_str_radix(&val[2..], 16)
+    } else if val.ends_with('K') || val.ends_with('k') {
+        let num: u64 = val[..val.len() - 1].parse()?;
+        Ok(num * 1024)
+    } else if val.ends_with('M') || val.ends_with('m') {
+        let num: u64 = val[..val.len() - 1].parse()?;
+        Ok(num * 1024 * 1024)
+    } else {
+        val.parse()
+    }
+}
+
+fn format_size(n: u64) -> String {
+    if n >= 1024 * 1024 && n.is_multiple_of(1024 * 1024) {
+        format!("{}M", n / (1024 * 1024))
+    } else if n >= 1024 && n.is_multiple_of(1024) {
+        format!("{}K", n / 1024)
+    } else {
+        format!("{n}")
+    }
+}

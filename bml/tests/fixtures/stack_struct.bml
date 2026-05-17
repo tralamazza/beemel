@@ -1,0 +1,9 @@
+struct Point {
+    x: u32,
+    y: u32,
+    z: u32,
+}
+
+fn main() {
+    var p: Point = Point { x: 1, y: 2, z: 3 };
+}

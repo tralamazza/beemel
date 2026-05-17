@@ -1,0 +1,7 @@
+fn usart1_isr() @isr("USART1", priority = 2) {
+    var x: u32 = 0;
+}
+
+fn main() @context(thread) {
+    var y: u32 = 0;
+}

@@ -1,0 +1,4 @@
+// Error: undefined name
+fn main() @context(thread) {
+    var x: u32 = ghost;  // E305: undefined name
+}

@@ -1,0 +1,21 @@
+// Boolean types: b1 literals, if/while conditions, logical not
+fn main() @context(thread) {
+    val t: u32 = 42;
+    val f: u32 = 0;
+
+    if true {
+        var x: u32 = 1;
+    }
+
+    while true {
+        if false {
+            var y: u32 = 2;
+        }
+        break;
+    }
+
+    val cond = true;
+    val neg = !cond;
+    val chained = cond || false;
+    val both = cond && true;
+}

@@ -1,0 +1,11 @@
+# STM32F401CCUx target
+arch = armv7em
+priority_bits = 4
+has_fpu = true
+has_bitband = true
+has_mpu = true
+flash_base = 0x08000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 64K
+vector_table_offset = 0x08000000

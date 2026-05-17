@@ -1,0 +1,6 @@
+// Error: ISR calling an extern fn @context(thread)
+extern fn blocking_call() @context(thread);
+
+fn timer_isr() @isr(priority = 1) {
+    blocking_call();  // E403: ISR cannot call @context(thread)
+}

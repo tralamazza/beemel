@@ -1,0 +1,11 @@
+fn first_isr() @isr(priority = 1) {
+    var x: u32 = 1;
+}
+
+fn second_isr() @isr(priority = 2) {
+    var y: u32 = 2;
+}
+
+fn main() @context(thread) {
+    var z: u32 = 0;
+}

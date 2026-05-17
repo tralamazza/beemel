@@ -1,0 +1,14 @@
+// Error: if/while condition must be b1, logical not requires b1
+fn main() @context(thread) {
+    var x: u32 = 42;
+
+    if x {          // E302: if condition must be b1
+        return;
+    }
+
+    while x {       // E303: while condition must be b1
+        break;
+    }
+
+    var y = !x;     // E306: logical not requires b1
+}

@@ -1,0 +1,4 @@
+// Test: E323 -- enum underlying type must be u8, u16, or u32
+enum Bad: f32 {
+    A = 0,
+}

@@ -1,0 +1,7 @@
+fn SysTick_Handler() @isr("SysTick", priority = 1) {
+    var x: u32 = 0;
+}
+
+fn main() @context(thread) {
+    var y: u32 = 42;
+}

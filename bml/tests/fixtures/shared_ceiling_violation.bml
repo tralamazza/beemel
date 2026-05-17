@@ -1,0 +1,18 @@
+// @shared(ceiling=2): only ISRs at priority >= 2 can access
+// Lower priority number = higher priority in ARM
+// ISR(1) = higher priority than ISR(2) → REJECTED (must be at-or-below ceiling)
+// ISR(2) = same priority → direct access
+// ISR(3) = lower priority → needs critical section (codegen concern)
+static bytes_sent: u32 @shared(ceiling = 2);
+
+fn main() @context(thread) {
+    var x: u32 = bytes_sent;  // OK -- thread can access any ceiling (auto critical section)
+}
+
+fn uart_isr() @isr(priority = 2) {
+    var y: u32 = bytes_sent;  // OK -- priority 2 >= ceiling 2
+}
+
+fn high_prio_isr() @isr(priority = 1) {
+    var z: u32 = bytes_sent;  // ERROR -- priority 1 < ceiling 2 (too high priority)
+}

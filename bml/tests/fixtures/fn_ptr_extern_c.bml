@@ -1,0 +1,11 @@
+extern fn register_callback(cb: fn(i32) -> void);
+extern fn trigger_callback();
+
+fn my_handler(x: i32) {
+    var _ = x;
+}
+
+fn main() @context(thread) {
+    register_callback(&my_handler);
+    trigger_callback();
+}

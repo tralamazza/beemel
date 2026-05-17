@@ -1,0 +1,10 @@
+// Test: E322 -- read from undefined register field
+peripheral GPIOA at 0x40020000 {
+    reg ODR offset 0x14 {
+        field ODR0: b1 bit[0]
+    }
+}
+
+fn main() @context(thread) {
+    var x: u32 = GPIOA.ODR.BOGUS;
+}

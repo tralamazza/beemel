@@ -1,0 +1,4 @@
+// sizeof with undefined type
+fn main() @context(thread) {
+    var a = sizeof(FakeType);
+}

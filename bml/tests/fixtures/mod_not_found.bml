@@ -1,0 +1,4 @@
+import nonexistent_module;
+
+fn main() @context(thread) {
+}

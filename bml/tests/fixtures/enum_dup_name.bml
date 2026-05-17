@@ -1,0 +1,8 @@
+// Test: E200 -- enum name collides with struct name
+enum Dupe: u32 {
+    A = 0,
+}
+
+struct Dupe {
+    x: u32,
+}

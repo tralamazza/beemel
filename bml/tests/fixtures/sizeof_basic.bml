@@ -1,0 +1,22 @@
+// sizeof operator -- primitive types, pointers, and structs
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+struct Small {
+    a: u8,
+    b: u8,
+}
+
+fn main() @context(thread) {
+    var a = sizeof(u32);
+    var b = sizeof(u8);
+    var c = sizeof(i64);
+    var d = sizeof(*u32);
+    var e = sizeof(*mut u8);
+    var f = sizeof(Point);
+    var g = sizeof(Small);
+    var h = sizeof(f32);
+    var i = sizeof(f64);
+}

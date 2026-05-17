@@ -1,0 +1,48 @@
+// blinky.bml -- Minimal LED blink demo for STM32F103C8 "Blue Pill"
+//
+// Build and flash:
+//   bml build --target examples/blue-pill/stm32f103c8.target examples/blue-pill/blinky.bml
+//   ld.lld -T blinky.ld blinky.o -o blinky.elf
+//   llvm-objcopy -O binary blinky.elf blinky.bin
+//   st-flash write blinky.bin 0x08000000
+//
+// Or use flash.sh (recommended):
+//   ./flash.sh           fast build (-Os), no debug info
+//   ./flash.sh --debug   debug build (-O0), DWARF debug info
+//   ./flash.sh --erase   erase flash only
+
+import rcc;
+import gpioc;
+
+// --- Delay constant ---
+const DELAY: u32 = 500000;
+
+// --- Busy-wait delay (empty asm barrier prevents dead-loop elimination) ---
+fn delay() {
+    var count: u32 = 0;
+    while count < DELAY {
+        asm { }
+        count = count + 1;
+    }
+}
+
+// --- Entry point ---
+fn main() @context(thread) {
+    // Enable GPIOC clock
+    RCC.APB2ENR.IOPCEN = 1;
+
+    // Configure PC13 as push-pull output (2 MHz)
+    GPIOC.CRH.MODE13 = 2;
+    GPIOC.CRH.CNF13 = 0;
+
+    loop {
+        delay();
+
+        // Toggle PC13 -- active low: false = LED on, true = LED off
+        if !GPIOC.ODR.ODR13 {
+            GPIOC.ODR.ODR13 = true;
+        } else {
+            GPIOC.ODR.ODR13 = false;
+        }
+    }
+}

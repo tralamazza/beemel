@@ -1,0 +1,4 @@
+// Error: float literal missing suffix
+fn main() @context(thread) {
+    var x: f64 = 3.14;
+}

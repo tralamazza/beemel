@@ -1,0 +1,8 @@
+fn main() @context(thread) {
+    var x: u32 = 0;
+    match x {
+        _ {
+            var y = 0;
+        }
+    }
+}

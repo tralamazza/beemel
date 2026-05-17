@@ -1,0 +1,46 @@
+struct Point { x: u8, y: u8 }
+
+fn main() @context(thread) {
+    // unsigned integer mins and maxes
+    var u8_min: u8 = 0;
+    var u8_max: u8 = 255;
+    var u16_min: u16 = 0;
+    var u16_max: u16 = 65535;
+    var u32_min: u32 = 0;
+    var u32_max: u32 = 4294967295;
+    var u64_min: u64 = 0;
+
+    // signed integer mins, zeroes, and maxes
+    var i8_min: i8 = -128;
+    var i8_zero: i8 = 0;
+    var i8_max: i8 = 127;
+    var i16_min: i16 = -32768;
+    var i16_zero: i16 = 0;
+    var i16_max: i16 = 32767;
+    var i32_min: i32 = -2147483648;
+    var i32_zero: i32 = 0;
+    var i32_max: i32 = 2147483647;
+    var i64_min: i64 = -9223372036854775808;
+    var i64_zero: i64 = 0;
+    var i64_max: i64 = 9223372036854775807;
+
+    // float mins and maxes
+    var f16_min: f16 = -65504.0;
+    var f16_zero: f16 = 0.0;
+    var f16_max: f16 = 65504.0;
+    var f32_min: f32 = -3.4e38;
+    var f32_zero: f32 = 0.0;
+    var f32_max: f32 = 3.4e38;
+    var f64_min: f64 = -1e100d;
+    var f64_zero: f64 = 0.0;
+    var f64_max: f64 = 1e100d;
+
+    // assignment reassignment
+    u8_min = 1;
+    u8_min = 254;
+    f32_zero = -1.5;
+    f32_zero = 1.5e10;
+
+    // struct init with unsuffixed literals
+    var p = Point { x: 0, y: 255 };
+}

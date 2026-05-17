@@ -1,0 +1,25 @@
+// break and continue in loops
+fn main() @context(thread) {
+    var i: u32 = 0;
+    var sum: u32 = 0;
+
+    loop {
+        i = i + 1;
+        if i == 10 {
+            break;
+        }
+        if i == 3 {
+            continue;
+        }
+        sum = sum + i;
+    }
+
+    var j: u32 = 0;
+    while j < 5 {
+        j = j + 1;
+    }
+
+    for k in 0 .. 5 {
+        var x: u32 = k;
+    }
+}

@@ -1,0 +1,16 @@
+// Test: enum auto-increment discriminants (mixed explicit/implicit)
+enum Status: u32 {
+    A = 10,
+    B,
+    C = 20,
+    D,
+    E = 0,
+    F,
+}
+
+fn main() @context(thread) {
+    var a = Status@A;
+    var b = Status@B;
+    var c = Status@C;
+    var d = Status@D;
+}

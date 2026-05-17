@@ -1,0 +1,5 @@
+import lib_x;
+import lib_y;
+
+fn main() @context(thread) {
+}

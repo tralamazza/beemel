@@ -1,0 +1,5 @@
+// E319: duplicate field in struct definition
+struct Point {
+    x: u32,
+    x: u32,
+}

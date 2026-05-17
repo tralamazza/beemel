@@ -1,0 +1,4 @@
+// Test: @naked function -- no default ret, no interrupt attribute
+fn naked_fn() @naked {
+    loop {}
+}

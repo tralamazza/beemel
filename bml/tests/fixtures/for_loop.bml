@@ -1,0 +1,13 @@
+// for loop with range, break, continue
+fn main() @context(thread) {
+    var sum: u32 = 0u32;
+    for i in 0u32 .. 10u32 {
+        sum = sum + i;
+        if sum == 45u32 {
+            break;
+        }
+        if i == 5u32 {
+            continue;
+        }
+    }
+}

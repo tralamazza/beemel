@@ -1,0 +1,15 @@
+fn level3() -> u32 {
+    return 3;
+}
+
+fn level2() -> u32 {
+    return level3();
+}
+
+fn level1() -> u32 {
+    return level2();
+}
+
+fn main() {
+    var x: u32 = level1();
+}

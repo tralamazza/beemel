@@ -1,0 +1,9 @@
+// Test: tailchain=true ISR with calls -- compiler emits push/pop
+fn helper() -> u32 {
+    return 7;
+}
+
+fn call_isr() @isr("DMA1", priority=2, tailchain=true) {
+    var x: u32 = helper();
+    x = x + 1;
+}

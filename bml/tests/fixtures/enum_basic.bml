@@ -1,0 +1,15 @@
+// Test: basic enum definition, variant access via @, assignment, comparison
+enum State: u32 {
+    Idle = 0,
+    Running = 1,
+    Error,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    s = State@Running;
+    s = State@Error;
+    if s == State@Error {
+        s = State@Idle;
+    }
+}

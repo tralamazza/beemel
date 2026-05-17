@@ -1,0 +1,4 @@
+// Error: array element type mismatch
+fn main() @context(thread) {
+    var arr = [1, 2i32, 3];  // E313: element type mismatch (u32 vs i32)
+}

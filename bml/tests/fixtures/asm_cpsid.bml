@@ -1,0 +1,7 @@
+fn main() @context(thread) {
+    asm {
+        cpsid i
+        nop
+        cpsie i
+    }
+}

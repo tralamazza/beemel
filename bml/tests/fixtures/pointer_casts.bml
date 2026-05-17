@@ -1,0 +1,8 @@
+// Pointer casts: int↔pointer, pointer↔pointer
+fn main() @context(thread) {
+    var addr: u32 = 0x20000000;
+    var p: *u8 = addr as *u8;
+    var pm: *mut u8 = addr as *mut u8;
+    var pa: *u32 = p as *u32;
+    var back: u32 = p as u32;
+}

@@ -1,0 +1,4 @@
+// E003: unknown escape sequence
+fn main() @context(thread) {
+    var s = "\x";
+}

@@ -1,0 +1,6 @@
+// Error: write through const pointer (*T)
+fn main() @context(thread) {
+    var x: u32 = 42;
+    var p: *u32 = &x;
+    *p = 10;  // E314: cannot write through const pointer
+}

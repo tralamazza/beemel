@@ -1,0 +1,60 @@
+// blinky-qemu.bml -- Blink demo for QEMU stm32vldiscovery (PC8 = LD4)
+//
+// Emits a semihosting '.' on each toggle -- run with -semihosting to see
+// heartbeat output even headless:
+//   qemu-system-arm -M stm32vldiscovery -semihosting -nographic -kernel ...
+
+// --- Semihosting API ---
+
+// Generic semihosting trap -- op in r0, param in r1 per ARM AAPCS.
+fn semihost_syscall(op: u32, param: u32) {
+    asm {
+        bkpt 0xAB
+    }
+}
+
+// Print a null-terminated string via SYS_WRITE0.
+fn semihost_write0(msg: *u8) {
+    semihost_syscall(0x04, msg as u32);
+}
+
+// Heartbeat: prints '.' on each LED toggle.
+fn debug_tick() {
+    semihost_write0(".");
+}
+
+import rcc;
+import gpioc;
+
+// --- Delay constant ---
+const DELAY: u32 = 500000;
+
+// --- Busy-wait delay (empty asm barrier prevents dead-loop elimination) ---
+fn delay() {
+    var count: u32 = 0;
+    while count < DELAY {
+        asm { }
+        count = count + 1;
+    }
+}
+
+// --- Entry point ---
+fn main() @context(thread) {
+    // Enable GPIOC clock
+    RCC.APB2ENR.IOPCEN = 1;
+
+    // Configure PC8 as push-pull output (2 MHz)
+    GPIOC.CRH.MODE8 = 2;
+    GPIOC.CRH.CNF8 = 0;
+
+    loop {
+        delay();
+
+        if GPIOC.ODR.ODR8 {
+            GPIOC.ODR.ODR8 = false;
+        } else {
+            GPIOC.ODR.ODR8 = true;
+        }
+        debug_tick();
+    }
+}

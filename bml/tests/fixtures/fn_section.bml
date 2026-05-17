@@ -1,0 +1,5 @@
+// Test: @section() on function
+fn ram_func() @section(".ram_code") {
+    var x: u32 = 0;
+    x = x + 1;
+}

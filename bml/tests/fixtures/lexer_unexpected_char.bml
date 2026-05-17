@@ -1,0 +1,4 @@
+// E005: unexpected character
+fn main() @context(thread) {
+    var x: u32 = $ 1;
+}

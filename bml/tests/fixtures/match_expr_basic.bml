@@ -1,0 +1,15 @@
+// match as expression -- basic value return
+enum State: u32 {
+    Idle,
+    Running = 1,
+    Error = 2,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    var x: u32 = match s {
+        State@Idle { 0 }
+        State@Running { 1 }
+        State@Error { 2 }
+    };
+}

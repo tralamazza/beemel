@@ -1,0 +1,4 @@
+// E002: invalid number literal (too large for u64)
+fn main() @context(thread) {
+    var x: u64 = 99999999999999999999;
+}

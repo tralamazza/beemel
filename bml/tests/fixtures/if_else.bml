@@ -1,0 +1,19 @@
+// if/else and if/else-if/else chains
+fn main() @context(thread) {
+    var x: u32 = 10;
+    var result: u32 = 0;
+
+    if x < 5 {
+        result = 1;
+    } else {
+        result = 2;
+    }
+
+    if x < 3 {
+        result = 10;
+    } else if x < 7 {
+        result = 20;
+    } else {
+        result = 30;
+    }
+}

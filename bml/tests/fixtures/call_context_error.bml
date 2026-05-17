@@ -1,0 +1,12 @@
+// Error: ISR calling a @context(thread) function
+fn blocking_init() @context(thread) {
+    var x: u32 = 0;
+}
+
+fn main() @context(thread) {
+    blocking_init();  // OK -- both thread
+}
+
+fn timer_isr() @isr(priority = 1) {
+    blocking_init();  // ERROR -- ISR cannot call thread-context function
+}

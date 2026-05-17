@@ -1,0 +1,9 @@
+export fn pub_fn;
+
+fn pub_fn() -> u32 @context(thread) {
+    return 1;
+}
+
+fn private_fn() -> u32 @context(thread) {
+    return 2;
+}

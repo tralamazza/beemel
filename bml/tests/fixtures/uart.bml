@@ -1,0 +1,36 @@
+// UART driver example -- tests parser Phase 1
+
+static tx_buf: [u8; 256] @exclusive(uart_isr);
+static rx_buf: [u8; 256] @exclusive(uart_isr);
+static bytes_sent: u32 @shared(ceiling = 2);
+
+const BAUD_RATE: u32 = 115200;
+
+peripheral UART1 at 0x40011000 {
+    reg SR offset 0x00 {
+        field TXE: b1 bit[7]
+        field RXNE: b1 bit[5]
+    }
+    reg DR offset 0x04 {
+        field DR: u32 bit[0..7]
+    }
+}
+
+fn main() @context(thread) {
+    var x: u32 = 0;
+    x = x + 1;
+    init_uart();
+}
+
+fn uart_isr() @isr(priority = 2) {
+    val status = 0;
+    loop {
+        if status == 1 {
+            return;
+        }
+    }
+}
+
+fn init_uart() {
+    var baud: u32 = BAUD_RATE;
+}

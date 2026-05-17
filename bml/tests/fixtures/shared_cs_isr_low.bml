@@ -1,0 +1,8 @@
+// ISR(priority=3) accessing @shared(ceiling=2) -- 3 > 2 → needs critical section
+
+static counter: u32 @shared(ceiling = 2);
+
+fn low_isr() @isr(priority = 3) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

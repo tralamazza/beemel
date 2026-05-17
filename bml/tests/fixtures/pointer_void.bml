@@ -1,0 +1,11 @@
+// *void and *mut void opaque pointer types
+extern fn free(ptr: *mut void);
+
+fn main() @context(thread) {
+    var p: *void = null;
+    var q: *mut void = null;
+
+    if p == null {
+        var x: u32 = 0;
+    }
+}

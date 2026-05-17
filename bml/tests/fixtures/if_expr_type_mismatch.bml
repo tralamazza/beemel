@@ -1,0 +1,5 @@
+// if expression -- type mismatch between branches
+fn main() @context(thread) {
+    var a = true;
+    var x = if a { 1u32 } else { 1u8 };
+}

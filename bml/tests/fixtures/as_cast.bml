@@ -1,0 +1,9 @@
+// as cast operator -- happy path for int↔int and float↔float
+fn main() @context(thread) {
+    var a: u32 = 42;
+    var b = a as u8;
+    var c = b as i32;
+
+    var d: f32 = 3.14f;
+    var e = d as f64;
+}

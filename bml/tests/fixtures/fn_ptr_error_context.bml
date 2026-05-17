@@ -1,0 +1,6 @@
+fn thread_only() @context(thread) {
+}
+
+fn main() @context(thread) {
+    var fp = &thread_only;
+}

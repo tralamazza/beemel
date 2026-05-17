@@ -1,0 +1,4 @@
+// block expression -- basic
+fn main() @context(thread) {
+    var x = { 42 };
+}

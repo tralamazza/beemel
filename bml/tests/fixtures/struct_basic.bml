@@ -1,0 +1,13 @@
+// Basic struct definition, initialization, field read and write
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+fn main() @context(thread) {
+    var p = Point { x: 10, y: 20 };
+    var a = p.x;
+    var b = p.y;
+    p.x = 30;
+    var c = p.x;
+}

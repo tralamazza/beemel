@@ -1,0 +1,4 @@
+// Error: type mismatch in var declaration
+fn main() @context(thread) {
+    var x: u32 = 42i32;  // E300: declared U32 but initialized with I32
+}

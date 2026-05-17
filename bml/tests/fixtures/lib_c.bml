@@ -1,0 +1,5 @@
+export fn quux;
+
+fn quux() -> u32 @context(thread) {
+    return 7;
+}

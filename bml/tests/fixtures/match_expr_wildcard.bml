@@ -1,0 +1,14 @@
+// match as expression -- wildcard arm
+enum State: u32 {
+    Idle,
+    Running = 1,
+    Error = 2,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    var x: u32 = match s {
+        State@Idle { 0 }
+        _ { 99 }
+    };
+}

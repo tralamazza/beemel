@@ -1,0 +1,8 @@
+fn add_one(x: u32) -> u32 {
+    return x + 1;
+}
+
+fn main() {
+    var fp: fn(u32) -> u32 = &add_one;
+    var result: u32 = fp(5);
+}

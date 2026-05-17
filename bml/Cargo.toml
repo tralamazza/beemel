@@ -1,0 +1,15 @@
+[package]
+name = "bml"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[[bin]]
+name = "bml"
+path = "src/main.rs"
+
+[dependencies]
+bml-core = { path = "../bml-core" }
+
+[lints]
+workspace = true

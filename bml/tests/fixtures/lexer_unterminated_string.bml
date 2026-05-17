@@ -1,0 +1,4 @@
+// E004: unterminated string literal
+fn main() @context(thread) {
+    var s = "unterminated string;
+}

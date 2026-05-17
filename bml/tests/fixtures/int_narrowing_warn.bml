@@ -1,0 +1,6 @@
+// Cast with narrowing warning
+fn main() @context(thread) {
+    var x: i8 = 300 as i8;
+    var y: u8 = 300 as u8;
+    var z: i16 = 300 as i16;  // OK -- 300 fits in i16
+}

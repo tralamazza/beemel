@@ -1,0 +1,5 @@
+// Test: E319 -- duplicate variant name in enum
+enum Bad: u32 {
+    X = 0,
+    X = 1,
+}

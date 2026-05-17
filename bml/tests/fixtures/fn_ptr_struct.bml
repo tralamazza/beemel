@@ -1,0 +1,10 @@
+fn handler(x: i32) -> i32 {
+    return x + 10i32;
+}
+
+fn main() @context(thread) {
+    var fp: fn(i32) -> i32 = null;
+    var result = 0i32;
+    fp = &handler;
+    result = fp(5i32);
+}

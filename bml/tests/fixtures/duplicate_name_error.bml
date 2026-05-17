@@ -1,0 +1,8 @@
+// Error: duplicate names (E200)
+fn duplicate_name() @context(thread) {
+    var x: u32 = 0;
+}
+
+fn duplicate_name() @context(thread) {  // E200: duplicate name
+    var x: u32 = 0;
+}

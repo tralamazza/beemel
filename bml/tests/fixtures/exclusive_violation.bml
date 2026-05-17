@@ -1,0 +1,10 @@
+// Error: accessing @exclusive static from wrong function
+static counter: u32 @exclusive(timer_isr);
+
+fn main() @context(thread) {
+    var x: u32 = counter;
+}
+
+fn timer_isr() @isr(priority = 1) {
+    var y: u32 = counter;  // OK -- this is the owner
+}

@@ -1,0 +1,7 @@
+fn good(x: i32) -> i32 {
+    return x;
+}
+
+fn main() @context(thread) {
+    var fp: fn(i32, i32) -> i32 = &good;
+}

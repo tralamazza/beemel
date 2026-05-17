@@ -1,0 +1,14 @@
+// Struct definition and pointer access
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+fn read_x(p: *Point) {
+    return (*p).x;
+}
+
+fn main() @context(thread) {
+    var pt = Point { x: 10, y: 20 };
+    var a = read_x(&pt);
+}

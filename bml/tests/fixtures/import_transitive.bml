@@ -1,0 +1,5 @@
+import lib_b;
+
+fn main() @context(thread) {
+    var x = bar();
+}

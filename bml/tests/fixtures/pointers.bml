@@ -1,0 +1,19 @@
+// Pointer basics: &x, *p, *p = v, &mut, null, p + n, p[i]
+fn main() @context(thread) {
+    var x: u32 = 42;
+    var p: *u32 = &x;
+    var v = *p;
+
+    var q: *mut u32 = &mut x;
+    *q = 10;
+    var v2 = *q;
+
+    var n: *u8 = null;
+    if n == null {
+        var z: u32 = 0;
+    }
+
+    var arr: *u8 = (&x) as *u8;
+    var b = arr[0];
+    var p2 = arr + 1;
+}

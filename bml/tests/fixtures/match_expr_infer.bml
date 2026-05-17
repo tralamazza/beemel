@@ -1,0 +1,15 @@
+// match as expression -- type inferred, no annotation
+enum State: u32 {
+    Idle,
+    Running = 1,
+    Error = 2,
+}
+
+fn main() @context(thread) {
+    var s = State@Idle;
+    var x = match s {
+        State@Idle { 0u32 }
+        State@Running { 1u32 }
+        State@Error { 2u32 }
+    };
+}

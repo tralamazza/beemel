@@ -1,0 +1,15 @@
+// extern fn without @context -- callable from any context
+extern fn getchar() -> u8;
+extern fn putchar(c: u8);
+extern fn HAL_Delay(ms: u32) @context(thread);
+extern fn SysTick_Handler() @isr("SysTick", priority = 1);
+
+fn main() @context(thread) {
+    val count: u32 = 42;
+    putchar(72u8);
+    HAL_Delay(count);
+}
+
+fn uart_isr() @isr(priority = 2) {
+    putchar(72u8);
+}

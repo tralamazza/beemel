@@ -1,0 +1,4 @@
+import lib_private { private_fn };
+
+fn main() @context(thread) {
+}

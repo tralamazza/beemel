@@ -1,0 +1,12 @@
+enum Flag: u8 {
+    On,
+}
+
+fn main() @context(thread) {
+    var f = Flag@On;
+    match f {
+        Flag@On {
+            var x = 0;
+        }
+    }
+}

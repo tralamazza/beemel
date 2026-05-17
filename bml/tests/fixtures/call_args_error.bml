@@ -1,0 +1,14 @@
+// Error: function call argument count/type mismatch (E307, E308)
+fn take_one(x: u32) {
+    var y = x;
+}
+
+fn take_two(a: u32, b: i32) {
+    var y = a;
+}
+
+fn main() @context(thread) {
+    take_one();             // E307: expects 1 argument, got 0
+    take_one(42, 43);       // E307: expects 1 argument, got 2
+    take_two(10, 20);       // E308: 2nd arg expects i32, got u32
+}
