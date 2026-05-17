@@ -117,7 +117,11 @@ impl<'a> Parser<'a> {
     fn skip_to_semicolon_or_brace(&mut self) {
         while !self.is_eof() {
             match self.peek_kind() {
-                TokenKind::Semicolon | TokenKind::RBrace => {
+                TokenKind::Semicolon => {
+                    self.advance();
+                    return;
+                }
+                TokenKind::RBrace => {
                     return;
                 }
                 _ => {
@@ -792,6 +796,24 @@ impl<'a> Parser<'a> {
                 });
                 self.advance();
                 Some(stmt)
+            }
+            TokenKind::Const => {
+                self.diags.error(
+                    "`const` cannot be declared inside a function body",
+                    "E112",
+                    self.peek_span(),
+                );
+                self.skip_to_semicolon_or_brace();
+                None
+            }
+            TokenKind::Static => {
+                self.diags.error(
+                    "`static` cannot be declared inside a function body",
+                    "E112",
+                    self.peek_span(),
+                );
+                self.skip_to_semicolon_or_brace();
+                None
             }
             TokenKind::Return => self.parse_return_stmt().map(Stmt::Return),
             TokenKind::Break => {

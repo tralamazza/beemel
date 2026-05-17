@@ -1944,13 +1944,21 @@ impl IrEmitter {
     ) -> Option<(String, Type)> {
         match lval {
             LValue::Name((name, _)) => {
-                let info = self.locals.get(name).cloned()?;
-                let reg = self.new_reg();
-                self.line(&format!(
-                    "{reg} = getelementptr i8, ptr {}, i32 0",
-                    info.alloca
-                ));
-                Some((reg, info.bml_type))
+                if let Some(info) = self.locals.get(name).cloned() {
+                    let reg = self.new_reg();
+                    self.line(&format!(
+                        "{reg} = getelementptr i8, ptr {}, i32 0",
+                        info.alloca
+                    ));
+                    return Some((reg, info.bml_type));
+                }
+                if let Some(sym) = symbols.statics.get(name) {
+                    let ty = sym.ty.inner().clone();
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
+                    return Some((reg, ty));
+                }
+                None
             }
             LValue::Field(base, field) => {
                 let (base_ptr, base_ty) = self.lvalue_base_info(base, symbols, fn_name)?;
