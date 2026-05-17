@@ -1,0 +1,37 @@
+// blinky.bml -- Minimal LED blink for BBC micro:bit V1 (nRF51822)
+//
+// Build:
+//   bml build --target examples/microbit-v1/microbit-v1.target examples/microbit-v1/blinky.bml
+//
+// Uses the LED matrix: top-left LED is column P0.4 (low), row P0.13 (high).
+
+import gpio;
+
+const COL: u32 = 4;
+const ROW: u32 = 13;
+const DELAY: u32 = 500000;
+
+fn delay() {
+    var count: u32 = 0;
+    while count < DELAY {
+        asm { }
+        count = count + 1;
+    }
+}
+
+fn main() @context(thread) {
+    // Set P0.4 and P0.13 as outputs
+    GPIO.DIRSET = (1 << ROW) | (1 << COL);
+
+    // Drive row high
+    GPIO.OUTSET = 1 << ROW;
+
+    loop {
+        delay();
+        // LED on: pull column low
+        GPIO.OUTCLR = 1 << COL;
+        delay();
+        // LED off: set column high
+        GPIO.OUTSET = 1 << COL;
+    }
+}

@@ -1,0 +1,12 @@
+# BBC micro:bit V1 (nRF51822-QFAA)
+# Cortex-M0, 256KB flash, 16KB RAM
+arch = armv6m
+priority_bits = 2
+has_bitband = false
+has_fpu = false
+has_mpu = false
+flash_base = 0x00000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 16K
+vector_table_offset = 0x00000000
