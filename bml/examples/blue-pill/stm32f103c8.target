@@ -1,6 +1,7 @@
 # STM32F103C8T6 (Blue Pill)
 # Cortex-M3, 64KB flash, 20KB RAM
 arch = armv7m
+cpu = cortex-m3
 priority_bits = 4
 has_bitband = true
 flash_base = 0x08000000

@@ -121,6 +121,41 @@ fn main() {
                 stack_analysis,
             );
         }
+        "cflags" => {
+            let mut target_path: Option<PathBuf> = None;
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--target" => {
+                        i += 1;
+                        if i < args.len() {
+                            target_path = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--target requires a path");
+                            process::exit(1);
+                        }
+                    }
+                    other => {
+                        eprintln!("Unknown option for cflags: {other}");
+                        process::exit(1);
+                    }
+                }
+                i += 1;
+            }
+            let target_path = target_path.unwrap_or_else(|| {
+                eprintln!("Usage: bml cflags --target <file.target>");
+                process::exit(1);
+            });
+            let target = Target::from_file(&target_path).unwrap_or_else(|e| {
+                eprintln!("{e}");
+                process::exit(1);
+            });
+            let flags = target.to_gcc_flags().unwrap_or_else(|e| {
+                eprintln!("{e}");
+                process::exit(1);
+            });
+            println!("{}", flags.join(" "));
+        }
         _ => {
             eprintln!("Unknown command: {command}");
             print_usage();
@@ -136,6 +171,7 @@ fn print_usage() {
     eprintln!("  check [--stack] <file.bml>                    Type-check a source file");
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
     eprintln!("        [--link <lib>]... [--stack] <file.bml>  Compile and optionally link");
+    eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --opt=<level>   Optimization level: 0, 1, 2, 3, s, z (default: s)");

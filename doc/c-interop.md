@@ -2,7 +2,8 @@
 
 Calling C functions and linking against C object files is essential for
 using vendor HALs (CMSIS, libopencm3, STM32Cube, etc.) and mixing
-existing C code with bml.
+existing C code with bml. For the concrete STM32 `SystemInit()` recipe,
+see [stm32-cmsis.md](./stm32-cmsis.md).
 
 ## Design principles
 

@@ -514,6 +514,8 @@ peripheral GPIOA at 0x40020000 {
 - `&PERIPH` yields `*PeriphType` for use in pointer contexts
 - `&periph.reg` yields a pointer to the register (via `inttoptr`)
 - CMSIS-SVD XML import available via the standalone [`bml-svd`](../../bml-svd/) tool
+- STM `cmsis-device-fX` device repos can be imported into `.target` files with
+  [`bml-cmsis`](./stm32-cmsis.md)
 
 ## 10. Target files
 

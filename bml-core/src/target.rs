@@ -4,6 +4,10 @@ use std::fs;
 #[derive(Debug, Clone)]
 pub struct Target {
     pub arch: String,
+    /// Cortex-M cpu (`cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m7`).
+    /// Optional in the target file; needed by `bml cflags` to disambiguate within an arch
+    /// (e.g. armv7em covers both M4 and M7).
+    pub cpu: Option<String>,
     pub priority_bits: u8,
     pub has_fpu: bool,
     pub has_bitband: bool,
@@ -20,6 +24,7 @@ impl Default for Target {
     fn default() -> Self {
         Target {
             arch: "armv7em".into(),
+            cpu: None,
             priority_bits: 4,
             has_fpu: false,
             has_bitband: true,
@@ -93,6 +98,7 @@ impl Target {
 
             match key {
                 "arch" => target.arch = val.to_string(),
+                "cpu" => target.cpu = Some(val.to_string()),
                 "priority_bits" => {
                     target.priority_bits = val.parse::<u8>().map_err(|_| {
                         format!("line {}: invalid priority_bits: {val}", line_num + 1)
@@ -149,6 +155,39 @@ impl Target {
     #[must_use]
     pub fn to_llvm_target_triple(&self) -> &'static str {
         self.to_arch().llvm_target_triple()
+    }
+
+    /// Compute the `arm-none-eabi-gcc` flags implied by this target.
+    /// Always emits `-mthumb`. Requires `cpu` to be set; for FPU-capable cpus the FPU
+    /// variant defaults to a sensible single-precision choice (override by editing the
+    /// `system_*.c` build command directly if you need DP).
+    ///
+    /// # Errors
+    /// Returns an error if `cpu` is missing or unrecognized.
+    pub fn to_gcc_flags(&self) -> Result<Vec<String>, String> {
+        let cpu = self.cpu.as_deref().ok_or_else(|| {
+            "target file has no `cpu = cortex-mX`; add one to use `bml cflags`".to_string()
+        })?;
+
+        let (has_fpu_capable, default_fpu): (bool, &'static str) = match cpu {
+            "cortex-m0" | "cortex-m0plus" | "cortex-m3" => (false, ""),
+            "cortex-m4" => (true, "fpv4-sp-d16"),
+            "cortex-m7" => (true, "fpv5-d16"),
+            other => {
+                return Err(format!(
+                    "unrecognized cpu `{other}` (expected cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, or cortex-m7)"
+                ));
+            }
+        };
+
+        let mut flags = vec![format!("-mcpu={cpu}"), "-mthumb".to_string()];
+        if has_fpu_capable && self.has_fpu {
+            flags.push("-mfloat-abi=hard".to_string());
+            flags.push(format!("-mfpu={default_fpu}"));
+        } else {
+            flags.push("-mfloat-abi=soft".to_string());
+        }
+        Ok(flags)
     }
 
     #[must_use]
@@ -248,5 +287,80 @@ fn format_size(n: u64) -> String {
         format!("{}K", n / 1024)
     } else {
         format!("{n}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(s: &str) -> Target {
+        Target::parse(s).unwrap()
+    }
+
+    #[test]
+    fn parses_cpu_field() {
+        let target = t("arch = armv7em\ncpu = cortex-m4\n");
+        assert_eq!(target.cpu.as_deref(), Some("cortex-m4"));
+    }
+
+    #[test]
+    fn cflags_m3() {
+        let target = t("arch = armv7m\ncpu = cortex-m3\n");
+        assert_eq!(
+            target.to_gcc_flags().unwrap(),
+            vec!["-mcpu=cortex-m3", "-mthumb", "-mfloat-abi=soft"]
+        );
+    }
+
+    #[test]
+    fn cflags_m4_hard_fpu() {
+        let target = t("arch = armv7em\ncpu = cortex-m4\nhas_fpu = true\n");
+        assert_eq!(
+            target.to_gcc_flags().unwrap(),
+            vec![
+                "-mcpu=cortex-m4",
+                "-mthumb",
+                "-mfloat-abi=hard",
+                "-mfpu=fpv4-sp-d16",
+            ]
+        );
+    }
+
+    #[test]
+    fn cflags_m4_no_fpu() {
+        let target = t("arch = armv7em\ncpu = cortex-m4\nhas_fpu = false\n");
+        assert_eq!(
+            target.to_gcc_flags().unwrap(),
+            vec!["-mcpu=cortex-m4", "-mthumb", "-mfloat-abi=soft"]
+        );
+    }
+
+    #[test]
+    fn cflags_m7_hard_fpu() {
+        let target = t("arch = armv7em\ncpu = cortex-m7\nhas_fpu = true\n");
+        assert_eq!(
+            target.to_gcc_flags().unwrap(),
+            vec![
+                "-mcpu=cortex-m7",
+                "-mthumb",
+                "-mfloat-abi=hard",
+                "-mfpu=fpv5-d16",
+            ]
+        );
+    }
+
+    #[test]
+    fn cflags_errors_when_cpu_missing() {
+        let target = t("arch = armv7em\n");
+        let err = target.to_gcc_flags().unwrap_err();
+        assert!(err.contains("cpu"), "got: {err}");
+    }
+
+    #[test]
+    fn cflags_errors_on_unknown_cpu() {
+        let target = t("arch = armv7em\ncpu = cortex-x99\n");
+        let err = target.to_gcc_flags().unwrap_err();
+        assert!(err.contains("cortex-x99"), "got: {err}");
     }
 }

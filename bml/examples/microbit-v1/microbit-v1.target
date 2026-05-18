@@ -1,6 +1,7 @@
 # BBC micro:bit V1 (nRF51822-QFAA)
 # Cortex-M0, 256KB flash, 16KB RAM
 arch = armv6m
+cpu = cortex-m0
 priority_bits = 2
 has_bitband = false
 has_fpu = false

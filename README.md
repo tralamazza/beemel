@@ -31,6 +31,7 @@ Requires `opt`, `llc`, and `ld.lld` (LLVM toolchain) for `bml build`.
 - [Language specification](./doc/language.md)
 - [Design decisions](./doc/design-decisions.md)
 - [C interop](./doc/c-interop.md)
+- [STM32 + CMSIS workflow](./doc/stm32-cmsis.md)
 - [Hacking guide](./doc/hacking.md)
 
 ## License
