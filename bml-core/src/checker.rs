@@ -425,6 +425,18 @@ fn check_block(
         }
     }
 
+    // Check trailing expression while scope is still active
+    if let Some(ref trailing) = block.trailing {
+        last_type = Some(check_expr(
+            trailing,
+            symbols,
+            scope,
+            fn_name,
+            expected_ret,
+            diags,
+        ));
+    }
+
     scope.pop();
     last_type
 }
@@ -620,7 +632,7 @@ fn check_expr(
             ty
         }
         Expr::BoolLiteral(_, _) => Type::B1,
-        Expr::NullLiteral(_) => Type::Unresolved("null".into()),
+        Expr::NullLiteral(_) => Type::Null,
         Expr::StringLiteral(_, _) => Type::ConstPtr(Box::new(Type::U8)),
         Expr::Ident((name, span)) => {
             // Check local scope first
@@ -782,10 +794,10 @@ fn check_expr(
                 | BinaryOp::Gt
                 | BinaryOp::LtEq
                 | BinaryOp::GtEq => {
-                    // Allow null comparison with pointers
-                    let null_compat = matches!(&left_ty, Type::Unresolved(s) if s == "null")
-                        || matches!(&right_ty, Type::Unresolved(s) if s == "null");
-                    if left_ty != right_ty && !null_compat {
+                    // null is only comparable with pointer-shaped types (and
+                    // itself). Without this guard, `null == 5` would slip
+                    // through the bare `left_ty != right_ty` check.
+                    if !types::types_compatible(&left_ty, &right_ty) {
                         diags.error(
                             format!(
                                 "comparison between different types `{left_ty:?}` and `{right_ty:?}` -- use `as` to cast"
@@ -796,12 +808,44 @@ fn check_expr(
                     }
                     Type::B1
                 }
-                BinaryOp::And | BinaryOp::Or => Type::B1,
+                BinaryOp::And | BinaryOp::Or => {
+                    if left_ty != Type::B1 {
+                        diags.error(
+                            format!("logical operator expects b1, got `{left_ty:?}`"),
+                            "E316",
+                            left.span(),
+                        );
+                    }
+                    if right_ty != Type::B1 {
+                        diags.error(
+                            format!("logical operator expects b1, got `{right_ty:?}`"),
+                            "E316",
+                            right.span(),
+                        );
+                    }
+                    Type::B1
+                }
                 BinaryOp::BitAnd
                 | BinaryOp::BitOr
                 | BinaryOp::BitXor
                 | BinaryOp::Shl
-                | BinaryOp::Shr => left_ty.clone(),
+                | BinaryOp::Shr => {
+                    if !types::is_int(&left_ty) && !matches!(left_ty, Type::B1 | Type::B8) {
+                        diags.error(
+                            format!("bitwise operator expects integer type, got `{left_ty:?}`"),
+                            "E317",
+                            left.span(),
+                        );
+                    }
+                    if !types::is_int(&right_ty) && !matches!(right_ty, Type::B1 | Type::B8) {
+                        diags.error(
+                            format!("bitwise operator expects integer type, got `{right_ty:?}`"),
+                            "E317",
+                            right.span(),
+                        );
+                    }
+                    left_ty.clone()
+                }
             }
         }
 
@@ -861,8 +905,8 @@ fn check_expr(
                         diags,
                     ),
                     _ => {
-                        diags.error("cannot call non-function type", "E327", field.1);
-                        Type::Unresolved("call".into())
+                        let guard = diags.error("cannot call non-function type", "E327", field.1);
+                        Type::Error(guard)
                     }
                 };
             }
@@ -880,6 +924,11 @@ fn check_expr(
                 for arg in args {
                     check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
                 }
+                // Intentional Unresolved (not Error): transitively-imported
+                // functions don't currently land in `symbols.functions`, so a
+                // legitimate cross-module call can reach this branch with no
+                // diagnostic. Relies on the leniency rule in `types::types_compatible`
+                // — see the TODO there.
                 return Type::Unresolved("call".into());
             }
 
@@ -914,8 +963,8 @@ fn check_expr(
                 }
                 return *ret.clone();
             }
-            diags.error("cannot call non-function type", "E327", func_expr.span());
-            Type::Unresolved("call".into())
+            let guard = diags.error("cannot call non-function type", "E327", func_expr.span());
+            Type::Error(guard)
         }
 
         Expr::FieldAccess(base, field) => {
@@ -973,12 +1022,12 @@ fn check_expr(
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
                 }
-                diags.error(
+                let guard = diags.error(
                     format!("struct `{name}` has no field `{}`", field.0),
                     "E318",
                     field.1,
                 );
-                return Type::Unresolved("field".into());
+                return Type::Error(guard);
             }
             // Check if it's a pointer to struct (auto-deref for field access)
             if let Type::Ptr(inner) | Type::ConstPtr(inner) = &base_ty
@@ -987,12 +1036,12 @@ fn check_expr(
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
                 }
-                diags.error(
+                let guard = diags.error(
                     format!("struct `{name}` has no field `{}`", field.0),
                     "E318",
                     field.1,
                 );
-                return Type::Unresolved("field".into());
+                return Type::Error(guard);
             }
             // Fallback: unknown field access
             Type::U32
@@ -1005,7 +1054,14 @@ fn check_expr(
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                _ => Type::Unresolved("element".into()),
+                other => {
+                    let guard = diags.error(
+                        format!("cannot index value of type `{other:?}`"),
+                        "E326",
+                        base.span(),
+                    );
+                    Type::Error(guard)
+                }
             }
         }
 
@@ -1013,6 +1069,9 @@ fn check_expr(
             let elem_ty = if let Some(first) = elems.first() {
                 check_expr(first, symbols, scope, fn_name, expected_ret, diags)
             } else {
+                // Empty array literal: element type must come from context
+                // (annotation). Not an error on its own — relies on the
+                // Unresolved leniency rule for the eventual annotation match.
                 Type::Unresolved("empty-array".into())
             };
             for elem in elems.iter().skip(1) {
@@ -1068,12 +1127,12 @@ fn check_expr(
             let (enum_name, variants) = if let Type::Enum(name, _, variants) = &scrutinee_ty {
                 (name.clone(), variants.clone())
             } else {
-                diags.error(
+                let guard = diags.error(
                     "match scrutinee must be an enum type",
                     "E324",
                     match_expr.scrutinee.span(),
                 );
-                return Type::Unresolved("match".into());
+                return Type::Error(guard);
             };
 
             let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1107,12 +1166,19 @@ fn check_expr(
                         }
                     }
                 }
-                check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
-                let arm_trailing_ty = arm
-                    .body
-                    .trailing
-                    .as_ref()
-                    .map(|e| check_expr(e, symbols, scope, fn_name, expected_ret, diags));
+                let arm_result =
+                    check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
+                // An arm that directly terminates (e.g. `Pat => { return; }`)
+                // contributes no value to the match expression. BML has no
+                // never/bottom type, so unlike Rust's `!` such arms cannot
+                // unify with a value-producing arm; they trigger E328 below.
+                // Lift this restriction once Type::Never is introduced.
+                let arm_trailing_ty =
+                    if arm.body.trailing.is_some() && !arm.body.has_direct_terminator() {
+                        arm_result
+                    } else {
+                        None
+                    };
 
                 match (&arm_type, arm_trailing_ty) {
                     (None, Some(ty)) => arm_type = Some(ty),
@@ -1159,10 +1225,14 @@ fn check_expr(
                 );
             }
 
-            arm_type.unwrap_or(Type::Unresolved("match".into()))
+            // Fallback only if no arm provided a type (caused by earlier
+            // diagnostics on missing trailing expressions in arms).
+            arm_type.unwrap_or_else(|| {
+                Type::Error(crate::errors::ErrorGuaranteed::unchecked_claim_error_was_emitted())
+            })
         }
         Expr::Block(block_expr) => {
-            check_block(
+            let result = check_block(
                 &block_expr.block,
                 symbols,
                 scope,
@@ -1170,11 +1240,11 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
-            if let Some(ref trailing) = block_expr.block.trailing {
-                check_expr(trailing, symbols, scope, fn_name, expected_ret, diags)
+            if block_expr.block.trailing.is_none() || block_expr.block.has_direct_terminator() {
+                let guard = diags.error("block has no value", "E328", block_expr.span);
+                Type::Error(guard)
             } else {
-                diags.error("block has no value", "E328", block_expr.span);
-                Type::Unresolved("void".into())
+                result.expect("check_block returns Some when trailing.is_some()")
             }
         }
         Expr::If(if_expr) => {
@@ -1186,7 +1256,7 @@ fn check_expr(
                     if_expr.cond.span(),
                 );
             }
-            check_block(
+            let then_result = check_block(
                 &if_expr.then_block,
                 symbols,
                 scope,
@@ -1194,6 +1264,17 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
+            // A then-block that terminates (e.g. `{ return; }`) produces no
+            // value. Same restriction as match arms — see comment there;
+            // lift once Type::Never exists.
+            let then_ty = if if_expr.then_block.trailing.is_none()
+                || if_expr.then_block.has_direct_terminator()
+            {
+                let guard = diags.error("if branch has no value", "E328", if_expr.then_block.span);
+                Type::Error(guard)
+            } else {
+                then_result.expect("check_block returns Some when trailing.is_some()")
+            };
             let else_ty = check_expr(
                 &if_expr.else_branch,
                 symbols,
@@ -1202,13 +1283,6 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
-
-            let then_ty = if let Some(ref trailing) = if_expr.then_block.trailing {
-                check_expr(trailing, symbols, scope, fn_name, expected_ret, diags)
-            } else {
-                diags.error("if branch has no value", "E328", if_expr.then_block.span);
-                Type::Unresolved("void".into())
-            };
 
             if !types::types_compatible(&then_ty, &else_ty) {
                 diags.error(
@@ -1403,22 +1477,30 @@ fn check_lvalue(
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
                 }
-                diags.error(
+                let guard = diags.error(
                     format!("struct `{name}` has no field `{}`", field.0),
                     "E318",
                     field.1,
                 );
-                return Type::Unresolved("field".into());
+                return Type::Error(guard);
             }
             // Fallback: unknown field access
             Type::U32
         }
-        LValue::Index(base, _index) => {
+        LValue::Index(base, index) => {
             let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                _ => Type::Unresolved("element".into()),
+                other => {
+                    let guard = diags.error(
+                        format!("cannot index value of type `{other:?}`"),
+                        "E326",
+                        base.span(),
+                    );
+                    Type::Error(guard)
+                }
             }
         }
         LValue::Deref(inner) => {
@@ -1426,16 +1508,17 @@ fn check_lvalue(
             match &inner_ty {
                 Type::Ptr(pointee) => pointee.as_ref().clone(),
                 Type::ConstPtr(_) => {
-                    diags.error(
+                    let guard = diags.error(
                         "cannot write through const pointer (`*T`) -- use `*mut T`",
                         "E314",
                         inner.span(),
                     );
-                    Type::Unresolved("deref".into())
+                    Type::Error(guard)
                 }
                 _ => {
-                    diags.error("dereference requires pointer type", "E315", inner.span());
-                    Type::Unresolved("deref".into())
+                    let guard =
+                        diags.error("dereference requires pointer type", "E315", inner.span());
+                    Type::Error(guard)
                 }
             }
         }

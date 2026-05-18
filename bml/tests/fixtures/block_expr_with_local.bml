@@ -1,0 +1,4 @@
+// Test: block expression with local variable inside
+fn main() @context(thread) {
+    var x = { var y: u32 = 1; y };
+}

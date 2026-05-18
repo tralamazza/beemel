@@ -1,0 +1,4 @@
+// Test: null assigned to non-pointer type should error
+fn main() @context(thread) {
+    var x: u32 = null;
+}

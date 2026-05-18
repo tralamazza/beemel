@@ -935,3 +935,53 @@ fn test_stack_struct() {
         "expected frame=24 for Point struct\n{output}"
     );
 }
+
+// ─── new tests for bugfixes ─────────────────────────────────────────
+
+// 1. return should not produce double terminators
+assert_ir_not_contains!(
+    test_return_not_double_ret,
+    "return_terminated.bml",
+    "ret void\nret void"
+);
+
+// 2. block expression with local variable inside should work
+assert_pass!(test_block_expr_with_local, "block_expr_with_local.bml");
+assert_ir_contains!(
+    test_block_expr_with_local_ir,
+    "block_expr_with_local.bml",
+    "store i32"
+);
+
+// 3. null assigned to non-pointer type should error
+assert_error!(test_null_non_ptr, "null_non_ptr.bml", "E300");
+
+// 4. logical and bitwise operators should validate operand types
+assert_error!(test_operator_type_error, "operator_type_error.bml", "E316");
+
+// 5. invalid peripheral bit specs
+assert_error!(
+    test_peripheral_bit_range_error,
+    "peripheral_bit_range_error.bml",
+    "E114"
+);
+
+// 6. large enum discriminant should be caught (not wrap negative)
+assert_error!(test_enum_disc_wrap, "enum_disc_wrap.bml", "E323");
+
+// 7. block and if expressions require a trailing value expression
+assert_error!(
+    test_block_expr_stmt_no_value,
+    "block_expr_stmt_no_value.bml",
+    "E328"
+);
+assert_error!(
+    test_if_expr_stmt_no_value,
+    "if_expr_stmt_no_value.bml",
+    "E328"
+);
+assert_error!(
+    test_block_expr_return_no_value,
+    "block_expr_return_no_value.bml",
+    "E328"
+);

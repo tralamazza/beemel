@@ -58,6 +58,18 @@ fn check_fn_body(
         );
     }
 
+    if let Some(ref trailing) = block.trailing {
+        check_expr(
+            trailing,
+            current_fn,
+            current_ctx,
+            symbols,
+            moved,
+            scope_stack,
+            diags,
+        );
+    }
+
     scope_stack.pop();
 }
 

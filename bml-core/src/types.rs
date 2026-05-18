@@ -3,6 +3,7 @@ use std::fmt;
 use std::collections::HashMap;
 
 use crate::ast::{Item, TypeExpr};
+use crate::errors::ErrorGuaranteed;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -33,10 +34,22 @@ pub enum Type {
     Struct(String, Vec<(String, Type)>),
     // User-defined enum types: name + underlying type + (variant_name, discriminant)
     Enum(String, Box<Type>, Vec<(String, i64)>),
-    // A named but unresolved type (resolved during name resolution pass)
+    // A named type whose lookup hasn't run yet. Produced during the early
+    // resolver passes; should never escape post-resolution. The resolver's
+    // finalization pass converts any leftover Unresolved into `Error` after
+    // reporting an "unknown type" diagnostic.
     Unresolved(String),
     // Function pointer type: fn(params) -> ret
     Fn(Vec<Type>, Box<Type>),
+    // Type of the `null` literal. Compatible only with pointer-shaped types
+    // (Ptr, ConstPtr, Fn). Coerced to the contextual pointer type during
+    // type checking or emission.
+    Null,
+    // Sentinel used for error recovery: a diagnostic was already emitted at
+    // this site, and downstream checks should short-circuit instead of
+    // producing cascading errors. Constructing requires an `ErrorGuaranteed`
+    // token, which is only obtainable from `DiagnosticBag::error`.
+    Error(ErrorGuaranteed),
 }
 
 impl fmt::Display for Type {
@@ -71,6 +84,8 @@ impl fmt::Display for Type {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();
                 write!(f, "fn({}) -> {ret}", p.join(", "))
             }
+            Type::Null => write!(f, "null"),
+            Type::Error(_) => write!(f, "<error>"),
         }
     }
 }
@@ -100,7 +115,9 @@ impl Type {
             | Type::B8
             | Type::Void
             | Type::Unresolved(_)
-            | Type::Fn(..) => Semantics::Copy,
+            | Type::Fn(..)
+            | Type::Null
+            | Type::Error(_) => Semantics::Copy,
             Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => inner.semantics(),
             Type::Struct(_, fields) => {
                 if fields.iter().all(|(_, ty)| ty.is_copy()) {
@@ -310,7 +327,32 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
         }
         return true;
     }
-    // Unresolved types are compatible with anything (lenient for now)
+    // Suppression: once a diagnostic has been emitted somewhere, Error
+    // absorbs further type comparisons so we don't pile cascading errors on
+    // the same site. The `ErrorGuaranteed` token guarantees the user already
+    // sees *some* diagnostic about the original failure.
+    if matches!(expected, Type::Error(_)) || matches!(actual, Type::Error(_)) {
+        return true;
+    }
+    // null is compatible with pointer-shaped types and itself.
+    if matches!(expected, Type::Null) {
+        return matches!(
+            actual,
+            Type::Null | Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..)
+        );
+    }
+    if matches!(actual, Type::Null) {
+        return matches!(
+            expected,
+            Type::Null | Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..)
+        );
+    }
+    // TODO: leniency for Unresolved should be removed once the checker's
+    // symbol table fully reflects transitively-imported functions. Today,
+    // bare calls to imported functions can flow through as `Unresolved("call")`
+    // because the called function isn't in `symbols.functions`; without this
+    // leniency, return-type checking would falsely reject legitimate cross-
+    // module calls. Fix the symbol-table gap, then drop this arm.
     if matches!(expected, Type::Unresolved(_)) || matches!(actual, Type::Unresolved(_)) {
         return true;
     }

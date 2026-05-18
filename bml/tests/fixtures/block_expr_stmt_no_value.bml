@@ -1,0 +1,4 @@
+// block expression -- statement-only body has no value
+fn main() @context(thread) {
+    var x = { var y: u32 = 1; };
+}

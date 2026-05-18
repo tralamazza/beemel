@@ -86,18 +86,35 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     symbols: &SymbolTable,
     target_interrupts: &HashMap<String, u16, S>,
 ) {
-    const SYSTEM_EXCEPTIONS: &[(&str, usize)] = &[
-        ("NMI", 2),
-        ("HardFault", 3),
-        ("MemManage", 4),
-        ("BusFault", 5),
-        ("UsageFault", 6),
-        ("SVC", 11),
-        ("DebugMon", 12),
-        ("PendSV", 14),
-        ("SysTick", 15),
-    ];
-    const RESERVED_SLOTS: &[usize] = &[7, 8, 9, 10, 13];
+    let is_armv6m = matches!(e.arch, crate::arch::Arch::Armv6m);
+    let system_exceptions: &[(&str, usize)] = if is_armv6m {
+        // ARMv6-M (Cortex-M0/M0+): only NMI, HardFault, SVCall, PendSV, SysTick
+        // Slots 4-10, 12-13 are reserved
+        &[
+            ("NMI", 2),
+            ("HardFault", 3),
+            ("SVC", 11),
+            ("PendSV", 14),
+            ("SysTick", 15),
+        ]
+    } else {
+        &[
+            ("NMI", 2),
+            ("HardFault", 3),
+            ("MemManage", 4),
+            ("BusFault", 5),
+            ("UsageFault", 6),
+            ("SVC", 11),
+            ("DebugMon", 12),
+            ("PendSV", 14),
+            ("SysTick", 15),
+        ]
+    };
+    let reserved_slots: &[usize] = if is_armv6m {
+        &[4, 5, 6, 7, 8, 9, 10, 12, 13]
+    } else {
+        &[7, 8, 9, 10, 13]
+    };
 
     let mut labeled: HashMap<String, (&str, u8)> = HashMap::new();
     let mut unlabeled: Vec<String> = Vec::new();
@@ -151,7 +168,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     entries[0] = "@_stack_top".to_string();
     entries[1] = format!("@{reset_fn}");
 
-    for &(label, slot) in SYSTEM_EXCEPTIONS {
+    for &(label, slot) in system_exceptions {
         entries[slot] = if let Some((fn_name, _)) = labeled.get(label) {
             format!("@{fn_name}")
         } else if symbols.functions.contains_key(label) {
@@ -160,7 +177,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
             format!("@{default_handler_name}")
         };
     }
-    for &slot in RESERVED_SLOTS {
+    for &slot in reserved_slots {
         entries[slot] = "null".to_string();
     }
 

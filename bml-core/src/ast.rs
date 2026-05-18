@@ -58,6 +58,16 @@ pub struct Block {
     pub span: Span,
 }
 
+impl Block {
+    /// True if any top-level statement directly terminates the basic block
+    /// (`return`, `break`, `continue`, or a nested block that does so).
+    /// Mirrors what the IR emitter treats as a terminator inside `emit_block`.
+    #[must_use]
+    pub fn has_direct_terminator(&self) -> bool {
+        self.stmts.iter().any(Stmt::is_direct_terminator)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     VarDecl(VarDecl),
@@ -73,6 +83,22 @@ pub enum Stmt {
     Block(Block),
     Match(MatchStmt),
     Asm(AsmStmt),
+}
+
+impl Stmt {
+    /// True if this statement directly terminates its enclosing basic block.
+    /// Only counts `return`/`break`/`continue` at this level, or such a
+    /// statement inside an unconditional nested block. Does not recurse into
+    /// `if`/`loop`/`while`/`for`/`match` arms, since those don't unconditionally
+    /// terminate the surrounding block.
+    #[must_use]
+    pub fn is_direct_terminator(&self) -> bool {
+        match self {
+            Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => true,
+            Stmt::Block(inner) => inner.has_direct_terminator(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +121,18 @@ pub enum LValue {
     Field(Box<LValue>, Ident),
     Index(Box<LValue>, Box<Expr>),
     Deref(Box<Expr>),
+}
+
+impl LValue {
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            LValue::Name((_, s)) => *s,
+            LValue::Field(base, (_, s)) => base.span().merge(*s),
+            LValue::Index(base, index) => base.span().merge(index.span()),
+            LValue::Deref(inner) => inner.span(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

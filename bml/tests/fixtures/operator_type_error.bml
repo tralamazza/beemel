@@ -1,0 +1,7 @@
+// Test: logical ops require b1, bitwise ops require integers
+fn main() @context(thread) {
+    var a: u32 = 1;
+    var b: u32 = 2;
+    // logical && on non-b1 should error
+    a && b;
+}

@@ -1,0 +1,6 @@
+peripheral LED at 0x1 {
+    reg VALUE offset 0 {
+        field BAD: u32 bit[32]
+        field REV: u32 bit[5..2]
+    }
+}

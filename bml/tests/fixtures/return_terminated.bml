@@ -1,0 +1,4 @@
+// Test: function ending in return should not emit two ret instructions
+fn main() @context(thread) {
+    return;
+}

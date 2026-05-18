@@ -1,0 +1,4 @@
+// Test: discriminant near u64::MAX should be caught (not wrap negative)
+enum Bad: u32 {
+    X = 5000000000,
+}

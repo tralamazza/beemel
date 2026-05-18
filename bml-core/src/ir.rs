@@ -305,6 +305,9 @@ impl IrEmitter {
         for stmt in &block.stmts {
             self.collect_and_emit_allocas_stmt(stmt, symbols);
         }
+        if let Some(ref trailing) = block.trailing {
+            self.collect_and_emit_allocas_expr(trailing, symbols);
+        }
     }
 
     fn collect_and_emit_allocas_stmt(&mut self, stmt: &Stmt, symbols: &SymbolTable) {
@@ -325,6 +328,7 @@ impl IrEmitter {
                         bml_type,
                     },
                 );
+                self.collect_and_emit_allocas_expr(&vd.init, symbols);
             }
             Stmt::For(for_stmt) => {
                 let bml_type = self.expr_type(&for_stmt.start, symbols);
@@ -359,6 +363,62 @@ impl IrEmitter {
             }
             Stmt::Block(inner) => {
                 self.collect_and_emit_allocas_block(inner, symbols);
+            }
+            Stmt::Return(ret) => {
+                if let Some(ref val) = ret.value {
+                    self.collect_and_emit_allocas_expr(val, symbols);
+                }
+            }
+            Stmt::Assign(assign) => {
+                self.collect_and_emit_allocas_expr(&assign.value, symbols);
+            }
+            Stmt::Expr(expr) => {
+                self.collect_and_emit_allocas_expr(expr, symbols);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_and_emit_allocas_expr(&mut self, expr: &Expr, symbols: &SymbolTable) {
+        match expr {
+            Expr::Block(block_expr) => {
+                self.collect_and_emit_allocas_block(&block_expr.block, symbols);
+            }
+            Expr::If(if_expr) => {
+                self.collect_and_emit_allocas_block(&if_expr.then_block, symbols);
+                self.collect_and_emit_allocas_expr(&if_expr.else_branch, symbols);
+            }
+            Expr::Match(match_expr) => {
+                for arm in &match_expr.arms {
+                    self.collect_and_emit_allocas_block(&arm.body, symbols);
+                }
+            }
+            Expr::Unary(_, inner) => self.collect_and_emit_allocas_expr(inner, symbols),
+            Expr::Binary(left, _, right) => {
+                self.collect_and_emit_allocas_expr(left, symbols);
+                self.collect_and_emit_allocas_expr(right, symbols);
+            }
+            Expr::Call(_, args) => {
+                for arg in args {
+                    self.collect_and_emit_allocas_expr(arg, symbols);
+                }
+            }
+            Expr::FieldAccess(base, _) => self.collect_and_emit_allocas_expr(base, symbols),
+            Expr::Index(base, index) => {
+                self.collect_and_emit_allocas_expr(base, symbols);
+                self.collect_and_emit_allocas_expr(index, symbols);
+            }
+            Expr::Group(inner) => self.collect_and_emit_allocas_expr(inner, symbols),
+            Expr::Cast(inner, _) => self.collect_and_emit_allocas_expr(inner, symbols),
+            Expr::ArrayInit(elems, _) => {
+                for elem in elems {
+                    self.collect_and_emit_allocas_expr(elem, symbols);
+                }
+            }
+            Expr::StructInit { fields, .. } => {
+                for (_, expr) in fields {
+                    self.collect_and_emit_allocas_expr(expr, symbols);
+                }
             }
             _ => {}
         }
@@ -555,18 +615,20 @@ impl IrEmitter {
                 (p.name.0.clone(), llvm_type(&bml_type))
             })
             .collect();
-        self.emit_block(&fn_def.body, symbols, &fn_def.name.0, None, None);
+        let (_, body_term) = self.emit_block(&fn_def.body, symbols, &fn_def.name.0, None, None);
         self.current_fn_params.clear();
 
-        // Default return or tailchain return sequence
-        if tailchain {
-            crate::arch::arm::emit_tailchain_epilogue(self, has_calls);
-        } else if is_naked {
-            self.line("unreachable");
-        } else if ret_ty == "void" {
-            self.line("ret void");
-        } else {
-            self.line(&format!("ret {ret_ty} 0"));
+        // Default return or tailchain return sequence (only if body didn't already terminate)
+        if !body_term {
+            if tailchain {
+                crate::arch::arm::emit_tailchain_epilogue(self, has_calls);
+            } else if is_naked {
+                self.line("unreachable");
+            } else if ret_ty == "void" {
+                self.line("ret void");
+            } else {
+                self.line(&format!("ret {ret_ty} 0"));
+            }
         }
 
         self.indent -= 1;
@@ -581,14 +643,20 @@ impl IrEmitter {
         fn_name: &str,
         break_label: Option<&str>,
         continue_label: Option<&str>,
-    ) -> Option<String> {
+    ) -> (Option<String>, bool) {
         let mut last_reg: Option<String> = None;
+        let mut terminated = false;
 
         for stmt in &block.stmts {
-            last_reg = self.emit_stmt(stmt, symbols, fn_name, break_label, continue_label);
+            let (lr, term) = self.emit_stmt(stmt, symbols, fn_name, break_label, continue_label);
+            last_reg = lr;
+            if term {
+                terminated = true;
+                break;
+            }
         }
 
-        last_reg
+        (last_reg, terminated)
     }
 
     /// Emit switch dispatch for a match. Returns arm labels + end label
@@ -677,7 +745,7 @@ impl IrEmitter {
         fn_name: &str,
         break_label: Option<&str>,
         continue_label: Option<&str>,
-    ) -> Option<String> {
+    ) -> (Option<String>, bool) {
         match stmt {
             Stmt::VarDecl(vd) => {
                 let init_reg = self.emit_expr(&vd.init, symbols, fn_name);
@@ -739,7 +807,7 @@ impl IrEmitter {
                     "store {llvm_ty} {final_reg}, ptr {alloca_name}{dbg_sfx}"
                 ));
                 self.dbg_declare(&alloca_name, &vd.name.0, &bml_type, vd.name.1);
-                Some(final_reg)
+                (Some(final_reg), false)
             }
 
             Stmt::Assign(assign) => {
@@ -747,10 +815,10 @@ impl IrEmitter {
                 let val_ty = self.expr_type(&assign.value, symbols);
                 let target =
                     self.emit_store_target(&assign.target, symbols, fn_name, &val_reg, &val_ty);
-                Some(target)
+                (Some(target), false)
             }
 
-            Stmt::Expr(expr) => Some(self.emit_expr(expr, symbols, fn_name)),
+            Stmt::Expr(expr) => (Some(self.emit_expr(expr, symbols, fn_name)), false),
 
             Stmt::Asm(asm_stmt) => {
                 let escaped = asm_stmt
@@ -794,7 +862,7 @@ impl IrEmitter {
                         ));
                     }
                 }
-                None
+                (None, false)
             }
 
             Stmt::Return(ret) => {
@@ -809,20 +877,20 @@ impl IrEmitter {
                 } else {
                     self.line(&format!("ret void{dbg_sfx}"));
                 }
-                None
+                (None, true)
             }
 
             Stmt::Break(_) => {
                 if let Some(lbl) = break_label {
                     self.line(&format!("br label %{lbl}"));
                 }
-                None
+                (None, true)
             }
             Stmt::Continue(_) => {
                 if let Some(lbl) = continue_label {
                     self.line(&format!("br label %{lbl}"));
                 }
-                None
+                (None, true)
             }
 
             Stmt::If(if_stmt) => {
@@ -839,43 +907,56 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{then_lbl}:"));
                 self.indent += 1;
-                self.emit_block(
+                let (_, then_term) = self.emit_block(
                     &if_stmt.then_block,
                     symbols,
                     fn_name,
                     break_label,
                     continue_label,
                 );
-                self.line(&format!("br label %{end_lbl}"));
+                if !then_term {
+                    self.line(&format!("br label %{end_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{else_lbl}:"));
                 self.indent += 1;
+                let mut else_term = false;
                 if let Some(else_branch) = &if_stmt.else_branch {
                     match else_branch.as_ref() {
                         Stmt::Block(block) => {
-                            self.emit_block(block, symbols, fn_name, break_label, continue_label);
+                            let (_, term) = self.emit_block(
+                                block,
+                                symbols,
+                                fn_name,
+                                break_label,
+                                continue_label,
+                            );
+                            else_term = term;
                         }
                         Stmt::If(_inner_if) => {
-                            self.emit_stmt(
+                            let (_, term) = self.emit_stmt(
                                 else_branch,
                                 symbols,
                                 fn_name,
                                 break_label,
                                 continue_label,
                             );
+                            else_term = term;
                         }
                         _ => {}
                     }
                 }
-                self.line(&format!("br label %{end_lbl}"));
+                if !else_term {
+                    self.line(&format!("br label %{end_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
-                None
+                (None, false)
             }
 
             Stmt::For(for_stmt) => {
@@ -924,23 +1005,25 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{body_lbl}:"));
                 self.indent += 1;
-                self.emit_block(
+                let (_, body_term) = self.emit_block(
                     &for_stmt.body,
                     symbols,
                     fn_name,
                     Some(end_lbl.as_str()),
                     Some(cond_lbl.as_str()),
                 );
-                let inc_reg = self.new_reg();
-                self.line(&format!("{inc_reg} = add {ty} {reg}, 1"));
-                self.line(&format!("store {ty} {inc_reg}, ptr {alloca}"));
-                self.line(&format!("br label %{cond_lbl}"));
+                if !body_term {
+                    let inc_reg = self.new_reg();
+                    self.line(&format!("{inc_reg} = add {ty} {reg}, 1"));
+                    self.line(&format!("store {ty} {inc_reg}, ptr {alloca}"));
+                    self.line(&format!("br label %{cond_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
-                None
+                (None, false)
             }
 
             Stmt::Loop(loop_stmt) => {
@@ -948,7 +1031,6 @@ impl IrEmitter {
                 let body_lbl = self.new_label("loop_body");
                 let end_lbl = self.new_label("loop_end");
 
-                // Pre-loop: jump to loop header
                 self.line(&format!("br label %{loop_lbl}"));
                 self.line("");
 
@@ -961,20 +1043,22 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{body_lbl}:"));
                 self.indent += 1;
-                self.emit_block(
+                let (_, body_term) = self.emit_block(
                     &loop_stmt.body,
                     symbols,
                     fn_name,
                     Some(end_lbl.as_str()),
                     Some(loop_lbl.as_str()),
                 );
-                self.line(&format!("br label %{loop_lbl}"));
+                if !body_term {
+                    self.line(&format!("br label %{loop_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
-                None
+                (None, false)
             }
 
             Stmt::While(while_stmt) => {
@@ -997,48 +1081,56 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{body_lbl}:"));
                 self.indent += 1;
-                self.emit_block(
+                let (_, body_term) = self.emit_block(
                     &while_stmt.body,
                     symbols,
                     fn_name,
                     Some(end_lbl.as_str()),
                     Some(cond_lbl.as_str()),
                 );
-                self.line(&format!("br label %{cond_lbl}"));
+                if !body_term {
+                    self.line(&format!("br label %{cond_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
-                None
+                (None, false)
             }
 
             Stmt::Match(match_stmt) => {
-                let MatchDispatch {
+                let Some(MatchDispatch {
                     end_lbl,
                     arm_labels,
                     ..
-                } = self.emit_match_dispatch(
+                }) = self.emit_match_dispatch(
                     &match_stmt.scrutinee,
                     &match_stmt.arms,
                     symbols,
                     fn_name,
                     false,
-                )?;
+                )
+                else {
+                    return (None, false);
+                };
 
                 for (i, arm) in match_stmt.arms.iter().enumerate() {
                     self.indent -= 1;
                     self.line(&format!("{}:", arm_labels[i]));
                     self.indent += 1;
-                    self.emit_block(&arm.body, symbols, fn_name, break_label, continue_label);
-                    self.line(&format!("br label %{end_lbl}"));
+                    let (_, arm_term) =
+                        self.emit_block(&arm.body, symbols, fn_name, break_label, continue_label);
+                    if !arm_term {
+                        self.line(&format!("br label %{end_lbl}"));
+                    }
                     self.line("");
                 }
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
-                None
+                (None, false)
             }
 
             Stmt::Block(inner) => {
@@ -1705,7 +1797,10 @@ impl IrEmitter {
             }
             Expr::Group(inner) => self.emit_expr(inner, symbols, fn_name),
             Expr::Block(block_expr) => {
-                self.emit_block(&block_expr.block, symbols, fn_name, None, None);
+                let (_, term) = self.emit_block(&block_expr.block, symbols, fn_name, None, None);
+                if term {
+                    return default_value_literal(&self.expr_type(expr, symbols));
+                }
                 if let Some(ref trailing) = block_expr.block.trailing {
                     self.emit_expr(trailing, symbols, fn_name)
                 } else {
@@ -1728,15 +1823,25 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{then_lbl}:"));
                 self.indent += 1;
-                self.emit_block(&if_expr.then_block, symbols, fn_name, None, None);
-                let then_val = if let Some(ref trailing) = if_expr.then_block.trailing {
-                    self.emit_expr(trailing, symbols, fn_name)
+                let (_, then_term) =
+                    self.emit_block(&if_expr.then_block, symbols, fn_name, None, None);
+                // Phi type comes from the else branch; if then's trailing is missing
+                // (checker should have rejected with E328) we still need a value of
+                // the right LLVM type so the phi verifies.
+                let phi_bml_ty = self.expr_type(&if_expr.else_branch, symbols);
+                let then_val = if then_term {
+                    None
+                } else if let Some(ref trailing) = if_expr.then_block.trailing {
+                    Some(self.emit_expr(trailing, symbols, fn_name))
                 } else {
-                    let reg = self.new_reg();
-                    self.line(&format!("{reg} = add i32 0, 0  ; no trailing"));
-                    reg
+                    Some(default_value_literal(&phi_bml_ty))
                 };
-                self.line(&format!("br label %{end_lbl}"));
+                // When then terminates we skip the join entirely and let the caller
+                // continue emitting into the else block; otherwise both arms branch
+                // to end_lbl and we phi the results.
+                if !then_term {
+                    self.line(&format!("br label %{end_lbl}"));
+                }
                 self.line("");
 
                 self.indent -= 1;
@@ -1744,19 +1849,26 @@ impl IrEmitter {
                 self.indent += 1;
                 let else_val = self.emit_expr(&if_expr.else_branch, symbols, fn_name);
                 let else_edge_label = self.current_label.clone().unwrap_or(else_lbl);
-                self.line(&format!("br label %{end_lbl}"));
+                if !then_term {
+                    self.line(&format!("br label %{end_lbl}"));
+                }
                 self.line("");
 
-                self.indent -= 1;
-                self.line(&format!("{end_lbl}:"));
-                self.indent += 1;
+                if then_term {
+                    else_val
+                } else {
+                    self.indent -= 1;
+                    self.line(&format!("{end_lbl}:"));
+                    self.indent += 1;
 
-                let result = self.new_reg();
-                let phi_llvm_ty = llvm_type(&self.expr_type(&if_expr.else_branch, symbols));
-                self.line(&format!(
-                    "{result} = phi {phi_llvm_ty} [ {then_val}, %{then_lbl} ], [ {else_val}, %{else_edge_label} ]"
-                ));
-                result
+                    let result = self.new_reg();
+                    let phi_llvm_ty = llvm_type(&phi_bml_ty);
+                    let then_val = then_val.expect("then_val is Some whenever then_term is false");
+                    self.line(&format!(
+                        "{result} = phi {phi_llvm_ty} [ {then_val}, %{then_lbl} ], [ {else_val}, %{else_edge_label} ]"
+                    ));
+                    result
+                }
             }
             Expr::Match(match_expr) => {
                 let Some(MatchDispatch {
@@ -1801,7 +1913,11 @@ impl IrEmitter {
                     self.indent -= 1;
                     self.line(&format!("{arm_lbl}:"));
                     self.indent += 1;
-                    self.emit_block(&arm.body, symbols, fn_name, None, None);
+                    let (_, arm_term) = self.emit_block(&arm.body, symbols, fn_name, None, None);
+                    if arm_term {
+                        self.line("");
+                        continue;
+                    }
                     let arm_val = if let Some(ref trailing) = arm.body.trailing {
                         self.emit_expr(trailing, symbols, fn_name)
                     } else {
@@ -1810,13 +1926,19 @@ impl IrEmitter {
                         reg
                     };
                     phi_pairs.push((arm_val, arm_lbl));
-                    self.line(&format!("br label %{end_lbl}"));
+                    if !arm_term {
+                        self.line(&format!("br label %{end_lbl}"));
+                    }
                     self.line("");
                 }
 
                 self.indent -= 1;
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
+
+                if phi_pairs.is_empty() {
+                    return default_value_literal(&self.expr_type(expr, symbols));
+                }
 
                 let result = self.new_reg();
                 let phi_args: Vec<String> = phi_pairs
@@ -2519,7 +2641,7 @@ impl IrEmitter {
             },
             Expr::BoolLiteral(_, _) => Type::B1,
             Expr::StringLiteral(_, _) => Type::ConstPtr(Box::new(Type::U8)),
-            Expr::NullLiteral(_) => Type::Unresolved("null".into()),
+            Expr::NullLiteral(_) => Type::Null,
             Expr::SizeOf(ty_expr, _) => {
                 let _ = crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
                 Type::U32
@@ -2606,7 +2728,8 @@ impl IrEmitter {
                 if let Some(fields) = symbols.structs.get(&name.0) {
                     Type::Struct(name.0.clone(), fields.clone())
                 } else {
-                    Type::Unresolved(name.0.clone())
+                    // Checker should have reported the unknown struct already.
+                    Type::Error(crate::errors::ErrorGuaranteed::unchecked_claim_error_was_emitted())
                 }
             }
             Expr::EnumVariant {
@@ -2616,7 +2739,7 @@ impl IrEmitter {
                 if let Some((inner_ty, variants)) = symbols.enums.get(name) {
                     Type::Enum(name.clone(), Box::new(inner_ty.clone()), variants.clone())
                 } else {
-                    Type::Unresolved(name.clone())
+                    Type::Error(crate::errors::ErrorGuaranteed::unchecked_claim_error_was_emitted())
                 }
             }
             Expr::Unary(op, inner) => match op {
@@ -2711,12 +2834,42 @@ fn llvm_type(ty: &Type) -> String {
         | Type::Mmio(inner)
         | Type::Dma(inner)
         | Type::External(inner) => llvm_type(inner),
-        Type::Unresolved(_) => "i32".into(),
+        Type::Null => "ptr".into(),
+        // Post-resolver these shouldn't appear; if they do, emit a safe i32
+        // so we still produce valid (if meaningless) IR for already-broken
+        // input rather than panicking.
+        Type::Unresolved(_) | Type::Error(_) => "i32".into(),
         Type::Struct(_, fields) => {
             let inner: Vec<String> = fields.iter().map(|(_, ty)| llvm_type(ty)).collect();
             format!("{{ {} }}", inner.join(", "))
         }
         Type::Enum(_, inner_ty, _) => llvm_type(inner_ty),
+    }
+}
+
+fn default_value_literal(ty: &Type) -> String {
+    match ty {
+        Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::B1
+        | Type::B8 => "0".to_string(),
+        Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
+        Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
+        Type::Array(..) | Type::Struct(..) => "zeroinitializer".to_string(),
+        Type::Enum(_, inner, _) => default_value_literal(inner),
+        Type::Exclusive(inner)
+        | Type::Shared(inner, _)
+        | Type::Mmio(inner)
+        | Type::Dma(inner)
+        | Type::External(inner) => default_value_literal(inner),
+        Type::Null => "null".to_string(),
+        Type::Void | Type::Unresolved(_) | Type::Error(_) => "0".to_string(),
     }
 }
 

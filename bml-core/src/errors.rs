@@ -1,5 +1,26 @@
 use crate::source::{SourceMap, Span};
 
+/// Witness that an error diagnostic was emitted. The only public way to
+/// construct one is by calling `DiagnosticBag::error` (or a variant), which
+/// guarantees a diagnostic landed in the bag before this value exists.
+///
+/// Used by `Type::Error(_)` so that constructing the error type requires
+/// proof that the user will see *some* diagnostic explaining the failure —
+/// preventing silent suppression of real type errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ErrorGuaranteed(());
+
+impl ErrorGuaranteed {
+    /// Escape hatch for sites that cannot themselves emit a diagnostic but
+    /// know one was emitted upstream (e.g. IR emission running after the
+    /// checker has already rejected malformed programs). Use sparingly; each
+    /// call is a claim that needs to hold in every code path.
+    #[must_use]
+    pub fn unchecked_claim_error_was_emitted() -> Self {
+        ErrorGuaranteed(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub level: Level,
@@ -35,7 +56,12 @@ impl DiagnosticBag {
         }
     }
 
-    pub fn error(&mut self, message: impl Into<String>, code: impl Into<String>, span: Span) {
+    pub fn error(
+        &mut self,
+        message: impl Into<String>,
+        code: impl Into<String>,
+        span: Span,
+    ) -> ErrorGuaranteed {
         self.diagnostics.push(Diagnostic {
             level: Level::Error,
             code: code.into(),
@@ -44,6 +70,7 @@ impl DiagnosticBag {
             labels: Vec::new(),
             notes: Vec::new(),
         });
+        ErrorGuaranteed(())
     }
 
     pub fn warn(&mut self, message: impl Into<String>, code: impl Into<String>, span: Span) {
@@ -63,7 +90,7 @@ impl DiagnosticBag {
         code: impl Into<String>,
         span: Span,
         notes: Vec<String>,
-    ) {
+    ) -> ErrorGuaranteed {
         self.diagnostics.push(Diagnostic {
             level: Level::Error,
             code: code.into(),
@@ -72,6 +99,7 @@ impl DiagnosticBag {
             labels: Vec::new(),
             notes,
         });
+        ErrorGuaranteed(())
     }
 
     #[must_use]

@@ -281,6 +281,33 @@ impl Resolver {
                     &self.table.structs,
                     &self.table.enums,
                 );
+                // Validate bit spec
+                match &field.bit_spec {
+                    crate::ast::BitSpec::Single(n) => {
+                        if *n >= 32 {
+                            diags.error(
+                                format!("bit index {n} out of range (must be 0..32)"),
+                                "E114",
+                                field.name.1,
+                            );
+                        }
+                    }
+                    crate::ast::BitSpec::Range(lo, hi) => {
+                        if *lo >= 32 || *hi >= 32 {
+                            diags.error(
+                                format!("bit range [{lo}..{hi}] out of range (must be 0..32)"),
+                                "E114",
+                                field.name.1,
+                            );
+                        } else if lo > hi {
+                            diags.error(
+                                format!("invalid bit range [{lo}..{hi}] (low must be <= high)"),
+                                "E114",
+                                field.name.1,
+                            );
+                        }
+                    }
+                }
                 fields.insert(
                     field.name.0.clone(),
                     FieldSymbol {
@@ -365,9 +392,9 @@ impl Resolver {
         // Resolve the underlying type (must be u8, u16, or u32)
         let inner_ty = crate::types::resolve_type_expr(&e.ty, &self.table.structs, &HashMap::new());
         let (max_val, ll_ty) = match &inner_ty {
-            crate::types::Type::U8 => (255i64, crate::types::Type::U8),
-            crate::types::Type::U16 => (65535i64, crate::types::Type::U16),
-            crate::types::Type::U32 => (4_294_967_295i64, crate::types::Type::U32),
+            crate::types::Type::U8 => (i128::from(u8::MAX), crate::types::Type::U8),
+            crate::types::Type::U16 => (i128::from(u16::MAX), crate::types::Type::U16),
+            crate::types::Type::U32 => (i128::from(u32::MAX), crate::types::Type::U32),
             _ => {
                 diags.error(
                     format!("enum underlying type must be u8, u16, or u32, got `{inner_ty:?}`"),
@@ -379,8 +406,9 @@ impl Resolver {
         };
 
         // Compute discriminants with auto-increment
+        // Use i128 to avoid u64→i64 wrap for large values
         let mut variants: Vec<(String, i64)> = Vec::new();
-        let mut next_val: i64 = 0;
+        let mut next_val: i128 = 0;
         let mut seen: HashSet<String> = HashSet::new();
         for v in &e.variants {
             if seen.contains(&v.name.0) {
@@ -392,9 +420,8 @@ impl Resolver {
             }
             seen.insert(v.name.0.clone());
 
-            let disc = if let Some(val) = v.value {
-                #[allow(clippy::cast_possible_wrap)]
-                let val = val as i64;
+            let disc: i128 = if let Some(val) = v.value {
+                let val = i128::from(val);
                 next_val = val + 1;
                 val
             } else {
@@ -414,7 +441,8 @@ impl Resolver {
                 );
             }
 
-            variants.push((v.name.0.clone(), disc));
+            #[allow(clippy::cast_possible_truncation)]
+            variants.push((v.name.0.clone(), disc as i64));
         }
 
         self.table.enums.insert(name, (ll_ty, variants));
@@ -483,6 +511,55 @@ impl Resolver {
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // TODO: passes 2c/2d/2e re-resolve types after the symbol table is built
+        // because pass 1 ran before all struct/enum names were registered.
+        // Collapse into a single post-symbol resolution pass; adding a new top-level
+        // item kind currently requires remembering to add another 2x pass here.
+
+        // Pass 2c: re-resolve static types
+        // (struct/enum names that were Unresolved in pass 1)
+        for item in &program.items {
+            if let ast::Item::StaticDef(s) = item
+                && let Some(sym) = self.table.statics.get_mut(&s.name.0)
+            {
+                let base_ty =
+                    crate::types::resolve_type_expr(&s.ty, &self.table.structs, &self.table.enums);
+                let wrapped_ty = wrap_with_storage(base_ty, &s.storage);
+                sym.ty = wrapped_ty;
+            }
+        }
+
+        // Pass 2d: re-resolve const types
+        for item in &program.items {
+            if let ast::Item::ConstDef(c) = item
+                && let Some(sym) = self.table.consts.get_mut(&c.name.0)
+            {
+                sym.ty =
+                    crate::types::resolve_type_expr(&c.ty, &self.table.structs, &self.table.enums);
+            }
+        }
+
+        // Pass 2e: re-resolve peripheral field types
+        for item in &program.items {
+            if let ast::Item::PeripheralDef(p) = item
+                && let Some(periph_sym) = self.table.peripherals.get_mut(&p.name.0)
+            {
+                for reg in &p.regs {
+                    if let Some(reg_sym) = periph_sym.regs.get_mut(&reg.name.0) {
+                        for field in &reg.fields {
+                            if let Some(field_sym) = reg_sym.fields.get_mut(&field.name.0) {
+                                field_sym.ty = crate::types::resolve_type_expr(
+                                    &field.ty,
+                                    &self.table.structs,
+                                    &self.table.enums,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }

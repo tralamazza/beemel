@@ -1,0 +1,5 @@
+// if expression -- statement-only branch has no value
+fn main() @context(thread) {
+    var a = true;
+    var x = if a { var y: u32 = 1; } else { 2u32 };
+}
