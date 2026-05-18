@@ -355,9 +355,10 @@ fn build_file(
         stack::print_report(&report, &symbols, 2048);
     }
 
+    let arch = target.to_arch();
     let triple = target.to_llvm_target_triple();
     let emitter = IrEmitter::new(
-        triple,
+        arch,
         target.interrupts.clone(),
         target.has_bitband,
         debug,
@@ -385,7 +386,7 @@ fn build_file(
         let llc_status = process::Command::new("llc")
             .args([
                 "-O0",
-                &format!("-mtriple={}", target.to_llvm_target_triple()),
+                &format!("-mtriple={triple}"),
                 "-filetype=obj",
                 "-o",
                 obj_path.to_str().unwrap(),

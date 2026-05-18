@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod arch;
 pub mod ast;
 pub mod borrow;
 pub mod checker;

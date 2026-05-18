@@ -125,17 +125,28 @@ impl Target {
                 _ => return Err(format!("line {}: unknown key `{key}`", line_num + 1)),
             }
         }
+        // ARMv6-M (Cortex-M0/M0+) does not support bit-banding
+        if target.has_bitband && target.arch == "armv6m" {
+            eprintln!("warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`");
+            target.has_bitband = false;
+        }
+
         Ok(target)
     }
 
     #[must_use]
-    pub fn to_llvm_target_triple(&self) -> &str {
+    pub fn to_arch(&self) -> crate::arch::Arch {
         match self.arch.as_str() {
-            "armv6m" => "thumbv6m-none-unknown-eabi",
-            "armv7m" => "thumbv7m-none-unknown-eabi",
-            "armv7em" => "thumbv7em-none-unknown-eabi",
-            _ => "thumbv7em-none-unknown-eabi",
+            "armv6m" => crate::arch::Arch::Armv6m,
+            "armv7m" => crate::arch::Arch::Armv7m,
+            "armv7em" => crate::arch::Arch::Armv7em,
+            _ => crate::arch::Arch::Armv7em,
         }
+    }
+
+    #[must_use]
+    pub fn to_llvm_target_triple(&self) -> &'static str {
+        self.to_arch().llvm_target_triple()
     }
 
     #[must_use]
