@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{self, BitSpec, Item, Program, StorageAnnotation};
+use crate::ast::{self, BitSpec, Program, StorageAnnotation};
 use crate::context::Context;
 use crate::errors::DiagnosticBag;
+use crate::imports::AliasInfo;
 use crate::types::Type;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SymbolTable {
     pub functions: HashMap<String, FnSymbol>,
     pub statics: HashMap<String, StaticSymbol>,
@@ -13,10 +14,10 @@ pub struct SymbolTable {
     pub peripherals: HashMap<String, PeripheralSymbol>,
     pub structs: HashMap<String, Vec<(String, crate::types::Type)>>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
-    pub import_aliases: HashMap<String, HashMap<String, Item>>,
+    pub import_aliases: HashMap<String, AliasInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnSymbol {
     pub context: Context,
     pub params: Vec<(String, crate::types::Type)>,
@@ -34,30 +35,30 @@ pub struct FnSymbol {
     pub max_depth: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StaticSymbol {
     pub ty: crate::types::Type,
     pub storage: Vec<StorageAnnotation>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConstSymbol {
     pub ty: crate::types::Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PeripheralSymbol {
     pub base_addr: u64,
     pub regs: HashMap<String, RegSymbol>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RegSymbol {
     pub offset: u64,
     pub fields: HashMap<String, FieldSymbol>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldSymbol {
     pub bit_spec: BitSpec,
     pub ty: Type,
@@ -93,7 +94,7 @@ impl Resolver {
         mut self,
         program: &Program,
         diags: &mut DiagnosticBag,
-        aliases: HashMap<String, HashMap<String, Item>>,
+        aliases: HashMap<String, AliasInfo>,
     ) -> SymbolTable {
         self.table.import_aliases = aliases;
 
@@ -106,34 +107,7 @@ impl Resolver {
                 ast::Item::PeripheralDef(p) => self.collect_peripheral(p, diags),
                 ast::Item::StructDef(s) => self.collect_struct(s, diags),
                 ast::Item::EnumDef(e) => self.collect_enum(e, diags),
-                ast::Item::Import(_) => {
-                    let alias_items: Vec<Item> = self
-                        .table
-                        .import_aliases
-                        .values()
-                        .flat_map(|e| e.values().cloned())
-                        .collect();
-                    // Pass 1a: register structs/enums first (other items may reference them)
-                    for item in &alias_items {
-                        match item {
-                            ast::Item::StructDef(s) => self.collect_struct(s, diags),
-                            ast::Item::EnumDef(e) => self.collect_enum(e, diags),
-                            _ => {}
-                        }
-                    }
-                    // Pass 1b: register everything else
-                    for item in &alias_items {
-                        match item {
-                            ast::Item::FnDef(f) => self.collect_fn(f, diags),
-                            ast::Item::ExternFnDef(e) => self.collect_extern_fn(e, diags),
-                            ast::Item::StaticDef(s) => self.collect_static(s, diags),
-                            ast::Item::ConstDef(c) => self.collect_const(c, diags),
-                            ast::Item::PeripheralDef(p) => self.collect_peripheral(p, diags),
-                            ast::Item::StructDef(_) | ast::Item::EnumDef(_) => {}
-                            _ => {}
-                        }
-                    }
-                }
+                ast::Item::Import(_) => {}
                 ast::Item::Export(_) => {
                     // Export statements are consumed by import resolver
                 }

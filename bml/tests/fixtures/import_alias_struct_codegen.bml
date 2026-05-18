@@ -1,0 +1,6 @@
+import lib_alias_struct as S;
+
+fn main() @context(thread) {
+    var p = S.make_point();
+    var x = p.x;
+}

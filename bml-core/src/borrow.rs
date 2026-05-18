@@ -357,6 +357,21 @@ fn check_expr(
             {
                 check_context_compat(callee, span, fn_sym, current_fn, current_ctx, diags);
             }
+            if let Expr::FieldAccess(base, field) = func_expr.as_ref()
+                && let Expr::Ident((alias, _)) = base.as_ref()
+                && let Some(alias_info) = symbols.import_aliases.get(alias)
+                && let Some(item) = alias_info.exports.get(&field.0)
+                && let Some(context) = alias_item_context(item)
+            {
+                check_context_compat_context(
+                    &format!("{alias}.{}", field.0),
+                    &field.1,
+                    context,
+                    current_fn,
+                    current_ctx,
+                    diags,
+                );
+            }
             for arg in args {
                 check_expr(
                     arg,
@@ -622,7 +637,18 @@ fn check_context_compat(
     current_ctx: Context,
     diags: &mut DiagnosticBag,
 ) {
-    match fn_sym.context {
+    check_context_compat_context(callee, span, fn_sym.context, current_fn, current_ctx, diags);
+}
+
+fn check_context_compat_context(
+    callee: &str,
+    span: &Span,
+    callee_context: Context,
+    current_fn: &str,
+    current_ctx: Context,
+    diags: &mut DiagnosticBag,
+) {
+    match callee_context {
         Context::Any => {
             // Any function can be called from anywhere
         }
@@ -656,6 +682,31 @@ fn check_context_compat(
                 Context::Any => {}
             }
         }
+    }
+}
+
+fn alias_item_context(item: &ast::Item) -> Option<Context> {
+    match item {
+        ast::Item::FnDef(f) => Some(if let Some(isr) = &f.isr {
+            Context::Isr(isr.priority)
+        } else {
+            context_from_ast(&f.context)
+        }),
+        ast::Item::ExternFnDef(f) => Some(if let Some(isr) = &f.isr {
+            Context::Isr(isr.priority)
+        } else if let Some(ctx) = &f.context {
+            context_from_ast(ctx)
+        } else {
+            Context::Any
+        }),
+        _ => None,
+    }
+}
+
+fn context_from_ast(ctx: &ast::ContextExpr) -> Context {
+    match ctx {
+        ast::ContextExpr::Thread => Context::Thread,
+        ast::ContextExpr::Any => Context::Any,
     }
 }
 

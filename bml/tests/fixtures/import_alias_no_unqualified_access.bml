@@ -1,0 +1,5 @@
+import lib_alias as L;
+
+fn main() @context(thread) {
+    var f = hello;
+}

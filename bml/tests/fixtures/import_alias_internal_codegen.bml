@@ -1,0 +1,5 @@
+import lib_alias_internal as I;
+
+fn main() @context(thread) {
+    var x = I.public_value();
+}

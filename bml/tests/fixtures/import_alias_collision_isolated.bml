@@ -1,0 +1,7 @@
+import lib_x as X;
+import lib_y as Y;
+
+fn main() @context(thread) {
+    X.foo();
+    Y.foo();
+}

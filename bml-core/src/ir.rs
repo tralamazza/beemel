@@ -4,7 +4,7 @@ use std::fmt::Write;
 use crate::arch::Arch;
 use crate::ast::{self, Expr, LValue, Program, Stmt, StorageAnnotation};
 use crate::context::Context;
-use crate::resolver::SymbolTable;
+use crate::resolver::{FnSymbol, SymbolTable};
 use crate::source::{SourceMap, Span};
 use crate::types::Type;
 
@@ -32,6 +32,7 @@ pub struct IrEmitter {
     current_ctx: Context,
     current_label: Option<String>,
     current_fn_params: Vec<(String, String)>,
+    alias_fn_symbols: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -143,6 +144,7 @@ impl IrEmitter {
             current_ctx: Context::Thread,
             current_label: None,
             current_fn_params: Vec::new(),
+            alias_fn_symbols: HashMap::new(),
         }
     }
 
@@ -155,6 +157,7 @@ impl IrEmitter {
         self.emit_global_declarations(program, symbols);
         self.emit_extern_function_declarations(program, symbols);
         self.emit_function_bodies(program, symbols);
+        self.emit_alias_function_bodies(symbols);
         self.emit_string_literals();
         self.emit_vector_table(program, symbols);
         if self.debug {
@@ -366,6 +369,55 @@ impl IrEmitter {
             if let ast::Item::FnDef(fn_def) = item {
                 self.emit_function(fn_def, symbols);
             }
+        }
+    }
+
+    fn emit_alias_function_bodies(&mut self, symbols: &SymbolTable) {
+        for (alias, alias_info) in &symbols.import_aliases {
+            let alias_symbols = symbols_with_alias_items(symbols, alias, alias_info);
+            let alias_fn_symbols = alias_function_symbols(alias, &alias_info.items);
+            let previous_alias_symbols =
+                std::mem::replace(&mut self.alias_fn_symbols, alias_fn_symbols);
+
+            for item in &alias_info.items {
+                match item {
+                    ast::Item::FnDef(fn_def) => {
+                        let mut aliased_fn = fn_def.clone();
+                        aliased_fn.name.0 = alias_fn_name(alias, &fn_def.name.0);
+                        self.emit_function(&aliased_fn, &alias_symbols);
+                    }
+                    ast::Item::ExternFnDef(extern_fn) => {
+                        let ret_ty = match &extern_fn.ret {
+                            Some(ty) => llvm_type(&crate::types::resolve_type_expr(
+                                ty,
+                                &alias_symbols.structs,
+                                &alias_symbols.enums,
+                            )),
+                            None => "void".to_string(),
+                        };
+                        let param_strs: Vec<String> = extern_fn
+                            .params
+                            .iter()
+                            .map(|p| {
+                                llvm_type(&crate::types::resolve_type_expr(
+                                    &p.ty,
+                                    &alias_symbols.structs,
+                                    &alias_symbols.enums,
+                                ))
+                            })
+                            .collect();
+                        self.line(&format!(
+                            "declare {} @{}({})",
+                            ret_ty,
+                            alias_fn_name(alias, &extern_fn.name.0),
+                            param_strs.join(", ")
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
+            self.alias_fn_symbols = previous_alias_symbols;
         }
     }
 
@@ -1089,6 +1141,11 @@ impl IrEmitter {
                     return reg;
                 }
                 // Functions: return function address as pointer
+                if let Some(symbol) = self.alias_fn_symbols.get(name).cloned() {
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = getelementptr i8, ptr @{symbol}, i32 0"));
+                    return reg;
+                }
                 if symbols.functions.contains_key(name) {
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
@@ -1337,10 +1394,20 @@ impl IrEmitter {
                 let dbg_sfx = self.dbg_loc(call_span);
 
                 // Determine if this is a direct call to a known function
-                let direct_name = if let Expr::Ident((name, _)) = func_expr.as_ref()
-                    && symbols.functions.contains_key(name)
+                let direct_name = if let Expr::Ident((name, _)) = func_expr.as_ref() {
+                    self.alias_fn_symbols
+                        .get(name)
+                        .cloned()
+                        .or_else(|| symbols.functions.contains_key(name).then(|| name.clone()))
+                } else if let Expr::FieldAccess(base, field) = func_expr.as_ref()
+                    && let Expr::Ident((alias, _)) = base.as_ref()
+                    && let Some(alias_info) = symbols.import_aliases.get(alias)
+                    && matches!(
+                        alias_info.exports.get(&field.0),
+                        Some(ast::Item::FnDef(_) | ast::Item::ExternFnDef(_))
+                    )
                 {
-                    Some(name.clone())
+                    Some(alias_fn_name(alias, &field.0))
                 } else {
                     None
                 };
@@ -1358,7 +1425,7 @@ impl IrEmitter {
 
                     let ret_ty = fn_sym
                         .and_then(|s| s.ret.as_ref())
-                        .map_or_else(|| "void".to_string(), llvm_type);
+                        .map_or_else(|| alias_call_return_type(func_expr, symbols), llvm_type);
 
                     let reg = self.new_reg();
                     if ret_ty == "void" {
@@ -2465,6 +2532,13 @@ impl IrEmitter {
                 if let Some(sym) = symbols.statics.get(name) {
                     return sym.ty.inner().clone();
                 }
+                if let Some(symbol) = self.alias_fn_symbols.get(name)
+                    && let Some(fn_sym) = symbols.functions.get(symbol)
+                {
+                    let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
+                    let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
+                    return Type::Fn(params, Box::new(ret));
+                }
                 if let Some(fn_sym) = symbols.functions.get(name) {
                     let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
                     let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
@@ -2585,7 +2659,33 @@ impl IrEmitter {
                     self.expr_type(&if_expr.else_branch, symbols)
                 }
             }
-            Expr::Call(..) => Type::U32,
+            Expr::Call(func_expr, _) => {
+                if let Expr::Ident((name, _)) = func_expr.as_ref()
+                    && let Some(fn_sym) = symbols.functions.get(name)
+                {
+                    return fn_sym.ret.clone().unwrap_or(Type::Void);
+                }
+                if let Expr::FieldAccess(base, field) = func_expr.as_ref()
+                    && let Expr::Ident((alias, _)) = base.as_ref()
+                    && let Some(alias_info) = symbols.import_aliases.get(alias)
+                    && let Some(item) = alias_info.exports.get(&field.0)
+                {
+                    let (structs, enums) = crate::types::alias_type_defs(
+                        &alias_info.items,
+                        &symbols.structs,
+                        &symbols.enums,
+                    );
+                    let ret = match item {
+                        ast::Item::FnDef(f) => f.ret.as_ref(),
+                        ast::Item::ExternFnDef(f) => f.ret.as_ref(),
+                        _ => None,
+                    };
+                    return ret.map_or(Type::Void, |ty| {
+                        crate::types::resolve_type_expr(ty, &structs, &enums)
+                    });
+                }
+                Type::U32
+            }
         }
     }
 }
@@ -2617,6 +2717,174 @@ fn llvm_type(ty: &Type) -> String {
             format!("{{ {} }}", inner.join(", "))
         }
         Type::Enum(_, inner_ty, _) => llvm_type(inner_ty),
+    }
+}
+
+fn alias_fn_name(alias: &str, name: &str) -> String {
+    format!("__bml.alias.{alias}.{name}")
+}
+
+fn alias_function_symbols(alias: &str, items: &[ast::Item]) -> HashMap<String, String> {
+    let mut symbols = HashMap::new();
+    for item in items {
+        match item {
+            ast::Item::FnDef(f) => {
+                symbols.insert(f.name.0.clone(), alias_fn_name(alias, &f.name.0));
+            }
+            ast::Item::ExternFnDef(f) => {
+                symbols.insert(f.name.0.clone(), alias_fn_name(alias, &f.name.0));
+            }
+            _ => {}
+        }
+    }
+    symbols
+}
+
+fn alias_call_return_type(func_expr: &Expr, symbols: &SymbolTable) -> String {
+    if let Expr::FieldAccess(base, field) = func_expr
+        && let Expr::Ident((alias, _)) = base.as_ref()
+        && let Some(alias_info) = symbols.import_aliases.get(alias)
+        && let Some(item) = alias_info.exports.get(&field.0)
+    {
+        let (structs, enums) =
+            crate::types::alias_type_defs(&alias_info.items, &symbols.structs, &symbols.enums);
+        let ret = match item {
+            ast::Item::FnDef(f) => f.ret.as_ref(),
+            ast::Item::ExternFnDef(f) => f.ret.as_ref(),
+            _ => None,
+        };
+        return ret.map_or_else(
+            || "void".to_string(),
+            |ty| llvm_type(&crate::types::resolve_type_expr(ty, &structs, &enums)),
+        );
+    }
+    "void".to_string()
+}
+
+fn symbols_with_alias_items(
+    symbols: &SymbolTable,
+    alias: &str,
+    alias_info: &crate::imports::AliasInfo,
+) -> SymbolTable {
+    let (structs, enums) =
+        crate::types::alias_type_defs(&alias_info.items, &symbols.structs, &symbols.enums);
+    let mut alias_symbols = symbols.clone();
+    alias_symbols.structs = structs;
+    alias_symbols.enums = enums;
+
+    for item in &alias_info.items {
+        match item {
+            ast::Item::FnDef(f) => {
+                let sym = fn_symbol_from_fn_def(f, &alias_symbols.structs, &alias_symbols.enums);
+                alias_symbols
+                    .functions
+                    .insert(f.name.0.clone(), sym.clone());
+                alias_symbols
+                    .functions
+                    .insert(alias_fn_name(alias, &f.name.0), sym);
+            }
+            ast::Item::ExternFnDef(f) => {
+                let sym = fn_symbol_from_extern_fn(f, &alias_symbols.structs, &alias_symbols.enums);
+                alias_symbols
+                    .functions
+                    .insert(f.name.0.clone(), sym.clone());
+                alias_symbols
+                    .functions
+                    .insert(alias_fn_name(alias, &f.name.0), sym);
+            }
+            _ => {}
+        }
+    }
+
+    alias_symbols
+}
+
+fn fn_symbol_from_fn_def(
+    f: &ast::FnDef,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    enums: &crate::types::EnumDefs,
+) -> FnSymbol {
+    let context = if let Some(isr) = &f.isr {
+        Context::Isr(isr.priority)
+    } else {
+        context_from_ast(&f.context)
+    };
+    let params = f
+        .params
+        .iter()
+        .map(|p| {
+            (
+                p.name.0.clone(),
+                crate::types::resolve_type_expr(&p.ty, structs, enums),
+            )
+        })
+        .collect();
+    let ret = f
+        .ret
+        .as_ref()
+        .map(|ty| crate::types::resolve_type_expr(ty, structs, enums));
+
+    FnSymbol {
+        context,
+        params,
+        ret,
+        isr_label: f.isr.as_ref().and_then(|i| i.label.clone()),
+        naked: f.naked,
+        section: f.section.clone(),
+        tailchain: f.isr.as_ref().is_some_and(|i| i.tailchain),
+        has_calls: false,
+        local_frame: 0,
+        callees: Vec::new(),
+        max_depth: 0,
+    }
+}
+
+fn fn_symbol_from_extern_fn(
+    f: &ast::ExternFnDef,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    enums: &crate::types::EnumDefs,
+) -> FnSymbol {
+    let context = if let Some(isr) = &f.isr {
+        Context::Isr(isr.priority)
+    } else if let Some(ctx) = &f.context {
+        context_from_ast(ctx)
+    } else {
+        Context::Any
+    };
+    let params = f
+        .params
+        .iter()
+        .map(|p| {
+            (
+                p.name.0.clone(),
+                crate::types::resolve_type_expr(&p.ty, structs, enums),
+            )
+        })
+        .collect();
+    let ret = f
+        .ret
+        .as_ref()
+        .map(|ty| crate::types::resolve_type_expr(ty, structs, enums));
+
+    FnSymbol {
+        context,
+        params,
+        ret,
+        isr_label: f.isr.as_ref().and_then(|i| i.label.clone()),
+        naked: false,
+        section: None,
+        tailchain: false,
+        has_calls: false,
+        local_frame: 0,
+        callees: Vec::new(),
+        max_depth: 0,
+    }
+}
+
+fn context_from_ast(ctx: &ast::ContextExpr) -> Context {
+    match ctx {
+        ast::ContextExpr::Thread => Context::Thread,
+        ast::ContextExpr::Any => Context::Any,
     }
 }
 

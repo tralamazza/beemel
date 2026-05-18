@@ -70,6 +70,10 @@ impl Checker {
 
 fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
     let mut scope = ScopeStack::new();
+    let expected_ret = fn_def
+        .ret
+        .as_ref()
+        .map(|ty| types::resolve_type_expr(ty, &symbols.structs, &symbols.enums));
 
     // Add parameters to the outermost scope
     for param in &fn_def.params {
@@ -84,7 +88,28 @@ fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBa
         );
     }
 
-    check_block(&fn_def.body, symbols, &mut scope, &fn_def.name.0, diags);
+    check_block(
+        &fn_def.body,
+        symbols,
+        &mut scope,
+        &fn_def.name.0,
+        expected_ret.as_ref(),
+        diags,
+    );
+
+    if let Some(expected_ret) = &expected_ret
+        && *expected_ret != Type::Void
+        && !block_definitely_returns(&fn_def.body)
+    {
+        diags.error(
+            format!(
+                "function `{}` may exit without returning `{expected_ret:?}`",
+                fn_def.name.0
+            ),
+            "E329",
+            fn_def.name.1,
+        );
+    }
 }
 
 fn check_block(
@@ -92,6 +117,7 @@ fn check_block(
     symbols: &SymbolTable,
     scope: &mut ScopeStack,
     fn_name: &str,
+    expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
 ) -> Option<Type> {
     scope.push();
@@ -100,7 +126,7 @@ fn check_block(
     for stmt in &block.stmts {
         match stmt {
             Stmt::VarDecl(vd) => {
-                let init_ty = check_expr(&vd.init, symbols, scope, fn_name, diags);
+                let init_ty = check_expr(&vd.init, symbols, scope, fn_name, expected_ret, diags);
                 let ty = if let Some(ty_ann) = &vd.ty_ann {
                     let ann_ty = types::resolve_type_expr(ty_ann, &symbols.structs, &symbols.enums);
                     // Check that init type is compatible with annotation
@@ -133,8 +159,10 @@ fn check_block(
             }
 
             Stmt::Assign(assign) => {
-                let val_ty = check_expr(&assign.value, symbols, scope, fn_name, diags);
-                let target_ty = check_lvalue(&assign.target, symbols, scope, fn_name, diags);
+                let val_ty =
+                    check_expr(&assign.value, symbols, scope, fn_name, expected_ret, diags);
+                let target_ty =
+                    check_lvalue(&assign.target, symbols, scope, fn_name, expected_ret, diags);
 
                 // Type compatibility check
                 // (unsuffixed literals are allowed if their value fits)
@@ -157,19 +185,34 @@ fn check_block(
             }
 
             Stmt::Expr(expr) => {
-                last_type = Some(check_expr(expr, symbols, scope, fn_name, diags));
+                last_type = Some(check_expr(
+                    expr,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                ));
             }
 
             Stmt::If(if_stmt) => {
-                let cond_ty = check_expr(&if_stmt.cond, symbols, scope, fn_name, diags);
+                let cond_ty =
+                    check_expr(&if_stmt.cond, symbols, scope, fn_name, expected_ret, diags);
                 if cond_ty != Type::B1 {
                     diags.error("if condition must be b1", "E302", if_stmt.cond.span());
                 }
-                check_block(&if_stmt.then_block, symbols, scope, fn_name, diags);
+                check_block(
+                    &if_stmt.then_block,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 if let Some(else_branch) = &if_stmt.else_branch {
                     match else_branch.as_ref() {
                         Stmt::Block(block) => {
-                            check_block(block, symbols, scope, fn_name, diags);
+                            check_block(block, symbols, scope, fn_name, expected_ret, diags);
                         }
                         Stmt::If(if_stmt) => {
                             // else if -- recurse
@@ -182,6 +225,7 @@ fn check_block(
                                 symbols,
                                 scope,
                                 fn_name,
+                                expected_ret,
                                 diags,
                             );
                         }
@@ -192,8 +236,16 @@ fn check_block(
             }
 
             Stmt::For(for_stmt) => {
-                let start_ty = check_expr(&for_stmt.start, symbols, scope, fn_name, diags);
-                let end_ty = check_expr(&for_stmt.end, symbols, scope, fn_name, diags);
+                let start_ty = check_expr(
+                    &for_stmt.start,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
+                let end_ty =
+                    check_expr(&for_stmt.end, symbols, scope, fn_name, expected_ret, diags);
                 if start_ty != end_ty {
                     diags.error(
                         format!("for loop range types mismatch: `{start_ty:?}` and `{end_ty:?}`"),
@@ -209,28 +261,85 @@ fn check_block(
                         moved: false,
                     },
                 );
-                check_block(&for_stmt.body, symbols, scope, fn_name, diags);
+                check_block(&for_stmt.body, symbols, scope, fn_name, expected_ret, diags);
                 last_type = None;
             }
 
             Stmt::Loop(loop_stmt) => {
-                check_block(&loop_stmt.body, symbols, scope, fn_name, diags);
+                check_block(
+                    &loop_stmt.body,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 last_type = None;
             }
 
             Stmt::While(while_stmt) => {
-                let cond_ty = check_expr(&while_stmt.cond, symbols, scope, fn_name, diags);
+                let cond_ty = check_expr(
+                    &while_stmt.cond,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 if cond_ty != Type::B1 {
                     diags.error("while condition must be b1", "E303", while_stmt.cond.span());
                 }
-                check_block(&while_stmt.body, symbols, scope, fn_name, diags);
+                check_block(
+                    &while_stmt.body,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 last_type = None;
             }
 
             Stmt::Return(ret) => {
                 if let Some(val) = &ret.value {
-                    last_type = Some(check_expr(val, symbols, scope, fn_name, diags));
+                    let actual = check_expr(val, symbols, scope, fn_name, expected_ret, diags);
+                    match expected_ret {
+                        Some(expected_ret)
+                            if !types::types_compatible(expected_ret, &actual)
+                                && !unsuffixed_literal_fits(val, expected_ret) =>
+                        {
+                            diags.error(
+                                format!(
+                                    "return type mismatch: expected `{expected_ret:?}`, got `{actual:?}`"
+                                ),
+                                "E300",
+                                val.span(),
+                            );
+                        }
+                        None => {
+                            diags.error(
+                                format!(
+                                    "return type mismatch: function `{fn_name}` does not declare a return type"
+                                ),
+                                "E300",
+                                val.span(),
+                            );
+                        }
+                        Some(_) => {}
+                    }
+                    last_type = Some(actual);
                 } else {
+                    if let Some(expected_ret) = expected_ret
+                        && *expected_ret != Type::Void
+                    {
+                        diags.error(
+                            format!(
+                                "return type mismatch: expected `{expected_ret:?}`, got `Void`"
+                            ),
+                            "E300",
+                            block.span,
+                        );
+                    }
                     last_type = Some(Type::Void);
                 }
             }
@@ -238,8 +347,14 @@ fn check_block(
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
 
             Stmt::Match(match_stmt) => {
-                let scrutinee_ty =
-                    check_expr(&match_stmt.scrutinee, symbols, scope, fn_name, diags);
+                let scrutinee_ty = check_expr(
+                    &match_stmt.scrutinee,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 let (enum_name, variants) = if let Type::Enum(name, _, variants) = &scrutinee_ty {
                     (name.clone(), variants.clone())
                 } else {
@@ -283,7 +398,7 @@ fn check_block(
                             }
                         }
                     }
-                    check_block(&arm.body, symbols, scope, fn_name, diags);
+                    check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
                 }
 
                 if !has_wildcard && covered.len() < variants.len() {
@@ -305,13 +420,73 @@ fn check_block(
             }
 
             Stmt::Block(inner_block) => {
-                last_type = check_block(inner_block, symbols, scope, fn_name, diags);
+                last_type = check_block(inner_block, symbols, scope, fn_name, expected_ret, diags);
             }
         }
     }
 
     scope.pop();
     last_type
+}
+
+fn block_definitely_returns(block: &ast::Block) -> bool {
+    block.stmts.iter().any(stmt_definitely_returns)
+}
+
+fn stmt_definitely_returns(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return(_) => true,
+        Stmt::Block(block) => block_definitely_returns(block),
+        Stmt::If(if_stmt) => {
+            let then_returns = block_definitely_returns(&if_stmt.then_block);
+            let else_returns = if_stmt
+                .else_branch
+                .as_ref()
+                .is_some_and(|else_branch| stmt_definitely_returns(else_branch));
+            then_returns && else_returns
+        }
+        Stmt::Match(match_stmt) => match_stmt
+            .arms
+            .iter()
+            .all(|arm| block_definitely_returns(&arm.body)),
+        Stmt::Loop(loop_stmt) => {
+            block_definitely_returns(&loop_stmt.body) && !block_may_break(&loop_stmt.body)
+        }
+        Stmt::VarDecl(_)
+        | Stmt::Assign(_)
+        | Stmt::Expr(_)
+        | Stmt::While(_)
+        | Stmt::For(_)
+        | Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Asm(_) => false,
+    }
+}
+
+fn block_may_break(block: &ast::Block) -> bool {
+    block.stmts.iter().any(stmt_may_break)
+}
+
+fn stmt_may_break(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Break(_) => true,
+        Stmt::Block(block) => block_may_break(block),
+        Stmt::If(if_stmt) => {
+            block_may_break(&if_stmt.then_block)
+                || if_stmt
+                    .else_branch
+                    .as_ref()
+                    .is_some_and(|else_branch| stmt_may_break(else_branch))
+        }
+        Stmt::Match(match_stmt) => match_stmt.arms.iter().any(|arm| block_may_break(&arm.body)),
+        Stmt::Loop(_) | Stmt::While(_) | Stmt::For(_) => false,
+        Stmt::VarDecl(_)
+        | Stmt::Assign(_)
+        | Stmt::Expr(_)
+        | Stmt::Return(_)
+        | Stmt::Continue(_)
+        | Stmt::Asm(_) => false,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -324,11 +499,12 @@ fn check_call_args(
     symbols: &SymbolTable,
     scope: &mut ScopeStack,
     fn_name: &str,
+    expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
 ) {
     if args.len() == fn_sym.params.len() {
         for (arg, (param_name, param_ty)) in args.iter().zip(fn_sym.params.iter()) {
-            let arg_ty = check_expr(arg, symbols, scope, fn_name, diags);
+            let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
             if !types::types_compatible(param_ty, &arg_ty)
                 && !unsuffixed_literal_fits(arg, param_ty)
             {
@@ -354,12 +530,62 @@ fn check_call_args(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn check_ast_call_args(
+    params: &[ast::Param],
+    ret: Option<&ast::TypeExpr>,
+    name: &str,
+    callee_span: crate::source::Span,
+    args: &[Expr],
+    symbols: &SymbolTable,
+    structs: &HashMap<String, Vec<(String, Type)>>,
+    enums: &types::EnumDefs,
+    scope: &mut ScopeStack,
+    fn_name: &str,
+    expected_ret: Option<&Type>,
+    diags: &mut DiagnosticBag,
+) -> Type {
+    if args.len() == params.len() {
+        for (arg, param) in args.iter().zip(params.iter()) {
+            let param_ty = types::resolve_type_expr(&param.ty, structs, enums);
+            let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
+            if !types::types_compatible(&param_ty, &arg_ty)
+                && !unsuffixed_literal_fits(arg, &param_ty)
+            {
+                diags.error(
+                    format!(
+                        "argument `{}` of `{name}` expects `{param_ty:?}`, got `{arg_ty:?}`",
+                        param.name.0
+                    ),
+                    "E308",
+                    arg.span(),
+                );
+            }
+        }
+    } else {
+        diags.error(
+            format!(
+                "function `{name}` expects {} arguments, got {}",
+                params.len(),
+                args.len()
+            ),
+            "E307",
+            callee_span,
+        );
+    }
+
+    ret.map_or(Type::Void, |ty| {
+        types::resolve_type_expr(ty, structs, enums)
+    })
+}
+
 #[allow(clippy::only_used_in_recursion)]
 fn check_expr(
     expr: &Expr,
     symbols: &SymbolTable,
     scope: &mut ScopeStack,
     fn_name: &str,
+    expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
 ) -> Type {
     match expr {
@@ -431,7 +657,7 @@ fn check_expr(
 
         Expr::Unary(op, inner) => {
             use crate::ast::UnaryOp;
-            let inner_ty = check_expr(inner, symbols, scope, fn_name, diags);
+            let inner_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
             match op {
                 UnaryOp::Neg => {
                     if inner_ty != Type::U32 && inner_ty != Type::U64 && inner_ty != Type::U16 {
@@ -510,8 +736,8 @@ fn check_expr(
 
         Expr::Binary(left, op, right) => {
             use crate::ast::BinaryOp;
-            let left_ty = check_expr(left, symbols, scope, fn_name, diags);
-            let right_ty = check_expr(right, symbols, scope, fn_name, diags);
+            let left_ty = check_expr(left, symbols, scope, fn_name, expected_ret, diags);
+            let right_ty = check_expr(right, symbols, scope, fn_name, expected_ret, diags);
 
             match op {
                 BinaryOp::Add | BinaryOp::Sub => {
@@ -583,40 +809,86 @@ fn check_expr(
             if let Expr::Ident((name, span)) = func_expr.as_ref()
                 && let Some(fn_sym) = symbols.functions.get(name)
             {
-                check_call_args(fn_sym, name, span, args, symbols, scope, fn_name, diags);
+                check_call_args(
+                    fn_sym,
+                    name,
+                    span,
+                    args,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                );
                 return fn_sym.ret.clone().unwrap_or(Type::Void);
             }
 
             // Try import alias: L.foo()
             if let Expr::FieldAccess(base, field) = func_expr.as_ref()
                 && let Expr::Ident((alias_name, _)) = base.as_ref()
-                && let Some(alias_exports) = symbols.import_aliases.get(alias_name)
-                && let Some(Item::FnDef(f)) = alias_exports.get(&field.0)
-                && let Some(fn_sym) = symbols.functions.get(&f.name.0)
+                && let Some(alias_info) = symbols.import_aliases.get(alias_name)
+                && let Some(item) = alias_info.exports.get(&field.0)
             {
-                check_call_args(
-                    fn_sym, &f.name.0, &field.1, args, symbols, scope, fn_name, diags,
-                );
-                return fn_sym.ret.clone().unwrap_or(Type::Void);
+                let (alias_structs, alias_enums) =
+                    types::alias_type_defs(&alias_info.items, &symbols.structs, &symbols.enums);
+                return match item {
+                    Item::FnDef(f) => check_ast_call_args(
+                        &f.params,
+                        f.ret.as_ref(),
+                        &f.name.0,
+                        field.1,
+                        args,
+                        symbols,
+                        &alias_structs,
+                        &alias_enums,
+                        scope,
+                        fn_name,
+                        expected_ret,
+                        diags,
+                    ),
+                    Item::ExternFnDef(f) => check_ast_call_args(
+                        &f.params,
+                        f.ret.as_ref(),
+                        &f.name.0,
+                        field.1,
+                        args,
+                        symbols,
+                        &alias_structs,
+                        &alias_enums,
+                        scope,
+                        fn_name,
+                        expected_ret,
+                        diags,
+                    ),
+                    _ => {
+                        diags.error("cannot call non-function type", "E327", field.1);
+                        Type::Unresolved("call".into())
+                    }
+                };
             }
 
-            // If callee is a simple identifier not found above, skip --
-            // the name might be resolved via import inlining and the error
-            // (E305) is emitted by the Ident handler when the name is used
-            // as a value, not in call position.
-            if matches!(func_expr.as_ref(), Expr::Ident(_)) {
+            if let Expr::Ident((name, span)) = func_expr.as_ref()
+                && scope.lookup(name).is_none()
+            {
+                if symbols
+                    .import_aliases
+                    .values()
+                    .any(|alias_info| alias_info.exports.contains_key(name))
+                {
+                    diags.error(format!("undefined name: `{name}`"), "E305", *span);
+                }
                 for arg in args {
-                    check_expr(arg, symbols, scope, fn_name, diags);
+                    check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
                 }
                 return Type::Unresolved("call".into());
             }
 
             // Indirect call via function pointer expression
-            let callee_ty = check_expr(func_expr, symbols, scope, fn_name, diags);
+            let callee_ty = check_expr(func_expr, symbols, scope, fn_name, expected_ret, diags);
             if let Type::Fn(params, ret) = &callee_ty {
                 if args.len() == params.len() {
                     for (arg, param_ty) in args.iter().zip(params.iter()) {
-                        let arg_ty = check_expr(arg, symbols, scope, fn_name, diags);
+                        let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
                         if !types::types_compatible(param_ty, &arg_ty)
                             && !unsuffixed_literal_fits(arg, param_ty)
                         {
@@ -695,7 +967,7 @@ fn check_expr(
                 _ => {}
             }
 
-            let base_ty = check_expr(base, symbols, scope, fn_name, diags);
+            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
             // Check if it's a struct field access
             if let Type::Struct(name, fields) = &base_ty {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
@@ -727,8 +999,8 @@ fn check_expr(
         }
 
         Expr::Index(base, index) => {
-            let base_ty = check_expr(base, symbols, scope, fn_name, diags);
-            check_expr(index, symbols, scope, fn_name, diags);
+            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             // Array indexing returns the element type
             match base_ty {
                 Type::Array(inner, _) => *inner,
@@ -739,12 +1011,12 @@ fn check_expr(
 
         Expr::ArrayInit(elems, _) => {
             let elem_ty = if let Some(first) = elems.first() {
-                check_expr(first, symbols, scope, fn_name, diags)
+                check_expr(first, symbols, scope, fn_name, expected_ret, diags)
             } else {
                 Type::Unresolved("empty-array".into())
             };
             for elem in elems.iter().skip(1) {
-                let ty = check_expr(elem, symbols, scope, fn_name, diags);
+                let ty = check_expr(elem, symbols, scope, fn_name, expected_ret, diags);
                 if ty != elem_ty {
                     diags.error(
                         format!("array element type mismatch: `{elem_ty:?}` vs `{ty:?}`"),
@@ -756,7 +1028,7 @@ fn check_expr(
             Type::Array(Box::new(elem_ty), elems.len())
         }
         Expr::Cast(inner, ty_expr) => {
-            let _inner_ty = check_expr(inner, symbols, scope, fn_name, diags);
+            let _inner_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
             let target_ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
             // Warn on literal narrowing
             if let Expr::IntLiteral(n, _, _) = inner.as_ref() {
@@ -783,9 +1055,16 @@ fn check_expr(
             }
             Type::U32
         }
-        Expr::Group(inner) => check_expr(inner, symbols, scope, fn_name, diags),
+        Expr::Group(inner) => check_expr(inner, symbols, scope, fn_name, expected_ret, diags),
         Expr::Match(match_expr) => {
-            let scrutinee_ty = check_expr(&match_expr.scrutinee, symbols, scope, fn_name, diags);
+            let scrutinee_ty = check_expr(
+                &match_expr.scrutinee,
+                symbols,
+                scope,
+                fn_name,
+                expected_ret,
+                diags,
+            );
             let (enum_name, variants) = if let Type::Enum(name, _, variants) = &scrutinee_ty {
                 (name.clone(), variants.clone())
             } else {
@@ -828,12 +1107,12 @@ fn check_expr(
                         }
                     }
                 }
-                check_block(&arm.body, symbols, scope, fn_name, diags);
+                check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
                 let arm_trailing_ty = arm
                     .body
                     .trailing
                     .as_ref()
-                    .map(|e| check_expr(e, symbols, scope, fn_name, diags));
+                    .map(|e| check_expr(e, symbols, scope, fn_name, expected_ret, diags));
 
                 match (&arm_type, arm_trailing_ty) {
                     (None, Some(ty)) => arm_type = Some(ty),
@@ -883,16 +1162,23 @@ fn check_expr(
             arm_type.unwrap_or(Type::Unresolved("match".into()))
         }
         Expr::Block(block_expr) => {
-            check_block(&block_expr.block, symbols, scope, fn_name, diags);
+            check_block(
+                &block_expr.block,
+                symbols,
+                scope,
+                fn_name,
+                expected_ret,
+                diags,
+            );
             if let Some(ref trailing) = block_expr.block.trailing {
-                check_expr(trailing, symbols, scope, fn_name, diags)
+                check_expr(trailing, symbols, scope, fn_name, expected_ret, diags)
             } else {
                 diags.error("block has no value", "E328", block_expr.span);
                 Type::Unresolved("void".into())
             }
         }
         Expr::If(if_expr) => {
-            let cond_ty = check_expr(&if_expr.cond, symbols, scope, fn_name, diags);
+            let cond_ty = check_expr(&if_expr.cond, symbols, scope, fn_name, expected_ret, diags);
             if cond_ty != Type::B1 {
                 diags.error(
                     "if expression condition must be b1",
@@ -900,11 +1186,25 @@ fn check_expr(
                     if_expr.cond.span(),
                 );
             }
-            check_block(&if_expr.then_block, symbols, scope, fn_name, diags);
-            let else_ty = check_expr(&if_expr.else_branch, symbols, scope, fn_name, diags);
+            check_block(
+                &if_expr.then_block,
+                symbols,
+                scope,
+                fn_name,
+                expected_ret,
+                diags,
+            );
+            let else_ty = check_expr(
+                &if_expr.else_branch,
+                symbols,
+                scope,
+                fn_name,
+                expected_ret,
+                diags,
+            );
 
             let then_ty = if let Some(ref trailing) = if_expr.then_block.trailing {
-                check_expr(trailing, symbols, scope, fn_name, diags)
+                check_expr(trailing, symbols, scope, fn_name, expected_ret, diags)
             } else {
                 diags.error("if branch has no value", "E328", if_expr.then_block.span);
                 Type::Unresolved("void".into())
@@ -932,7 +1232,8 @@ fn check_expr(
                     let provided = fields.iter().find(|(n, _)| n.0 == *fname);
                     match provided {
                         Some((_, expr)) => {
-                            let expr_ty = check_expr(expr, symbols, scope, fn_name, diags);
+                            let expr_ty =
+                                check_expr(expr, symbols, scope, fn_name, expected_ret, diags);
                             // (unsuffixed literals are allowed if their value fits)
                             if !types::types_compatible(ftype, &expr_ty)
                                 && !unsuffixed_literal_fits(expr, ftype)
@@ -1017,6 +1318,7 @@ fn check_lvalue(
     symbols: &SymbolTable,
     scope: &mut ScopeStack,
     fn_name: &str,
+    expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
 ) -> Type {
     match lval {
@@ -1095,7 +1397,7 @@ fn check_lvalue(
                 _ => {}
             }
 
-            let base_ty = check_lvalue(base, symbols, scope, fn_name, diags);
+            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags);
             // Check if it's a struct field write
             if let Type::Struct(name, fields) = &base_ty {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
@@ -1112,7 +1414,7 @@ fn check_lvalue(
             Type::U32
         }
         LValue::Index(base, _index) => {
-            let base_ty = check_lvalue(base, symbols, scope, fn_name, diags);
+            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags);
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
@@ -1120,7 +1422,7 @@ fn check_lvalue(
             }
         }
         LValue::Deref(inner) => {
-            let inner_ty = check_expr(inner, symbols, scope, fn_name, diags);
+            let inner_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
             match &inner_ty {
                 Type::Ptr(pointee) => pointee.as_ref().clone(),
                 Type::ConstPtr(_) => {

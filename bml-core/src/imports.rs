@@ -7,7 +7,13 @@ use crate::parser::Parser;
 use crate::source::SourceMap;
 
 pub type Exports = HashMap<String, Item>;
-pub type AliasMap = HashMap<String, Exports>;
+pub type AliasMap = HashMap<String, AliasInfo>;
+
+#[derive(Debug, Clone)]
+pub struct AliasInfo {
+    pub exports: Exports,
+    pub items: Vec<Item>,
+}
 
 pub struct ImportResolver {
     pub source_map: SourceMap,
@@ -79,11 +85,16 @@ impl ImportResolver {
                     };
 
                     let canon = canonicalize(&path);
-                    if self.check_cycle(&canon, span) {
-                        continue;
+                    let cycle_state = self.check_cycle(&canon, span);
+                    match cycle_state {
+                        CycleState::CycleDetected => continue,
+                        CycleState::AlreadyResolved | CycleState::Pushed => {}
                     }
 
                     let Ok(module_program) = self.load_and_parse(&path) else {
+                        if matches!(cycle_state, CycleState::Pushed) {
+                            self.visiting.pop();
+                        }
                         continue;
                     };
 
@@ -99,7 +110,13 @@ impl ImportResolver {
                     let exports = filter_exports(&module_program, &export_names);
 
                     if let Some(alias) = &import.alias {
-                        self.aliases.insert(alias.0.clone(), exports);
+                        self.aliases.insert(
+                            alias.0.clone(),
+                            AliasInfo {
+                                exports,
+                                items: module_program.items.clone(),
+                            },
+                        );
                         items.push(Item::Import(import));
                     } else {
                         match &import.imports {
@@ -127,6 +144,9 @@ impl ImportResolver {
                     }
 
                     self.resolved.insert(canon);
+                    if matches!(cycle_state, CycleState::Pushed) {
+                        self.visiting.pop();
+                    }
                 }
                 Item::Export(_) => {}
                 other => items.push(other),
@@ -173,7 +193,7 @@ impl ImportResolver {
         Ok(program)
     }
 
-    fn check_cycle(&mut self, canon: &PathBuf, import_span: crate::source::Span) -> bool {
+    fn check_cycle(&mut self, canon: &PathBuf, import_span: crate::source::Span) -> CycleState {
         if self.visiting.contains(canon) {
             let cycle: Vec<String> = self
                 .visiting
@@ -192,14 +212,21 @@ impl ImportResolver {
                 "E500",
                 import_span,
             );
-            return true;
+            return CycleState::CycleDetected;
         }
         if self.resolved.contains(canon) {
-            return false;
+            return CycleState::AlreadyResolved;
         }
         self.visiting.push(canon.clone());
-        false
+        CycleState::Pushed
     }
+}
+
+#[derive(Clone, Copy)]
+enum CycleState {
+    CycleDetected,
+    AlreadyResolved,
+    Pushed,
 }
 
 fn collect_export_names(program: &Program) -> HashSet<String> {

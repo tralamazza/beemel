@@ -1,0 +1,5 @@
+import cycle_then_ok_a;
+import cycle_then_ok_c;
+
+fn main() @context(thread) {
+}

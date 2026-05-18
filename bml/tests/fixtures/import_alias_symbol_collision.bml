@@ -1,0 +1,10 @@
+import lib_alias as L;
+
+fn L__hello() -> u32 @context(thread) {
+    return 0;
+}
+
+fn main() @context(thread) {
+    var x = L.hello();
+    var y = L__hello();
+}

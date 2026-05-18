@@ -1,0 +1,6 @@
+fn bad() -> u32 @context(thread) {
+    loop {
+        break;
+        return 1;
+    }
+}

@@ -1,0 +1,4 @@
+export fn thread_only;
+
+fn thread_only() @context(thread) {
+}

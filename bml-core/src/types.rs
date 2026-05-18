@@ -2,7 +2,7 @@ use std::fmt;
 
 use std::collections::HashMap;
 
-use crate::ast::TypeExpr;
+use crate::ast::{Item, TypeExpr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -204,6 +204,67 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
         }
         TypeExpr::Void(_) => Type::Void,
     }
+}
+
+/// Build struct and enum type definitions from alias module items.
+///
+/// Two-pass approach: first insert structs with unresolved field types,
+/// then resolve all fields and enum inner types sequentially.
+#[must_use]
+pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
+    items: &[Item],
+    base_structs: &HashMap<String, Vec<(String, Type)>, S>,
+    base_enums: &EnumDefs,
+) -> (HashMap<String, Vec<(String, Type)>>, EnumDefs) {
+    let mut structs: HashMap<String, Vec<(String, Type)>> =
+        base_structs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut enums = base_enums.clone();
+
+    for item in items {
+        if let Item::StructDef(s) = item {
+            let fields = s
+                .fields
+                .iter()
+                .map(|field| (field.name.0.clone(), Type::Unresolved(field.name.0.clone())))
+                .collect();
+            structs.insert(s.name.0.clone(), fields);
+        }
+    }
+
+    for item in items {
+        match item {
+            Item::StructDef(s) => {
+                let fields = s
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.name.0.clone(),
+                            resolve_type_expr(&field.ty, &structs, &enums),
+                        )
+                    })
+                    .collect();
+                structs.insert(s.name.0.clone(), fields);
+            }
+            Item::EnumDef(e) => {
+                let inner_ty = resolve_type_expr(&e.ty, &structs, &enums);
+                let mut next_val = 0i64;
+                let variants = e
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let disc = variant.value.map_or(next_val, u64::cast_signed);
+                        next_val = disc + 1;
+                        (variant.name.0.clone(), disc)
+                    })
+                    .collect();
+                enums.insert(e.name.0.clone(), (inner_ty, variants));
+            }
+            _ => {}
+        }
+    }
+
+    (structs, enums)
 }
 
 /// Check if two types are compatible (for assignment, arguments, etc.).

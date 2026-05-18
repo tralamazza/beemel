@@ -1,0 +1,5 @@
+import lib_alias_thread_only as T;
+
+fn timer_isr() @isr(priority = 1) {
+    T.thread_only();
+}

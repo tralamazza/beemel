@@ -1,0 +1,7 @@
+import import_shared_common;
+
+export fn a;
+
+fn a() -> u32 @context(thread) {
+    return common();
+}

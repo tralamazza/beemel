@@ -1,0 +1,3 @@
+fn bad() -> u32 @context(thread) {
+    var x = 1u32;
+}

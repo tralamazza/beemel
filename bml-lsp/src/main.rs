@@ -258,7 +258,7 @@ impl Server {
                 format!("struct {name} {{\n{}\n}}", fields.join(",\n")),
                 None,
             )
-        } else if let Some(exports) = analysis.symbols.import_aliases.get(name) {
+        } else if let Some(alias_info) = analysis.symbols.import_aliases.get(name) {
             let mut counts: Vec<String> = Vec::new();
             let mut funcs = 0;
             let mut statics = 0;
@@ -266,7 +266,7 @@ impl Server {
             let mut peripherals = 0;
             let mut structs = 0;
             let mut enums = 0;
-            for item in exports.values() {
+            for item in alias_info.exports.values() {
                 match item {
                     ast::Item::FnDef(_) | ast::Item::ExternFnDef(_) => funcs += 1,
                     ast::Item::StaticDef(_) => statics += 1,
@@ -794,8 +794,8 @@ fn find_periph_field<'a>(
 
 fn find_def_in_aliases(name: &str, symbols: &SymbolTable) -> Option<bml_core::source::Span> {
     use bml_core::ast::Item;
-    for exports in symbols.import_aliases.values() {
-        for item in exports.values() {
+    for alias_info in symbols.import_aliases.values() {
+        for item in alias_info.exports.values() {
             match item {
                 Item::FnDef(f) if f.name.0 == name => return Some(f.name.1),
                 Item::ExternFnDef(e) if e.name.0 == name => return Some(e.name.1),

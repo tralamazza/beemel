@@ -1,0 +1,9 @@
+export fn public_value;
+
+fn helper() -> u32 @context(thread) {
+    return 7;
+}
+
+fn public_value() -> u32 @context(thread) {
+    return helper();
+}

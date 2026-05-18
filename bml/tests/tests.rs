@@ -219,10 +219,39 @@ assert_pass!(test_if_expr_elseif, "if_expr_elseif.bml");
 assert_pass!(test_import_basic, "import_basic.bml");
 assert_pass!(test_import_selective, "import_selective.bml");
 assert_pass!(test_import_alias, "import_alias.bml");
+assert_ir_contains!(
+    test_import_alias_codegen,
+    "import_alias.bml",
+    "call i32 @__bml.alias.L.hello()"
+);
+assert_ir_contains!(
+    test_import_alias_internal_codegen,
+    "import_alias_internal_codegen.bml",
+    "call i32 @__bml.alias.I.helper()"
+);
+assert_pass!(
+    test_import_alias_struct_codegen_check,
+    "import_alias_struct_codegen.bml"
+);
+assert_ir_contains!(
+    test_import_alias_struct_codegen,
+    "import_alias_struct_codegen.bml",
+    "call { i32, i32 } @__bml.alias.S.make_point()"
+);
+assert_ir_contains!(
+    test_import_alias_symbol_collision,
+    "import_alias_symbol_collision.bml",
+    "define i32 @L__hello()"
+);
 assert_pass!(test_import_transitive, "import_transitive.bml");
 assert_pass!(test_import_path, "import_path.bml");
 assert_pass!(test_import_path_alias, "import_path_alias.bml");
 assert_pass!(test_import_path_selective, "import_path_selective.bml");
+assert_pass!(test_import_shared_dependency, "import_shared_root.bml");
+assert_pass!(
+    test_import_alias_collision_isolated,
+    "import_alias_collision_isolated.bml"
+);
 assert_pass!(test_struct_cross, "struct_cross.bml");
 assert_pass!(test_naked_fn_pass, "naked_fn.bml");
 assert_pass!(test_naked_isr_pass, "naked_isr.bml");
@@ -243,8 +272,29 @@ assert_error!(
     "extern_fn_context_error.bml",
     "E403"
 );
+assert_error!(
+    test_import_alias_context_error,
+    "import_alias_context_error.bml",
+    "E403"
+);
 assert_error!(test_val_immutability, "val_immutability_error.bml", "E309");
 assert_error!(test_type_mismatch, "type_mismatch_error.bml", "E310");
+assert_error!(
+    test_return_type_mismatch,
+    "return_type_mismatch_error.bml",
+    "E300"
+);
+assert_error!(
+    test_return_value_without_type,
+    "return_value_without_type_error.bml",
+    "E300"
+);
+assert_error!(test_return_missing, "return_missing_error.bml", "E329");
+assert_error!(
+    test_return_loop_break_before_return,
+    "return_loop_break_before_return_error.bml",
+    "E329"
+);
 assert_error!(test_call_args, "call_args_error.bml", "E307");
 assert_error!(test_duplicate_name, "duplicate_name_error.bml", "E200");
 assert_error!(test_ptr_write_const, "ptr_write_const_error.bml", "E314");
@@ -363,7 +413,29 @@ assert_error!(test_block_expr_no_value, "block_expr_no_value.bml", "E328");
 assert_error!(test_mod_not_found, "mod_not_found.bml", "E501");
 assert_error!(test_private_access, "private_access.bml", "E503");
 assert_error!(test_circular_import, "circular_a.bml", "E500");
+
+#[test]
+fn test_circular_import_does_not_poison_later_imports() {
+    let (ok, output) = bml_check("cycle_then_ok_root.bml");
+    assert!(!ok, "expected circular import error, got success");
+    let count = output.matches("error[E500]").count();
+    assert_eq!(
+        count, 1,
+        "expected exactly one circular import error:\n{output}"
+    );
+}
+
 assert_error!(test_rename_collision, "rename_collision.bml", "E200");
+assert_error!(
+    test_import_alias_no_unqualified_access,
+    "import_alias_no_unqualified_access.bml",
+    "E305"
+);
+assert_error!(
+    test_import_alias_no_unqualified_call,
+    "import_alias_no_unqualified_call.bml",
+    "E305"
+);
 
 assert_error!(
     test_unsuffixed_literal_out_of_range,

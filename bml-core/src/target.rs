@@ -127,7 +127,9 @@ impl Target {
         }
         // ARMv6-M (Cortex-M0/M0+) does not support bit-banding
         if target.has_bitband && target.arch == "armv6m" {
-            eprintln!("warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`");
+            eprintln!(
+                "warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`"
+            );
             target.has_bitband = false;
         }
 

@@ -1,0 +1,4 @@
+export fn c;
+
+fn c() @context(thread) {
+}
