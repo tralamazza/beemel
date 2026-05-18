@@ -6,16 +6,16 @@ use bml_core::imports::ImportResolver;
 use bml_core::parser::Parser;
 use bml_core::resolver::{self, Resolver, SymbolTable};
 use bml_core::source::{self, SourceMap};
-use lsp_server::{Connection, Message, Notification, Request, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response, ResponseError};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     Notification as _,
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionResponse, Diagnostic,
-    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, Location, MarkupContent,
-    MarkupKind, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, InitializeParams, Location,
+    MarkupContent, MarkupKind, Position, PositionEncodingKind, PublishDiagnosticsParams, Range,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,28 +31,76 @@ struct Server {
     file_paths: HashMap<Uri, PathBuf>,
     file_sources: HashMap<Uri, String>,
     analysis_cache: HashMap<Uri, AnalysisResult>,
+    position_encoding: PositionEncodingKind,
 }
 
 fn main() {
     let (conn, io_threads) = Connection::stdio();
+
+    let (init_id, init_params) = conn.initialize_start().unwrap();
+    let init_params: InitializeParams = serde_json::from_value(init_params).unwrap();
+    let Some(position_encoding) = select_position_encoding(&init_params) else {
+        conn.sender
+            .send(Message::Response(Response::new_err(
+                init_id,
+                ErrorCode::RequestFailed as i32,
+                "bml-lsp requires LSP UTF-8 or UTF-16 position encoding".to_string(),
+            )))
+            .ok();
+        return;
+    };
+
     let caps = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         completion_provider: Some(lsp_types::CompletionOptions::default()),
+        position_encoding: Some(position_encoding.clone()),
         ..ServerCapabilities::default()
     };
-    let caps = serde_json::to_value(&caps).unwrap();
-    conn.initialize(caps).unwrap();
+    conn.initialize_finish(
+        init_id,
+        serde_json::json!({
+            "capabilities": caps,
+        }),
+    )
+    .unwrap();
 
     let mut server = Server {
         file_paths: HashMap::new(),
         file_sources: HashMap::new(),
         analysis_cache: HashMap::new(),
+        position_encoding,
     };
 
     server.run(&conn);
     io_threads.join().unwrap();
+}
+
+fn select_position_encoding(params: &InitializeParams) -> Option<PositionEncodingKind> {
+    let encodings = params
+        .capabilities
+        .general
+        .as_ref()
+        .and_then(|general| general.position_encodings.as_ref());
+
+    let Some(encodings) = encodings else {
+        return Some(PositionEncodingKind::UTF16);
+    };
+
+    if encodings
+        .iter()
+        .any(|encoding| encoding == &PositionEncodingKind::UTF8)
+    {
+        Some(PositionEncodingKind::UTF8)
+    } else if encodings
+        .iter()
+        .any(|encoding| encoding == &PositionEncodingKind::UTF16)
+    {
+        Some(PositionEncodingKind::UTF16)
+    } else {
+        None
+    }
 }
 
 impl Server {
@@ -110,7 +158,19 @@ impl Server {
                     }))
                     .ok();
             }
-            _ => {}
+            _ => {
+                conn.sender
+                    .send(Message::Response(Response {
+                        id,
+                        result: None,
+                        error: Some(ResponseError {
+                            code: ErrorCode::MethodNotFound as i32,
+                            message: format!("method not supported: {}", req.method),
+                            data: None,
+                        }),
+                    }))
+                    .ok();
+            }
         }
     }
 
@@ -184,7 +244,7 @@ impl Server {
         let lsp_diags: Vec<Diagnostic> = diags
             .diagnostics()
             .iter()
-            .map(|d| diagnostic_to_lsp(d, &analysis.source_map))
+            .map(|d| diagnostic_to_lsp(d, &analysis.source_map, &self.position_encoding))
             .collect();
 
         self.analysis_cache.insert(uri.clone(), analysis);
@@ -213,7 +273,7 @@ impl Server {
         let source = self.file_sources.get(&uri)?;
         let analysis = self.analysis_cache.get(&uri)?;
 
-        let offset = pos_to_offset(source, lsp_pos);
+        let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
         let ident = find_ident_at(&analysis.program, offset)?;
         let name = &ident.0;
 
@@ -328,7 +388,7 @@ impl Server {
         let source = self.file_sources.get(&uri)?;
         let analysis = self.analysis_cache.get(&uri)?;
 
-        let offset = pos_to_offset(source, lsp_pos);
+        let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
         let ident = find_ident_at(&analysis.program, offset)?;
         let name = &ident.0;
 
@@ -341,20 +401,9 @@ impl Server {
             path_to_uri(analysis.source_map.get_path(target_range.file))
         };
 
-        let loc = analysis.source_map.span_location(target_range);
-
         Some(GotoDefinitionResponse::Scalar(Location {
             uri: target_uri,
-            range: Range {
-                start: Position {
-                    line: loc.start.line as u32 - 1,
-                    character: loc.start.column as u32 - 1,
-                },
-                end: Position {
-                    line: loc.end.line as u32 - 1,
-                    character: loc.end.column as u32 - 1,
-                },
-            },
+            range: span_to_range(&analysis.source_map, target_range, &self.position_encoding),
         }))
     }
 
@@ -369,19 +418,7 @@ impl Server {
         let source = self.file_sources.get(&uri)?;
         let analysis = self.analysis_cache.get(&uri)?;
 
-        eprintln!(
-            "[bml-lsp] completion: {} peripherals, {} funcs, {} statics, {} regs total",
-            analysis.symbols.peripherals.len(),
-            analysis.symbols.functions.len(),
-            analysis.symbols.statics.len(),
-            analysis
-                .symbols
-                .peripherals
-                .values()
-                .map(|p| p.regs.len())
-                .sum::<usize>()
-        );
-        let offset = pos_to_offset(source, lsp_pos);
+        let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
 
         let items = collect_completions(&analysis.program, &analysis.symbols, offset);
         Some(CompletionResponse::List(CompletionList {
@@ -430,23 +467,17 @@ fn analyze_file(path: &Path, source: &str) -> (AnalysisResult, DiagnosticBag) {
     (analysis, diags)
 }
 
-fn diagnostic_to_lsp(d: &errors::Diagnostic, source_map: &SourceMap) -> Diagnostic {
-    let loc = source_map.span_location(d.primary);
+fn diagnostic_to_lsp(
+    d: &errors::Diagnostic,
+    source_map: &SourceMap,
+    encoding: &PositionEncodingKind,
+) -> Diagnostic {
     let severity = match d.level {
         Level::Error => DiagnosticSeverity::ERROR,
         Level::Warning => DiagnosticSeverity::WARNING,
     };
     Diagnostic {
-        range: Range {
-            start: Position {
-                line: loc.start.line as u32 - 1,
-                character: loc.start.column as u32 - 1,
-            },
-            end: Position {
-                line: loc.end.line as u32 - 1,
-                character: loc.end.column as u32 - 1,
-            },
-        },
+        range: span_to_range(source_map, d.primary, encoding),
         severity: Some(severity),
         code: Some(lsp_types::NumberOrString::String(d.code.clone())),
         source: Some("bml".to_string()),
@@ -456,28 +487,133 @@ fn diagnostic_to_lsp(d: &errors::Diagnostic, source_map: &SourceMap) -> Diagnost
 }
 
 fn uri_to_pathbuf(uri: &Uri) -> PathBuf {
-    let s = uri.as_str();
-    if let Some(path) = s.strip_prefix("file://") {
-        PathBuf::from(path)
-    } else {
-        PathBuf::from(s)
-    }
+    let raw = uri.path().as_str();
+    let decoded = percent_decode(raw);
+    PathBuf::from(decoded)
 }
 
 fn path_to_uri(path: &Path) -> Uri {
-    format!("file://{}", path.display()).parse().unwrap()
+    let encoded = percent_encode_path(path);
+    format!("file://{encoded}").parse().expect("valid file URI")
 }
 
-fn pos_to_offset(source: &str, pos: Position) -> usize {
-    let mut offset = 0;
-    for _ in 0..pos.line {
-        if let Some(idx) = source[offset..].find('\n') {
-            offset += idx + 1;
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(hex) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("00"),
+                16,
+            )
+        {
+            result.push(hex);
+            i += 3;
+            continue;
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(result).unwrap_or_else(|_| s.to_string())
+}
+
+fn percent_encode_path(path: &Path) -> String {
+    use std::fmt::Write;
+    let s = path.to_string_lossy();
+    let mut result = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' | b':') {
+            result.push(b as char);
         } else {
-            break;
+            let _ = write!(result, "%{b:02X}");
         }
     }
-    offset + pos.character as usize
+    result
+}
+
+fn span_to_range(
+    source_map: &SourceMap,
+    span: source::Span,
+    encoding: &PositionEncodingKind,
+) -> Range {
+    let source = source_map.source(span.file);
+    Range {
+        start: offset_to_pos(source, span.start, encoding),
+        end: offset_to_pos(source, span.end, encoding),
+    }
+}
+
+fn offset_to_pos(source: &str, offset: usize, encoding: &PositionEncodingKind) -> Position {
+    let offset = offset.min(source.len());
+    let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
+    let line = source[..line_start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count() as u32;
+    let line_prefix = &source[line_start..offset];
+    let character = if encoding == &PositionEncodingKind::UTF16 {
+        line_prefix.encode_utf16().count()
+    } else {
+        line_prefix.len()
+    };
+
+    Position {
+        line,
+        character: character as u32,
+    }
+}
+
+fn pos_to_offset(source: &str, pos: Position, encoding: &PositionEncodingKind) -> usize {
+    let (line_start, line_end) = line_range(source, pos.line);
+    if encoding == &PositionEncodingKind::UTF16 {
+        utf16_pos_to_offset(
+            &source[line_start..line_end],
+            line_start,
+            pos.character as usize,
+        )
+    } else {
+        utf8_pos_to_offset(source, line_start, line_end, pos.character as usize)
+    }
+}
+
+fn line_range(source: &str, line: u32) -> (usize, usize) {
+    let mut start = 0;
+    for _ in 0..line {
+        let Some(idx) = source[start..].find('\n') else {
+            return (source.len(), source.len());
+        };
+        start += idx + 1;
+    }
+
+    let end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |idx| start + idx);
+    (start, end)
+}
+
+fn utf8_pos_to_offset(source: &str, line_start: usize, line_end: usize, character: usize) -> usize {
+    let mut offset = line_start + character.min(line_end - line_start);
+    while offset > line_start && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn utf16_pos_to_offset(line: &str, line_start: usize, character: usize) -> usize {
+    let mut units = 0;
+    for (idx, ch) in line.char_indices() {
+        let width = ch.len_utf16();
+        if units + width > character {
+            return line_start + idx;
+        }
+        units += width;
+        if units == character {
+            return line_start + idx + ch.len_utf8();
+        }
+    }
+    line_start + line.len()
 }
 
 fn find_ident_at(program: &ast::Program, offset: usize) -> Option<ast::Ident> {
@@ -928,7 +1064,6 @@ struct CompletionScope {
     scopes: Vec<HashMap<String, String>>, // name → type string
 }
 
-#[allow(dead_code)]
 impl CompletionScope {
     fn new() -> Self {
         CompletionScope {
@@ -938,10 +1073,6 @@ impl CompletionScope {
 
     fn push(&mut self) {
         self.scopes.push(HashMap::new());
-    }
-
-    fn pop(&mut self) {
-        self.scopes.pop();
     }
 
     fn insert(&mut self, name: String, ty: String) {
@@ -1119,63 +1250,161 @@ fn collect_completions(
     items
 }
 
-fn walk_block_for_scope(block: &ast::Block, offset: usize, scope: &mut CompletionScope) {
+fn walk_block_for_scope(block: &ast::Block, offset: usize, scope: &mut CompletionScope) -> bool {
+    scope.push();
     for stmt in &block.stmts {
-        walk_stmt_for_scope(stmt, offset, scope);
+        if offset < stmt_start(stmt) {
+            return true;
+        }
+        if walk_stmt_for_scope(stmt, offset, scope) {
+            return true;
+        }
     }
-    if let Some(trailing) = &block.trailing {
-        walk_expr_for_scope(trailing, offset, scope);
+    if let Some(trailing) = &block.trailing
+        && span_contains(&trailing.span(), offset)
+    {
+        return walk_expr_for_scope(trailing, offset, scope);
     }
+    true
 }
 
-fn walk_stmt_for_scope(stmt: &ast::Stmt, offset: usize, scope: &mut CompletionScope) {
+fn walk_stmt_for_scope(stmt: &ast::Stmt, offset: usize, scope: &mut CompletionScope) -> bool {
     match stmt {
         ast::Stmt::VarDecl(v) => {
+            if offset < expr_end(&v.init) {
+                return true;
+            }
             let ty = v.ty_ann.as_ref().map_or_else(
                 || format!("{}: ?", v.name.0),
                 |t| format!("{}: {}", v.name.0, t),
             );
             scope.insert(v.name.0.clone(), ty);
+            false
         }
         ast::Stmt::Block(b) if offset >= b.span.start && offset < b.span.end => {
-            walk_block_for_scope(b, offset, scope);
+            walk_block_for_scope(b, offset, scope)
         }
         ast::Stmt::If(i) => {
-            if offset >= i.then_block.span.start && offset < i.then_block.span.end {
-                walk_block_for_scope(&i.then_block, offset, scope);
+            if span_contains(&i.cond.span(), offset) {
+                true
+            } else if offset >= i.then_block.span.start && offset < i.then_block.span.end {
+                walk_block_for_scope(&i.then_block, offset, scope)
             } else if let Some(ref else_s) = i.else_branch {
-                walk_stmt_for_scope(else_s, offset, scope);
+                walk_stmt_for_scope(else_s, offset, scope)
+            } else {
+                false
             }
         }
         ast::Stmt::Loop(l) if offset >= l.body.span.start && offset < l.body.span.end => {
-            walk_block_for_scope(&l.body, offset, scope);
+            walk_block_for_scope(&l.body, offset, scope)
         }
         ast::Stmt::While(w) if offset >= w.body.span.start && offset < w.body.span.end => {
-            walk_block_for_scope(&w.body, offset, scope);
+            walk_block_for_scope(&w.body, offset, scope)
         }
+        ast::Stmt::While(w) if span_contains(&w.cond.span(), offset) => true,
         ast::Stmt::For(f) if offset >= f.body.span.start && offset < f.body.span.end => {
-            walk_block_for_scope(&f.body, offset, scope);
+            scope.insert(f.var.0.clone(), format!("{} (for loop)", f.var.0));
+            walk_block_for_scope(&f.body, offset, scope)
+        }
+        ast::Stmt::For(f)
+            if span_contains(&f.var.1, offset)
+                || span_contains(&f.start.span(), offset)
+                || span_contains(&f.end.span(), offset) =>
+        {
+            true
         }
         ast::Stmt::Match(m) => {
+            if span_contains(&m.scrutinee.span(), offset) {
+                return true;
+            }
             for arm in &m.arms {
                 if offset >= arm.body.span.start && offset < arm.body.span.end {
-                    walk_block_for_scope(&arm.body, offset, scope);
-                    break;
+                    return walk_block_for_scope(&arm.body, offset, scope);
                 }
             }
+            false
         }
-        _ => {}
+        ast::Stmt::Expr(e) | ast::Stmt::Return(ast::ReturnStmt { value: Some(e) })
+            if span_contains(&e.span(), offset) =>
+        {
+            walk_expr_for_scope(e, offset, scope)
+        }
+        ast::Stmt::Assign(a) if span_contains(&a.value.span(), offset) => {
+            walk_expr_for_scope(&a.value, offset, scope)
+        }
+        _ => false,
     }
 }
 
-fn walk_expr_for_scope(expr: &ast::Expr, offset: usize, scope: &mut CompletionScope) {
+fn stmt_start(stmt: &ast::Stmt) -> usize {
+    match stmt {
+        ast::Stmt::VarDecl(v) => v.name.1.start,
+        ast::Stmt::Assign(a) => lvalue_start(&a.target),
+        ast::Stmt::Expr(e) => e.span().start,
+        ast::Stmt::If(i) => i.cond.span().start,
+        ast::Stmt::Loop(l) => l.body.span.start,
+        ast::Stmt::While(w) => w.cond.span().start,
+        ast::Stmt::For(f) => f.var.1.start,
+        ast::Stmt::Return(r) => r.value.as_ref().map_or(0, |e| e.span().start),
+        ast::Stmt::Break(span)
+        | ast::Stmt::Continue(span)
+        | ast::Stmt::Block(ast::Block { span, .. })
+        | ast::Stmt::Asm(ast::AsmStmt { span, .. }) => span.start,
+        ast::Stmt::Match(m) => m.scrutinee.span().start,
+    }
+}
+
+fn lvalue_start(lvalue: &ast::LValue) -> usize {
+    match lvalue {
+        ast::LValue::Name((_, span)) => span.start,
+        ast::LValue::Field(base, _) | ast::LValue::Index(base, _) => lvalue_start(base),
+        ast::LValue::Deref(expr) => expr.span().start,
+    }
+}
+
+fn expr_end(expr: &ast::Expr) -> usize {
+    match expr {
+        ast::Expr::Unary(_, inner) | ast::Expr::Cast(inner, _) | ast::Expr::Group(inner) => {
+            expr_end(inner)
+        }
+        ast::Expr::Binary(left, _, right) => expr_end(left).max(expr_end(right)),
+        ast::Expr::Call(func, args) => args.iter().map(expr_end).fold(expr_end(func), usize::max),
+        ast::Expr::FieldAccess(base, (_, span)) => expr_end(base).max(span.end),
+        ast::Expr::Index(base, index) => expr_end(base).max(expr_end(index)),
+        ast::Expr::ArrayInit(_, span)
+        | ast::Expr::StructInit { span, .. }
+        | ast::Expr::EnumVariant { span, .. } => span.end,
+        ast::Expr::Block(block) => block.span.end,
+        ast::Expr::Match(m) => m.span.end,
+        ast::Expr::If(i) => i.span.end,
+        _ => expr.span().end,
+    }
+}
+
+fn walk_expr_for_scope(expr: &ast::Expr, offset: usize, scope: &mut CompletionScope) -> bool {
     match expr {
         ast::Expr::Block(b) => walk_block_for_scope(&b.block, offset, scope),
         ast::Expr::If(i) => {
-            walk_block_for_scope(&i.then_block, offset, scope);
-            walk_expr_for_scope(&i.else_branch, offset, scope);
+            if span_contains(&i.cond.span(), offset) {
+                true
+            } else if offset >= i.then_block.span.start && offset < i.then_block.span.end {
+                walk_block_for_scope(&i.then_block, offset, scope)
+            } else {
+                walk_expr_for_scope(&i.else_branch, offset, scope)
+            }
         }
-        _ => {}
+        ast::Expr::Match(m) => {
+            if span_contains(&m.scrutinee.span(), offset) {
+                return true;
+            }
+            for arm in &m.arms {
+                if offset >= arm.body.span.start && offset < arm.body.span.end {
+                    return walk_block_for_scope(&arm.body, offset, scope);
+                }
+            }
+            true
+        }
+        _ => true,
     }
 }
 
@@ -1405,5 +1634,189 @@ fn format_call_args(
         None
     } else {
         Some(lines.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn completion_labels(source: &str) -> Vec<String> {
+        let marker = "$0";
+        let offset = source
+            .find(marker)
+            .expect("source must contain cursor marker");
+        let source = source.replace(marker, "");
+        let (analysis, diags) = analyze_file(Path::new("/tmp/completion_test.bml"), &source);
+        assert!(!diags.has_errors());
+        collect_completions(&analysis.program, &analysis.symbols, offset)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    fn contains_label(labels: &[String], label: &str) -> bool {
+        labels.iter().any(|item| item == label)
+    }
+
+    #[test]
+    fn position_encoding_defaults_to_utf16() {
+        let params = InitializeParams::default();
+        assert_eq!(
+            select_position_encoding(&params),
+            Some(PositionEncodingKind::UTF16)
+        );
+    }
+
+    #[test]
+    fn position_encoding_prefers_utf8_when_advertised() {
+        let mut params = InitializeParams::default();
+        params.capabilities.general = Some(lsp_types::GeneralClientCapabilities {
+            position_encodings: Some(vec![
+                PositionEncodingKind::UTF16,
+                PositionEncodingKind::UTF8,
+            ]),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            select_position_encoding(&params),
+            Some(PositionEncodingKind::UTF8)
+        );
+    }
+
+    #[test]
+    fn position_conversions_handle_utf8_and_utf16() {
+        let source = "fn café() {\n    café\n}\n";
+        let byte_offset = source.find("() {").expect("function name suffix exists");
+
+        assert_eq!(
+            offset_to_pos(source, byte_offset, &PositionEncodingKind::UTF8),
+            Position {
+                line: 0,
+                character: 8,
+            }
+        );
+        assert_eq!(
+            offset_to_pos(source, byte_offset, &PositionEncodingKind::UTF16),
+            Position {
+                line: 0,
+                character: 7,
+            }
+        );
+
+        assert_eq!(
+            pos_to_offset(
+                source,
+                Position {
+                    line: 0,
+                    character: 8,
+                },
+                &PositionEncodingKind::UTF8,
+            ),
+            byte_offset
+        );
+        assert_eq!(
+            pos_to_offset(
+                source,
+                Position {
+                    line: 0,
+                    character: 7,
+                },
+                &PositionEncodingKind::UTF16,
+            ),
+            byte_offset
+        );
+    }
+
+    #[test]
+    fn completion_includes_function_local() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    val local: u32 = 1u32;
+    $0
+}
+",
+        );
+
+        assert!(contains_label(&labels, "local"));
+    }
+
+    #[test]
+    fn completion_excludes_local_declared_after_cursor() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    $0
+    val later: u32 = 1u32;
+}
+",
+        );
+
+        assert!(!contains_label(&labels, "later"));
+    }
+
+    #[test]
+    fn completion_excludes_declared_local_inside_own_initializer() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    val local: u32 = $01u32;
+}
+",
+        );
+
+        assert!(!contains_label(&labels, "local"));
+    }
+
+    #[test]
+    fn completion_excludes_local_from_sibling_block() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    {
+        val hidden: u32 = 1u32;
+    }
+    $0
+}
+",
+        );
+
+        assert!(!contains_label(&labels, "hidden"));
+    }
+
+    #[test]
+    fn completion_includes_nested_block_locals() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    val outer: u32 = 1u32;
+    {
+        val inner: u32 = 2u32;
+        $0
+    }
+}
+",
+        );
+
+        assert!(contains_label(&labels, "outer"));
+        assert!(contains_label(&labels, "inner"));
+    }
+
+    #[test]
+    fn completion_includes_for_loop_variable() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    for i in 0u32 .. 2u32 {
+        $0
+    }
+}
+",
+        );
+
+        assert!(contains_label(&labels, "i"));
     }
 }

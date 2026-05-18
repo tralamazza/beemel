@@ -216,8 +216,10 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
     base_structs: &HashMap<String, Vec<(String, Type)>, S>,
     base_enums: &EnumDefs,
 ) -> (HashMap<String, Vec<(String, Type)>>, EnumDefs) {
-    let mut structs: HashMap<String, Vec<(String, Type)>> =
-        base_structs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut structs: HashMap<String, Vec<(String, Type)>> = base_structs
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let mut enums = base_enums.clone();
 
     for item in items {
