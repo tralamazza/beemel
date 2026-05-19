@@ -48,6 +48,8 @@ pub enum TokenKind {
     Match,
     Naked,
     Tailchain,
+    Readonly,
+    Writeonly,
     Asm,
     AsmBody(String),
 
@@ -671,6 +673,8 @@ fn keyword_or_ident(s: &str) -> TokenKind {
         "match" => TokenKind::Match,
         "naked" => TokenKind::Naked,
         "tailchain" => TokenKind::Tailchain,
+        "readonly" => TokenKind::Readonly,
+        "writeonly" => TokenKind::Writeonly,
         "asm" => TokenKind::Asm,
         "true" => TokenKind::BoolLiteral(true),
         "false" => TokenKind::BoolLiteral(false),

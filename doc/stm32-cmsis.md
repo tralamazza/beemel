@@ -118,13 +118,19 @@ The `cmsis-device-fX` repos do **not** ship SVD files. Get them from one of:
 - The community [`cmsis-svd`](https://github.com/cmsis-svd/cmsis-svd-data) mirror.
 - ST's [SVD download portal](https://www.st.com).
 
-Then:
+Then choose one of:
 
 ```
-bml-svd path/to/stm32f401xc.svd --out src/svd/
+# Single combined file containing every peripheral.
+bml-svd path/to/stm32f401xc.svd --output src/svd.bml
+
+# One .bml per peripheral, written to the current directory (lowercased
+# filenames). cd into the target dir first to control where they land.
+mkdir -p src/svd && (cd src/svd && bml-svd ../../path/to/stm32f401xc.svd --split)
 ```
 
-This produces one `.bml` file per peripheral. Import them like any other module:
+The `--split` form produces files like `rcc.bml`, `gpioa.bml`, ..., importable
+as any other module:
 
 ```bml
 import svd.rcc;

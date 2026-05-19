@@ -1,0 +1,30 @@
+// Test: per-field readonly / writeonly modifiers
+peripheral RCC at 0x40023800 {
+    reg CR offset 0x00 {
+        field HSION: b1 bit[0]
+        field HSIRDY: b1 bit[1] readonly
+        field PLLON: b1 bit[24]
+    }
+    reg SR offset 0x04 {
+        field BSY: b1 bit[0] readonly
+        field TXE: b1 bit[1] readonly
+    }
+    reg ICR offset 0x08 {
+        field CLEAR0: b1 bit[0] writeonly
+        field CLEAR1: b1 bit[1] writeonly
+    }
+}
+
+fn main() @context(thread) {
+    // OK: read readonly field, read readwrite field
+    var r: b1 = RCC.CR.HSIRDY;
+    var on: b1 = RCC.CR.HSION;
+    // OK: write readwrite field
+    RCC.CR.HSION = true;
+    // OK: read register where all fields are readonly
+    var sr: u32 = RCC.SR;
+    // OK: write register where all fields are writeonly
+    RCC.ICR = 0x3;
+    // OK: write writeonly field
+    RCC.ICR.CLEAR0 = true;
+}

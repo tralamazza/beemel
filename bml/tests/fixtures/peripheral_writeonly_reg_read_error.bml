@@ -1,0 +1,11 @@
+// Test: E330 -- reading a register whose fields are all writeonly
+peripheral RCC at 0x40023800 {
+    reg ICR offset 0x08 {
+        field CLEAR0: b1 bit[0] writeonly
+        field CLEAR1: b1 bit[1] writeonly
+    }
+}
+
+fn main() @context(thread) {
+    var v: u32 = RCC.ICR;
+}

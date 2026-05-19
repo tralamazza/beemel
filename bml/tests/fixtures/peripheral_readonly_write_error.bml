@@ -1,0 +1,11 @@
+// Test: E331 -- assigning to a readonly field
+peripheral RCC at 0x40023800 {
+    reg CR offset 0x00 {
+        field HSION: b1 bit[0]
+        field HSIRDY: b1 bit[1] readonly
+    }
+}
+
+fn main() @context(thread) {
+    RCC.CR.HSIRDY = true;
+}

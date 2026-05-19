@@ -1,0 +1,11 @@
+// Multi-bit field declared as u8: read should trunc i32→i8, write zext i8→i32.
+peripheral RCC at 0x40023800 {
+    reg CR offset 0x00 {
+        field MODE: u8 bit[2..3]
+    }
+}
+
+fn main() @context(thread) {
+    var m: u8 = RCC.CR.MODE;
+    RCC.CR.MODE = 3u8;
+}

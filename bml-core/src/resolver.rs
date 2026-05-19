@@ -55,6 +55,7 @@ pub struct PeripheralSymbol {
 #[derive(Debug, Clone)]
 pub struct RegSymbol {
     pub offset: u64,
+    pub access: crate::ast::Access,
     pub fields: HashMap<String, FieldSymbol>,
 }
 
@@ -62,6 +63,7 @@ pub struct RegSymbol {
 pub struct FieldSymbol {
     pub bit_spec: BitSpec,
     pub ty: Type,
+    pub access: crate::ast::Access,
 }
 
 pub struct Resolver {
@@ -281,6 +283,7 @@ impl Resolver {
                     &self.table.structs,
                     &self.table.enums,
                 );
+                let field_access = field.access.unwrap_or(crate::ast::Access::ReadWrite);
                 // Validate bit spec
                 match &field.bit_spec {
                     crate::ast::BitSpec::Single(n) => {
@@ -313,13 +316,16 @@ impl Resolver {
                     FieldSymbol {
                         bit_spec: field.bit_spec.clone(),
                         ty,
+                        access: field_access,
                     },
                 );
             }
+            let reg_access = derive_reg_access(&fields);
             regs.insert(
                 reg.name.0.clone(),
                 RegSymbol {
                     offset: reg.offset,
+                    access: reg_access,
                     fields,
                 },
             );
@@ -586,6 +592,21 @@ fn context_from_ast(ctx: &ast::ContextExpr) -> Context {
     match ctx {
         ast::ContextExpr::Thread => Context::Thread,
         ast::ContextExpr::Any => Context::Any,
+    }
+}
+
+fn derive_reg_access(fields: &HashMap<String, FieldSymbol>) -> crate::ast::Access {
+    if fields.is_empty() {
+        return crate::ast::Access::ReadWrite;
+    }
+    let first = fields.values().next().unwrap().access;
+    if first == crate::ast::Access::ReadWrite {
+        return crate::ast::Access::ReadWrite;
+    }
+    if fields.values().all(|f| f.access == first) {
+        first
+    } else {
+        crate::ast::Access::ReadWrite
     }
 }
 

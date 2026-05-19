@@ -511,6 +511,20 @@ peripheral GPIOA at 0x40020000 {
 - Field types must be explicitly declared -- `field NAME: TYPE bit[N]` for a single bit
   or `field NAME: TYPE bit[L..H]` for a bit range. Single bits are typically `b1`,
   multi-bit ranges `u32`.
+- Fields may carry an access modifier after the bit spec: `readonly` or `writeonly`.
+  Omitted = read-write.
+
+  ```
+  reg CR offset 0x00 {
+      field HSION: b1 bit[0]
+      field HSIRDY: b1 bit[1] readonly
+  }
+  ```
+
+  Writing a `readonly` field is `E331`; reading a `writeonly` field is `E330`.
+  Register-level access is derived from its fields: a register is `readonly` when
+  every field is `readonly`, `writeonly` when every field is `writeonly`, otherwise
+  read-write. The same `E330` / `E331` errors apply to whole-register reads and writes.
 - `&PERIPH` yields `*PeriphType` for use in pointer contexts
 - `&periph.reg` yields a pointer to the register (via `inttoptr`)
 - CMSIS-SVD XML import available via the standalone [`bml-svd`](../../bml-svd/) tool
@@ -573,7 +587,8 @@ peripheral_def= "peripheral" ident "at" int "{" { reg_def } "}"
 
 reg_def       = "reg" ident "offset" int "{" { field_def } "}"
 
-field_def     = "field" ident ":" type "bit" "[" int [ ".." int ] "]"
+field_def     = "field" ident ":" type "bit" "[" int [ ".." int ] "]" [ access ]
+access        = "readonly" | "writeonly"
 
 storage_annotation = "exclusive" "(" ident ")"
               | "shared" "(" "ceiling" "=" int ")"

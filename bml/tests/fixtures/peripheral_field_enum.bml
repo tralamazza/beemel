@@ -1,0 +1,18 @@
+// Enum-typed field with u8 backing: same trunc/zext as a bare u8 field.
+enum GpioMode: u8 {
+    Input = 0,
+    Output = 1,
+    Alt = 2,
+    Analog = 3,
+}
+
+peripheral GPIOA at 0x40020000 {
+    reg MODER offset 0x00 {
+        field MODER0: GpioMode bit[0..1]
+    }
+}
+
+fn main() @context(thread) {
+    var m: GpioMode = GPIOA.MODER.MODER0;
+    GPIOA.MODER.MODER0 = GpioMode@Output;
+}

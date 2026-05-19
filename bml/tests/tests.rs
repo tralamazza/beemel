@@ -203,6 +203,27 @@ assert_pass!(
     "peripheral_field_explicit_ty.bml"
 );
 assert_pass!(test_peripheral_field_32bit, "peripheral_field_32bit.bml");
+assert_pass!(test_peripheral_field_access, "peripheral_field_access.bml");
+assert_error!(
+    test_peripheral_readonly_write,
+    "peripheral_readonly_write_error.bml",
+    "E331"
+);
+assert_error!(
+    test_peripheral_writeonly_read,
+    "peripheral_writeonly_read_error.bml",
+    "E330"
+);
+assert_error!(
+    test_peripheral_readonly_reg_write,
+    "peripheral_readonly_reg_write_error.bml",
+    "E331"
+);
+assert_error!(
+    test_peripheral_writeonly_reg_read,
+    "peripheral_writeonly_reg_read_error.bml",
+    "E330"
+);
 assert_pass!(test_enum_basic, "enum_basic.bml");
 assert_pass!(test_enum_u8, "enum_u8.bml");
 assert_pass!(test_enum_autoincr, "enum_autoincr.bml");
@@ -683,6 +704,46 @@ fn test_bitband_field_write() {
     assert!(
         ir.contains("1111491200 to ptr)"),
         "expected bit-band alias for ODR0 store\n--- IR ---\n{ir}\n-----------"
+    );
+}
+
+// u8 field: i32 RMW math, trunc on read, zext on write
+#[test]
+fn test_field_u8_rmw_widths() {
+    let ir = bml_ir("peripheral_field_u8.bml");
+    assert!(
+        ir.contains("trunc i32") && ir.contains(" to i8"),
+        "expected i32→i8 trunc on read\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        ir.contains("zext i8") && ir.contains(" to i32"),
+        "expected i8→i32 zext on write\n--- IR ---\n{ir}\n-----------"
+    );
+}
+
+#[test]
+fn test_field_u16_rmw_widths() {
+    let ir = bml_ir("peripheral_field_u16.bml");
+    assert!(
+        ir.contains("trunc i32") && ir.contains(" to i16"),
+        "expected i32→i16 trunc on read\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        ir.contains("zext i16") && ir.contains(" to i32"),
+        "expected i16→i32 zext on write\n--- IR ---\n{ir}\n-----------"
+    );
+}
+
+#[test]
+fn test_field_enum_u8_rmw_widths() {
+    let ir = bml_ir("peripheral_field_enum.bml");
+    assert!(
+        ir.contains("trunc i32") && ir.contains(" to i8"),
+        "expected i32→i8 trunc for u8-backed enum read\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        ir.contains("zext i8") && ir.contains(" to i32"),
+        "expected i8→i32 zext for u8-backed enum write\n--- IR ---\n{ir}\n-----------"
     );
 }
 

@@ -1,0 +1,11 @@
+// Test: E331 -- writing to a register whose fields are all readonly
+peripheral RCC at 0x40023800 {
+    reg SR offset 0x04 {
+        field BSY: b1 bit[0] readonly
+        field TXE: b1 bit[1] readonly
+    }
+}
+
+fn main() @context(thread) {
+    RCC.SR = 0;
+}

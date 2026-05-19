@@ -973,7 +973,18 @@ fn check_expr(
                 Expr::Ident((periph_name, _)) => {
                     // GPIOA.REG -- register read
                     if let Some(p) = symbols.peripherals.get(periph_name) {
-                        if !p.regs.contains_key(&field.0) {
+                        if let Some(reg) = p.regs.get(&field.0) {
+                            if reg.access == crate::ast::Access::WriteOnly {
+                                diags.error(
+                                    format!(
+                                        "cannot read from writeonly register `{periph_name}.{}`",
+                                        field.0
+                                    ),
+                                    "E330",
+                                    field.1,
+                                );
+                            }
+                        } else {
                             diags.error(
                                 format!("peripheral `{periph_name}` has no register `{}`", field.0),
                                 "E322",
@@ -989,6 +1000,16 @@ fn check_expr(
                         if let Some(p) = symbols.peripherals.get(periph_name) {
                             if let Some(reg) = p.regs.get(&reg_field.0) {
                                 if let Some(field_sym) = reg.fields.get(&field.0) {
+                                    if field_sym.access == crate::ast::Access::WriteOnly {
+                                        diags.error(
+                                            format!(
+                                                "cannot read from writeonly field `{periph_name}.{}.{}`",
+                                                reg_field.0, field.0
+                                            ),
+                                            "E330",
+                                            field.1,
+                                        );
+                                    }
                                     return field_sym.ty.clone();
                                 }
                                 diags.error(
@@ -1428,7 +1449,18 @@ fn check_lvalue(
                 LValue::Name((periph_name, _)) => {
                     // GPIOA.REG = val -- register write
                     if let Some(p) = symbols.peripherals.get(periph_name) {
-                        if !p.regs.contains_key(&field.0) {
+                        if let Some(reg) = p.regs.get(&field.0) {
+                            if reg.access == crate::ast::Access::ReadOnly {
+                                diags.error(
+                                    format!(
+                                        "cannot write to readonly register `{periph_name}.{}`",
+                                        field.0
+                                    ),
+                                    "E331",
+                                    field.1,
+                                );
+                            }
+                        } else {
                             diags.error(
                                 format!("peripheral `{periph_name}` has no register `{}`", field.0),
                                 "E322",
@@ -1444,6 +1476,16 @@ fn check_lvalue(
                         if let Some(p) = symbols.peripherals.get(periph_name) {
                             if let Some(reg) = p.regs.get(&reg_field.0) {
                                 if let Some(field_sym) = reg.fields.get(&field.0) {
+                                    if field_sym.access == crate::ast::Access::ReadOnly {
+                                        diags.error(
+                                            format!(
+                                                "cannot write to readonly field `{periph_name}.{}.{}`",
+                                                reg_field.0, field.0
+                                            ),
+                                            "E331",
+                                            field.1,
+                                        );
+                                    }
                                     return field_sym.ty.clone();
                                 }
                                 diags.error(

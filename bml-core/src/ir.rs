@@ -1592,12 +1592,7 @@ impl IrEmitter {
                             "{val_reg} = load volatile i32, ptr inttoptr ({ptr_ty} {alias} to ptr)",
                             ptr_ty = self.arch.ptr_type()
                         ));
-                        if field_def.ty == Type::B1 {
-                            let bool_val = self.new_reg();
-                            self.line(&format!("{bool_val} = trunc i32 {val_reg} to i1"));
-                            return bool_val;
-                        }
-                        return val_reg;
+                        return self.narrow_from_i32(&val_reg, &field_def.ty);
                     }
                     // Fallback RMW read
                     let val_reg = self.new_reg();
@@ -1614,13 +1609,7 @@ impl IrEmitter {
                     } else {
                         self.line(&format!("{result} = add i32 {masked}, 0"));
                     }
-                    // For bool fields, truncate i32 to i1
-                    if field_def.ty == Type::B1 {
-                        let bool_val = self.new_reg();
-                        self.line(&format!("{bool_val} = trunc i32 {result} to i1"));
-                        return bool_val;
-                    }
-                    return result;
+                    return self.narrow_from_i32(&result, &field_def.ty);
                 }
                 // Struct field access: extractvalue from loaded struct
                 let base_ty = self.expr_type(base, symbols);
@@ -2206,21 +2195,7 @@ impl IrEmitter {
                         && let Some(alias) =
                             crate::arch::arm::bitband_alias(addr, &field_def.bit_spec)
                     {
-                        let alias_val = if field_def.ty == Type::B1 {
-                            let bool_reg = if *val_ty == Type::B1 {
-                                val_reg.to_string()
-                            } else {
-                                let llvm_ty = llvm_type(val_ty);
-                                let tr = self.new_reg();
-                                self.line(&format!("{tr} = trunc {llvm_ty} {val_reg} to i1"));
-                                tr
-                            };
-                            let reg = self.new_reg();
-                            self.line(&format!("{reg} = zext i1 {bool_reg} to i32"));
-                            reg
-                        } else {
-                            val_reg.to_string()
-                        };
+                        let alias_val = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
                         self.line(&format!(
                             "store volatile i32 {alias_val}, ptr inttoptr ({ptr_ty} {alias} to ptr)",
                             ptr_ty = self.arch.ptr_type()
@@ -2239,22 +2214,8 @@ impl IrEmitter {
                     // clear field bits
                     let cleared = self.new_reg();
                     self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
-                    // widen bool value to i32 for RMW
-                    let wide_val = if field_def.ty == Type::B1 {
-                        let bool_reg = if *val_ty == Type::B1 {
-                            val_reg.to_string()
-                        } else {
-                            let llvm_ty = llvm_type(val_ty);
-                            let tr = self.new_reg();
-                            self.line(&format!("{tr} = trunc {llvm_ty} {val_reg} to i1"));
-                            tr
-                        };
-                        let reg = self.new_reg();
-                        self.line(&format!("{reg} = zext i1 {bool_reg} to i32"));
-                        reg
-                    } else {
-                        val_reg.to_string()
-                    };
+                    // widen narrow value to i32 for RMW math
+                    let wide_val = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
                     // shift new value into position
                     let shifted = self.new_reg();
                     if shift > 0 {
@@ -2810,6 +2771,70 @@ impl IrEmitter {
                 Type::U32
             }
         }
+    }
+}
+
+fn field_llvm_width(ty: &Type) -> usize {
+    match ty {
+        Type::B1 => 1,
+        Type::I8 | Type::U8 | Type::B8 => 8,
+        Type::I16 | Type::U16 => 16,
+        Type::I32 | Type::U32 => 32,
+        Type::I64 | Type::U64 => 64,
+        Type::Enum(_, inner, _) => field_llvm_width(inner),
+        _ => {
+            debug_assert!(false, "field_llvm_width: unexpected type {ty:?}");
+            32
+        }
+    }
+}
+
+impl IrEmitter {
+    /// Truncate an i32 RMW result down to the field's LLVM type width.
+    /// Returns the original register name when the field is already i32-wide.
+    /// Peripheral fields wider than i32 are not supported by the i32-based RMW
+    /// path and trigger a debug assertion.
+    fn narrow_from_i32(&mut self, val: &str, field_ty: &Type) -> String {
+        let w = field_llvm_width(field_ty);
+        debug_assert!(w <= 32, "narrow_from_i32: field type wider than i32");
+        if w >= 32 {
+            return val.to_string();
+        }
+        let llvm_to = llvm_type(field_ty);
+        let r = self.new_reg();
+        self.line(&format!("{r} = trunc i32 {val} to {llvm_to}"));
+        r
+    }
+
+    /// Convert a value of `val_ty` to i32 for use in i32 RMW math or a 32-bit
+    /// volatile store. When `val_ty` is strictly wider than `field_ty`, the
+    /// source is truncated to the field type first; the result is then
+    /// zero-extended to i32 if it is still narrower. Both types must fit in
+    /// i32; wider types are unsupported and trigger a debug assertion.
+    fn widen_to_i32(&mut self, val: &str, val_ty: &Type, field_ty: &Type) -> String {
+        let field_w = field_llvm_width(field_ty);
+        let val_w = field_llvm_width(val_ty);
+        debug_assert!(
+            field_w <= 32 && val_w <= 32,
+            "widen_to_i32: value or field type wider than i32"
+        );
+        let mut cur = val.to_string();
+        let mut cur_w = val_w;
+        let mut cur_llvm = llvm_type(val_ty);
+        if val_w > field_w {
+            let llvm_to = llvm_type(field_ty);
+            let r = self.new_reg();
+            self.line(&format!("{r} = trunc {cur_llvm} {cur} to {llvm_to}"));
+            cur = r;
+            cur_w = field_w;
+            cur_llvm = llvm_to;
+        }
+        if cur_w < 32 {
+            let r = self.new_reg();
+            self.line(&format!("{r} = zext {cur_llvm} {cur} to i32"));
+            return r;
+        }
+        cur
     }
 }
 

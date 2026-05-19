@@ -1,0 +1,11 @@
+// Multi-bit field declared as u16: read should trunc i32→i16, write zext i16→i32.
+peripheral TIM at 0x40000000 {
+    reg PSC offset 0x28 {
+        field VAL: u16 bit[0..15]
+    }
+}
+
+fn main() @context(thread) {
+    var v: u16 = TIM.PSC.VAL;
+    TIM.PSC.VAL = 100u16;
+}

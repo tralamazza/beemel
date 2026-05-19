@@ -596,6 +596,16 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_access_modifier(&mut self) -> Option<crate::ast::Access> {
+        if self.eat(&TokenKind::Readonly) {
+            Some(crate::ast::Access::ReadOnly)
+        } else if self.eat(&TokenKind::Writeonly) {
+            Some(crate::ast::Access::WriteOnly)
+        } else {
+            None
+        }
+    }
+
     fn parse_field_def(&mut self) -> Option<FieldDef> {
         self.expect(&TokenKind::Field, "expected `field`").ok()?;
         let name = self.parse_ident()?;
@@ -622,7 +632,14 @@ impl<'a> Parser<'a> {
             return None;
         };
 
-        Some(FieldDef { name, ty, bit_spec })
+        let access = self.parse_access_modifier();
+
+        Some(FieldDef {
+            name,
+            ty,
+            bit_spec,
+            access,
+        })
     }
 
     fn parse_import(&mut self) -> Option<ImportStmt> {

@@ -396,6 +396,14 @@ pub struct FieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
     pub bit_spec: BitSpec,
+    pub access: Option<Access>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    ReadWrite,
+    ReadOnly,
+    WriteOnly,
 }
 
 #[derive(Debug, Clone)]
