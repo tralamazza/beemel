@@ -913,23 +913,17 @@ fn check_expr(
 
             if let Expr::Ident((name, span)) = func_expr.as_ref()
                 && scope.lookup(name).is_none()
+                && !symbols.statics.contains_key(name)
+                && !symbols.consts.contains_key(name)
             {
-                if symbols
-                    .import_aliases
-                    .values()
-                    .any(|alias_info| alias_info.exports.contains_key(name))
-                {
-                    diags.error(format!("undefined name: `{name}`"), "E305", *span);
-                }
+                // Genuinely undefined name. Calling a name that resolves through
+                // an alias's exports unqualified is also reported here -- the
+                // user must write `Alias.name(...)` for those.
+                let guard = diags.error(format!("undefined name: `{name}`"), "E305", *span);
                 for arg in args {
                     check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
                 }
-                // Intentional Unresolved (not Error): transitively-imported
-                // functions don't currently land in `symbols.functions`, so a
-                // legitimate cross-module call can reach this branch with no
-                // diagnostic. Relies on the leniency rule in `types::types_compatible`
-                // — see the TODO there.
-                return Type::Unresolved("call".into());
+                return Type::Error(guard);
             }
 
             // Indirect call via function pointer expression

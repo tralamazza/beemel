@@ -265,6 +265,14 @@ assert_ir_contains!(
     "define i32 @L__hello()"
 );
 assert_pass!(test_import_transitive, "import_transitive.bml");
+// Regression: transitive call through a private dependency must reach IR
+// (previously the symbol table missed `quux`, masked by a leniency rule in
+// `types_compatible`, and IR emission panicked).
+assert_ir_contains!(
+    test_import_transitive_ir,
+    "import_transitive.bml",
+    "call i32 @quux()"
+);
 assert_pass!(test_import_path, "import_path.bml");
 assert_pass!(test_import_path_alias, "import_path_alias.bml");
 assert_pass!(test_import_path_selective, "import_path_selective.bml");

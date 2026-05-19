@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileId(u32);
 
 impl Default for FileId {
@@ -21,7 +21,7 @@ impl FileId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub file: FileId,
     pub start: usize,

@@ -347,16 +347,21 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
             Type::Null | Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..)
         );
     }
-    // TODO: leniency for Unresolved should be removed once the checker's
-    // symbol table fully reflects transitively-imported functions. Today,
-    // bare calls to imported functions can flow through as `Unresolved("call")`
-    // because the called function isn't in `symbols.functions`; without this
-    // leniency, return-type checking would falsely reject legitimate cross-
-    // module calls. Fix the symbol-table gap, then drop this arm.
-    if matches!(expected, Type::Unresolved(_)) || matches!(actual, Type::Unresolved(_)) {
+    // Empty-array literal sentinel: `var x: [u32; 0] = [];` produces
+    // `Type::Unresolved("empty-array")` because the element type cannot be
+    // inferred from no elements. Allow it to match any array type so the
+    // annotation supplies the type. This is the only Unresolved leniency --
+    // every other Unresolved represents an undefined name and must fail.
+    if is_empty_array_sentinel(expected) && matches!(actual, Type::Array(..))
+        || is_empty_array_sentinel(actual) && matches!(expected, Type::Array(..))
+    {
         return true;
     }
     false
+}
+
+fn is_empty_array_sentinel(ty: &Type) -> bool {
+    matches!(ty, Type::Unresolved(name) if name == "empty-array")
 }
 
 /// Check if two types belong to the same family for `as` casts.
