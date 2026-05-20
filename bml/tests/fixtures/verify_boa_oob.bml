@@ -1,0 +1,5 @@
+fn main() @context(thread) {
+    var buf: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
+    var i: u32 = 10;
+    var x: u32 = buf[i];
+}

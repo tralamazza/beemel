@@ -1,0 +1,6 @@
+fn main() @context(thread) {
+    var x: u8 = 42;
+    var p: *mut u8 = &mut x;
+    var y: u8 = *p;
+    assert(y == 42u8);
+}

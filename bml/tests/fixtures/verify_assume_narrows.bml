@@ -1,0 +1,6 @@
+fn main() @context(thread) {
+    var a: u32 = 10;
+    var b: u32 = 0;
+    assume(b != 0);
+    var c: u32 = a / b;
+}

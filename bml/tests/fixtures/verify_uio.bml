@@ -1,0 +1,5 @@
+fn main() @context(thread) {
+    var a: u32 = 4294967295;
+    var b: u32 = a + 1u32;
+    assert(b == 0u32);
+}

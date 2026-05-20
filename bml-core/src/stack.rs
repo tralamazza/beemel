@@ -412,7 +412,9 @@ fn stmt_contribution(
 
         Stmt::Block(block) => block_contribution(block, symbols, defined_fns),
 
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => Contribution::empty(),
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) | Stmt::Assume(_) | Stmt::Assert(_) => {
+            Contribution::empty()
+        }
     }
 }
 

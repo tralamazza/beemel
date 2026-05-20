@@ -663,7 +663,7 @@ fn test_array_write() {
         "expected GEP for array write\n--- IR ---\n{ir}\n-----------"
     );
     assert!(
-        ir.contains("store i32 %11, ptr %14"),
+        ir.contains("store i32 %9, ptr %12"),
         "expected element store\n--- IR ---\n{ir}\n-----------"
     );
 }
@@ -1054,3 +1054,119 @@ assert_error!(
     "block_expr_return_no_value.bml",
     "E328"
 );
+
+// ─── verify/IKOS: assume / assert ──────────────────────────────────────
+
+assert_pass!(test_assume_assert_pass, "assume_assert_pass.bml");
+
+assert_error!(
+    test_assume_type_error,
+    "assume_assert_type_error.bml",
+    "E340"
+);
+assert_error!(test_assert_type_error, "assert_type_error.bml", "E341");
+
+assert_ir_contains!(test_assume_ir_has_cmp, "assume_ir_cmp.bml", "br i1");
+assert_ir_contains!(
+    test_assume_ir_has_unreachable,
+    "assume_ir_unreach.bml",
+    "unreachable"
+);
+// assert IR emission in verify mode is covered by the integration.
+
+// ─── verify integration (requires BML_IKOS_BIN) ───────────────────────
+
+fn bml_verify(fixture: &str) -> (bool, String) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(fixture);
+
+    let ikos_bin = std::env::var("BML_IKOS_BIN").unwrap_or_else(|_| "ikos-analyzer".into());
+
+    // Unique temp dir per fixture to avoid IKOS DB lock contention
+    let tmpdir = std::env::temp_dir().join(format!("bml_test_{}", fixture.replace('.', "_")));
+    let _ = std::fs::create_dir_all(&tmpdir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("verify")
+        .arg("--ikos-bin")
+        .arg(&ikos_bin)
+        .arg(&path)
+        .env("TMPDIR", &tmpdir)
+        .env(
+            "PATH",
+            format!(
+                "/opt/homebrew/opt/llvm@14/bin:/opt/homebrew/opt/llvm/bin:/usr/bin:/bin:{}",
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .output()
+        .expect("failed to run bml verify");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    // Clean up temp files from the fixture dir (created by --save-temps)
+    let fixture_dir = path.parent().unwrap();
+    if let Ok(entries) = fixture_dir.read_dir() {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".verify.ll")
+                || name.ends_with(".verify.bc")
+                || name.ends_with(".verify.db")
+                || name.ends_with(".verify.json")
+                || name.ends_with(".verify.hwaddrs")
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&tmpdir);
+
+    (output.status.success(), combined)
+}
+
+macro_rules! assert_verify_fail {
+    ($name:ident, $fixture:expr) => {
+        #[test]
+        fn $name() {
+            if std::env::var("BML_IKOS_BIN").is_err() {
+                eprintln!("skipping verify test (set BML_IKOS_BIN)");
+                return;
+            }
+            let (ok, output) = bml_verify($fixture);
+            assert!(!ok, "expected verify to fail, got success:\n{output}");
+        }
+    };
+}
+
+macro_rules! assert_verify_pass {
+    ($name:ident, $fixture:expr) => {
+        #[test]
+        fn $name() {
+            if std::env::var("BML_IKOS_BIN").is_err() {
+                eprintln!("skipping verify test (set BML_IKOS_BIN)");
+                return;
+            }
+            let (ok, output) = bml_verify($fixture);
+            assert!(ok, "expected verify to pass, got failure:\n{output}");
+        }
+    };
+}
+
+assert_verify_fail!(test_verify_assert_fails, "verify_assert_fail.bml");
+assert_verify_pass!(test_verify_assert_holds, "verify_assert_pass.bml");
+assert_verify_fail!(test_verify_boa_oob, "verify_boa_oob.bml");
+assert_verify_fail!(test_verify_dbz, "verify_dbz.bml");
+assert_verify_fail!(test_verify_uio, "verify_uio.bml");
+assert_verify_pass!(test_verify_no_findings, "verify_no_findings.bml");
+// assume_narrows: assume(b != 0) before a/b should prevent dbz
+assert_verify_pass!(test_verify_assume_narrows, "verify_assume_narrows.bml");
+assert_verify_fail!(test_verify_nullity, "verify_nullity.bml");
+assert_verify_pass!(test_verify_global_ref, "verify_global_ref.bml");
+assert_verify_fail!(test_verify_unlabeled_isr, "verify_unlabeled_isr.bml");
+assert_verify_pass!(test_verify_ptr_u8, "verify_ptr_u8.bml");
+assert_verify_pass!(test_verify_ptr_u16, "verify_ptr_u16.bml");

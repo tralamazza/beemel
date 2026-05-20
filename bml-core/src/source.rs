@@ -58,12 +58,14 @@ impl Span {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct SourceFile {
     pub id: FileId,
     pub path: PathBuf,
     pub source: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
     line_starts: HashMap<FileId, Vec<usize>>,

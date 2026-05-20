@@ -605,7 +605,10 @@ enum_def      = "enum" ident ":" type "{" { ident ["=" int] "," } "}"
 
 stmt          = var_decl | assign | expr_stmt | if_stmt | loop_stmt
               | while_stmt | return_stmt | break_stmt | continue_stmt
-              | block | match_stmt | asm_stmt
+              | block | match_stmt | asm_stmt | assume_stmt | assert_stmt
+
+assume_stmt   = "assume" "(" expr ")" ";"
+assert_stmt   = "assert" "(" expr ")" ";"
 
 match_stmt    = "match" expr "{"
                 { match_arm }
@@ -751,3 +754,17 @@ from context and is compatible with any `*T` or `*mut T`.
 | W200  | (unused -- was "import statements not yet supported") |
 | W301  | Integer literal may be truncated in cast |
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |
+| E340  | `assume` condition must be b1 |
+| E341  | `assert` condition must be b1 |
+| V100  | IKOS: buffer/array out of bounds (error) |
+| V101  | IKOS: buffer/array out of bounds (warning) |
+| V110  | IKOS: null pointer dereference |
+| V120  | IKOS: division by zero |
+| V130  | IKOS: signed/unsigned integer overflow |
+| V140  | IKOS: shift count exceeds bit width |
+| V150  | IKOS: unaligned pointer access |
+| V160  | IKOS: undefined value access |
+| V170  | IKOS: dead code |
+| V180  | IKOS: dangling function pointer call |
+| V190  | IKOS: function call argument mismatch |
+| V200  | IKOS: user assert statement violated |

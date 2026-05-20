@@ -836,6 +836,26 @@ impl<'a> Parser<'a> {
                 self.skip_to_semicolon_or_brace();
                 None
             }
+            TokenKind::Assume => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `assume`")
+                    .ok()?;
+                let cond = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                Some(Stmt::Assume(AssumeStmt { cond, span }))
+            }
+            TokenKind::Assert => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `assert`")
+                    .ok()?;
+                let cond = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                Some(Stmt::Assert(AssertStmt { cond, span }))
+            }
             TokenKind::Return => self.parse_return_stmt().map(Stmt::Return),
             TokenKind::Break => {
                 let span = self.peek_span();

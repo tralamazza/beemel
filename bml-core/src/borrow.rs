@@ -286,6 +286,30 @@ fn check_stmt(
             }
         }
 
+        Stmt::Assume(assume) => {
+            check_expr(
+                &assume.cond,
+                current_fn,
+                current_ctx,
+                symbols,
+                moved,
+                scope_stack,
+                diags,
+            );
+        }
+
+        Stmt::Assert(assert) => {
+            check_expr(
+                &assert.cond,
+                current_fn,
+                current_ctx,
+                symbols,
+                moved,
+                scope_stack,
+                diags,
+            );
+        }
+
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
 
         Stmt::Block(inner) => {

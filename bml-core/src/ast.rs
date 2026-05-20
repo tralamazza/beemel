@@ -83,6 +83,8 @@ pub enum Stmt {
     Block(Block),
     Match(MatchStmt),
     Asm(AsmStmt),
+    Assume(AssumeStmt),
+    Assert(AssertStmt),
 }
 
 impl Stmt {
@@ -164,6 +166,18 @@ pub struct ForStmt {
     pub start: Expr,
     pub end: Expr,
     pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssumeStmt {
+    pub cond: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssertStmt {
+    pub cond: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

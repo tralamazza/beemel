@@ -1,0 +1,5 @@
+fn main() @context(thread) {
+    var x: u32 = 0;
+    assume(x == 0);
+    assert(x == 0);
+}

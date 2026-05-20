@@ -15,3 +15,4 @@ pub mod source;
 pub mod stack;
 pub mod target;
 pub mod types;
+pub mod verify;

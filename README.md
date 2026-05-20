@@ -14,9 +14,13 @@ cargo build --release
 
 # Build a binary
 ./target/release/bml build --target path/to/stm32f103c8.target path/to/main.bml
+
+# Verify with IKOS static analysis
+./target/release/bml verify path/to/main.bml
 ```
 
 Requires `opt`, `llc`, and `ld.lld` (LLVM toolchain) for `bml build`.
+Requires `ikos-analyzer` for `bml verify` (see [doc/verify.md](./doc/verify.md)).
 
 ## Crates
 
@@ -30,6 +34,7 @@ Requires `opt`, `llc`, and `ld.lld` (LLVM toolchain) for `bml build`.
 
 - [Language specification](./doc/language.md)
 - [Design decisions](./doc/design-decisions.md)
+- [IKOS verification](./doc/verify.md)
 - [C interop](./doc/c-interop.md)
 - [STM32 + CMSIS workflow](./doc/stm32-cmsis.md)
 - [Hacking guide](./doc/hacking.md)

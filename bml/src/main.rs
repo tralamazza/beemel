@@ -9,6 +9,7 @@ use bml_core::resolver::Resolver;
 use bml_core::source::SourceMap;
 use bml_core::stack;
 use bml_core::target::Target;
+use bml_core::verify::{self, VerifyConfig};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -121,6 +122,90 @@ fn main() {
                 stack_analysis,
             );
         }
+        "verify" => {
+            let mut target_path: Option<PathBuf> = None;
+            let mut domain = "interval".to_string();
+            let mut checks: Vec<String> = vec![];
+            let mut ikos_bin: Option<PathBuf> = None;
+            let mut save_temps = false;
+            let mut source_path: Option<PathBuf> = None;
+
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--target" => {
+                        i += 1;
+                        if i < args.len() {
+                            target_path = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--target requires a path");
+                            process::exit(1);
+                        }
+                    }
+                    "--domain" => {
+                        i += 1;
+                        if i < args.len() {
+                            let raw = args[i].as_str();
+                            domain = match raw {
+                                "octagon" => "apron-octagon".to_string(),
+                                "apron" => "apron-interval".to_string(),
+                                other => other.to_string(),
+                            };
+                        } else {
+                            eprintln!("--domain requires a name");
+                            process::exit(1);
+                        }
+                    }
+                    "--checks" => {
+                        i += 1;
+                        if i < args.len() {
+                            checks = args[i].split(',').map(String::from).collect();
+                        } else {
+                            eprintln!("--checks requires a comma-separated list");
+                            process::exit(1);
+                        }
+                    }
+                    "--ikos-bin" => {
+                        i += 1;
+                        if i < args.len() {
+                            ikos_bin = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--ikos-bin requires a path");
+                            process::exit(1);
+                        }
+                    }
+                    "--save-temps" => {
+                        save_temps = true;
+                    }
+                    other => {
+                        source_path = Some(PathBuf::from(other));
+                    }
+                }
+                i += 1;
+            }
+
+            let source_path = source_path.unwrap_or_else(|| {
+                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--save-temps] <file.bml>");
+                process::exit(1);
+            });
+
+            let target = match &target_path {
+                Some(p) => Target::from_file(p).unwrap_or_else(|e| {
+                    eprintln!("Error parsing target: {e}");
+                    process::exit(1);
+                }),
+                None => Target::default(),
+            };
+
+            verify_file(
+                &source_path,
+                &target,
+                &domain,
+                &checks,
+                ikos_bin,
+                save_temps,
+            );
+        }
         "cflags" => {
             let mut target_path: Option<PathBuf> = None;
             let mut i = 2;
@@ -171,6 +256,9 @@ fn print_usage() {
     eprintln!("  check [--stack] <file.bml>                    Type-check a source file");
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
     eprintln!("        [--link <lib>]... [--stack] <file.bml>  Compile and optionally link");
+    eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
+    eprintln!("         [--ikos-bin <path>] [--save-temps] <file.bml>");
+    eprintln!("                                                 Run IKOS static analysis");
     eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
     eprintln!();
     eprintln!("Options:");
@@ -531,6 +619,135 @@ fn build_file(
 }
 
 /// Map optimization level for llc (which only supports 0-3, not s/z).
+fn verify_file(
+    path: &Path,
+    target: &Target,
+    domain: &str,
+    checks: &[String],
+    ikos_bin: Option<PathBuf>,
+    save_temps: bool,
+) {
+    let mut source_map = SourceMap::new();
+    let mut diags = DiagnosticBag::new();
+
+    let file_id = match source_map.add_file(path.to_path_buf()) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Error reading {}: {e}", path.display());
+            process::exit(1);
+        }
+    };
+
+    let source = source_map.source(file_id);
+
+    let mut parser = Parser::new(source, file_id, &mut diags);
+    let program = parser.parse_program();
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    let mut import_resolver = ImportResolver::new();
+    import_resolver.source_map = source_map;
+    let (program, aliases) = import_resolver.resolve(program, path);
+    let source_map = import_resolver.source_map;
+    diags.merge(import_resolver.diags);
+
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    let resolver = Resolver::new();
+    let symbols = resolver.resolve(&program, &mut diags, aliases);
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    Checker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    BorrowChecker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    if !diags.is_empty() {
+        diags.emit(&source_map);
+    }
+
+    let check_list = if checks.is_empty() {
+        vec![
+            "boa".to_string(),
+            "nullity".to_string(),
+            "sio".to_string(),
+            "uio".to_string(),
+            "dbz".to_string(),
+            "shc".to_string(),
+            "poa".to_string(),
+            "upa".to_string(),
+            "uva".to_string(),
+            "dca".to_string(),
+            "dfa".to_string(),
+            "fca".to_string(),
+            "prover".to_string(),
+        ]
+    } else {
+        checks.to_vec()
+    };
+
+    let config = VerifyConfig {
+        ikos_bin: ikos_bin.unwrap_or_else(|| PathBuf::from("ikos-analyzer")),
+        domain: domain.to_string(),
+        checks: check_list,
+        extra_hwaddrs: Vec::new(),
+    };
+
+    let work_dir = if save_temps {
+        path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+
+    match verify::verify(
+        &program,
+        &symbols,
+        &source_map,
+        target,
+        &config,
+        &work_dir,
+        path,
+    ) {
+        Ok(findings) => {
+            let mut has_errors = false;
+            for f in findings {
+                let severity = match f.status {
+                    bml_core::verify::report::Status::Error => "error",
+                    bml_core::verify::report::Status::Warning => "warning",
+                    _ => "info",
+                };
+                eprintln!("{severity}[{}]: {}", f.check, f.message);
+                eprintln!("  \u{2192} {}:{}:{}", f.file.display(), f.line, f.column);
+                if f.status == bml_core::verify::report::Status::Error {
+                    has_errors = true;
+                }
+            }
+            if has_errors {
+                process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("ikos failed: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn llc_opt_level(level: &str) -> &str {
     match level {
         "0" => "0",

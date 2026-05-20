@@ -140,6 +140,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         "default_handler"
     };
     if default_handler_name == "default_handler" {
+        e.counter = 0;
         e.line("define void @default_handler() #1 {");
         e.line("entry:");
         e.line("  br label %halt_loop");
@@ -237,6 +238,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
 }
 
 pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
+    e.counter = 0;
     let has_main = symbols.functions.contains_key("main");
 
     e.line("@_sdata = external global i8");
@@ -253,37 +255,40 @@ pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
     e.line("  br label %data_copy_test");
     e.line("");
 
-    e.line("data_copy_test:");
-    let src = e.new_reg();
-    let dst = e.new_reg();
-    let dst_int = e.new_reg();
-    let edata_int = e.new_reg();
-    let data_done = e.new_reg();
-    let val = e.new_reg();
-    let src_next = e.new_reg();
-    let dst_next = e.new_reg();
     let ptr_ty = e.arch.ptr_type();
-    e.line(&format!(
-        "{src} = phi ptr [ @_sidata, %entry ], [ {src_next}, %data_copy_body ]"
+
+    // Named values for phi-node back-edges (values from successor blocks
+    // referenced by the phi before their definition).
+    let data_src_next = "%__phi.data_src_next".to_string();
+    let data_dst_next = "%__phi.data_dst_next".to_string();
+    let bss_next = "%__phi.bss_next".to_string();
+
+    e.indent -= 1;
+    e.line("data_copy_test:");
+    e.indent += 1;
+    let src = e.emit_line(&format!(
+        "phi ptr [ @_sidata, %entry ], [ {data_src_next}, %data_copy_body ]"
     ));
-    e.line(&format!(
-        "{dst} = phi ptr [ @_sdata, %entry ], [ {dst_next}, %data_copy_body ]"
+    let dst = e.emit_line(&format!(
+        "phi ptr [ @_sdata, %entry ], [ {data_dst_next}, %data_copy_body ]"
     ));
-    e.line(&format!("{dst_int} = ptrtoint ptr {dst} to {ptr_ty}"));
-    e.line(&format!("{edata_int} = ptrtoint ptr @_edata to {ptr_ty}"));
-    e.line(&format!(
-        "{data_done} = icmp eq {ptr_ty} {dst_int}, {edata_int}"
-    ));
+    let dst_int = e.emit_line(&format!("ptrtoint ptr {dst} to {ptr_ty}"));
+    let edata_int = e.emit_line(&format!("ptrtoint ptr @_edata to {ptr_ty}"));
+    let data_done = e.emit_line(&format!("icmp eq {ptr_ty} {dst_int}, {edata_int}"));
     e.line(&format!(
         "br i1 {data_done}, label %bss_zero_init, label %data_copy_body"
     ));
     e.line("");
 
     e.line("data_copy_body:");
-    e.line(&format!("{val} = load volatile i8, ptr {src}"));
+    let val = e.emit_line(&format!("load volatile i8, ptr {src}"));
     e.line(&format!("store volatile i8 {val}, ptr {dst}"));
-    e.line(&format!("{src_next} = getelementptr i8, ptr {src}, i32 1"));
-    e.line(&format!("{dst_next} = getelementptr i8, ptr {dst}, i32 1"));
+    e.line(&format!(
+        "{data_src_next} = getelementptr i8, ptr {src}, i32 1"
+    ));
+    e.line(&format!(
+        "{data_dst_next} = getelementptr i8, ptr {dst}, i32 1"
+    ));
     e.line("br label %data_copy_test");
     e.line("");
 
@@ -291,20 +296,15 @@ pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
     e.line("  br label %bss_test");
     e.line("");
 
+    e.indent -= 1;
     e.line("bss_test:");
-    let bss_ptr = e.new_reg();
-    let bss_int = e.new_reg();
-    let ebss_int = e.new_reg();
-    let bss_done = e.new_reg();
-    let bss_next = e.new_reg();
-    e.line(&format!(
-        "{bss_ptr} = phi ptr [ @_sbss, %bss_zero_init ], [ {bss_next}, %bss_body ]"
+    e.indent += 1;
+    let bss_ptr = e.emit_line(&format!(
+        "phi ptr [ @_sbss, %bss_zero_init ], [ {bss_next}, %bss_body ]"
     ));
-    e.line(&format!("{bss_int} = ptrtoint ptr {bss_ptr} to {ptr_ty}"));
-    e.line(&format!("{ebss_int} = ptrtoint ptr @_ebss to {ptr_ty}"));
-    e.line(&format!(
-        "{bss_done} = icmp eq {ptr_ty} {bss_int}, {ebss_int}"
-    ));
+    let bss_int = e.emit_line(&format!("ptrtoint ptr {bss_ptr} to {ptr_ty}"));
+    let ebss_int = e.emit_line(&format!("ptrtoint ptr @_ebss to {ptr_ty}"));
+    let bss_done = e.emit_line(&format!("icmp eq {ptr_ty} {bss_int}, {ebss_int}"));
     let after_bss = if has_main { "call_main" } else { "halt_loop" };
     e.line(&format!(
         "br i1 {bss_done}, label %{after_bss}, label %bss_body"

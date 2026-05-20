@@ -50,6 +50,8 @@ pub enum TokenKind {
     Tailchain,
     Readonly,
     Writeonly,
+    Assume,
+    Assert,
     Asm,
     AsmBody(String),
 
@@ -675,6 +677,8 @@ fn keyword_or_ident(s: &str) -> TokenKind {
         "tailchain" => TokenKind::Tailchain,
         "readonly" => TokenKind::Readonly,
         "writeonly" => TokenKind::Writeonly,
+        "assume" => TokenKind::Assume,
+        "assert" => TokenKind::Assert,
         "asm" => TokenKind::Asm,
         "true" => TokenKind::BoolLiteral(true),
         "false" => TokenKind::BoolLiteral(false),

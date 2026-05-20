@@ -20,6 +20,8 @@ name = "bml-core"
 version = "0.1.0"
 dependencies = [
  "codespan-reporting",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

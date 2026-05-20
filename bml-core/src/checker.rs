@@ -344,6 +344,24 @@ fn check_block(
                 }
             }
 
+            Stmt::Assume(assume) => {
+                let cond_ty =
+                    check_expr(&assume.cond, symbols, scope, fn_name, expected_ret, diags);
+                if cond_ty != Type::B1 {
+                    diags.error("`assume` condition must be b1", "E340", assume.cond.span());
+                }
+                last_type = None;
+            }
+
+            Stmt::Assert(assert) => {
+                let cond_ty =
+                    check_expr(&assert.cond, symbols, scope, fn_name, expected_ret, diags);
+                if cond_ty != Type::B1 {
+                    diags.error("`assert` condition must be b1", "E341", assert.cond.span());
+                }
+                last_type = None;
+            }
+
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
 
             Stmt::Match(match_stmt) => {
@@ -471,7 +489,9 @@ fn stmt_definitely_returns(stmt: &Stmt) -> bool {
         | Stmt::For(_)
         | Stmt::Break(_)
         | Stmt::Continue(_)
-        | Stmt::Asm(_) => false,
+        | Stmt::Asm(_)
+        | Stmt::Assume(_)
+        | Stmt::Assert(_) => false,
     }
 }
 
@@ -497,7 +517,9 @@ fn stmt_may_break(stmt: &Stmt) -> bool {
         | Stmt::Expr(_)
         | Stmt::Return(_)
         | Stmt::Continue(_)
-        | Stmt::Asm(_) => false,
+        | Stmt::Asm(_)
+        | Stmt::Assume(_)
+        | Stmt::Assert(_) => false,
     }
 }
 
@@ -1102,7 +1124,7 @@ fn check_expr(
             Type::Array(Box::new(elem_ty), elems.len())
         }
         Expr::Cast(inner, ty_expr) => {
-            let _inner_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
             let target_ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
             // Warn on literal narrowing
             if let Expr::IntLiteral(n, _, _) = inner.as_ref() {

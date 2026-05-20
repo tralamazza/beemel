@@ -1,0 +1,4 @@
+fn main() @context(thread) {
+    var p: *mut u32 = null;
+    *p = 42;
+}

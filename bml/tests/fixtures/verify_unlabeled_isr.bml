@@ -1,0 +1,9 @@
+fn main() @context(thread) {
+    var x: u32 = 1;
+}
+
+fn timer() @isr(priority = 1) {
+    var a: u32 = 5;
+    var b: u32 = 0;
+    var c: u32 = a / b; // division by zero — IKOS must find this
+}

@@ -1351,6 +1351,8 @@ fn stmt_start(stmt: &ast::Stmt) -> usize {
         | ast::Stmt::Block(ast::Block { span, .. })
         | ast::Stmt::Asm(ast::AsmStmt { span, .. }) => span.start,
         ast::Stmt::Match(m) => m.scrutinee.span().start,
+        ast::Stmt::Assume(a) => a.span.start,
+        ast::Stmt::Assert(a) => a.span.start,
     }
 }
 

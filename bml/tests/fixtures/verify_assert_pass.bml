@@ -1,0 +1,4 @@
+fn main() @context(thread) {
+    var x: u32 = 42;
+    assert(x == 42);
+}
