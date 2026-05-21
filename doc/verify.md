@@ -22,10 +22,7 @@ zero, and integer overflow.
 | prover       | User-provided `assert` statements                      | Error    |
 
 The 12 checks above run by default. `uva` (uninitialized variable) is
-deliberately excluded because BML's frontend already requires `var`
-initialization, so the only V160 sources are IKOS modeling artifacts
-(entry-point parameters, havoc'd shared reads). Opt back in with
-`--checks boa,nullity,...,uva` if you want it.
+opt-in; see the note below for why.
 
 `upa` requires a domain that tracks congruences. The default domain is
 `interval-congruence` for that reason; pairing `upa` with the plain
@@ -33,6 +30,45 @@ initialization, so the only V160 sources are IKOS modeling artifacts
 a false positive.
 
 Pass `--checks <list>` to run any subset.
+
+### Why `uva` is opt-in
+
+Unlike `upa`, this isn't an abstract-domain precision issue — switching
+domains can't fix it. The two noise sources are fundamental modeling
+artifacts:
+
+1. **Entry-point function parameters.** IKOS analyzes each `@thread` /
+   `@isr` function with no caller, so it has no information about the
+   initial value of any parameter. The first read of every parameter
+   trips V160.
+2. **Havoc'd `@shared` reads.** The preempt shim emits
+   `__ikos_forget_mem(ptr, size)` immediately before a `@shared` load to
+   model "an ISR may have changed this". `__ikos_forget_mem` marks the
+   storage as uninitialized by design, so the subsequent load trips
+   V160. The V200 (assert) finding at the same line is the real
+   diagnostic; the V160 is its modeling shadow.
+
+Neither source corresponds to a real bug, and they fire on most
+non-trivial fixtures. Meanwhile BML's frontend already prevents the
+classical uninit-local pattern (`var x = expr;` requires an initializer
+at declaration; the borrow checker forbids reading moved-out values; no
+heap). The narrow real-bug cases that remain are uninit reads through
+`@dma` buffers, `@external` storage, or raw `*T` pointers built from
+arbitrary addresses.
+
+If your code does any of those, enable `uva` explicitly:
+
+```bash
+bml verify --checks boa,nullity,sio,uio,dbz,shc,poa,upa,uva,dca,dfa,fca,prover file.bml
+```
+
+The two noise classes could be filtered out on the BML side — drop V160
+findings whose operand resolves to a function parameter, and drop V160
+findings on loads that immediately follow a `__ikos_forget_mem`. The
+parameter filter is cheap (~30 lines, reachable via the symbol table);
+the post-forget filter needs IKOS-side cooperation or a different shim
+emission strategy. Neither has been done yet because the surface area
+of bugs `uva` would catch in real BML code looks small.
 
 ### Diagnostic codes
 
