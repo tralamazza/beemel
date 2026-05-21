@@ -66,6 +66,23 @@ export BML_IKOS_BIN="$IKOS_SRC/install/bin/ikos-analyzer"
 No separate `BML_IKOS_REPORT_BIN` is needed after installation. Use
 `--ikos-report-bin` only as an escape hatch for non-standard IKOS layouts.
 
+## LLVM 18 `opt` requirement
+
+`bml verify` runs `opt -passes=mem2reg,sroa` before invoking the analyzer.
+The `opt` from LLVM 19 or newer emits "debug records" (`#dbg_value(...)`)
+that the LLVM-18-based IKOS cannot parse. The verify pipeline auto-discovers
+LLVM 18's `opt` in the common Homebrew / Debian install prefixes; if you
+have a non-standard install, set `BML_OPT_BIN`:
+
+```bash
+export BML_OPT_BIN=/path/to/llvm@18/bin/opt
+```
+
+As a safety net, BML also strips any leftover `#dbg_` records from the
+post-`opt` IR before handing it to IKOS, so things still work even if the
+only `opt` on PATH is newer. Source-line `!dbg` metadata on instructions
+survives — that's what IKOS uses to map findings back to BML source.
+
 ## Notes
 
 - BML passes textual LLVM `.ll` directly to IKOS. No `llvm-as` step is required.

@@ -159,6 +159,23 @@ pub fn verify(
         )));
     }
 
+    // LLVM 19+ defaults to "debug records" (`#dbg_value(...)` etc.) which
+    // ikos-analyzer (built against LLVM 18) cannot parse. Strip them so the
+    // pipeline still works when the only `opt` on PATH is newer. Instruction
+    // !dbg locations survive — those are what IKOS uses for source mapping.
+    if let Ok(opt_ir) = std::fs::read_to_string(&opt_ll_path)
+        && opt_ir.contains("#dbg_")
+    {
+        let stripped: String = opt_ir
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("#dbg_"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&opt_ll_path, stripped).map_err(|e| {
+            VerifyError::ToolInvocation(format!("failed to rewrite {}: {e}", opt_ll_path.display()))
+        })?;
+    }
+
     // 3. Write hardware addresses file.
     let hwaddrs_path = stem.with_extension("verify.hwaddrs");
     hwaddrs::write_hwaddrs_file(symbols, &hwaddrs_path)
