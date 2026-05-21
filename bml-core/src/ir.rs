@@ -194,170 +194,6 @@ impl IrEmitter {
         }
     }
 
-    /// Extract the LLVM type from the start of a string, bracket-aware.
-    /// e.g. "[4 x i32] %val" → "[4 x i32]", "i32 %val" → "i32", "ptr %p" → "ptr"
-    fn extract_llvm_type(s: &str) -> &str {
-        let s = s.trim();
-        if s.starts_with('[') {
-            // Find matching bracket
-            let mut depth = 0;
-            for (i, c) in s.char_indices() {
-                match c {
-                    '[' => depth += 1,
-                    ']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            // Include the space after the bracket (the "x" and count)
-                            // Actually ']' is the end of the array type
-                            return s[..=i].trim();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            s.split_whitespace().next().unwrap_or("i32")
-        } else if s.starts_with('{') {
-            // Struct type { ... }
-            let mut depth = 0;
-            for (i, c) in s.char_indices() {
-                match c {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return s[..=i].trim();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            s.split_whitespace().next().unwrap_or("i32")
-        } else {
-            // Simple type: first whitespace-delimited word
-            s.split_whitespace().next().unwrap_or("i32")
-        }
-    }
-
-    /// Convert opaque pointer (`ptr`) IR to typed pointers for LLVM 14 compat.
-    ///
-    /// Must handle patterns like:
-    ///   `store i32 %0, ptr %p`  → `store i32 %0, i32* %p`
-    ///   `load i32, ptr %p`      → `load i32, i32* %p`
-    ///   `phi ptr`               → `phi i32*`
-    ///   `getelementptr T, ptr`   → `getelementptr T, T*`  (T = first type arg)
-    ///   `ptrtoint ptr`          → `ptrtoint i32*`
-    ///   `inttoptr i32 %x to ptr`→ `inttoptr i32 %x to i32*`
-    ///   `declare void @f(i8*, i64)` stays
-    fn convert_opaque_to_typed(ir: &str) -> String {
-        // First pass: handle ptr patterns the line-by-line pass can miss.
-        let ir = ir
-            .replace(" ptr* ", " i32** ")
-            .replace("store ptr ", "store i32* ")
-            .replace("load ptr,", "load i32*,");
-        let mut out = String::new();
-        for line in ir.lines() {
-            let trimmed = line.trim();
-
-            // Handle load/store: extract the value type and use it for the pointer type.
-            // store has no leading % (no result register).
-            // The value type may contain spaces (e.g. "[4 x i32]"), so we bracket-match.
-            if (trimmed.contains(" load ") || trimmed.starts_with("store "))
-                && trimmed.contains(", ptr ")
-            {
-                let s = line.to_string();
-                let keyword = if trimmed.starts_with("store ") {
-                    "store "
-                } else {
-                    " load "
-                };
-                if let Some((_, after_kw)) = trimmed.split_once(keyword)
-                    && let Some(val_part) = after_kw.split_once(", ptr ")
-                {
-                    let type_str = val_part.0.trim();
-                    // Strip "volatile " prefix if present
-                    let type_str = type_str.strip_prefix("volatile ").unwrap_or(type_str);
-                    // Find the type by bracket-matching to handle "[N x T]"
-                    let val_type = Self::extract_llvm_type(type_str);
-                    if !val_type.is_empty() {
-                        let s = s.replace(", ptr ", &format!(", {val_type}* "));
-                        let s = s.replace(" to ptr", " to i32*");
-                        out.push_str(&s);
-                        out.push('\n');
-                        continue;
-                    }
-                }
-            }
-
-            // Special case: getelementptr T, ptr  →  getelementptr T, T*
-            if trimmed.starts_with('%') && trimmed.contains("getelementptr ") {
-                // Extract the first type argument after "getelementptr " up to the comma
-                if let Some(rest) = trimmed.split_once("getelementptr ") {
-                    if let Some(gep_ty) = rest.1.split_once(", ") {
-                        // The type is everything before the first comma
-                        let elem_ty = gep_ty.0.trim();
-                        // Check if the pointer type (after second comma) is "ptr"
-                        if let Some(after) = gep_ty.1.split_once(", ") {
-                            if after.0.trim() == "ptr" || after.0.trim().starts_with("ptr ") {
-                                let s = line.replacen(", ptr ", &format!(", {elem_ty}* "), 1);
-                                out.push_str(&s);
-                            } else {
-                                out.push_str(&line.replace(", ptr ", &format!(", {elem_ty}* ")));
-                            }
-                        } else {
-                            out.push_str(line);
-                        }
-                    } else {
-                        out.push_str(line);
-                    }
-                } else {
-                    out.push_str(line);
-                }
-                out.push('\n');
-                continue;
-            }
-
-            let replaced = if trimmed.starts_with("declare ") || trimmed.starts_with(';') {
-                line.to_string()
-            } else if trimmed.starts_with('%') && trimmed.contains("= alloca ptr") {
-                // alloca ptr → alloca i32*  (BML uses 32-bit pointers)
-                line.replace("= alloca ptr", "= alloca i32*")
-            } else if trimmed.contains(" phi ") {
-                line.replace(" phi ptr ", " phi i32* ")
-                    .replace(" phi ptr,", " phi i32*,")
-            } else if trimmed.contains(" ptr, ptr ") || trimmed.contains(" ptr]") {
-                line.replace("x ptr]", "x i32*]")
-                    .replace(" ptr, ptr", " i32*, ptr")
-                    .replace(" ptr] ", " i32*] ")
-            } else if trimmed.contains(" ptrtoint ptr ") {
-                line.replace(" ptrtoint ptr ", " ptrtoint i32* ")
-            } else if trimmed.contains(" ptr* ")
-                || trimmed.starts_with("store ptr ")
-                || trimmed.contains(" ptr,")
-            {
-                let mut s = line.replace(" ptr* ", " i32** ");
-                s = s.replace("store ptr ", "store i32* ");
-                s = s.replace(" ptr,", " i32*,");
-                s
-            } else if trimmed.contains("global ptr ") || trimmed.contains("constant ptr ") {
-                // global/constant declarations with pointer type
-                line.replace(" ptr ", " i32* ")
-            } else if trimmed.contains(" to ptr") {
-                line.replace(" to ptr", " to i32*")
-            } else if trimmed.contains(" ptr ") {
-                let s = line.to_string();
-                let s = s.replace(", ptr ", ", i32* ");
-                let s = s.replace(" ptr %", " i32* %");
-                let s = s.replace(" ptr ", " i32* ");
-                s.replace(" to ptr", " to i32*")
-            } else {
-                line.to_string()
-            };
-            out.push_str(&replaced);
-            out.push('\n');
-        }
-        out
-    }
-
     #[must_use]
     pub fn emit(mut self, program: &Program, symbols: &SymbolTable) -> String {
         self.emit_module_header();
@@ -366,9 +202,8 @@ impl IrEmitter {
         }
         self.emit_global_declarations(program, symbols);
         if !self.verify_mode {
-            // In verify mode, skip startup/runtime code — IKOS only needs
-            // user functions. The startup code uses mixed i8*/i32* pointers
-            // that opaque-to-typed conversion cannot handle correctly.
+            // In verify mode, IKOS only needs user functions. Startup/runtime
+            // code adds noise and can introduce irrelevant inline assembly.
             self.emit_vector_table(program, symbols);
         }
         self.emit_extern_function_declarations(program, symbols);
@@ -378,11 +213,6 @@ impl IrEmitter {
         if self.debug {
             self.emit_debug_module_flags();
             self.out.push_str(&self.debug_metadata);
-        }
-        if self.verify_mode {
-            // Convert opaque pointers to typed pointers for LLVM 14
-            // compat (IKOS 3.5 requires typed pointers).
-            self.out = Self::convert_opaque_to_typed(&self.out);
         }
         self.out
     }
@@ -495,13 +325,10 @@ impl IrEmitter {
             }
         }
         if self.verify_mode {
-            // __ikos_assert(i32) is recognized by IKOS as a verification
-            // intrinsic. Declare it so LLVM tools accept call sites.
-            // NOTE: __ikos_forget_mem is NOT declared here because IKOS 3.5
-            // crashes on extern function declarations containing pointer
-            // types (i8*, i64) in --opaque-pointers mode. The forget_mem
-            // shim is effectively disabled until this is resolved.
+            // IKOS recognizes these by name and imports them as analysis
+            // intrinsics. Keep them verify-only so normal builds stay clean.
             self.line("declare void @__ikos_assert(i32)");
+            self.line("declare void @__ikos_forget_mem(ptr, i32)");
             any = true;
         }
         if any {
@@ -548,7 +375,7 @@ impl IrEmitter {
                 } else {
                     self.expr_type(&vd.init, symbols)
                 };
-                let llvm_ty = self.llvm_type_verify(&bml_type);
+                let llvm_ty = llvm_type(&bml_type);
                 let alloca = self.alloca(&llvm_ty, &vd.name.0);
                 self.locals.insert(
                     vd.name.0.clone(),
@@ -562,7 +389,7 @@ impl IrEmitter {
             }
             Stmt::For(for_stmt) => {
                 let bml_type = self.expr_type(&for_stmt.start, symbols);
-                let llvm_ty = self.llvm_type_verify(&bml_type);
+                let llvm_ty = llvm_type(&bml_type);
                 let alloca = self.alloca(&llvm_ty, &for_stmt.var.0);
                 self.locals.insert(
                     for_stmt.var.0.clone(),
@@ -822,7 +649,7 @@ impl IrEmitter {
         for param in &fn_def.params {
             let bml_type =
                 crate::types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums);
-            let pty = self.llvm_type_verify(&bml_type);
+            let pty = llvm_type(&bml_type);
             let reg = self.alloca(&pty, &param.name.0);
             let dbg_sfx = self.dbg_loc(param.name.1);
             self.line(&format!(
@@ -1442,11 +1269,7 @@ impl IrEmitter {
             }
             Expr::NullLiteral(_) => {
                 let reg = self.new_reg();
-                if self.verify_mode {
-                    self.line(&format!("{reg} = inttoptr i32 0 to i32*"));
-                } else {
-                    self.line(&format!("{reg} = getelementptr i8, ptr null, i32 0"));
-                }
+                self.line(&format!("{reg} = getelementptr i8, ptr null, i32 0"));
                 reg
             }
             Expr::StringLiteral(s, _) => {
@@ -1483,9 +1306,13 @@ impl IrEmitter {
                 // Check statics (global load)
                 if let Some(sym) = symbols.statics.get(name) {
                     let ty = llvm_type(sym.ty.inner());
-                    // Emit preempt shim if needed
-                    // NOTE: __ikos_forget_mem shim was removed; IKOS 3.5
-                    // crashes on extern declarations with pointer types.
+                    if sym
+                        .storage
+                        .iter()
+                        .any(|ann| matches!(ann, StorageAnnotation::Shared(_)))
+                    {
+                        self.emit_verify_forget_shared_static(name, sym.ty.inner());
+                    }
                     let needs_cs = self.static_needs_critical_section(name, symbols);
                     if needs_cs {
                         crate::arch::arm::emit_critical_enter(self);
@@ -1952,25 +1779,10 @@ impl IrEmitter {
                     };
                     let ll_elem = llvm_type(elem_ty);
                     let gep = self.new_reg();
-                    let base_type = self.expr_type(base, symbols);
-                    let inner_elem = match &base_type {
-                        Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => {
-                            *inner.clone()
-                        }
-                        _ => crate::types::Type::I32,
-                    };
-                    let elem_llvm = llvm_type(&inner_elem);
-                    if self.verify_mode {
-                        self.line(&format!(
-                            "{gep} = getelementptr {ll_elem}, {elem_llvm}* {base_ptr}, {} {idx_reg}",
-                            llvm_type(&idx_ty)
-                        ));
-                    } else {
-                        self.line(&format!(
-                            "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
-                            llvm_type(&idx_ty)
-                        ));
-                    }
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
+                        llvm_type(&idx_ty)
+                    ));
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ll_elem}, ptr {gep}"));
                     reg
@@ -2273,18 +2085,6 @@ impl IrEmitter {
         }
     }
 
-    /// Return the LLVM type string for the element of a BML type used in
-    /// verify-mode bitcasts.  For arrays this is the element type; for
-    /// everything else it is the type itself.
-    fn elem_llvm_type_for_verify(bml_type: &Type) -> String {
-        let elem = match bml_type {
-            Type::Array(inner, _) => inner.as_ref(),
-            Type::Ptr(inner) | Type::ConstPtr(inner) => inner.as_ref(),
-            other => other,
-        };
-        llvm_type(elem)
-    }
-
     /// Return a pointer to an expression without loading its value.
     /// Used by AddrOf/AddrOfMut. Returns SSA register holding a ptr.
     fn emit_lvalue_ptr(&mut self, expr: &Expr, symbols: &SymbolTable) -> String {
@@ -2293,32 +2093,16 @@ impl IrEmitter {
                 // Local variable: return the alloca pointer
                 if let Some(info) = self.locals.get(name).cloned() {
                     let reg = self.new_reg();
-                    if self.verify_mode {
-                        let elem_llvm = Self::elem_llvm_type_for_verify(&info.bml_type);
-                        self.line(&format!(
-                            "{reg} = bitcast {}* {} to {elem_llvm}*",
-                            info.llvm_ty, info.alloca
-                        ));
-                    } else {
-                        self.line(&format!(
-                            "{reg} = getelementptr i8, ptr {}, i32 0",
-                            info.alloca
-                        ));
-                    }
+                    self.line(&format!(
+                        "{reg} = getelementptr i8, ptr {}, i32 0",
+                        info.alloca
+                    ));
                     return reg;
                 }
                 // Static: return a pointer to the global
-                if let Some(sym) = symbols.statics.get(name) {
+                if symbols.statics.contains_key(name) {
                     let reg = self.new_reg();
-                    let static_ty = llvm_type(sym.ty.inner());
-                    if self.verify_mode {
-                        let elem_llvm = Self::elem_llvm_type_for_verify(sym.ty.inner());
-                        self.line(&format!(
-                            "{reg} = bitcast {static_ty}* @{name} to {elem_llvm}*"
-                        ));
-                    } else {
-                        self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
-                    }
+                    self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
                     return reg;
                 }
                 // Peripheral: return inttoptr of the base address
@@ -2351,17 +2135,10 @@ impl IrEmitter {
                 };
                 let ll_elem = llvm_type(&elem_ty);
                 let reg = self.new_reg();
-                if self.verify_mode {
-                    self.line(&format!(
-                        "{reg} = getelementptr {ll_elem}, {ll_elem}* {base_ptr}, {} {idx_reg}",
-                        llvm_type(&idx_ty)
-                    ));
-                } else {
-                    self.line(&format!(
-                        "{reg} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
-                        llvm_type(&idx_ty)
-                    ));
-                }
+                self.line(&format!(
+                    "{reg} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
+                    llvm_type(&idx_ty)
+                ));
                 reg
             }
             Expr::FieldAccess(base, field) => {
@@ -2416,32 +2193,16 @@ impl IrEmitter {
             LValue::Name((name, _)) => {
                 if let Some(info) = self.locals.get(name).cloned() {
                     let reg = self.new_reg();
-                    if self.verify_mode {
-                        let elem_llvm = Self::elem_llvm_type_for_verify(&info.bml_type);
-                        self.line(&format!(
-                            "{reg} = bitcast {}* {} to {elem_llvm}*",
-                            info.llvm_ty, info.alloca
-                        ));
-                    } else {
-                        self.line(&format!(
-                            "{reg} = getelementptr i8, ptr {}, i32 0",
-                            info.alloca
-                        ));
-                    }
+                    self.line(&format!(
+                        "{reg} = getelementptr i8, ptr {}, i32 0",
+                        info.alloca
+                    ));
                     return Some((reg, info.bml_type));
                 }
                 if let Some(sym) = symbols.statics.get(name) {
                     let ty = sym.ty.inner().clone();
                     let reg = self.new_reg();
-                    if self.verify_mode {
-                        let elem_llvm = Self::elem_llvm_type_for_verify(&ty);
-                        self.line(&format!(
-                            "{reg} = bitcast {}* @{name} to {elem_llvm}*",
-                            llvm_type(&ty),
-                        ));
-                    } else {
-                        self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
-                    }
+                    self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
                     return Some((reg, ty));
                 }
                 None
@@ -2611,17 +2372,10 @@ impl IrEmitter {
                 let idx_ty = self.expr_type(index, symbols);
                 let gep = self.new_reg();
                 let ll_elem = llvm_type(&elem_ty);
-                if self.verify_mode {
-                    self.line(&format!(
-                        "{gep} = getelementptr {ll_elem}, {ll_elem}* {base_ptr}, {} {idx_reg}",
-                        llvm_type(&idx_ty)
-                    ));
-                } else {
-                    self.line(&format!(
-                        "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
-                        llvm_type(&idx_ty)
-                    ));
-                }
+                self.line(&format!(
+                    "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
+                    llvm_type(&idx_ty)
+                ));
                 self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}"));
                 val_reg.to_string()
             }
@@ -2696,20 +2450,18 @@ impl IrEmitter {
 
     // ─── helpers ─────────────────────────────────────────────────────
 
-    /// Like [`llvm_type`], but in verify mode emits typed pointers
-    /// (`{inner}*`) instead of opaque `ptr`. Non-pointer types are
-    /// unchanged.
-    fn llvm_type_verify(&self, ty: &Type) -> String {
-        match ty {
-            Type::Ptr(inner) | Type::ConstPtr(inner) if self.verify_mode => {
-                format!("{}*", llvm_type(inner))
-            }
-            _ => llvm_type(ty),
-        }
-    }
-
     fn ptr_type(&self) -> &'static str {
         self.arch.ptr_type()
+    }
+
+    fn emit_verify_forget_shared_static(&mut self, name: &str, ty: &Type) {
+        if !self.verify_mode {
+            return;
+        }
+        let size = crate::types::element_size(ty);
+        self.line(&format!(
+            "call void @__ikos_forget_mem(ptr @{name}, i32 {size})"
+        ));
     }
 
     fn static_needs_critical_section(&self, name: &str, symbols: &SymbolTable) -> bool {
@@ -2864,6 +2616,23 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
+            Type::Array(inner, len) => {
+                let elem_id = self.dbg_type(inner);
+                let range_id = self.new_dbg_id();
+                writeln!(
+                    self.debug_metadata,
+                    "!{range_id} = !DISubrange(count: {len})"
+                )
+                .unwrap();
+                let total_bits = crate::types::element_size(ty) * 8;
+                writeln!(
+                    self.debug_metadata,
+                    "!{id} = !DICompositeType(tag: DW_TAG_array_type, baseType: !{elem_id}, size: {total_bits}, elements: !{{!{range_id}}})"
+                )
+                .unwrap();
+                self.type_dbg_id.insert(key, id);
+                return id;
+            }
             Type::Struct(name, fields) => {
                 let mut offset_bits: u32 = 0;
                 let field_debug: Vec<String> = fields
@@ -2951,13 +2720,8 @@ impl IrEmitter {
             "!{loc_id} = !DILocation(line: {line}, column: 0, scope: !{scope})"
         )
         .unwrap();
-        let ptr_type = if self.verify_mode {
-            format!("{}*", self.llvm_type_verify(ty))
-        } else {
-            "ptr".to_string()
-        };
         self.line(&format!(
-            "call void @llvm.dbg.declare(metadata {ptr_type} {alloca}, metadata !{var_id}, metadata !DIExpression()), !dbg !{loc_id}"
+            "call void @llvm.dbg.declare(metadata ptr {alloca}, metadata !{var_id}, metadata !DIExpression()), !dbg !{loc_id}"
         ));
     }
 

@@ -37,7 +37,9 @@ If no annotated functions exist, all functions are used as a fallback.
 
 - Integer refinement ranges (`u32 in 0..=N`) -- deferred.
 - Custom `@shared` ceiling protocol verification -- deferred.
-- Data races or concurrency safety (no active preemption shim).
+- Full data-race or concurrency protocol checking. Shared-memory reads are
+  conservatively invalidated, but `@shared` ceiling protocol verification is
+  deferred.
 - Liveness or termination.
 - Overflow in `for` loop induction variables.
 
@@ -46,12 +48,10 @@ If no annotated functions exist, all functions are used as a fallback.
 For a single execution trace (no interrupt preemption), IKOS is sound:
 every reported violation corresponds to a real possible execution path.
 
-Under interrupt preemption, no shim is currently active. `@shared` statics
-are analyzed as single-threaded — a preempting ISR that modifies a `@shared`
-static between an access check and the access itself is not modelled. This is
-unsound under preemption. A concurrency shim (via `__ikos_forget_mem`) was
-prototyped and removed due to an IKOS 3.5 crash on pointer-typed extern
-declarations.
+Under interrupt preemption, reads of `@shared` statics are invalidated with
+IKOS's `__ikos_forget_mem` intrinsic before loading. This models that a higher
+priority ISR may have changed shared memory since the previous read. The model
+is conservative and may reduce precision for shared-state-heavy code.
 
 ## Domain Selection Guide
 
@@ -81,7 +81,10 @@ bml verify --checks boa,dbz,nullity program.bml
 # With explicit IKOS binary path (or set BML_IKOS_BIN env var)
 bml verify --ikos-bin /opt/ikos/bin/ikos-analyzer program.bml
 
-# Keep intermediate files (.ll, .bc, .hwaddrs, .json)
+# With explicit report tool path, if inference is not suitable
+bml verify --ikos-report-bin /opt/ikos/bin/ikos-report program.bml
+
+# Keep intermediate files (.ll, .db, .hwaddrs, .json)
 bml verify --save-temps program.bml
 ```
 
@@ -153,5 +156,5 @@ Verification findings are reported with V-series error codes:
 
 ## Requirements
 
-- IKOS 3.5 must be installed. See `doc/ikos-setup.md`.
-- `llvm-as` from LLVM 14 is **required** (used to convert IR to bitcode). See `doc/ikos-setup.md`.
+- An LLVM 18 IKOS build with opaque-pointer support is required. See
+  `doc/ikos-setup.md`.

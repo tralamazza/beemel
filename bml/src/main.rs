@@ -127,6 +127,7 @@ fn main() {
             let mut domain = "interval".to_string();
             let mut checks: Vec<String> = vec![];
             let mut ikos_bin: Option<PathBuf> = None;
+            let mut ikos_report_bin: Option<PathBuf> = None;
             let mut save_temps = false;
             let mut source_path: Option<PathBuf> = None;
 
@@ -174,6 +175,15 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "--ikos-report-bin" => {
+                        i += 1;
+                        if i < args.len() {
+                            ikos_report_bin = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--ikos-report-bin requires a path");
+                            process::exit(1);
+                        }
+                    }
                     "--save-temps" => {
                         save_temps = true;
                     }
@@ -185,7 +195,7 @@ fn main() {
             }
 
             let source_path = source_path.unwrap_or_else(|| {
-                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--save-temps] <file.bml>");
+                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--ikos-report-bin <path>] [--save-temps] <file.bml>");
                 process::exit(1);
             });
 
@@ -203,6 +213,7 @@ fn main() {
                 &domain,
                 &checks,
                 ikos_bin,
+                ikos_report_bin,
                 save_temps,
             );
         }
@@ -257,7 +268,7 @@ fn print_usage() {
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
     eprintln!("        [--link <lib>]... [--stack] <file.bml>  Compile and optionally link");
     eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
-    eprintln!("         [--ikos-bin <path>] [--save-temps] <file.bml>");
+    eprintln!("         [--ikos-bin <path>] [--ikos-report-bin <path>] [--save-temps] <file.bml>");
     eprintln!("                                                 Run IKOS static analysis");
     eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
     eprintln!();
@@ -625,6 +636,7 @@ fn verify_file(
     domain: &str,
     checks: &[String],
     ikos_bin: Option<PathBuf>,
+    ikos_report_bin: Option<PathBuf>,
     save_temps: bool,
 ) {
     let mut source_map = SourceMap::new();
@@ -701,8 +713,14 @@ fn verify_file(
         checks.to_vec()
     };
 
+    let ikos_bin = ikos_bin
+        .or_else(|| std::env::var_os("BML_IKOS_BIN").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("ikos-analyzer"));
+    let ikos_report_bin = ikos_report_bin.unwrap_or_else(|| infer_ikos_report_bin(&ikos_bin));
+
     let config = VerifyConfig {
-        ikos_bin: ikos_bin.unwrap_or_else(|| PathBuf::from("ikos-analyzer")),
+        ikos_bin,
+        ikos_report_bin,
         domain: domain.to_string(),
         checks: check_list,
         extra_hwaddrs: Vec::new(),
@@ -711,7 +729,19 @@ fn verify_file(
     let work_dir = if save_temps {
         path.parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        std::env::temp_dir()
+        let unique = format!(
+            "bml-verify-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let dir = std::env::temp_dir().join(unique);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("failed to create temp dir {}: {e}", dir.display());
+            process::exit(1);
+        }
+        dir
     };
 
     match verify::verify(
@@ -746,6 +776,25 @@ fn verify_file(
             process::exit(1);
         }
     }
+
+    if !save_temps {
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+}
+
+fn infer_ikos_report_bin(ikos_bin: &Path) -> PathBuf {
+    if let Some(analyzer_dir) = ikos_bin.parent() {
+        let same_dir = analyzer_dir.join("ikos-report");
+        if same_dir.exists() {
+            return same_dir;
+        }
+
+        let sibling = analyzer_dir.join("script").join("ikos-report");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    PathBuf::from("ikos-report")
 }
 
 fn llc_opt_level(level: &str) -> &str {

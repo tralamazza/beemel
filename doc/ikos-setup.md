@@ -1,68 +1,70 @@
 # IKOS Setup
 
-[IKOS](https://github.com/NASA-SW-VnV/ikos) is NASA's LLVM-based
-abstract-interpretation static analyzer. These instructions cover installing
-IKOS and verifying that `bml verify` can invoke it.
+`bml verify` targets an LLVM 18 IKOS build with opaque-pointer support. IKOS
+3.5/LLVM 14 typed-pointer compatibility is not supported.
 
 ## Prerequisites
 
-- LLVM 14 (required by IKOS 3.5). Install via Homebrew:
+- LLVM 18. On macOS with Homebrew:
   ```bash
-  brew install llvm@14
+  brew install llvm@18
   ```
 - Rust toolchain.
+- The LLVM 18 IKOS port from
+  `https://github.com/tralamazza/ikos/tree/feat/llvm18`.
 
-## Build IKOS from Source
-
-IKOS 3.5 must be built from source against LLVM 14. The Homebrew bottle
-(`nasa-sw-vnv/core/ikos`) uses LLVM 14 but its opaque pointer support is
-incomplete. Building from source with typed pointers avoids these issues.
+## Build IKOS
 
 ```bash
-git clone https://github.com/NASA-SW-VnV/ikos.git
-cd ikos
-mkdir build && cd build
-cmake .. \
+git clone -b feat/llvm18 https://github.com/tralamazza/ikos.git \
+  /Users/tralamazza/github/tralamazza/ikos
+cd /Users/tralamazza/github/tralamazza/ikos
+cmake -S . -B build-llvm18 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_CONFIG_EXECUTABLE=/opt/homebrew/opt/llvm@14/bin/llvm-config
-make -j$(sysctl -n hw.logicalcpu)
-# No need for `make install` -- use the build directory directly
+  -DLLVM_CONFIG_EXECUTABLE=/opt/homebrew/opt/llvm@18/bin/llvm-config
+cmake --build build-llvm18 -j
+cmake --install build-llvm18
 ```
 
-The analyzer binary will be at `ikos/build/analyzer/ikos-analyzer`.
+The analyzer binary is expected at:
+
+```bash
+/Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer
+```
+
+`bml verify` also needs `ikos-report` to convert IKOS's SQLite database to JSON.
+The install step creates the Python environment used by `ikos-report`. After
+installing, BML infers the matching report tool automatically when `--ikos-bin`
+points at either the build-tree analyzer or the installed analyzer.
 
 ## Running `bml verify`
 
 ```bash
-# Via explicit --ikos-bin:
-bml verify --ikos-bin /path/to/ikos/build/analyzer/ikos-analyzer file.bml
+bml verify \
+  --ikos-bin /Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer \
+  file.bml
+```
 
-# Or set BML_IKOS_BIN environment variable for integration tests:
-export BML_IKOS_BIN=/path/to/ikos/build/analyzer/ikos-analyzer
+Environment variables are also supported:
+
+```bash
+export BML_IKOS_BIN=/Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer
 cargo test --test tests -- test_verify_
 ```
 
-Path requirements:
-- `llvm-as` from LLVM 14 must be on `$PATH` (at `/opt/homebrew/opt/llvm@14/bin/llvm-as`)
-- `ikos-report` must be on `$PATH` (at `~/.local/bin/ikos-report` or in the build tree)
-
-## Verify Installation
+The installed analyzer works too:
 
 ```bash
-bml verify --ikos-bin /path/to/ikos/build/analyzer/ikos-analyzer \
-  --checks prover \
-  <(echo 'fn main() @context(thread) { assert(1 == 2); }')
+export BML_IKOS_BIN=/Users/tralamazza/github/tralamazza/ikos/install/bin/ikos-analyzer
 ```
 
-Should print: `error[assert]: [error][V200] assert violation`
+No separate `BML_IKOS_REPORT_BIN` is needed after installation. Use
+`--ikos-report-bin` only as an escape hatch for non-standard IKOS layouts.
 
-## Known Issues
+## Notes
 
-- **No debug source locations**: Debug info is disabled in verify mode because
-  the typed-pointer conversion doesn't handle `llvm.dbg.declare` metadata.
-  Findings report `:0:0` for source location.
-- **Concurrency shim** (`__ikos_forget_mem`): Disabled because IKOS 3.5
-  crashes on extern declarations with pointer types (`i8*`).
-- **Store type narrowing**: When assigning a `u32` value to a `u8` array
-  element, the IR emitter doesn't truncate the value. Use explicit casts or
-  element-typed literals (`42u8`).
+- BML passes textual LLVM `.ll` directly to IKOS. No `llvm-as` step is required.
+- Verify IR uses LLVM 18 opaque pointers.
+- `assert` and shared-memory invalidation use IKOS intrinsics only in verify
+  mode. `assume` lowers to a branch to `unreachable`, which IKOS handles more
+  precisely for BML's current IR.

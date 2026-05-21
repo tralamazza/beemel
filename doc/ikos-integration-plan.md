@@ -31,8 +31,7 @@ Before any BML code changes:
    `opt`/`llc` use. LLVM version compatibility is tight.
 2. Verify three things by running IKOS by hand on a toy `.ll` produced by
    `bml build`:
-   - Whether `ikos` accepts `.ll` directly or requires `llvm-as` to convert to
-     `.bc`.
+   - Whether `ikos` accepts `.ll` directly. The LLVM 18 fork does.
    - The exact format expected by `--hardware-addresses-file` (header file
      hints at one range per line; confirm against the `add_range_from_file`
      implementation).
@@ -197,8 +196,7 @@ Internal flow:
    `verify_mode=true` (enables the Phase 8 shim).
 2. Write `<stem>.verify.ll`.
 3. Write `<stem>.verify.hwaddrs` from Phase 4.
-4. Optionally `llvm-as <stem>.verify.ll -o <stem>.verify.bc` if IKOS requires
-   bitcode.
+4. Pass `<stem>.verify.ll` directly to IKOS.
 5. Build `ikos-analyzer` command: input, `--entry-points=...`, `-d=<domain>`,
    `-a=<checks>`, `--hardware-addresses-file=...`, `--format=json`,
    `--report-file=<stem>.verify.json`.
@@ -408,7 +406,7 @@ at the (a) milestone before tackling the harder concurrency work.
 ## Open questions to resolve in Phase 0
 
 1. Exact `--hardware-addresses-file` line format.
-2. Whether `ikos` accepts `.ll` or only `.bc`.
+2. Whether `ikos` accepts `.ll` directly.
 3. JSON report schema stability across IKOS versions.
 4. IKOS version-pin policy.
 5. Whether `__ikos_forget_mem` must be a real link-time symbol or if IKOS

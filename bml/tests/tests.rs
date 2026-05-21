@@ -1097,7 +1097,7 @@ fn bml_verify(fixture: &str) -> (bool, String) {
         .env(
             "PATH",
             format!(
-                "/opt/homebrew/opt/llvm@14/bin:/opt/homebrew/opt/llvm/bin:/usr/bin:/bin:{}",
+                "/opt/homebrew/opt/llvm@18/bin:/opt/homebrew/opt/llvm/bin:/usr/bin:/bin:{}",
                 std::env::var("PATH").unwrap_or_default()
             ),
         )
@@ -1114,7 +1114,6 @@ fn bml_verify(fixture: &str) -> (bool, String) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.ends_with(".verify.ll")
-                || name.ends_with(".verify.bc")
                 || name.ends_with(".verify.db")
                 || name.ends_with(".verify.json")
                 || name.ends_with(".verify.hwaddrs")

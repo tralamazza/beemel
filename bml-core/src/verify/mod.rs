@@ -15,6 +15,7 @@ use self::report::{Finding, Status, deduplicate};
 
 pub struct VerifyConfig {
     pub ikos_bin: PathBuf,
+    pub ikos_report_bin: PathBuf,
     pub domain: String,
     pub checks: Vec<String>,
     pub extra_hwaddrs: Vec<PathBuf>,
@@ -24,6 +25,7 @@ impl Default for VerifyConfig {
     fn default() -> Self {
         VerifyConfig {
             ikos_bin: PathBuf::from("ikos-analyzer"),
+            ikos_report_bin: PathBuf::from("ikos-report"),
             domain: "interval".to_string(),
             checks: vec![
                 "boa".into(),
@@ -84,22 +86,6 @@ pub fn collect_entry_points(symbols: &SymbolTable) -> Vec<String> {
     entries
 }
 
-/// Locate LLVM 14's llvm-as, which IKOS 3.5 requires for bitcode compat.
-fn find_llvm_as() -> &'static str {
-    // Check common locations
-    let candidates = &[
-        "/opt/homebrew/opt/llvm@14/bin/llvm-as",
-        "/usr/lib/llvm-14/bin/llvm-as",
-        "/usr/local/opt/llvm@14/bin/llvm-as",
-    ];
-    for c in candidates {
-        if std::path::Path::new(c).exists() {
-            return c;
-        }
-    }
-    "llvm-as" // fallback: hope it's on PATH
-}
-
 /// Main verification entry point.
 ///
 /// # Panics
@@ -108,8 +94,8 @@ fn find_llvm_as() -> &'static str {
 ///
 /// # Errors
 ///
-/// Returns `VerifyError` if IKOS, llvm-as, or ikos-report fail, or if the
-/// JSON report cannot be parsed.
+/// Returns `VerifyError` if IKOS or ikos-report fail, or if the JSON report
+/// cannot be parsed.
 #[allow(clippy::too_many_arguments)]
 pub fn verify(
     program: &crate::ast::Program,
@@ -123,7 +109,7 @@ pub fn verify(
     let file_stem = source_path.file_stem().unwrap_or_default();
     let stem = work_dir.join(file_stem);
 
-    // 1. Emit LLVM IR with debug info forced on, typed pointers (no opaque).
+    // 1. Emit LLVM 18 opaque-pointer IR with debug info forced on.
     let arch = target.to_arch();
 
     let emitter = IrEmitter::new_with_verify(
@@ -145,29 +131,17 @@ pub fn verify(
     hwaddrs::write_hwaddrs_file(symbols, &hwaddrs_path)
         .map_err(|e| VerifyError::ToolInvocation(format!("failed to write hwaddrs: {e}")))?;
 
-    // 3. Convert `.ll` to `.bc` using LLVM 14's llvm-as.
-    let llvm_as = find_llvm_as();
-    let bc_path = stem.with_extension("verify.bc");
-    let as_status = Command::new(llvm_as)
-        .args([ll_path.to_str().unwrap(), "-o", bc_path.to_str().unwrap()])
-        .status()
-        .map_err(|e| VerifyError::ToolInvocation(format!("failed to run {llvm_as}: {e}")))?;
-    if !as_status.success() {
-        return Err(VerifyError::ToolInvocation(format!(
-            "{llvm_as} failed — is LLVM 14 installed? Try: brew install llvm@14"
-        )));
-    }
-
-    // 4. Collect entry points.
+    // 3. Collect entry points.
     let entry_points = collect_entry_points(symbols);
     let entry_points_str = entry_points.join(",");
 
-    // 5. Build and run ikos-analyzer.
+    // 4. Build and run ikos-analyzer. The LLVM 18 fork accepts textual `.ll`
+    // through LLVM's parseIRFile(), so no llvm-as step is needed here.
     let db_path = stem.with_extension("verify.db");
     let json_path = stem.with_extension("verify.json");
 
     let mut cmd = Command::new(&config.ikos_bin);
-    cmd.arg(bc_path.to_str().unwrap())
+    cmd.arg(ll_path.to_str().unwrap())
         .arg("--entry-points")
         .arg(&entry_points_str)
         .arg("-d")
@@ -186,17 +160,17 @@ pub fn verify(
         cmd.arg(extra.to_str().unwrap());
     }
 
-    let output = cmd
-        .output()
-        .map_err(|e| VerifyError::ToolInvocation(format!("failed to run ikos-analyzer: {e}")))?;
+    let output = cmd.output().map_err(|e| {
+        VerifyError::ToolInvocation(format!("failed to run {}: {e}", config.ikos_bin.display()))
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(VerifyError::IkosFailed(stderr.to_string()));
     }
 
-    // 6. Convert DB to JSON via ikos-report.
-    let report_output = Command::new("ikos-report")
+    // 5. Convert DB to JSON via the matching ikos-report.
+    let report_output = Command::new(&config.ikos_report_bin)
         .args([
             "-f",
             "json",
@@ -205,16 +179,27 @@ pub fn verify(
             db_path.to_str().unwrap(),
         ])
         .output()
-        .map_err(|e| VerifyError::ToolInvocation(format!("failed to run ikos-report: {e}")))?;
+        .map_err(|e| {
+            let hint = if config.ikos_report_bin.exists() {
+                "; the script exists, so its interpreter may be missing. Run the IKOS install step or pass --ikos-report-bin to a working ikos-report"
+            } else {
+                ""
+            };
+            VerifyError::ToolInvocation(format!(
+                "failed to run {}: {e}{hint}",
+                config.ikos_report_bin.display()
+            ))
+        })?;
 
     if !report_output.status.success() {
         let stderr = String::from_utf8_lossy(&report_output.stderr);
         return Err(VerifyError::IkosFailed(format!(
-            "ikos-report failed: {stderr}"
+            "{} failed: {stderr}",
+            config.ikos_report_bin.display()
         )));
     }
 
-    // 7. Parse JSON report.
+    // 6. Parse JSON report.
     let report_content = std::fs::read_to_string(&json_path).map_err(|e| {
         VerifyError::ParseError(format!(
             "failed to read report {}: {e}",
