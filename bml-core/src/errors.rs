@@ -107,10 +107,6 @@ impl DiagnosticBag {
         self.diagnostics.iter().any(|d| d.level == Level::Error)
     }
 
-    pub fn push(&mut self, diagnostic: Diagnostic) {
-        self.diagnostics.push(diagnostic);
-    }
-
     pub fn merge(&mut self, other: DiagnosticBag) {
         self.diagnostics.extend(other.diagnostics);
     }

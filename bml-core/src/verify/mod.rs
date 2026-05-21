@@ -1,4 +1,5 @@
 pub mod hwaddrs;
+pub mod preempt;
 pub mod report;
 
 use std::collections::HashMap;
@@ -47,6 +48,7 @@ impl Default for VerifyConfig {
     }
 }
 
+#[derive(Debug)]
 pub enum VerifyError {
     ToolInvocation(String),
     ParseError(String),
@@ -62,6 +64,8 @@ impl std::fmt::Display for VerifyError {
         }
     }
 }
+
+impl std::error::Error for VerifyError {}
 
 /// Collect entry points from the symbol table.
 #[must_use]
@@ -88,10 +92,6 @@ pub fn collect_entry_points(symbols: &SymbolTable) -> Vec<String> {
 
 /// Main verification entry point.
 ///
-/// # Panics
-///
-/// Panics if `work_dir` contains invalid UTF-8 in debug formatting paths.
-///
 /// # Errors
 ///
 /// Returns `VerifyError` if IKOS or ikos-report fail, or if the JSON report
@@ -112,13 +112,14 @@ pub fn verify(
     // 1. Emit LLVM 18 opaque-pointer IR with debug info forced on.
     let arch = target.to_arch();
 
-    let emitter = IrEmitter::new_with_verify(
+    let mut emitter = IrEmitter::new_with_verify(
         arch,
         target.interrupts.clone(),
         target.has_bitband,
         true,
         Some(source_map.clone()),
     );
+    emitter.set_preempt(preempt::analyze(program, symbols));
     let llvm_ir = emitter.emit(program, symbols);
 
     let ll_path = stem.with_extension("verify.ll");
@@ -141,7 +142,7 @@ pub fn verify(
     let json_path = stem.with_extension("verify.json");
 
     let mut cmd = Command::new(&config.ikos_bin);
-    cmd.arg(ll_path.to_str().unwrap())
+    cmd.arg(&ll_path)
         .arg("--entry-points")
         .arg(&entry_points_str)
         .arg("-d")
@@ -149,15 +150,15 @@ pub fn verify(
         .arg("-a")
         .arg(config.checks.join(","))
         .arg("--hardware-addresses-file")
-        .arg(hwaddrs_path.to_str().unwrap())
+        .arg(&hwaddrs_path)
         .arg("--no-libc")
         .arg("--no-libcpp")
         .arg("-o")
-        .arg(db_path.to_str().unwrap());
+        .arg(&db_path);
 
     for extra in &config.extra_hwaddrs {
         cmd.arg("--hardware-addresses-file");
-        cmd.arg(extra.to_str().unwrap());
+        cmd.arg(extra);
     }
 
     let output = cmd.output().map_err(|e| {
@@ -171,13 +172,11 @@ pub fn verify(
 
     // 5. Convert DB to JSON via the matching ikos-report.
     let report_output = Command::new(&config.ikos_report_bin)
-        .args([
-            "-f",
-            "json",
-            "-o",
-            json_path.to_str().unwrap(),
-            db_path.to_str().unwrap(),
-        ])
+        .arg("-f")
+        .arg("json")
+        .arg("-o")
+        .arg(&json_path)
+        .arg(&db_path)
         .output()
         .map_err(|e| {
             let hint = if config.ikos_report_bin.exists() {
@@ -274,6 +273,14 @@ fn check_to_bml_code(check: &str, status: Status) -> (String, String) {
         ("unreachable", _) => "V170",
         ("unknown-function-call-pointer", _) => "V180",
         ("function-call", _) => "V190",
+        ("recursive-function-call", _) => "V191",
+        ("function-call-inline-asm", _) => "V192",
+        ("null-pointer-comparison", _) => "V111",
+        ("invalid-pointer-deref", _) => "V112",
+        ("pointer-overflow", _) => "V113",
+        ("unknown-memory-access", _) => "V114",
+        ("pointer-comparison" | "invalid-pointer-comparison", _) => "V115",
+        ("ignored-store", _) => "V116",
         ("assert", _) => "V200",
         _ => "V999",
     };

@@ -675,6 +675,18 @@ sizeof_expr   = "sizeof" "(" type ")"
 
 struct_init   = ident "{" { ident ":" expr "," } "}"
 
+### `assume` / `assert` semantics
+
+Both are intended for `bml verify`, but `bml build` treats them differently:
+
+- `assert(cond)` is a no-op in `bml build`: neither `cond` nor any side
+  effects in it are evaluated. Use it only to express verifier obligations,
+  not for runtime checks.
+- `assume(cond)` lowers in all modes to a branch to `unreachable` when `cond`
+  is false. In `bml build` this is undefined behavior if the condition can be
+  false at runtime, and the optimizer may rely on it. Only place `assume` on
+  facts that are genuinely guaranteed by the surrounding code.
+
 ### Literals
 
 ```
@@ -759,6 +771,12 @@ from context and is compatible with any `*T` or `*mut T`.
 | V100  | IKOS: buffer/array out of bounds (error) |
 | V101  | IKOS: buffer/array out of bounds (warning) |
 | V110  | IKOS: null pointer dereference |
+| V111  | IKOS: null pointer comparison |
+| V112  | IKOS: invalid pointer dereference |
+| V113  | IKOS: pointer arithmetic overflow |
+| V114  | IKOS: unknown memory access |
+| V115  | IKOS: pointer comparison across unrelated objects |
+| V116  | IKOS: store with no effect |
 | V120  | IKOS: division by zero |
 | V130  | IKOS: signed/unsigned integer overflow |
 | V140  | IKOS: shift count exceeds bit width |
@@ -767,4 +785,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | V170  | IKOS: dead code |
 | V180  | IKOS: dangling function pointer call |
 | V190  | IKOS: function call argument mismatch |
+| V191  | IKOS: recursive function call |
+| V192  | IKOS: call through inline asm |
 | V200  | IKOS: user assert statement violated |
+| V999  | IKOS: other check finding (catch-all) |

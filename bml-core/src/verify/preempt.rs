@@ -25,7 +25,7 @@ pub fn analyze(program: &Program, symbols: &SymbolTable) -> PreemptInfo {
 
     for (static_name, writer_fns) in &writers {
         for (reader_name, reader_prio) in &priorities {
-            if reader_name == "_" || writer_fns.contains(reader_name) {
+            if writer_fns.contains(reader_name) {
                 continue;
             }
             for writer_name in writer_fns {

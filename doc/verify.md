@@ -24,6 +24,35 @@ zero, and integer overflow.
 
 All 13 checks run by default. Pass `--checks <list>` to run a subset.
 
+### Diagnostic codes
+
+Findings surface as BML V-series diagnostics. The full table lives in
+[`language.md` § Error codes](./language.md), but the most common ones are:
+
+| Code  | Meaning                                            |
+|-------|----------------------------------------------------|
+| V100  | Buffer/array out of bounds (error)                 |
+| V101  | Buffer/array out of bounds (warning)               |
+| V110  | Null pointer dereference                           |
+| V111  | Null pointer comparison                            |
+| V112  | Invalid pointer dereference                        |
+| V113  | Pointer arithmetic overflow                        |
+| V114  | Unknown memory access                              |
+| V115  | Pointer comparison across unrelated objects        |
+| V116  | Store with no effect                               |
+| V120  | Division by zero                                   |
+| V130  | Signed/unsigned integer overflow                   |
+| V140  | Shift count exceeds bit width                      |
+| V150  | Unaligned pointer access                           |
+| V160  | Undefined value access                             |
+| V170  | Dead code                                          |
+| V180  | Dangling function pointer call                     |
+| V190  | Function call argument mismatch                    |
+| V191  | Recursive function call                            |
+| V192  | Call through inline asm                            |
+| V200  | User `assert` statement violated                   |
+| V999  | Other IKOS finding (catch-all for unmapped kinds)  |
+
 ### Entry Points
 
 IKOS analyzes functions marked as entry points. BML collects them automatically:

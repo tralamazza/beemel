@@ -7,6 +7,7 @@ use crate::context::Context;
 use crate::resolver::{FnSymbol, SymbolTable};
 use crate::source::{SourceMap, Span};
 use crate::types::Type;
+use crate::verify::preempt::PreemptInfo;
 
 /// Emits textual LLVM IR from a validated AST + symbol table.
 pub struct IrEmitter {
@@ -36,6 +37,7 @@ pub struct IrEmitter {
     alloca_counter: u32,
     verify_mode: bool,
     current_fn_name: String,
+    preempt: Option<PreemptInfo>,
 }
 
 #[derive(Clone)]
@@ -153,6 +155,7 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: false,
             current_fn_name: String::new(),
+            preempt: None,
         }
     }
 
@@ -191,7 +194,15 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: true,
             current_fn_name: String::new(),
+            preempt: None,
         }
+    }
+
+    /// Install preemption analysis results so verify-mode IR only invalidates
+    /// `@shared` reads that an ISR with strictly higher priority can actually
+    /// write. Without this, every `@shared` read is unconditionally havoc'd.
+    pub fn set_preempt(&mut self, preempt: PreemptInfo) {
+        self.preempt = Some(preempt);
     }
 
     #[must_use]
@@ -1620,7 +1631,11 @@ impl IrEmitter {
 
                     if ret_ty == "void" {
                         self.line(&format!("call void @{direct_name}({arg_str}){dbg_sfx}"));
-                        "%void".to_string()
+                        // No SSA value; callers may not consume this. The
+                        // type checker forbids using a void call's result as
+                        // a value, so the empty string is never embedded in
+                        // emitted IR.
+                        String::new()
                     } else {
                         let reg = self.new_reg();
                         self.line(&format!(
@@ -1648,15 +1663,16 @@ impl IrEmitter {
                         _ => "void".to_string(),
                     };
 
-                    let reg = self.new_reg();
                     if ret_ty == "void" {
                         self.line(&format!("call void {callee_reg}({arg_str}){dbg_sfx}"));
+                        String::new()
                     } else {
+                        let reg = self.new_reg();
                         self.line(&format!(
                             "{reg} = call {ret_ty} {callee_reg}({arg_str}){dbg_sfx}"
                         ));
+                        reg
                     }
-                    reg
                 }
             }
 
@@ -2457,6 +2473,15 @@ impl IrEmitter {
     fn emit_verify_forget_shared_static(&mut self, name: &str, ty: &Type) {
         if !self.verify_mode {
             return;
+        }
+        // Without preemption info we have no choice but to over-approximate.
+        // With it, only havoc when a higher-priority ISR can actually write
+        // this static while the current function is reading it.
+        if let Some(preempt) = &self.preempt {
+            let key = (self.current_fn_name.clone(), name.to_string());
+            if !preempt.preemptable.contains_key(&key) {
+                return;
+            }
         }
         let size = crate::types::element_size(ty);
         self.line(&format!(

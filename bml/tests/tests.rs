@@ -1094,6 +1094,8 @@ fn bml_verify(fixture: &str) -> (bool, String) {
         .arg(&ikos_bin)
         .arg(&path)
         .env("TMPDIR", &tmpdir)
+        // The Homebrew LLVM 18 prefix is macOS-only; non-existent paths are
+        // ignored on Linux so the prepended PATH is harmless there.
         .env(
             "PATH",
             format!(

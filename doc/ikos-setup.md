@@ -3,6 +3,16 @@
 `bml verify` targets an LLVM 18 IKOS build with opaque-pointer support. IKOS
 3.5/LLVM 14 typed-pointer compatibility is not supported.
 
+In the commands below, `$IKOS_SRC` is the directory where you clone IKOS, and
+`$LLVM18` is the prefix that contains `bin/llvm-config` for LLVM 18 (e.g.
+`/opt/homebrew/opt/llvm@18` on macOS Homebrew, `/usr/lib/llvm-18` on Debian).
+Set both before running anything:
+
+```bash
+export IKOS_SRC=$HOME/src/ikos
+export LLVM18=/opt/homebrew/opt/llvm@18
+```
+
 ## Prerequisites
 
 - LLVM 18. On macOS with Homebrew:
@@ -16,21 +26,16 @@
 ## Build IKOS
 
 ```bash
-git clone -b feat/llvm18 https://github.com/tralamazza/ikos.git \
-  /Users/tralamazza/github/tralamazza/ikos
-cd /Users/tralamazza/github/tralamazza/ikos
+git clone -b feat/llvm18 https://github.com/tralamazza/ikos.git "$IKOS_SRC"
+cd "$IKOS_SRC"
 cmake -S . -B build-llvm18 \
   -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_CONFIG_EXECUTABLE=/opt/homebrew/opt/llvm@18/bin/llvm-config
+  -DLLVM_CONFIG_EXECUTABLE="$LLVM18/bin/llvm-config"
 cmake --build build-llvm18 -j
 cmake --install build-llvm18
 ```
 
-The analyzer binary is expected at:
-
-```bash
-/Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer
-```
+The analyzer binary is then at `$IKOS_SRC/build-llvm18/analyzer/ikos-analyzer`.
 
 `bml verify` also needs `ikos-report` to convert IKOS's SQLite database to JSON.
 The install step creates the Python environment used by `ikos-report`. After
@@ -41,21 +46,21 @@ points at either the build-tree analyzer or the installed analyzer.
 
 ```bash
 bml verify \
-  --ikos-bin /Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer \
+  --ikos-bin "$IKOS_SRC/build-llvm18/analyzer/ikos-analyzer" \
   file.bml
 ```
 
 Environment variables are also supported:
 
 ```bash
-export BML_IKOS_BIN=/Users/tralamazza/github/tralamazza/ikos/build-llvm18/analyzer/ikos-analyzer
+export BML_IKOS_BIN="$IKOS_SRC/build-llvm18/analyzer/ikos-analyzer"
 cargo test --test tests -- test_verify_
 ```
 
 The installed analyzer works too:
 
 ```bash
-export BML_IKOS_BIN=/Users/tralamazza/github/tralamazza/ikos/install/bin/ikos-analyzer
+export BML_IKOS_BIN="$IKOS_SRC/install/bin/ikos-analyzer"
 ```
 
 No separate `BML_IKOS_REPORT_BIN` is needed after installation. Use
