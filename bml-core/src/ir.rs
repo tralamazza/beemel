@@ -2118,33 +2118,26 @@ impl IrEmitter {
     fn emit_lvalue_ptr(&mut self, expr: &Expr, symbols: &SymbolTable) -> String {
         match expr {
             Expr::Ident((name, _)) => {
-                // Local variable: return the alloca pointer
+                // Local variable: the alloca name *is* the pointer. Routing
+                // it through `getelementptr i8, ptr X, i32 0` was a relic of
+                // typed-pointer LLVM; with opaque pointers it just strips
+                // alignment info the alloca carries (sroa adds align N),
+                // which made IKOS report spurious V150 unaligned-pointer
+                // warnings on every array index.
                 if let Some(info) = self.locals.get(name).cloned() {
-                    let reg = self.new_reg();
-                    self.line(&format!(
-                        "{reg} = getelementptr i8, ptr {}, i32 0",
-                        info.alloca
-                    ));
-                    return reg;
+                    return info.alloca;
                 }
-                // Static: return a pointer to the global
                 if symbols.statics.contains_key(name) {
-                    let reg = self.new_reg();
-                    self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
-                    return reg;
+                    return format!("@{name}");
                 }
-                // Peripheral: return inttoptr of the base address
                 if let Some(p) = symbols.peripherals.get(name) {
                     let reg = self.new_reg();
                     let ptr_ty = self.ptr_type();
                     self.line(&format!("{reg} = inttoptr {ptr_ty} {} to ptr", p.base_addr));
                     return reg;
                 }
-                // Function: return a pointer to the function
                 if symbols.functions.contains_key(name) {
-                    let reg = self.new_reg();
-                    self.line(&format!("{reg} = getelementptr i8, ptr @{name}, i32 0"));
-                    return reg;
+                    return format!("@{name}");
                 }
                 let reg = self.new_reg();
                 self.line(&format!(

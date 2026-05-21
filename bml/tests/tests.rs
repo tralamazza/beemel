@@ -1226,3 +1226,38 @@ fn test_verify_isr_to_isr() {
         "expected V200 assert finding from cross-ISR preempt, got:\n{output}"
     );
 }
+
+// Bounded for loop: IKOS proves `i ∈ [0, 4)` so no V100/V101 fires.
+assert_verify_pass!(test_verify_loop_safe, "verify_loop_safe.bml");
+
+// Out-of-bounds for loop: IKOS reports V101 buffer-overflow on the index
+// (warning, not error, because the violation is conditional on iteration).
+#[test]
+fn test_verify_loop_oob() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_loop_oob.bml");
+    assert!(
+        output.contains("[V101]"),
+        "expected V101 buffer-overflow warning, got:\n{output}"
+    );
+}
+
+// Path-sensitive narrowing: `if i < 4` should let IKOS prove `buf[i]` safe.
+assert_verify_pass!(test_verify_cond_narrow, "verify_cond_narrow.bml");
+
+// Narrowing not tight enough: `if i < 10` leaves indices 4..=9, still OOB.
+#[test]
+fn test_verify_cond_loose() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_cond_loose.bml");
+    assert!(
+        output.contains("[V101]"),
+        "expected V101 buffer-overflow warning, got:\n{output}"
+    );
+}

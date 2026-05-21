@@ -757,7 +757,7 @@ fn verify_file(
     }
 
     let check_list = if checks.is_empty() {
-        // `uva` omitted by default; see VerifyConfig::default for rationale.
+        // `uva` and `upa` omitted by default; see VerifyConfig::default.
         vec![
             "boa".to_string(),
             "nullity".to_string(),
@@ -766,7 +766,6 @@ fn verify_file(
             "dbz".to_string(),
             "shc".to_string(),
             "poa".to_string(),
-            "upa".to_string(),
             "dca".to_string(),
             "dfa".to_string(),
             "fca".to_string(),

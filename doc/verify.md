@@ -15,17 +15,22 @@ zero, and integer overflow.
 | dbz          | Division by zero                                       | Error    |
 | sio / uio    | Signed/unsigned integer overflow                       | Warning  |
 | shc          | Shift count exceeds bit width                          | Error    |
-| upa          | Unaligned pointer access                               | Error    |
 | dca          | Dead code (unreachable after assert/assume failure)    | Warning  |
 | dfa          | Dangling function pointer call                         | Error    |
 | fca          | Function called with wrong argument count or type      | Error    |
 | prover       | User-provided `assert` statements                      | Error    |
 
-All 12 checks above run by default. `uva` (uninitialized variable) is
-deliberately excluded because BML's frontend already requires `var`
-initialization, so the only V160 sources are IKOS modeling artifacts (entry
-point parameters, havoc'd shared reads). Opt in with `--checks
-boa,nullity,...,uva` if you want them.
+The 11 checks above run by default. `uva` (uninitialized variable) and
+`upa` (unaligned pointer access) are deliberately excluded:
+
+- `uva` only fires on IKOS modeling artifacts (entry-point parameters,
+  havoc'd shared reads) because BML's frontend already requires `var`
+  initialization.
+- `upa` fires on every array index with a runtime index because IKOS
+  cannot prove modular alignment of `&buf[i]` even when `buf` is
+  4-aligned and the element type matches.
+
+Opt back in with `--checks boa,nullity,...,uva,upa` if you want them.
 
 Pass `--checks <list>` to run any subset.
 
