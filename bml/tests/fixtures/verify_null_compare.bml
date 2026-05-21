@@ -1,0 +1,9 @@
+// Comparing an unknown pointer parameter against null. Exercises the V11x
+// null-pointer-comparison family in the widened V-code mapping.
+fn maybe_load(p: *u32) @context(thread) {
+    if p == null {
+        return;
+    }
+    var x: u32 = *p;
+    assert(x == x);
+}

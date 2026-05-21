@@ -886,8 +886,15 @@ impl IrEmitter {
             Stmt::Assign(assign) => {
                 let val_reg = self.emit_expr(&assign.value, symbols, fn_name);
                 let val_ty = self.expr_type(&assign.value, symbols);
-                let target =
-                    self.emit_store_target(&assign.target, symbols, fn_name, &val_reg, &val_ty);
+                let dbg_span = assign.target.span();
+                let target = self.emit_store_target(
+                    &assign.target,
+                    symbols,
+                    fn_name,
+                    &val_reg,
+                    &val_ty,
+                    dbg_span,
+                );
                 (Some(target), false)
             }
 
@@ -1576,17 +1583,20 @@ impl IrEmitter {
                 // For logical ops, result is i1
                 let is_logical = matches!(op, BinaryOp::And | BinaryOp::Or);
 
+                let dbg = self.dbg_loc(expr.span());
                 if cmp_result {
                     let (cmd, cond) = (llvm_op, result_ty);
                     self.line(&format!(
-                        "{reg} = {cmd} {cond} {lty} {left_reg}, {right_reg}"
+                        "{reg} = {cmd} {cond} {lty} {left_reg}, {right_reg}{dbg}"
                     ));
                 } else if is_logical {
                     self.line(&format!(
-                        "{reg} = {llvm_op} {result_ty} {left_reg}, {right_reg}"
+                        "{reg} = {llvm_op} {result_ty} {left_reg}, {right_reg}{dbg}"
                     ));
                 } else {
-                    self.line(&format!("{reg} = {llvm_op} {lty} {left_reg}, {right_reg}"));
+                    self.line(&format!(
+                        "{reg} = {llvm_op} {lty} {left_reg}, {right_reg}{dbg}"
+                    ));
                 }
                 reg
             }
@@ -1766,6 +1776,7 @@ impl IrEmitter {
 
             Expr::Index(base, index) => {
                 let base_ty = self.expr_type(base, symbols);
+                let dbg = self.dbg_loc(expr.span());
                 if crate::types::is_ptr(&base_ty) {
                     // Pointer index: GEP + load
                     let base_reg = self.emit_expr(base, symbols, fn_name);
@@ -1778,11 +1789,11 @@ impl IrEmitter {
                     let ll_elem = llvm_type(pointee_ty);
                     let gep = self.new_reg();
                     self.line(&format!(
-                        "{gep} = getelementptr {ll_elem}, ptr {base_reg}, {} {idx_reg}",
+                        "{gep} = getelementptr {ll_elem}, ptr {base_reg}, {} {idx_reg}{dbg}",
                         llvm_type(&idx_ty)
                     ));
                     let reg = self.new_reg();
-                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}"));
+                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
                 } else if matches!(&base_ty, Type::Array(_, _)) {
                     // Array value: get lvalue pointer, GEP, load
@@ -1796,11 +1807,11 @@ impl IrEmitter {
                     let ll_elem = llvm_type(elem_ty);
                     let gep = self.new_reg();
                     self.line(&format!(
-                        "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
+                        "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}{dbg}",
                         llvm_type(&idx_ty)
                     ));
                     let reg = self.new_reg();
-                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}"));
+                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
                 } else {
                     // Fallback
@@ -2259,13 +2270,15 @@ impl IrEmitter {
         fn_name: &str,
         val_reg: &str,
         val_ty: &Type,
+        dbg_span: Span,
     ) -> String {
+        let dbg = self.dbg_loc(dbg_span);
         match lval {
             LValue::Name((name, _)) => {
                 // Local variable
                 if let Some(info) = self.locals.get(name) {
                     self.line(&format!(
-                        "store {} {val_reg}, ptr {}",
+                        "store {} {val_reg}, ptr {}{dbg}",
                         info.llvm_ty, info.alloca
                     ));
                     return val_reg.to_string();
@@ -2277,7 +2290,7 @@ impl IrEmitter {
                     if needs_cs {
                         crate::arch::arm::emit_critical_enter(self);
                     }
-                    self.line(&format!("store {ty} {val_reg}, ptr @{name}"));
+                    self.line(&format!("store {ty} {val_reg}, ptr @{name}{dbg}"));
                     if needs_cs {
                         crate::arch::arm::emit_critical_leave(self);
                     }
@@ -2293,7 +2306,7 @@ impl IrEmitter {
                 {
                     let addr = p.base_addr + reg.offset;
                     self.line(&format!(
-                        "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr)",
+                        "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
                     return val_reg.to_string();
@@ -2313,7 +2326,7 @@ impl IrEmitter {
                     {
                         let alias_val = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
                         self.line(&format!(
-                            "store volatile i32 {alias_val}, ptr inttoptr ({ptr_ty} {alias} to ptr)",
+                            "store volatile i32 {alias_val}, ptr inttoptr ({ptr_ty} {alias} to ptr){dbg}",
                             ptr_ty = self.arch.ptr_type()
                         ));
                         return alias_val;
@@ -2347,7 +2360,7 @@ impl IrEmitter {
                     self.line(&format!("{new_val} = or i32 {cleared}, {masked_val}"));
                     // volatile store back
                     self.line(&format!(
-                        "store volatile i32 {new_val}, ptr inttoptr ({ptr_ty} {addr} to ptr)",
+                        "store volatile i32 {new_val}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
                     return new_val;
@@ -2367,7 +2380,7 @@ impl IrEmitter {
                         self.line(&format!(
                             "{gep} = getelementptr {llvm_ty}, ptr {alloca}, i32 0, i32 {idx}"
                         ));
-                        self.line(&format!("store {ll_field} {val_reg}, ptr {gep}"));
+                        self.line(&format!("store {ll_field} {val_reg}, ptr {gep}{dbg}"));
                         return val_reg.to_string();
                     }
                 }
@@ -2392,7 +2405,7 @@ impl IrEmitter {
                     "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
                     llvm_type(&idx_ty)
                 ));
-                self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}"));
+                self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
                 val_reg.to_string()
             }
             LValue::Deref(inner) => {
@@ -2403,7 +2416,7 @@ impl IrEmitter {
                     _ => &crate::types::Type::I32,
                 };
                 let llty = llvm_type(pointee_ty);
-                self.line(&format!("store {llty} {val_reg}, ptr {ptr_reg}"));
+                self.line(&format!("store {llty} {val_reg}, ptr {ptr_reg}{dbg}"));
                 val_reg.to_string()
             }
         }

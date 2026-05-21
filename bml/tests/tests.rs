@@ -1189,3 +1189,37 @@ fn test_verify_shared_with_writer() {
         "expected V200 assert finding from preempt shim, got:\n{output}"
     );
 }
+
+// Pointer-related V11x mapping: an unknown pointer parameter that's
+// dereferenced after a null-check produces a V114 finding from IKOS.
+#[test]
+fn test_verify_null_compare_v11x() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_null_compare.bml");
+    assert!(
+        output.contains("[V114]"),
+        "expected V114 unknown-memory-access finding, got:\n{output}"
+    );
+}
+
+// Self-writer exclusion: the writer is also the reader, so preempt analysis
+// must skip it. No forget_mem emitted; assert is provable.
+assert_verify_pass!(test_verify_self_writer, "verify_self_writer.bml");
+
+// ISR-to-ISR preemption: high-priority ISR writes while a lower-priority
+// ISR reads. Neither side is a thread, but the shim must still fire.
+#[test]
+fn test_verify_isr_to_isr() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_isr_to_isr.bml");
+    assert!(
+        output.contains("[V200]"),
+        "expected V200 assert finding from cross-ISR preempt, got:\n{output}"
+    );
+}

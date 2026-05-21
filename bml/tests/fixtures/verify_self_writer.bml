@@ -1,0 +1,10 @@
+// Reader == writer (same ISR writes and reads X). Preempt analysis must
+// exclude the function from its own preemptable set, so no forget_mem is
+// emitted and the assert is provable.
+static X: u32 @shared(ceiling = 1) = 5;
+
+fn touch() @isr(priority = 1) {
+    X = 10u32;
+    var y: u32 = X;
+    assert(y == 10u32);
+}

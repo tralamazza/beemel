@@ -717,8 +717,11 @@ fn verify_file(
         .or_else(|| std::env::var_os("BML_IKOS_BIN").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("ikos-analyzer"));
     let ikos_report_bin = ikos_report_bin.unwrap_or_else(|| infer_ikos_report_bin(&ikos_bin));
+    let opt_bin =
+        std::env::var_os("BML_OPT_BIN").map_or_else(|| PathBuf::from("opt"), PathBuf::from);
 
     let config = VerifyConfig {
+        opt_bin,
         ikos_bin,
         ikos_report_bin,
         domain: domain.to_string(),

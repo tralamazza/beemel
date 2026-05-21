@@ -15,6 +15,7 @@ use crate::target::Target;
 use self::report::{Finding, Status, deduplicate};
 
 pub struct VerifyConfig {
+    pub opt_bin: PathBuf,
     pub ikos_bin: PathBuf,
     pub ikos_report_bin: PathBuf,
     pub domain: String,
@@ -25,6 +26,7 @@ pub struct VerifyConfig {
 impl Default for VerifyConfig {
     fn default() -> Self {
         VerifyConfig {
+            opt_bin: PathBuf::from("opt"),
             ikos_bin: PathBuf::from("ikos-analyzer"),
             ikos_report_bin: PathBuf::from("ikos-report"),
             domain: "interval".to_string(),
@@ -127,22 +129,45 @@ pub fn verify(
         VerifyError::ToolInvocation(format!("failed to write {}: {e}", ll_path.display()))
     })?;
 
-    // 2. Write hardware addresses file.
+    // 2. Promote allocas to SSA registers so IKOS can refine values across
+    // loads. Without mem2reg/sroa, BML's alloca-heavy lowering hides the
+    // dataflow IKOS needs for assume narrowing and array-init bounds.
+    let opt_ll_path = stem.with_extension("verify.opt.ll");
+    let opt_status = Command::new(&config.opt_bin)
+        .arg("-passes=mem2reg,sroa")
+        .arg("-S")
+        .arg(&ll_path)
+        .arg("-o")
+        .arg(&opt_ll_path)
+        .output()
+        .map_err(|e| {
+            VerifyError::ToolInvocation(format!("failed to run {}: {e}", config.opt_bin.display()))
+        })?;
+    if !opt_status.status.success() {
+        let stderr = String::from_utf8_lossy(&opt_status.stderr);
+        return Err(VerifyError::ToolInvocation(format!(
+            "{} mem2reg failed: {stderr}",
+            config.opt_bin.display()
+        )));
+    }
+
+    // 3. Write hardware addresses file.
     let hwaddrs_path = stem.with_extension("verify.hwaddrs");
     hwaddrs::write_hwaddrs_file(symbols, &hwaddrs_path)
         .map_err(|e| VerifyError::ToolInvocation(format!("failed to write hwaddrs: {e}")))?;
 
-    // 3. Collect entry points.
+    // 4. Collect entry points.
     let entry_points = collect_entry_points(symbols);
     let entry_points_str = entry_points.join(",");
 
-    // 4. Build and run ikos-analyzer. The LLVM 18 fork accepts textual `.ll`
-    // through LLVM's parseIRFile(), so no llvm-as step is needed here.
+    // 5. Build and run ikos-analyzer on the mem2reg'd IR. The LLVM 18 fork
+    // accepts textual `.ll` through LLVM's parseIRFile(), so no llvm-as step
+    // is needed here.
     let db_path = stem.with_extension("verify.db");
     let json_path = stem.with_extension("verify.json");
 
     let mut cmd = Command::new(&config.ikos_bin);
-    cmd.arg(&ll_path)
+    cmd.arg(&opt_ll_path)
         .arg("--entry-points")
         .arg(&entry_points_str)
         .arg("-d")

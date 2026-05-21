@@ -82,6 +82,22 @@ IKOS's `__ikos_forget_mem` intrinsic before loading. This models that a higher
 priority ISR may have changed shared memory since the previous read. The model
 is conservative and may reduce precision for shared-state-heavy code.
 
+The preempt shim is only emitted when a strictly higher-priority writer
+actually exists for the static being read. Functions that read a `@shared`
+static no other preemptable writer touches are not invalidated.
+
+### Expected noise after the shim fires
+
+`__ikos_forget_mem` marks the storage as uninitialized in IKOS's internal
+model. As a side effect, any subsequent use of the havoc'd value will trip
+the `uva` check, so a V200 (assert) finding from a preempted shared read is
+usually accompanied by a V160 (uninitialized variable) at the same line.
+Treat the V160 as redundant noise -- the V200 is the load-bearing diagnostic.
+
+Function parameters in entry-point functions (`@context(thread)`, `@isr`)
+also trigger V160 because IKOS has no caller from which to infer their
+values. This is informational, not a bug in the program under analysis.
+
 ## Domain Selection Guide
 
 | Domain                | Alias    | Speed    | Precision | Use Case                              |
