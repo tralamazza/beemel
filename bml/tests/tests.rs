@@ -1171,3 +1171,21 @@ assert_verify_pass!(test_verify_global_ref, "verify_global_ref.bml");
 assert_verify_fail!(test_verify_unlabeled_isr, "verify_unlabeled_isr.bml");
 assert_verify_pass!(test_verify_ptr_u8, "verify_ptr_u8.bml");
 assert_verify_pass!(test_verify_ptr_u16, "verify_ptr_u16.bml");
+// Preempt shim: no ISR writer → no forget_mem → prover can fold the value.
+assert_verify_pass!(test_verify_shared_no_writer, "verify_shared_no_writer.bml");
+
+// Preempt shim: ISR writer exists → forget_mem havocs the read → IKOS can no
+// longer prove the assert and reports it (warning, not error, since the value
+// is unknown rather than statically wrong).
+#[test]
+fn test_verify_shared_with_writer() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_shared_with_writer.bml");
+    assert!(
+        output.contains("[V200]"),
+        "expected V200 assert finding from preempt shim, got:\n{output}"
+    );
+}

@@ -1,0 +1,12 @@
+// ISR at priority 1 writes X, so the preempt shim havocs X in main().
+// The assert is therefore NOT provable.
+static X: u32 @shared(ceiling = 1) = 5;
+
+fn main() @context(thread) {
+    var y: u32 = X;
+    assert(y == 5);
+}
+
+fn timer() @isr(priority = 1) {
+    X = 42;
+}
