@@ -1374,8 +1374,9 @@ impl IrEmitter {
                             _ => crate::types::Type::I32, // fallback
                         };
                         let llty = llvm_type(&pointee_ty);
+                        let dbg = self.dbg_loc(expr.span());
                         let reg = self.new_reg();
-                        self.line(&format!("{reg} = load {llty}, ptr {inner_reg}"));
+                        self.line(&format!("{reg} = load {llty}, ptr {inner_reg}{dbg}"));
                         reg
                     }
                     UnaryOp::AddrOf | UnaryOp::AddrOfMut => {
