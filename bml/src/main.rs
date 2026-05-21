@@ -138,7 +138,7 @@ fn main() {
         }
         "verify" => {
             let mut target_path: Option<PathBuf> = None;
-            let mut domain = "interval".to_string();
+            let mut domain = "interval-congruence".to_string();
             let mut checks: Vec<String> = vec![];
             let mut ikos_bin: Option<PathBuf> = None;
             let mut ikos_report_bin: Option<PathBuf> = None;
@@ -757,7 +757,7 @@ fn verify_file(
     }
 
     let check_list = if checks.is_empty() {
-        // `uva` and `upa` omitted by default; see VerifyConfig::default.
+        // `uva` omitted by default; see VerifyConfig::default.
         vec![
             "boa".to_string(),
             "nullity".to_string(),
@@ -766,6 +766,7 @@ fn verify_file(
             "dbz".to_string(),
             "shc".to_string(),
             "poa".to_string(),
+            "upa".to_string(),
             "dca".to_string(),
             "dfa".to_string(),
             "fca".to_string(),

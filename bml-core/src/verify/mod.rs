@@ -29,14 +29,16 @@ impl Default for VerifyConfig {
             opt_bin: PathBuf::from("opt"),
             ikos_bin: PathBuf::from("ikos-analyzer"),
             ikos_report_bin: PathBuf::from("ikos-report"),
-            domain: "interval".to_string(),
-            // `uva` and `upa` are intentionally omitted. `uva` flags only
-            // IKOS-modeling artifacts (entry-point parameters, havoc'd shared
-            // reads) since BML requires `var` init. `upa` fires on every
-            // array indexing with a runtime index because IKOS cannot prove
-            // modular alignment of `&buf[i]` even when buf is 4-aligned and
-            // the element type matches. Both lose more signal than they add.
-            // Opt back in with `--checks ...,uva,upa`.
+            // `interval-congruence` (reduced product of interval + congruence)
+            // is required for `upa` to prove modular alignment of array
+            // indexing without flooding the report with V150 false positives.
+            // Cost over plain `interval` is within measurement noise on the
+            // verify fixture set.
+            domain: "interval-congruence".to_string(),
+            // `uva` is intentionally omitted: BML's frontend requires `var`
+            // initialization, so the only V160 sources are IKOS modeling
+            // artifacts (entry-point parameters, havoc'd shared reads). Opt
+            // back in with `--checks ...,uva`.
             checks: vec![
                 "boa".into(),
                 "nullity".into(),
@@ -45,6 +47,7 @@ impl Default for VerifyConfig {
                 "dbz".into(),
                 "shc".into(),
                 "poa".into(),
+                "upa".into(),
                 "dca".into(),
                 "dfa".into(),
                 "fca".into(),

@@ -15,22 +15,22 @@ zero, and integer overflow.
 | dbz          | Division by zero                                       | Error    |
 | sio / uio    | Signed/unsigned integer overflow                       | Warning  |
 | shc          | Shift count exceeds bit width                          | Error    |
+| upa          | Unaligned pointer access                               | Error    |
 | dca          | Dead code (unreachable after assert/assume failure)    | Warning  |
 | dfa          | Dangling function pointer call                         | Error    |
 | fca          | Function called with wrong argument count or type      | Error    |
 | prover       | User-provided `assert` statements                      | Error    |
 
-The 11 checks above run by default. `uva` (uninitialized variable) and
-`upa` (unaligned pointer access) are deliberately excluded:
+The 12 checks above run by default. `uva` (uninitialized variable) is
+deliberately excluded because BML's frontend already requires `var`
+initialization, so the only V160 sources are IKOS modeling artifacts
+(entry-point parameters, havoc'd shared reads). Opt back in with
+`--checks boa,nullity,...,uva` if you want it.
 
-- `uva` only fires on IKOS modeling artifacts (entry-point parameters,
-  havoc'd shared reads) because BML's frontend already requires `var`
-  initialization.
-- `upa` fires on every array index with a runtime index because IKOS
-  cannot prove modular alignment of `&buf[i]` even when `buf` is
-  4-aligned and the element type matches.
-
-Opt back in with `--checks boa,nullity,...,uva,upa` if you want them.
+`upa` requires a domain that tracks congruences. The default domain is
+`interval-congruence` for that reason; pairing `upa` with the plain
+`interval` domain will report every array index with a runtime index as
+a false positive.
 
 Pass `--checks <list>` to run any subset.
 
