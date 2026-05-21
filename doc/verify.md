@@ -16,13 +16,18 @@ zero, and integer overflow.
 | sio / uio    | Signed/unsigned integer overflow                       | Warning  |
 | shc          | Shift count exceeds bit width                          | Error    |
 | upa          | Unaligned pointer access                               | Error    |
-| uva          | Undefined value access                                 | Error    |
 | dca          | Dead code (unreachable after assert/assume failure)    | Warning  |
 | dfa          | Dangling function pointer call                         | Error    |
 | fca          | Function called with wrong argument count or type      | Error    |
 | prover       | User-provided `assert` statements                      | Error    |
 
-All 13 checks run by default. Pass `--checks <list>` to run a subset.
+All 12 checks above run by default. `uva` (uninitialized variable) is
+deliberately excluded because BML's frontend already requires `var`
+initialization, so the only V160 sources are IKOS modeling artifacts (entry
+point parameters, havoc'd shared reads). Opt in with `--checks
+boa,nullity,...,uva` if you want them.
+
+Pass `--checks <list>` to run any subset.
 
 ### Diagnostic codes
 
@@ -85,6 +90,40 @@ is conservative and may reduce precision for shared-state-heavy code.
 The preempt shim is only emitted when a strictly higher-priority writer
 actually exists for the static being read. Functions that read a `@shared`
 static no other preemptable writer touches are not invalidated.
+
+### Per-line suppression
+
+To silence a finding on a specific line, place a directive comment on the
+same line or the line immediately above:
+
+```bml
+var c: u32 = a / b; // bml-verify: ignore V120
+```
+
+Multiple codes can be listed, comma-separated:
+
+```bml
+var x: u32 = buf[i]; // bml-verify: ignore V100, V101
+```
+
+`all` is a wildcard that suppresses every finding on the affected line:
+
+```bml
+// bml-verify: ignore all
+*p = 42;
+```
+
+Use suppressions sparingly. Each one disables a real analyzer result, and
+the next reader has to decide whether the suppression is still justified.
+
+### Diagnostic detail
+
+Each finding includes the operand name(s) IKOS associates with the violation,
+so a division-by-zero on `a / b` is reported as `division-by-zero violation
+(operand: b)`. Full inferred ranges (e.g. `b ∈ [0, 0]`) are written to
+`ikos-analyzer`'s stderr with `--display-inv=fail`; BML does not currently
+parse or surface that output because it uses unstable LLVM register addresses
+rather than source-level variable names.
 
 ### Expected noise after the shim fires
 

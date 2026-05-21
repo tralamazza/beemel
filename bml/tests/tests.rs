@@ -1209,6 +1209,9 @@ fn test_verify_null_compare_v11x() {
 // must skip it. No forget_mem emitted; assert is provable.
 assert_verify_pass!(test_verify_self_writer, "verify_self_writer.bml");
 
+// `// bml-verify: ignore V120` on the same line as a finding silences it.
+assert_verify_pass!(test_verify_suppress_v120, "verify_suppress.bml");
+
 // ISR-to-ISR preemption: high-priority ISR writes while a lower-priority
 // ISR reads. Neither side is a thread, but the shim must still fire.
 #[test]

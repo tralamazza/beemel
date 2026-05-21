@@ -1,0 +1,6 @@
+// `// bml-verify: ignore V120` on the offending line silences the V120 finding.
+fn main() @context(thread) {
+    var a: u32 = 10;
+    var b: u32 = 0;
+    var c: u32 = a / b; // bml-verify: ignore V120
+}

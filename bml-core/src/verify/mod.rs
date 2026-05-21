@@ -12,7 +12,7 @@ use crate::resolver::SymbolTable;
 use crate::source::SourceMap;
 use crate::target::Target;
 
-use self::report::{Finding, Status, deduplicate};
+use self::report::{Finding, Status, Suppressions, apply_suppressions, deduplicate};
 
 pub struct VerifyConfig {
     pub opt_bin: PathBuf,
@@ -30,6 +30,10 @@ impl Default for VerifyConfig {
             ikos_bin: PathBuf::from("ikos-analyzer"),
             ikos_report_bin: PathBuf::from("ikos-report"),
             domain: "interval".to_string(),
+            // `uva` is intentionally omitted: BML's frontend requires `var`
+            // initialization, so the only V160 sources are IKOS-modeling
+            // artifacts (entry-point parameters, havoc'd shared reads). Users
+            // who want it can opt in with `--checks ...,uva`.
             checks: vec![
                 "boa".into(),
                 "nullity".into(),
@@ -39,7 +43,6 @@ impl Default for VerifyConfig {
                 "shc".into(),
                 "poa".into(),
                 "upa".into(),
-                "uva".into(),
                 "dca".into(),
                 "dfa".into(),
                 "fca".into(),
@@ -232,8 +235,21 @@ pub fn verify(
     })?;
 
     let findings = parse_json_report(&report_content)?;
+    let findings = deduplicate(findings);
 
-    Ok(deduplicate(findings))
+    // 7. Apply per-line suppression directives parsed from the sources that
+    // appeared in the findings.
+    let mut per_file: std::collections::HashMap<PathBuf, Suppressions> =
+        std::collections::HashMap::new();
+    for f in &findings {
+        if f.file.as_os_str().is_empty() || per_file.contains_key(&f.file) {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(&f.file) {
+            per_file.insert(f.file.clone(), report::parse_suppressions(&src));
+        }
+    }
+    Ok(apply_suppressions(findings, &per_file))
 }
 
 /// Map IKOS `CheckKind` integer to a short string name.
@@ -325,6 +341,8 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
         files: Vec<IkosFile>,
         functions: Vec<IkosFunction>,
         statements: Vec<IkosStatement>,
+        #[serde(default)]
+        operands: Vec<IkosOperand>,
         reports: Vec<IkosReportEntry>,
     }
 
@@ -353,10 +371,18 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
     }
 
     #[derive(serde::Deserialize)]
+    struct IkosOperand {
+        id: i64,
+        repr: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
     struct IkosReportEntry {
         kind: i64,
         status: i64,
         statement_id: i64,
+        #[serde(default)]
+        operands: Vec<(i64, i64)>,
         #[allow(dead_code)]
         info: Option<serde_json::Value>,
     }
@@ -373,6 +399,11 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
     let stmt_by_id: HashMap<i64, &IkosStatement> =
         root.statements.iter().map(|s| (s.id, s)).collect();
     let fn_by_id: HashMap<i64, &IkosFunction> = root.functions.iter().map(|f| (f.id, f)).collect();
+    let operand_by_id: HashMap<i64, &str> = root
+        .operands
+        .iter()
+        .filter_map(|o| o.repr.as_deref().map(|r| (o.id, r)))
+        .collect();
 
     let mut findings = Vec::new();
     for entry in root.reports {
@@ -416,10 +447,28 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
             })
             .unwrap_or_default();
 
-        let message = format!("[{severity}][{code}] {check} violation");
+        // Collect operand names IKOS thinks are involved in this finding.
+        // The JSON encodes them as (kind, id) pairs; we look up the printable
+        // repr from the operands table. Kind 17 in IKOS is a local variable;
+        // others are constants/internals we skip.
+        let operand_names: Vec<&str> = entry
+            .operands
+            .iter()
+            .filter_map(|(_, id)| operand_by_id.get(id).copied())
+            .filter(|name| !name.is_empty())
+            .collect();
+        let message = if operand_names.is_empty() {
+            format!("[{severity}][{code}] {check} violation")
+        } else {
+            format!(
+                "[{severity}][{code}] {check} violation (operand: {})",
+                operand_names.join(", ")
+            )
+        };
 
         findings.push(Finding {
             check,
+            code,
             status,
             message,
             file,

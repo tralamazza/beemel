@@ -1,3 +1,17 @@
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailOn {
+    Error,
+    Warning,
+    Info,
+    Never,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 use bml_core::ast;
 use bml_core::borrow::BorrowChecker;
 use bml_core::checker::Checker;
@@ -130,6 +144,8 @@ fn main() {
             let mut ikos_report_bin: Option<PathBuf> = None;
             let mut save_temps = false;
             let mut source_path: Option<PathBuf> = None;
+            let mut fail_on = FailOn::Error;
+            let mut output_format = OutputFormat::Text;
 
             let mut i = 2;
             while i < args.len() {
@@ -187,6 +203,44 @@ fn main() {
                     "--save-temps" => {
                         save_temps = true;
                     }
+                    "--fail-on" => {
+                        i += 1;
+                        if i < args.len() {
+                            fail_on = match args[i].as_str() {
+                                "error" => FailOn::Error,
+                                "warning" => FailOn::Warning,
+                                "info" => FailOn::Info,
+                                "never" => FailOn::Never,
+                                other => {
+                                    eprintln!(
+                                        "--fail-on: unknown level `{other}` (expected error, warning, info, never)"
+                                    );
+                                    process::exit(1);
+                                }
+                            };
+                        } else {
+                            eprintln!("--fail-on requires a level");
+                            process::exit(1);
+                        }
+                    }
+                    "--format" => {
+                        i += 1;
+                        if i < args.len() {
+                            output_format = match args[i].as_str() {
+                                "text" => OutputFormat::Text,
+                                "json" => OutputFormat::Json,
+                                other => {
+                                    eprintln!(
+                                        "--format: unknown format `{other}` (expected text, json)"
+                                    );
+                                    process::exit(1);
+                                }
+                            };
+                        } else {
+                            eprintln!("--format requires a name");
+                            process::exit(1);
+                        }
+                    }
                     other => {
                         source_path = Some(PathBuf::from(other));
                     }
@@ -195,7 +249,7 @@ fn main() {
             }
 
             let source_path = source_path.unwrap_or_else(|| {
-                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--ikos-report-bin <path>] [--save-temps] <file.bml>");
+                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--ikos-report-bin <path>] [--fail-on <level>] [--format <fmt>] [--save-temps] <file.bml>");
                 process::exit(1);
             });
 
@@ -215,6 +269,8 @@ fn main() {
                 ikos_bin,
                 ikos_report_bin,
                 save_temps,
+                fail_on,
+                output_format,
             );
         }
         "cflags" => {
@@ -268,7 +324,8 @@ fn print_usage() {
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
     eprintln!("        [--link <lib>]... [--stack] <file.bml>  Compile and optionally link");
     eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
-    eprintln!("         [--ikos-bin <path>] [--ikos-report-bin <path>] [--save-temps] <file.bml>");
+    eprintln!("         [--ikos-bin <path>] [--ikos-report-bin <path>]");
+    eprintln!("         [--fail-on <level>] [--format <fmt>] [--save-temps] <file.bml>");
     eprintln!("                                                 Run IKOS static analysis");
     eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
     eprintln!();
@@ -279,6 +336,9 @@ fn print_usage() {
     eprintln!("  --stack         Perform compile-time stack usage analysis");
     eprintln!("  --target <path> Target specification file");
     eprintln!("  --link <lib>    Link with library (.a / .o), repeatable");
+    eprintln!("  --fail-on <l>   Exit non-zero when any finding meets level: error,");
+    eprintln!("                  warning, info, or never (default: error)");
+    eprintln!("  --format <fmt>  Output format: text or json (default: text)");
     eprintln!("  --help, -h      Show this help");
 }
 
@@ -630,6 +690,7 @@ fn build_file(
 }
 
 /// Map optimization level for llc (which only supports 0-3, not s/z).
+#[allow(clippy::too_many_arguments)]
 fn verify_file(
     path: &Path,
     target: &Target,
@@ -638,6 +699,8 @@ fn verify_file(
     ikos_bin: Option<PathBuf>,
     ikos_report_bin: Option<PathBuf>,
     save_temps: bool,
+    fail_on: FailOn,
+    output_format: OutputFormat,
 ) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
@@ -694,6 +757,7 @@ fn verify_file(
     }
 
     let check_list = if checks.is_empty() {
+        // `uva` omitted by default; see VerifyConfig::default for rationale.
         vec![
             "boa".to_string(),
             "nullity".to_string(),
@@ -703,7 +767,6 @@ fn verify_file(
             "shc".to_string(),
             "poa".to_string(),
             "upa".to_string(),
-            "uva".to_string(),
             "dca".to_string(),
             "dfa".to_string(),
             "fca".to_string(),
@@ -757,20 +820,8 @@ fn verify_file(
         path,
     ) {
         Ok(findings) => {
-            let mut has_errors = false;
-            for f in findings {
-                let severity = match f.status {
-                    bml_core::verify::report::Status::Error => "error",
-                    bml_core::verify::report::Status::Warning => "warning",
-                    _ => "info",
-                };
-                eprintln!("{severity}[{}]: {}", f.check, f.message);
-                eprintln!("  \u{2192} {}:{}:{}", f.file.display(), f.line, f.column);
-                if f.status == bml_core::verify::report::Status::Error {
-                    has_errors = true;
-                }
-            }
-            if has_errors {
+            emit_findings(&findings, output_format);
+            if should_fail(&findings, fail_on) {
                 process::exit(1);
             }
         }
@@ -783,6 +834,86 @@ fn verify_file(
     if !save_temps {
         let _ = std::fs::remove_dir_all(&work_dir);
     }
+}
+
+fn severity_str(status: bml_core::verify::report::Status) -> &'static str {
+    use bml_core::verify::report::Status;
+    match status {
+        Status::Error => "error",
+        Status::Warning => "warning",
+        Status::Safe | Status::Unreachable => "info",
+    }
+}
+
+fn emit_findings(findings: &[bml_core::verify::report::Finding], format: OutputFormat) {
+    match format {
+        OutputFormat::Text => {
+            for f in findings {
+                let severity = severity_str(f.status);
+                eprintln!("{severity}[{}]: {}", f.check, f.message);
+                eprintln!("  \u{2192} {}:{}:{}", f.file.display(), f.line, f.column);
+            }
+        }
+        OutputFormat::Json => {
+            // Hand-roll JSON to avoid pulling serde_json into bml; the Finding
+            // schema is small and fixed.
+            print!("{{\"findings\":[");
+            for (i, f) in findings.iter().enumerate() {
+                if i > 0 {
+                    print!(",");
+                }
+                let severity = severity_str(f.status);
+                print!("{{");
+                print!("\"check\":{},", json_string(&f.check));
+                print!("\"severity\":{},", json_string(severity));
+                print!("\"message\":{},", json_string(&f.message));
+                print!("\"file\":{},", json_string(&f.file.display().to_string()));
+                print!("\"line\":{},", f.line);
+                print!("\"column\":{}", f.column);
+                print!("}}");
+            }
+            println!("]}}");
+        }
+    }
+}
+
+fn should_fail(findings: &[bml_core::verify::report::Finding], fail_on: FailOn) -> bool {
+    use bml_core::verify::report::Status;
+    let threshold = match fail_on {
+        FailOn::Error => 3,
+        FailOn::Warning => 2,
+        FailOn::Info => 1,
+        FailOn::Never => return false,
+    };
+    findings.iter().any(|f| {
+        let rank = match f.status {
+            Status::Error => 3,
+            Status::Warning => 2,
+            Status::Safe | Status::Unreachable => 1,
+        };
+        rank >= threshold
+    })
+}
+
+fn json_string(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn infer_ikos_report_bin(ikos_bin: &Path) -> PathBuf {
