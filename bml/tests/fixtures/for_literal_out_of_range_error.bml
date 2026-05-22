@@ -1,0 +1,7 @@
+// The unsuffixed literal `1000` defaults to u32, doesn't fit u8,
+// so the bound is rejected as a type mismatch.
+fn main() @context(thread) {
+    for i: u8 in 0 upto 1000 {  // E312: end bound out of range
+        var x: u8 = i;
+    }
+}

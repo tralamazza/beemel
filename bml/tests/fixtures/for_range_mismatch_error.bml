@@ -1,7 +1,7 @@
-// Error: for loop range types mismatch
+// Error: for loop bound type does not match declared loop variable type.
+// `0u8` is a suffixed literal of type u8, so it does not fit the u32 declaration.
 fn main() @context(thread) {
-    var i: u32 = 0;
-    for i in 0u8 .. 10u16 {  // E312: range types mismatch
-        var x = i;
+    for i: u32 in 0u8 upto 10 {  // E312: start bound type mismatch
+        var x: u32 = i;
     }
 }

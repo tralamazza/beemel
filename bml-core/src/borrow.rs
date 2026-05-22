@@ -201,6 +201,17 @@ fn check_stmt(
                 scope_stack,
                 diags,
             );
+            if let Some(step) = &for_stmt.step {
+                check_expr(
+                    step,
+                    current_fn,
+                    current_ctx,
+                    symbols,
+                    moved,
+                    scope_stack,
+                    diags,
+                );
+            }
             scope_stack
                 .last_mut()
                 .unwrap()

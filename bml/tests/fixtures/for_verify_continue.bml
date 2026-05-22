@@ -1,0 +1,13 @@
+// Verify-style proof that the continue fix preserves IKOS's
+// ability to prove i is in range across all iterations: with
+// `continue` in the body, IKOS must still bound i to [0, 5) so
+// that `buf[i]` raises no V101.
+fn main() @context(thread) {
+    var buf: [u32; 5] = [0u32, 0, 0, 0, 0];
+    for i: u32 in 0 upto 5 {
+        if i == 2 {
+            continue;
+        }
+        buf[i] = 1;
+    }
+}

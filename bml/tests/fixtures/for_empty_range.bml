@@ -1,0 +1,7 @@
+// start == end: cond fails on entry, body never runs.
+fn main() @context(thread) {
+    var hit: u32 = 0;
+    for i: u32 in 5 upto 5 {
+        hit = hit + 1;
+    }
+}

@@ -1,0 +1,6 @@
+// Literal step of zero is a compile-time error (would loop forever).
+fn main() @context(thread) {
+    for i: u32 in 0 upto 10 step 0 {  // E312: step must not be zero
+        var x: u32 = i;
+    }
+}

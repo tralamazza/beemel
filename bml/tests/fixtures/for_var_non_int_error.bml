@@ -1,0 +1,6 @@
+// Loop variable must be an integer type. Floats are rejected.
+fn main() @context(thread) {
+    for x: f32 in 0.0 upto 1.0 {  // E312: variable must be integer
+        var y: f32 = x;
+    }
+}

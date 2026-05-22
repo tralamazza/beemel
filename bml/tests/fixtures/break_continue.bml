@@ -19,7 +19,7 @@ fn main() @context(thread) {
         j = j + 1;
     }
 
-    for k in 0 .. 5 {
+    for k: u32 in 0 upto 5 {
         var x: u32 = k;
     }
 }

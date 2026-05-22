@@ -2,7 +2,7 @@
 // `buf[i]` is in bounds and no V100/V101 fires.
 fn main() @context(thread) {
     var buf: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
-    for i in 0u32..4u32 {
+    for i: u32 in 0 upto 4 {
         var x: u32 = buf[i];
     }
 }

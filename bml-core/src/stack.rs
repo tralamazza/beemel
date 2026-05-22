@@ -287,7 +287,7 @@ fn stmt_contribution(
         }
 
         Stmt::For(for_stmt) => {
-            let ty = infer_type_from_expr(&for_stmt.start, symbols);
+            let ty = types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
             let size = types::element_size(&ty);
 
             let body_contrib = block_contribution(&for_stmt.body, symbols, defined_fns);
@@ -295,6 +295,10 @@ fn stmt_contribution(
             // Walk range expressions for callees
             let start_contrib = expr_contribution(&for_stmt.start, symbols, defined_fns);
             let end_contrib = expr_contribution(&for_stmt.end, symbols, defined_fns);
+            let step_contrib = for_stmt
+                .step
+                .as_ref()
+                .map(|s| expr_contribution(s, symbols, defined_fns));
 
             Contribution {
                 frame: size + body_contrib.frame,
@@ -302,11 +306,15 @@ fn stmt_contribution(
                     let mut c = Vec::new();
                     c.extend(start_contrib.callees);
                     c.extend(end_contrib.callees);
+                    if let Some(sc) = &step_contrib {
+                        c.extend(sc.callees.iter().cloned());
+                    }
                     c.extend(body_contrib.callees);
                     c
                 },
                 has_indirect: start_contrib.has_indirect
                     || end_contrib.has_indirect
+                    || step_contrib.as_ref().is_some_and(|sc| sc.has_indirect)
                     || body_contrib.has_indirect,
             }
         }

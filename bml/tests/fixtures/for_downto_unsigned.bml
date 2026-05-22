@@ -1,0 +1,10 @@
+// Unsigned reverse near zero with default step.
+// Half-open: `5 downto 0` yields 5, 4, 3, 2, 1 (excludes 0).
+// With step 1 the cond `i > 0` fails exactly at i = 0, so the
+// decrement never underflows the unsigned representation.
+fn main() @context(thread) {
+    var sum: u32 = 0;
+    for i: u32 in 5 downto 0 {
+        sum = sum + i;
+    }
+}

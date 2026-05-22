@@ -1,0 +1,9 @@
+// Non-literal upper bound whose type differs from the declared
+// loop variable type. The unsuffixed-literal escape hatch does
+// not apply because `size` is a typed local, not a literal.
+fn main() @context(thread) {
+    var size: u16 = 8;
+    for i: u32 in 0 upto size {  // E312: end bound type mismatch
+        var x: u32 = i;
+    }
+}

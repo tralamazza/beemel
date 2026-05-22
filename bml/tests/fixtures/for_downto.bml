@@ -1,0 +1,8 @@
+// Reverse iteration with a non-default step.
+// Half-open: `10 downto 0 step 2` yields 10, 8, 6, 4, 2.
+fn main() @context(thread) {
+    var sum: u32 = 0;
+    for i: u32 in 10 downto 0 step 2 {
+        sum = sum + i;
+    }
+}

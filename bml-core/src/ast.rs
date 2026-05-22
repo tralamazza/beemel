@@ -76,7 +76,7 @@ pub enum Stmt {
     If(IfStmt),
     Loop(LoopStmt),
     While(WhileStmt),
-    For(ForStmt),
+    For(Box<ForStmt>),
     Return(ReturnStmt),
     Break(Span),
     Continue(Span),
@@ -163,9 +163,18 @@ pub struct ReturnStmt {
 #[derive(Debug, Clone)]
 pub struct ForStmt {
     pub var: Ident,
+    pub ty: TypeExpr,
     pub start: Expr,
+    pub direction: ForDirection,
     pub end: Expr,
+    pub step: Option<Expr>,
     pub body: Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForDirection {
+    Upto,
+    Downto,
 }
 
 #[derive(Debug, Clone)]

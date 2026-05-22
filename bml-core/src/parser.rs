@@ -807,7 +807,7 @@ impl<'a> Parser<'a> {
             TokenKind::If => self.parse_if_stmt().map(Stmt::If),
             TokenKind::Loop => self.parse_loop_stmt().map(Stmt::Loop),
             TokenKind::While => self.parse_while_stmt().map(Stmt::While),
-            TokenKind::For => self.parse_for_stmt().map(Stmt::For),
+            TokenKind::For => self.parse_for_stmt().map(|f| Stmt::For(Box::new(f))),
             TokenKind::Match => self.parse_match_stmt().map(Stmt::Match),
             TokenKind::AsmBody(text) => {
                 let span = self.peek_span();
@@ -1020,15 +1020,52 @@ impl<'a> Parser<'a> {
     fn parse_for_stmt(&mut self) -> Option<ForStmt> {
         self.advance(); // for
         let var = self.parse_ident()?;
+        self.expect(
+            &TokenKind::Colon,
+            "expected `:` (for loop variable requires a type annotation)",
+        )
+        .ok()?;
+        let ty = self.parse_type_expr()?;
         self.expect(&TokenKind::In, "expected `in`").ok()?;
-        let start = self.parse_expr()?;
-        self.expect(&TokenKind::DotDot, "expected `..`").ok()?;
-        let end = self.parse_expr()?;
+        let start = self.parse_expr_no_struct()?;
+        let direction = match self.peek_kind() {
+            TokenKind::Upto => {
+                self.advance();
+                ForDirection::Upto
+            }
+            TokenKind::Downto => {
+                self.advance();
+                ForDirection::Downto
+            }
+            TokenKind::DotDot => {
+                self.diags.error(
+                    "for loops use `upto` or `downto`; `..` is only valid in `bit[L..H]`",
+                    "E100",
+                    self.peek_span(),
+                );
+                self.advance();
+                ForDirection::Upto
+            }
+            _ => {
+                self.diags
+                    .error("expected `upto` or `downto`", "E100", self.peek_span());
+                return None;
+            }
+        };
+        let end = self.parse_expr_no_struct()?;
+        let step = if self.eat(&TokenKind::Step) {
+            Some(self.parse_expr_no_struct()?)
+        } else {
+            None
+        };
         let body = self.parse_block()?;
         Some(ForStmt {
             var,
+            ty,
             start,
+            direction,
             end,
+            step,
             body,
         })
     }

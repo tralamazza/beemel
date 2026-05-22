@@ -1,0 +1,8 @@
+// Non-literal upper bound: bound is a typed local that exactly
+// matches the loop variable's declared type.
+fn main() @context(thread) {
+    var size: u32 = 8;
+    for i: u32 in 0 upto size {
+        var x: u32 = i;
+    }
+}

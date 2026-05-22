@@ -236,27 +236,52 @@ fn check_block(
             }
 
             Stmt::For(for_stmt) => {
-                let start_ty = check_expr(
-                    &for_stmt.start,
-                    symbols,
-                    scope,
-                    fn_name,
-                    expected_ret,
-                    diags,
-                );
-                let end_ty =
-                    check_expr(&for_stmt.end, symbols, scope, fn_name, expected_ret, diags);
-                if start_ty != end_ty {
+                let decl_ty =
+                    types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
+                if !types::is_int(&decl_ty) {
                     diags.error(
-                        format!("for loop range types mismatch: `{start_ty:?}` and `{end_ty:?}`"),
+                        format!("for loop variable must be an integer type, got `{decl_ty:?}`"),
                         "E312",
-                        for_stmt.start.span(),
+                        for_stmt.var.1,
                     );
+                }
+                for (bound, label) in [(&for_stmt.start, "start"), (&for_stmt.end, "end")] {
+                    let bound_ty = check_expr(bound, symbols, scope, fn_name, expected_ret, diags);
+                    if !types::types_compatible(&decl_ty, &bound_ty)
+                        && !unsuffixed_literal_fits(bound, &decl_ty)
+                    {
+                        diags.error(
+                            format!(
+                                "for loop {label} bound type `{bound_ty:?}` does not match \
+                                 declared `{decl_ty:?}`"
+                            ),
+                            "E312",
+                            bound.span(),
+                        );
+                    }
+                }
+                if let Some(step) = &for_stmt.step {
+                    let step_ty = check_expr(step, symbols, scope, fn_name, expected_ret, diags);
+                    if !types::types_compatible(&decl_ty, &step_ty)
+                        && !unsuffixed_literal_fits(step, &decl_ty)
+                    {
+                        diags.error(
+                            format!(
+                                "for loop step type `{step_ty:?}` does not match declared \
+                                 `{decl_ty:?}`"
+                            ),
+                            "E312",
+                            step.span(),
+                        );
+                    }
+                    if let Expr::IntLiteral(0, _, _) = step {
+                        diags.error("for loop step must not be zero", "E312", step.span());
+                    }
                 }
                 scope.insert(
                     for_stmt.var.0.clone(),
                     VarInfo {
-                        ty: start_ty.clone(),
+                        ty: decl_ty,
                         mutable: false,
                         moved: false,
                     },

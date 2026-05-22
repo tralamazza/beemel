@@ -1,0 +1,13 @@
+// Regression: `continue` inside a for loop must advance the induction
+// variable. Before the fix, `continue` branched straight to the cond
+// block, re-checked the same `i`, and looped forever.
+fn main() @context(thread) {
+    var sum: u32 = 0;
+    for i: u32 in 0 upto 5 {
+        if i == 2 {
+            continue;
+        }
+        sum = sum + i;
+    }
+    // sum = 0 + 1 + 3 + 4 = 8
+}

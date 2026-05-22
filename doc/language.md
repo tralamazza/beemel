@@ -651,7 +651,7 @@ continue_stmt = "continue" ";"
 
 asm_stmt      = "asm" "{" "body" "}"
 
-for_stmt      = "for" ident "in" expr ".." expr block
+for_stmt      = "for" ident ":" type "in" expr ("upto" | "downto") expr ["step" expr] block
 
 array_init    = "[" [expr {"," expr}] "]"
 
@@ -674,6 +674,41 @@ enum_variant  = expr "@" ident
 sizeof_expr   = "sizeof" "(" type ")"
 
 struct_init   = ident "{" { ident ":" expr "," } "}"
+
+### For loops
+
+The loop variable's type is required. Bounds and the optional step must match
+the declared type; unsuffixed integer literals adopt the declared type if
+their value fits. Direction is purely syntactic via `upto` / `downto`, never
+inferred from the bound values (which lets the loop work with runtime
+bounds). Ranges are half-open in both directions: `0 upto 10` excludes 10;
+`10 downto 0` excludes 0. `step` defaults to 1 and must be a positive integer
+expression; a literal step of 0 is a compile error.
+
+```bml
+// runtime upper bound
+for i: u32 in 0 upto size {
+    buf[i] = 0;
+}
+
+// reverse with custom step: 10, 7, 4, 1
+for i: u32 in 10 downto 0 step 3 {
+    sum = sum + i;
+}
+
+// signed counter
+for i: i32 in -2 upto 3 {
+    n = n + i;
+}
+```
+
+With `step == 1` the loop is safe at type boundaries: the cond predicate
+fails one iteration before the variable would overflow. With larger steps
+the user is responsible for ensuring the last increment or decrement does
+not wrap the loop variable's type.
+
+`..` is no longer accepted inside a for-loop; it remains valid only in
+`bit[L..H]` peripheral field declarations.
 
 ### `assume` / `assert` semantics
 
@@ -739,7 +774,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E309  | Cannot assign to immutable variable (`val`) |
 | E310  | Type mismatch in arithmetic expression -- use `as` to cast |
 | E311  | Comparison between different types -- use `as` to cast |
-| E312  | For loop range types mismatch |
+| E312  | For loop variable must be integer; bound or step type does not match declared type; or literal step is zero |
 | E313  | Array element type mismatch |
 | E314  | Cannot write through const pointer (`*T`) -- use `*mut T` |
 | E315  | Dereference requires pointer type |

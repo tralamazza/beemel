@@ -106,6 +106,7 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
         ast::Stmt::For(for_stmt) => {
             expr_has_calls(&for_stmt.start)
                 || expr_has_calls(&for_stmt.end)
+                || for_stmt.step.as_ref().is_some_and(expr_has_calls)
                 || block_has_calls(&for_stmt.body)
         }
         ast::Stmt::Asm(_) | ast::Stmt::Break(_) | ast::Stmt::Continue(_) => false,
@@ -399,7 +400,8 @@ impl IrEmitter {
                 self.collect_and_emit_allocas_expr(&vd.init, symbols);
             }
             Stmt::For(for_stmt) => {
-                let bml_type = self.expr_type(&for_stmt.start, symbols);
+                let bml_type =
+                    crate::types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
                 let llvm_ty = llvm_type(&bml_type);
                 let alloca = self.alloca(&llvm_ty, &for_stmt.var.0);
                 self.locals.insert(
@@ -1040,10 +1042,17 @@ impl IrEmitter {
             }
 
             Stmt::For(for_stmt) => {
+                let bml_type =
+                    crate::types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
+                let ty = llvm_type(&bml_type);
+                let signed = matches!(bml_type, Type::I8 | Type::I16 | Type::I32 | Type::I64);
                 let start_reg = self.emit_expr(&for_stmt.start, symbols, fn_name);
                 let end_reg = self.emit_expr(&for_stmt.end, symbols, fn_name);
-                let bml_type = self.expr_type(&for_stmt.start, symbols);
-                let ty = llvm_type(&bml_type);
+                let step_reg = if let Some(step) = &for_stmt.step {
+                    self.emit_expr(step, symbols, fn_name)
+                } else {
+                    "1".to_string()
+                };
                 let alloca = self
                     .locals
                     .get(&for_stmt.var.0)
@@ -1054,6 +1063,7 @@ impl IrEmitter {
 
                 let cond_lbl = self.new_label("for_cond");
                 let body_lbl = self.new_label("for_body");
+                let step_lbl = self.new_label("for_step");
                 let end_lbl = self.new_label("for_end");
 
                 self.line(&format!("br label %{cond_lbl}"));
@@ -1062,21 +1072,16 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{cond_lbl}:"));
                 self.indent += 1;
-                let reg = self.new_reg();
-                self.line(&format!("{reg} = load {ty}, ptr {alloca}"));
+                let cond_reg = self.new_reg();
+                self.line(&format!("{cond_reg} = load {ty}, ptr {alloca}"));
                 let cmp_reg = self.new_reg();
-                let (cmp_op, cmp_ty) =
-                    if crate::types::is_int(&self.expr_type(&for_stmt.start, symbols))
-                        && matches!(
-                            self.expr_type(&for_stmt.start, symbols),
-                            Type::I8 | Type::I16 | Type::I32 | Type::I64
-                        )
-                    {
-                        ("icmp slt", ty.as_str())
-                    } else {
-                        ("icmp ult", ty.as_str())
-                    };
-                self.line(&format!("{cmp_reg} = {cmp_op} {cmp_ty} {reg}, {end_reg}"));
+                let cmp_op = match (for_stmt.direction, signed) {
+                    (ast::ForDirection::Upto, true) => "icmp slt",
+                    (ast::ForDirection::Upto, false) => "icmp ult",
+                    (ast::ForDirection::Downto, true) => "icmp sgt",
+                    (ast::ForDirection::Downto, false) => "icmp ugt",
+                };
+                self.line(&format!("{cmp_reg} = {cmp_op} {ty} {cond_reg}, {end_reg}"));
                 self.line(&format!(
                     "br i1 {cmp_reg}, label %{body_lbl}, label %{end_lbl}"
                 ));
@@ -1090,14 +1095,28 @@ impl IrEmitter {
                     symbols,
                     fn_name,
                     Some(end_lbl.as_str()),
-                    Some(cond_lbl.as_str()),
+                    Some(step_lbl.as_str()),
                 );
                 if !body_term {
-                    let inc_reg = self.new_reg();
-                    self.line(&format!("{inc_reg} = add {ty} {reg}, 1"));
-                    self.line(&format!("store {ty} {inc_reg}, ptr {alloca}"));
-                    self.line(&format!("br label %{cond_lbl}"));
+                    self.line(&format!("br label %{step_lbl}"));
                 }
+                self.line("");
+
+                self.indent -= 1;
+                self.line(&format!("{step_lbl}:"));
+                self.indent += 1;
+                let step_load = self.new_reg();
+                self.line(&format!("{step_load} = load {ty}, ptr {alloca}"));
+                let step_op = match for_stmt.direction {
+                    ast::ForDirection::Upto => "add",
+                    ast::ForDirection::Downto => "sub",
+                };
+                let next_reg = self.new_reg();
+                self.line(&format!(
+                    "{next_reg} = {step_op} {ty} {step_load}, {step_reg}"
+                ));
+                self.line(&format!("store {ty} {next_reg}, ptr {alloca}"));
+                self.line(&format!("br label %{cond_lbl}"));
                 self.line("");
 
                 self.indent -= 1;

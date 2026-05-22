@@ -711,6 +711,11 @@ fn find_ident_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Ident> {
             .then_some(f.var.clone())
             .or_else(|| find_ident_in_expr(&f.start, offset))
             .or_else(|| find_ident_in_expr(&f.end, offset))
+            .or_else(|| {
+                f.step
+                    .as_ref()
+                    .and_then(|s| find_ident_in_expr(s, offset))
+            })
             .or_else(|| find_ident_in_block(&f.body, offset)),
         ast::Stmt::Return(r) => r.value.as_ref().and_then(|e| find_ident_in_expr(e, offset)),
         ast::Stmt::Match(m) => find_ident_in_expr(&m.scrutinee, offset).or_else(|| {
@@ -1309,7 +1314,10 @@ fn walk_stmt_for_scope(stmt: &ast::Stmt, offset: usize, scope: &mut CompletionSc
         ast::Stmt::For(f)
             if span_contains(&f.var.1, offset)
                 || span_contains(&f.start.span(), offset)
-                || span_contains(&f.end.span(), offset) =>
+                || span_contains(&f.end.span(), offset)
+                || f.step
+                    .as_ref()
+                    .is_some_and(|s| span_contains(&s.span(), offset)) =>
         {
             true
         }
@@ -1553,6 +1561,11 @@ fn find_call_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Expr> {
         }
         ast::Stmt::For(f) => find_call_in_expr(&f.start, offset)
             .or_else(|| find_call_in_expr(&f.end, offset))
+            .or_else(|| {
+                f.step
+                    .as_ref()
+                    .and_then(|s| find_call_in_expr(s, offset))
+            })
             .or_else(|| find_call_in_block(&f.body, offset)),
         ast::Stmt::Match(m) => find_call_in_expr(&m.scrutinee, offset).or_else(|| {
             m.arms
@@ -1812,7 +1825,7 @@ fn main() {
         let labels = completion_labels(
             r"
 fn main() {
-    for i in 0u32 .. 2u32 {
+    for i: u32 in 0 upto 2 {
         $0
     }
 }

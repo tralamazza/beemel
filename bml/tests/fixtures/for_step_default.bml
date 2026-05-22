@@ -1,0 +1,7 @@
+// Omitted `step` defaults to 1.
+fn main() @context(thread) {
+    var n: u32 = 0;
+    for i: u32 in 0 upto 4 {
+        n = n + 1;
+    }
+}

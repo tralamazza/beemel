@@ -178,6 +178,25 @@ macro_rules! assert_ir_not_contains {
 assert_pass!(test_uart, "uart.bml");
 assert_pass!(test_floats, "floats.bml");
 assert_pass!(test_for_loop, "for_loop.bml");
+assert_pass!(test_for_continue_advances, "for_continue_advances.bml");
+assert_pass!(test_for_bounds_runtime, "for_bounds_runtime.bml");
+assert_pass!(test_for_empty_range, "for_empty_range.bml");
+assert_pass!(test_for_downto, "for_downto.bml");
+assert_pass!(test_for_downto_unsigned, "for_downto_unsigned.bml");
+assert_pass!(test_for_step_default, "for_step_default.bml");
+
+#[test]
+fn test_for_continue_branches_to_step() {
+    let ir = bml_ir("for_continue_advances.bml");
+    assert!(
+        ir.contains("for_step"),
+        "expected `for_step` block in emitted IR; got:\n{ir}"
+    );
+    assert!(
+        ir.matches("for_step").count() >= 2,
+        "expected both a `for_step:` label and a `br label %for_step` from `continue`; got:\n{ir}"
+    );
+}
 assert_pass!(test_extern_fn, "extern_fn.bml");
 assert_pass!(test_booleans, "booleans.bml");
 assert_pass!(test_break_continue, "break_continue.bml");
@@ -340,6 +359,18 @@ assert_error!(
     "for_range_mismatch_error.bml",
     "E312"
 );
+assert_error!(
+    test_for_bound_type_mismatch,
+    "for_bound_type_mismatch_error.bml",
+    "E312"
+);
+assert_error!(
+    test_for_literal_out_of_range,
+    "for_literal_out_of_range_error.bml",
+    "E312"
+);
+assert_error!(test_for_var_non_int, "for_var_non_int_error.bml", "E312");
+assert_error!(test_for_step_zero, "for_step_zero_error.bml", "E312");
 assert_error!(test_array_mismatch, "array_mismatch_error.bml", "E313");
 assert_error!(
     test_exclusive_unknown,
@@ -1229,6 +1260,7 @@ fn test_verify_isr_to_isr() {
 
 // Bounded for loop: IKOS proves `i ∈ [0, 4)` so no V100/V101 fires.
 assert_verify_pass!(test_verify_loop_safe, "verify_loop_safe.bml");
+assert_verify_pass!(test_for_verify_continue, "for_verify_continue.bml");
 
 // Out-of-bounds for loop: IKOS reports V101 buffer-overflow on the index
 // (warning, not error, because the violation is conditional on iteration).
