@@ -15,14 +15,16 @@ zero, and integer overflow.
 | dbz          | Division by zero                                       | Error    |
 | sio / uio    | Signed/unsigned integer overflow                       | Warning  |
 | shc          | Shift count exceeds bit width                          | Error    |
+| poa          | Pointer arithmetic overflow / out-of-bounds pointer    | Error    |
 | upa          | Unaligned pointer access                               | Error    |
 | dca          | Dead code (unreachable after assert/assume failure)    | Warning  |
 | dfa          | Dangling function pointer call                         | Error    |
 | fca          | Function called with wrong argument count or type      | Error    |
 | prover       | User-provided `assert` statements                      | Error    |
 
-The 12 checks above run by default. `uva` (uninitialized variable) is
-opt-in; see the note below for why.
+All of the above run by default; the full set is
+`boa,nullity,sio,uio,dbz,shc,poa,upa,dca,dfa,fca,prover`. `uva`
+(uninitialized variable) is opt-in; see the note below for why.
 
 `upa` requires a domain that tracks congruences. The default domain is
 `interval-congruence` for that reason; pairing `upa` with the plain
@@ -183,10 +185,11 @@ values. This is informational, not a bug in the program under analysis.
 | Domain                | Alias    | Speed    | Precision | Use Case                              |
 |-----------------------|----------|----------|-----------|---------------------------------------|
 | interval              | —        | Fastest  | Coarse    | Quick bounds checking, CI             |
+| interval-congruence   | —        | Fast     | Coarse + alignment | Default; congruence keeps `upa` from false-positiving on modular indexing |
 | apron-octagon         | octagon  | Moderate | Moderate  | Relationship tracking, fewer FPs      |
 | apron-interval        | apron    | Slow     | Fine      | Complex arithmetic, maximal precision |
 
-Default: `interval`.
+Default: `interval-congruence`.
 
 ## Usage
 

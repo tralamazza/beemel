@@ -99,12 +99,12 @@ it. A `peripheral` address is always accessed with volatile semantics.
 A `static` in `.bss` is never volatile. The compiler always knows and
 never forgets.
 
-## 8. Signed integer arithmetic: wrapping by default
+## 8. Integer arithmetic: wrapping by default
 
-bml's signed integer types (`i8`, `i16`, `i32`, `i64`) use wrapping
-(two's complement) semantics on overflow. The generated LLVM IR
-deliberately omits `nsw` (no signed wrap) and `nuw` (no unsigned
-wrap) flags on `add`, `sub`, and `mul` instructions.
+bml's integer types -- signed (`i8`..`i64`) and unsigned (`u8`..`u64`)
+alike -- use wrapping (two's complement) semantics on overflow. The
+generated LLVM IR deliberately omits `nsw` (no signed wrap) and `nuw`
+(no unsigned wrap) flags on `add`, `sub`, and `mul` instructions.
 
 Rationale:
 - Cortex-M hardware wraps naturally on overflow -- the behavior has

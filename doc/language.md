@@ -244,8 +244,11 @@ if p == q { ... }     // both must be same pointer type
 
 `p + n` where `p: *T` or `*mut T` and `n` is any integer type produces
 a pointer offset by `n * sizeof(T)` elements (LLVM `getelementptr`).
-This is the **only mixed-type binary operation** -- pointer+integer is
-fundamental to array iteration.
+Pointer+integer is the only arithmetic, comparison, or assignment that
+mixes a pointer with another type. (Bitwise and shift operators allow
+their two integer operands to be different integer types -- the shift
+count, for instance -- but arithmetic `+ - * / %` and comparisons require
+both operands to share a type.)
 
 Subtraction works the same way:
 ```bml
@@ -387,7 +390,6 @@ Point → { i32, i32 }
 - Field read: `extractvalue { i32, i32 } %struct_val, 0`
 - Field write: `getelementptr { i32, i32 }, ptr %alloca, i32 0, i32 0` + `store`
 - Struct init: allocate temp, GEP + store each field, load whole struct
-```
 
 ## 7. Enum types
 
@@ -527,7 +529,7 @@ peripheral GPIOA at 0x40020000 {
   read-write. The same `E330` / `E331` errors apply to whole-register reads and writes.
 - `&PERIPH` yields `*PeriphType` for use in pointer contexts
 - `&periph.reg` yields a pointer to the register (via `inttoptr`)
-- CMSIS-SVD XML import available via the standalone [`bml-svd`](../../bml-svd/) tool
+- CMSIS-SVD XML import available via the standalone [`bml-svd`](https://github.com/tralamazza/bml-svd) tool
 - STM `cmsis-device-fX` device repos can be imported into `.target` files with
   [`bml-cmsis`](./stm32-cmsis.md)
 
@@ -536,6 +538,7 @@ peripheral GPIOA at 0x40020000 {
 ```
 # stm32f401.target
 arch = armv7em
+cpu = cortex-m4
 priority_bits = 4
 has_fpu = true
 has_bitband = true
@@ -547,8 +550,11 @@ ram_size = 64K
 vector_table_offset = 0x08000000
 ```
 
-- Keys: `arch`, `priority_bits`, `has_fpu`, `has_bitband`, `has_mpu`,
+- Keys: `arch`, `cpu`, `priority_bits`, `has_fpu`, `has_bitband`, `has_mpu`,
   `flash_base`, `flash_size`, `ram_base`, `ram_size`, `vector_table_offset`
+- `cpu` (optional, e.g. `cortex-m3`, `cortex-m4`, `cortex-m7`) selects the
+  `llc` CPU and the default FPU; `arch` (`armv6m`/`armv7m`/`armv7em`) selects
+  the instruction set
 - `has_bitband = true` enables bit-band alias access for single-bit fields
   on Cortex-M3/M4 (peripheral region `0x4000_0000`–`0x400F_FFFF`,
   SRAM region `0x2000_0000`–`0x200F_FFFF`)
@@ -604,7 +610,7 @@ struct_def    = "struct" ident "{" { ident ":" type "," } "}"
 enum_def      = "enum" ident ":" type "{" { ident ["=" int] "," } "}"
 
 stmt          = var_decl | assign | expr_stmt | if_stmt | loop_stmt
-              | while_stmt | return_stmt | break_stmt | continue_stmt
+              | while_stmt | for_stmt | return_stmt | break_stmt | continue_stmt
               | block | match_stmt | asm_stmt | assume_stmt | assert_stmt
 
 assume_stmt   = "assume" "(" expr ")" ";"
@@ -691,8 +697,9 @@ for i: u32 in 0 upto size {
     buf[i] = 0;
 }
 
-// reverse with custom step: 10, 7, 4, 1
-for i: u32 in 10 downto 0 step 3 {
+// reverse with custom step: 10, 8, 6, 4, 2 (step must land on the
+// excluded endpoint; a step that skips past 0 would wrap the unsigned counter)
+for i: u32 in 10 downto 0 step 2 {
     sum = sum + i;
 }
 
@@ -778,6 +785,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E313  | Array element type mismatch |
 | E314  | Cannot write through const pointer (`*T`) -- use `*mut T` |
 | E315  | Dereference requires pointer type |
+| E316  | Logical operator (`&&` / `\|\|`) requires `b1` operands |
+| E317  | Bitwise/shift operator requires integer operands |
 | E318  | Struct field not found |
 | E319  | Duplicate name (struct field, enum variant, or match arm) |
 | E320  | Missing field in struct initializer |
