@@ -224,28 +224,8 @@ assert_exec!(exec_control_flow, "control_flow.bml");
 assert_exec!(exec_const_eval, "const_eval.bml");
 
 // ─── known compiler bugs surfaced by the documentation-driven fixtures ────────
-// These are #[ignore]d so the suite stays green; run `-- --ignored` to confirm
-// they still reproduce. Each has a minimal fixture documenting the symptom.
-known_bug!(
-    bug_neg_narrow,
-    "neg_narrow_known_bug.bml",
-    "unary `-` lowers to `sub i32 0, ...` ignoring operand width (ir.rs:1410)"
-);
-known_bug!(
-    bug_cast_enum_widen,
-    "cast_enum_widen_known_bug.bml",
-    "enum-to-wider-int cast uses bitcast instead of zext (ir.rs:1854)"
-);
-known_bug!(
-    bug_ptr_diff_type,
-    "ptr_diff_known_bug.bml",
-    "pointer difference is mistyped as a pointer, so `(q-p) as u32` emits ptrtoint"
-);
-known_bug!(
-    bug_for_narrow_induction,
-    "for_narrow_induction_known_bug.bml",
-    "for-loop with a narrow induction var stores an i32 step into the i8 slot"
-);
+// #[ignore]d so the suite stays green; run `-- --ignored` to confirm they still
+// reproduce. Each has a minimal fixture documenting the symptom.
 known_bug!(
     bug_array_size_const,
     "array_size_const_known_bug.bml",

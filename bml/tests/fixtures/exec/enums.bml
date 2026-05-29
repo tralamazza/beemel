@@ -20,6 +20,7 @@ fn main() @context(thread) {
     expect_u32(Status@B as u32, 11);
     expect_u32(Status@C as u32, 20);
     expect_u32(Status@D as u32, 21);
+    expect_u32(Small@Z as u32, 2); // u8-backed enum widened to u32
 
     // sizeof reflects the underlying integer type
     expect_u32(sizeof(Status), 4);

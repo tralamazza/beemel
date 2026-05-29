@@ -1046,10 +1046,19 @@ impl IrEmitter {
                     crate::types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
                 let ty = llvm_type(&bml_type);
                 let signed = matches!(bml_type, Type::I8 | Type::I16 | Type::I32 | Type::I64);
+                // Bounds and step may be integer literals (emitted as i32) or
+                // wider expressions; coerce each to the loop variable's width so
+                // the store/compare/step all agree on type.
+                let start_ty = self.expr_type(&for_stmt.start, symbols);
                 let start_reg = self.emit_expr(&for_stmt.start, symbols, fn_name);
+                let start_reg = self.coerce_int(start_reg, &start_ty, &bml_type);
+                let end_ty = self.expr_type(&for_stmt.end, symbols);
                 let end_reg = self.emit_expr(&for_stmt.end, symbols, fn_name);
+                let end_reg = self.coerce_int(end_reg, &end_ty, &bml_type);
                 let step_reg = if let Some(step) = &for_stmt.step {
-                    self.emit_expr(step, symbols, fn_name)
+                    let step_ty = self.expr_type(step, symbols);
+                    let reg = self.emit_expr(step, symbols, fn_name);
+                    self.coerce_int(reg, &step_ty, &bml_type)
                 } else {
                     "1".to_string()
                 };
@@ -1404,16 +1413,19 @@ impl IrEmitter {
                     }
                     _ => {
                         let inner_reg = self.emit_expr(inner, symbols, fn_name);
+                        // Negation and bitwise-not must operate at the operand's
+                        // own width; hardcoding i32 produces invalid IR for i8/i16.
+                        let inner_llvm = llvm_type(&self.expr_type(inner, symbols));
                         let reg = self.new_reg();
                         match op {
                             UnaryOp::Neg => {
-                                self.line(&format!("{reg} = sub i32 0, {inner_reg}"));
+                                self.line(&format!("{reg} = sub {inner_llvm} 0, {inner_reg}"));
                             }
                             UnaryOp::Not => {
                                 self.line(&format!("{reg} = xor i1 {inner_reg}, true"));
                             }
                             UnaryOp::BitNot => {
-                                self.line(&format!("{reg} = xor i32 {inner_reg}, -1"));
+                                self.line(&format!("{reg} = xor {inner_llvm} {inner_reg}, -1"));
                             }
                             _ => {}
                         }
@@ -1851,19 +1863,25 @@ impl IrEmitter {
                 let llvm_target = llvm_type(&target_ty);
                 let reg = self.new_reg();
                 let inner_llvm = llvm_type(&inner_ty);
-                if crate::types::is_int(&inner_ty) && crate::types::is_int(&target_ty) {
+                // Enums carry an underlying integer type; cast them as that
+                // integer so widening uses zext/sext rather than an invalid
+                // same-or-different-width bitcast.
+                let inner_num = scalar_repr(&inner_ty);
+                let target_num = scalar_repr(&target_ty);
+                if crate::types::is_int(&inner_num) && crate::types::is_int(&target_num) {
                     let inner_bits = int_bit_width(&inner_llvm);
                     let target_bits = int_bit_width(&llvm_target);
                     match target_bits.cmp(&inner_bits) {
                         std::cmp::Ordering::Greater => {
                             // Widening -- signed vs unsigned
-                            let ext_op =
-                                if matches!(inner_ty, Type::I8 | Type::I16 | Type::I32 | Type::I64)
-                                {
-                                    "sext"
-                                } else {
-                                    "zext"
-                                };
+                            let ext_op = if matches!(
+                                inner_num,
+                                Type::I8 | Type::I16 | Type::I32 | Type::I64
+                            ) {
+                                "sext"
+                            } else {
+                                "zext"
+                            };
                             self.line(&format!(
                                 "{reg} = {ext_op} {inner_llvm} {inner_reg} to {llvm_target}"
                             ));
@@ -2776,6 +2794,34 @@ impl IrEmitter {
         ));
     }
 
+    /// Widen or narrow an integer register from `from` to `to`, emitting the
+    /// appropriate sext/zext/trunc. No-op when the widths already match or
+    /// either side is not an integer.
+    fn coerce_int(&mut self, reg: String, from: &Type, to: &Type) -> String {
+        if !(crate::types::is_int(from) && crate::types::is_int(to)) {
+            return reg;
+        }
+        let from_llvm = llvm_type(from);
+        let to_llvm = llvm_type(to);
+        if from_llvm == to_llvm {
+            return reg;
+        }
+        let from_bits = int_bit_width(&from_llvm);
+        let to_bits = int_bit_width(&to_llvm);
+        let out = self.new_reg();
+        if to_bits > from_bits {
+            let ext_op = if matches!(from, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                "sext"
+            } else {
+                "zext"
+            };
+            self.line(&format!("{out} = {ext_op} {from_llvm} {reg} to {to_llvm}"));
+        } else {
+            self.line(&format!("{out} = trunc {from_llvm} {reg} to {to_llvm}"));
+        }
+        out
+    }
+
     fn expr_type(&self, expr: &Expr, symbols: &SymbolTable) -> Type {
         match expr {
             Expr::IntLiteral(_, suffix, _) => match suffix {
@@ -2823,7 +2869,7 @@ impl IrEmitter {
                 }
                 Type::U32 // default for locals and consts
             }
-            Expr::Binary(left, op, _) => {
+            Expr::Binary(left, op, right) => {
                 use crate::ast::BinaryOp;
                 match op {
                     BinaryOp::Eq
@@ -2834,6 +2880,19 @@ impl IrEmitter {
                     | BinaryOp::GtEq
                     | BinaryOp::And
                     | BinaryOp::Or => Type::B1,
+                    // pointer - pointer yields an integer element count, not a
+                    // pointer (matches the checker); pointer +/- int stays ptr.
+                    BinaryOp::Add | BinaryOp::Sub => {
+                        let left_ty = self.expr_type(left, symbols);
+                        if *op == BinaryOp::Sub
+                            && crate::types::is_ptr(&left_ty)
+                            && crate::types::is_ptr(&self.expr_type(right, symbols))
+                        {
+                            Type::I32
+                        } else {
+                            left_ty
+                        }
+                    }
                     _ => self.expr_type(left, symbols),
                 }
             }
@@ -3029,6 +3088,15 @@ impl IrEmitter {
             return r;
         }
         cur
+    }
+}
+
+/// Reduce a type to the scalar it is represented by for arithmetic/casts:
+/// an enum becomes its underlying integer type; everything else is unchanged.
+fn scalar_repr(ty: &Type) -> Type {
+    match ty {
+        Type::Enum(_, inner, _) => (**inner).clone(),
+        other => other.clone(),
     }
 }
 

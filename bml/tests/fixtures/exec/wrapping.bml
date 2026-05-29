@@ -17,8 +17,9 @@ fn main() @context(thread) {
     var zero: u32 = 0;
     expect_u32(zero - 1, 4294967295);
 
-    // i8 signed add wraps: 100 + 50 = 150 -> -106; the bit pattern read back as
-    // u8 is 150 (= 256 - 106), which is what two's-complement wrapping produces.
+    // i8 signed add wraps: 100 + 50 = 150 -> -106 (150 - 256)
+    expect_b1((100i8 + 50i8) == -106i8, true);
+    // and the same value's bit pattern read back as u8 is 150 (= 256 - 106)
     expect_u32(((100i8 + 50i8) as u8) as u32, 150);
 
     done();

@@ -1,7 +1,6 @@
 // Pointer arithmetic and dereference (language.md §5).
-// "p + n where n: int -> element-scaled offset"; indexing p[i] is element-scaled
-// access. (Pointer-difference `p - q` lives in a known-bug fixture: its result
-// is currently mistyped as a pointer.)
+// "p + n where n: int -> element-scaled offset"; "p - q (both *T) -> element
+//  count difference". Indexing p[i] is element-scaled access.
 import harness.semihost;
 
 fn main() @context(thread) {
@@ -18,6 +17,10 @@ fn main() @context(thread) {
 
     // indexing is element-scaled
     expect_u32(p[3], 40);
+
+    // pointer difference counts elements, not bytes
+    var q: *mut u32 = &mut arr[3];
+    expect_u32((q - p) as u32, 3);
 
     // deref round-trip
     var x: u32 = 7;
