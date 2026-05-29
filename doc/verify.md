@@ -1,9 +1,10 @@
 # Verification with IKOS
 
-`bml verify` runs [IKOS](https://github.com/NASA-SW-VnV/ikos) (NASA's
-LLVM-based abstract-interpretation static analyzer) on a BML program to detect
-runtime errors such as buffer overflows, null pointer dereferences, division by
-zero, and integer overflow.
+`bml verify` runs [IKOS](https://github.com/tralamazza/ikos/tree/feat/llvm18)
+(NASA's LLVM-based abstract-interpretation static analyzer; this is the LLVM 18
+port `bml verify` targets) on a BML program to detect runtime errors such as
+buffer overflows, null pointer dereferences, division by zero, and integer
+overflow.
 
 ## What Gets Checked
 

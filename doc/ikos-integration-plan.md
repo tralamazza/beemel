@@ -1,8 +1,8 @@
 # IKOS Integration Plan
 
-Plan for integrating [IKOS](https://github.com/NASA-SW-VnV/ikos) (NASA's
-LLVM-based abstract-interpretation static analyzer) into the BML compiler as an
-opt-in `bml verify` subcommand.
+Plan for integrating [IKOS](https://github.com/tralamazza/ikos/tree/feat/llvm18)
+(NASA's LLVM-based abstract-interpretation static analyzer; `bml verify` targets
+the LLVM 18 port) into the BML compiler as an opt-in `bml verify` subcommand.
 
 Scope: parts (a) and (b) from the design discussion.
 
@@ -26,9 +26,10 @@ Out of scope for this plan:
 
 Before any BML code changes:
 
-1. Pin an IKOS version. Document install: `apt install ikos` on Ubuntu, or
-   build from `NASA-SW-VnV/ikos` against the same LLVM toolchain BML's
-   `opt`/`llc` use. LLVM version compatibility is tight.
+1. Pin an IKOS version. Build the LLVM 18 port from
+   `tralamazza/ikos` (branch `feat/llvm18`) against the same LLVM toolchain
+   BML's `opt`/`llc` use; see [ikos-setup.md](./ikos-setup.md). LLVM version
+   compatibility is tight.
 2. Verify three things by running IKOS by hand on a toy `.ll` produced by
    `bml build`:
    - Whether `ikos` accepts `.ll` directly. The LLVM 18 fork does.
