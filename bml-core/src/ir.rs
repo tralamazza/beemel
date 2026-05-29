@@ -1443,9 +1443,13 @@ impl IrEmitter {
                         let inner_reg = self.emit_expr(inner, symbols, fn_name);
                         // Negation and bitwise-not must operate at the operand's
                         // own width; hardcoding i32 produces invalid IR for i8/i16.
-                        let inner_llvm = llvm_type(&self.expr_type(inner, symbols));
+                        let inner_ty = self.expr_type(inner, symbols);
+                        let inner_llvm = llvm_type(&inner_ty);
                         let reg = self.new_reg();
                         match op {
+                            UnaryOp::Neg if crate::types::is_float(&inner_ty) => {
+                                self.line(&format!("{reg} = fneg {inner_llvm} {inner_reg}"));
+                            }
                             UnaryOp::Neg => {
                                 self.line(&format!("{reg} = sub {inner_llvm} 0, {inner_reg}"));
                             }
@@ -1536,10 +1540,11 @@ impl IrEmitter {
                 let lty = llvm_type(&left_ty);
                 let reg = self.new_reg();
 
+                let is_float = crate::types::is_float(&left_ty);
                 let (llvm_op, result_ty) = match op {
-                    BinaryOp::Add => ("add", lty.as_str()),
-                    BinaryOp::Sub => ("sub", lty.as_str()),
-                    BinaryOp::Mul => ("mul", lty.as_str()),
+                    BinaryOp::Add => (if is_float { "fadd" } else { "add" }, lty.as_str()),
+                    BinaryOp::Sub => (if is_float { "fsub" } else { "sub" }, lty.as_str()),
+                    BinaryOp::Mul => (if is_float { "fmul" } else { "mul" }, lty.as_str()),
                     BinaryOp::Div => {
                         if crate::types::is_int(&left_ty) {
                             if matches!(left_ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
@@ -1949,13 +1954,20 @@ impl IrEmitter {
                         std::cmp::Ordering::Equal => return inner_reg,
                     }
                 } else if matches!(inner_num, Type::B1 | Type::B8)
-                    && crate::types::is_int(&target_num)
+                    && (crate::types::is_int(&target_num)
+                        || matches!(target_num, Type::B1 | Type::B8))
                 {
-                    // bool → int: a bool is 0 or 1, so always zero-extend the
-                    // i1/i8 value to the target width (never sext, never an
-                    // invalid same-family bitcast).
-                    let inner_bits = if matches!(inner_num, Type::B1) { 1 } else { 8 };
-                    let target_bits = int_bit_width(&llvm_target);
+                    // bool → int or bool → bool: a bool is 0 or 1, so adjust the
+                    // width by zext/trunc (never sext, never an invalid
+                    // same-family bitcast). `int_bit_width` doesn't know the i1
+                    // width, so size bools explicitly.
+                    let bits = |t: &Type, llvm: &str| match t {
+                        Type::B1 => 1u32,
+                        Type::B8 => 8,
+                        _ => int_bit_width(llvm),
+                    };
+                    let inner_bits = bits(&inner_num, &inner_llvm);
+                    let target_bits = bits(&target_num, &llvm_target);
                     match target_bits.cmp(&inner_bits) {
                         std::cmp::Ordering::Greater => self.line(&format!(
                             "{reg} = zext {inner_llvm} {inner_reg} to {llvm_target}"
@@ -1968,15 +1980,42 @@ impl IrEmitter {
                 } else if crate::types::is_float(&inner_ty) && crate::types::is_float(&target_ty) {
                     let inner_bits = float_bit_width(&inner_llvm);
                     let target_bits = float_bit_width(&llvm_target);
-                    if target_bits > inner_bits {
-                        self.line(&format!(
+                    match target_bits.cmp(&inner_bits) {
+                        // same float type is a no-op (a same-width fpext/fptrunc
+                        // would be invalid IR)
+                        std::cmp::Ordering::Equal => return inner_reg,
+                        std::cmp::Ordering::Greater => self.line(&format!(
                             "{reg} = fpext {inner_llvm} {inner_reg} to {llvm_target}"
-                        ));
-                    } else {
-                        self.line(&format!(
+                        )),
+                        std::cmp::Ordering::Less => self.line(&format!(
                             "{reg} = fptrunc {inner_llvm} {inner_reg} to {llvm_target}"
-                        ));
+                        )),
                     }
+                } else if (crate::types::is_int(&inner_num)
+                    || matches!(inner_num, Type::B1 | Type::B8))
+                    && crate::types::is_float(&target_ty)
+                {
+                    // int/bool → float: signed sources use sitofp, unsigned ints
+                    // and bools (0/1) use uitofp. (A plain `bitcast` here is
+                    // invalid -- the families differ.)
+                    let op = if matches!(inner_num, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                        "sitofp"
+                    } else {
+                        "uitofp"
+                    };
+                    self.line(&format!(
+                        "{reg} = {op} {inner_llvm} {inner_reg} to {llvm_target}"
+                    ));
+                } else if crate::types::is_float(&inner_ty) && crate::types::is_int(&target_num) {
+                    // float → int: signed targets use fptosi, unsigned fptoui.
+                    let op = if matches!(target_num, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                        "fptosi"
+                    } else {
+                        "fptoui"
+                    };
+                    self.line(&format!(
+                        "{reg} = {op} {inner_llvm} {inner_reg} to {llvm_target}"
+                    ));
                 } else if crate::types::is_ptr(&inner_ty) && crate::types::is_int(&target_ty) {
                     // pointer → int
                     self.line(&format!(
