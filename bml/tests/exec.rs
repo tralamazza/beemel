@@ -206,6 +206,31 @@ macro_rules! known_bug {
     };
 }
 
+/// xorshift64* — small deterministic PRNG so failures reproduce from a seed.
+/// Shared by the generative tests (`property`, `build_validity`).
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Write a generated fixture into the exec fixtures dir (so its imports, if any,
+/// resolve) and return its path.
+fn write_generated(name: &str, source: &str) -> PathBuf {
+    let path = fixtures_dir().join(name);
+    std::fs::write(&path, source).expect("write generated fixture");
+    path
+}
+
 // ─── smoke ──────────────────────────────────────────────────────────────────
 assert_exec!(exec_smoke, "smoke.bml");
 
@@ -283,8 +308,7 @@ assert_exec!(exec_bool_to_int, "bool_to_int.bml");
     clippy::format_push_string
 )]
 mod property {
-    use super::{OPT_LEVELS, bml_run, fixtures_dir, tools_available};
-    use std::path::PathBuf;
+    use super::{OPT_LEVELS, Rng, bml_run, tools_available, write_generated};
 
     #[derive(Clone, Copy, PartialEq)]
     enum Ty {
@@ -309,22 +333,6 @@ mod property {
     enum Expr {
         Lit(i64),
         Bin(Box<Expr>, Op, Box<Expr>),
-    }
-
-    /// xorshift64* — small deterministic PRNG so failures reproduce from a seed.
-    struct Rng(u64);
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x >> 12;
-            x ^= x << 25;
-            x ^= x >> 27;
-            self.0 = x;
-            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-        }
-        fn below(&mut self, n: u64) -> u64 {
-            self.next() % n
-        }
     }
 
     const U32_EDGES: &[i64] = &[
@@ -485,12 +493,6 @@ mod property {
         }
     }
 
-    fn write_generated(name: &str, source: &str) -> PathBuf {
-        let path = fixtures_dir().join(name);
-        std::fs::write(&path, source).expect("write generated fixture");
-        path
-    }
-
     #[test]
     fn exec_property_arith() {
         if !tools_available() {
@@ -550,5 +552,393 @@ mod property {
 
     fn count(haystack: &str, needle: &str) -> usize {
         haystack.matches(needle).count()
+    }
+}
+
+// ─── Tier-2 build-validity fuzzer ─────────────────────────────────────────────
+//
+// Generate random *well-typed* scalar expressions across every scalar type
+// (and `as` casts between them), compile through the full `bml build` pipeline
+// at -O0 and -O2, and link. The oracle is the LLVM/ld toolchain itself: a
+// well-typed program that fails to build or link means we emitted IR the
+// toolchain rejects -- i.e. a back-end bug -- not a wrong value (that needs an
+// execution oracle, which this layer deliberately does not use). This is how
+// the bool-cast and int<->float-cast bugs were found.
+
+/// Locate the soft-float libgcc for the cortex-m3 (`thumb/v7-m/nofp`) multilib
+/// via `arm-none-eabi-gcc`. Float ops on this FPU-less target lower to
+/// `__aeabi_*` runtime calls that live in libgcc, so the link step needs it.
+fn libgcc_path() -> Option<String> {
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let out = Command::new("arm-none-eabi-gcc")
+            .args(["-mcpu=cortex-m3", "-mthumb", "-print-libgcc-file-name"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!p.is_empty() && std::path::Path::new(&p).exists()).then_some(p)
+    })
+    .clone()
+}
+
+/// Tools for the build+link validity oracle. `llc`/`opt` are discovered by
+/// `bml build` itself, so we only gate on the linker and the soft-float libgcc.
+fn build_link_tools_available() -> bool {
+    runnable(&ld_bin()) && libgcc_path().is_some()
+}
+
+/// Build `fixture` with `bml build` at `opt`, then link the object (with the
+/// soft-float libgcc) to a throwaway ELF. Returns (success, captured log).
+/// Unlike `bml_run` this never panics on failure -- the caller collects it.
+fn bml_build_link(fixture: &str, opt: &str) -> (bool, String) {
+    let dir = fixtures_dir();
+    let src = dir.join(fixture);
+    let target = dir.join("qemu.target");
+
+    let build = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg(format!("--opt={opt}"))
+        .arg("--save-temps")
+        .arg("--target")
+        .arg(&target)
+        .arg(&src)
+        .output()
+        .expect("failed to run bml build");
+
+    let obj = src.with_extension("o");
+    let lds = src.with_extension("ld");
+    let mut log = format!(
+        "[build -O{opt}]\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr),
+    );
+
+    let mut ok = build.status.success() && obj.exists();
+    if ok {
+        let stem = src.file_stem().unwrap().to_string_lossy().to_string();
+        let pid = std::process::id();
+        let elf = std::env::temp_dir().join(format!("bml-build-{stem}-O{opt}-{pid}.elf"));
+        let libgcc = libgcc_path().expect("libgcc present (gated)");
+        let link = Command::new(ld_bin())
+            .arg("-T")
+            .arg(&lds)
+            .arg(&obj)
+            .arg(&libgcc)
+            .arg("-o")
+            .arg(&elf)
+            .output()
+            .expect("failed to run linker");
+        // The linker emits benign warnings (RWX segment, GNU-stack note) to
+        // stderr but still succeeds; only a non-zero status is a real failure.
+        if !link.status.success() {
+            use std::fmt::Write;
+            ok = false;
+            let _ = write!(
+                log,
+                "[link -O{opt}]\n{}",
+                String::from_utf8_lossy(&link.stderr)
+            );
+        }
+        let _ = std::fs::remove_file(&elf);
+    }
+
+    let _ = std::fs::remove_file(src.with_extension("ll"));
+    let _ = std::fs::remove_file(src.with_extension("opt.ll"));
+    let _ = std::fs::remove_file(&obj);
+    let _ = std::fs::remove_file(&lds);
+
+    (ok, log)
+}
+
+// Short mathematical names and deliberate width casts in the generator trip the
+// usual pedantic lints; they are noise here.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names,
+    clippy::doc_markdown,
+    clippy::format_push_string
+)]
+mod build_validity {
+    use super::{OPT_LEVELS, Rng, bml_build_link, build_link_tools_available, write_generated};
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Sty {
+        I8,
+        I16,
+        I32,
+        I64,
+        U8,
+        U16,
+        U32,
+        U64,
+        F32,
+        F64,
+        B1,
+        B8,
+    }
+    use Sty::{B1, B8, F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+
+    // f16 is "ARM VFP only" (language.md §1) and the cortex-m3 has no FPU, so it
+    // is intentionally excluded to avoid ABI false-positives unrelated to the
+    // lowering paths under test.
+    const NUMERIC: &[Sty] = &[I8, I16, I32, I64, U8, U16, U32, U64, F32, F64];
+    const ALL: &[Sty] = &[I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, B1, B8];
+    const BINDABLE: &[Sty] = ALL;
+
+    fn name(t: Sty) -> &'static str {
+        match t {
+            I8 => "i8",
+            I16 => "i16",
+            I32 => "i32",
+            I64 => "i64",
+            U8 => "u8",
+            U16 => "u16",
+            U32 => "u32",
+            U64 => "u64",
+            F32 => "f32",
+            F64 => "f64",
+            B1 => "b1",
+            B8 => "b8",
+        }
+    }
+
+    fn is_int(t: Sty) -> bool {
+        matches!(t, I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64)
+    }
+    fn is_signed(t: Sty) -> bool {
+        matches!(t, I8 | I16 | I32 | I64)
+    }
+    fn is_float(t: Sty) -> bool {
+        matches!(t, F32 | F64)
+    }
+    fn is_bool(t: Sty) -> bool {
+        matches!(t, B1 | B8)
+    }
+    fn int_width(t: Sty) -> u32 {
+        match t {
+            I8 | U8 => 8,
+            I16 | U16 => 16,
+            I64 | U64 => 64,
+            _ => 32,
+        }
+    }
+
+    fn pick(rng: &mut Rng, pool: &[Sty]) -> Sty {
+        pool[rng.below(pool.len() as u64) as usize]
+    }
+
+    /// In-range integer literal. Signed values skip the type minimum (which has
+    /// no writable negative literal); negatives are parenthesised.
+    fn int_lit(rng: &mut Rng, t: Sty) -> String {
+        let w = int_width(t);
+        let suffix = name(t);
+        if is_signed(t) {
+            let max: i128 = (1i128 << (w - 1)) - 1;
+            let span = (2 * max + 1) as u128;
+            let v = (u128::from(rng.next()) % span) as i128 - max;
+            if v < 0 {
+                format!("({v}{suffix})")
+            } else {
+                format!("{v}{suffix}")
+            }
+        } else {
+            let v: u128 = if w >= 64 {
+                u128::from(rng.next())
+            } else {
+                u128::from(rng.next()) % (1u128 << w)
+            };
+            format!("{v}{suffix}")
+        }
+    }
+
+    fn float_lit(rng: &mut Rng, t: Sty) -> String {
+        const POOL: &[&str] = &["0.0", "1.0", "0.5", "2.5", "3.25", "10.0", "100.0", "7.75"];
+        let base = POOL[rng.below(POOL.len() as u64) as usize];
+        let suffix = if matches!(t, F32) { "f" } else { "d" };
+        if rng.below(2) == 1 {
+            format!("(-{base}{suffix})")
+        } else {
+            format!("{base}{suffix}")
+        }
+    }
+
+    /// A nonzero divisor with small magnitude in range; signed divisors avoid -1
+    /// (INT_MIN / -1 overflows).
+    fn int_divisor(rng: &mut Rng, t: Sty) -> String {
+        let w = int_width(t);
+        let suffix = name(t);
+        let cap = if is_signed(t) {
+            if w >= 64 { 1000 } else { (1u64 << (w - 1)) - 1 }
+        } else if w >= 64 {
+            1000
+        } else {
+            (1u64 << w) - 1
+        };
+        let mag = 1 + rng.below(cap.clamp(1, 1000));
+        if is_signed(t) && rng.below(2) == 1 {
+            let m = if mag == 1 { 2 } else { mag };
+            format!("(-{m}{suffix})")
+        } else {
+            format!("{mag}{suffix}")
+        }
+    }
+
+    /// Shift count in `0..width`, typed as the operand type.
+    fn shift_amount(rng: &mut Rng, t: Sty) -> String {
+        format!("{}{}", rng.below(u64::from(int_width(t))), name(t))
+    }
+
+    /// A non-constant leaf derived from the runtime `seed`, so the optimizer
+    /// cannot fold the whole expression away (keeping -O2 coverage live).
+    fn num_leaf(rng: &mut Rng, t: Sty) -> String {
+        if rng.below(100) < 40 {
+            if matches!(t, U32) {
+                "seed".into()
+            } else {
+                format!("(seed as {})", name(t))
+            }
+        } else if is_float(t) {
+            float_lit(rng, t)
+        } else {
+            int_lit(rng, t)
+        }
+    }
+
+    fn gen_int(rng: &mut Rng, t: Sty, depth: u32) -> String {
+        const OPS: &[&str] = &["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
+        let l = gen_expr(rng, t, depth - 1);
+        let op = OPS[rng.below(OPS.len() as u64) as usize];
+        let r = match op {
+            "/" | "%" => int_divisor(rng, t),
+            "<<" | ">>" => shift_amount(rng, t),
+            _ => gen_expr(rng, t, depth - 1),
+        };
+        format!("({l} {op} {r})")
+    }
+
+    fn gen_float(rng: &mut Rng, t: Sty, depth: u32) -> String {
+        const OPS: &[&str] = &["+", "-", "*", "/"];
+        let l = gen_expr(rng, t, depth - 1);
+        let op = OPS[rng.below(OPS.len() as u64) as usize];
+        let r = gen_expr(rng, t, depth - 1);
+        format!("({l} {op} {r})")
+    }
+
+    /// A b1 expression. Never produced via a cast (int/float -> bool casts are a
+    /// separate, untested lowering path); only comparisons and bool ops.
+    fn gen_bool(rng: &mut Rng, depth: u32) -> String {
+        if depth == 0 || rng.below(100) < 25 {
+            return if rng.below(2) == 1 { "true" } else { "false" }.into();
+        }
+        match rng.below(3) {
+            0 => {
+                const CMP: &[&str] = &["==", "!=", "<", ">", "<=", ">="];
+                let nt = pick(rng, NUMERIC);
+                let a = gen_expr(rng, nt, depth - 1);
+                let b = gen_expr(rng, nt, depth - 1);
+                let c = CMP[rng.below(CMP.len() as u64) as usize];
+                format!("({a} {c} {b})")
+            }
+            1 => {
+                let a = gen_bool(rng, depth - 1);
+                let b = gen_bool(rng, depth - 1);
+                let op = if rng.below(2) == 1 { "&&" } else { "||" };
+                format!("({a} {op} {b})")
+            }
+            _ => format!("(!{})", gen_bool(rng, depth - 1)),
+        }
+    }
+
+    fn gen_expr(rng: &mut Rng, t: Sty, depth: u32) -> String {
+        if is_bool(t) {
+            let b = gen_bool(rng, depth);
+            return if matches!(t, B8) {
+                format!("({b} as b8)")
+            } else {
+                b
+            };
+        }
+        if depth == 0 {
+            return num_leaf(rng, t);
+        }
+        match rng.below(100) {
+            // cast from any source type into this numeric type
+            0..=24 => {
+                let src = pick(rng, ALL);
+                format!("({} as {})", gen_expr(rng, src, depth - 1), name(t))
+            }
+            25..=44 => num_leaf(rng, t),
+            _ if is_int(t) => gen_int(rng, t, depth),
+            _ => gen_float(rng, t, depth),
+        }
+    }
+
+    /// Build one program: N bindings of random typed expressions, each XORed
+    /// (via `as u32`) into an accumulator that is finally stored to an
+    /// `@external` static so nothing can be optimized out.
+    fn build_program(seed: u64, n: usize) -> String {
+        let mut rng = Rng(seed);
+        let mut body = String::new();
+        for k in 0..n {
+            let t = pick(&mut rng, BINDABLE);
+            let e = gen_expr(&mut rng, t, 3);
+            body.push_str(&format!("    val v{k}: {} = {e};\n", name(t)));
+            body.push_str(&format!("    acc = acc ^ (v{k} as u32);\n"));
+        }
+        format!(
+            "// GENERATED by build_validity (seed {seed:#018x}). Do not edit.\n\
+             static sink: u32 @external = 0;\n\
+             fn main() @context(thread) {{\n\
+             \x20   var seed: u32 = sink;\n\
+             \x20   var acc: u32 = 0u32;\n\
+             {body}    sink = acc;\n}}\n"
+        )
+    }
+
+    #[test]
+    fn build_validity_scalars() {
+        if !build_link_tools_available() {
+            eprintln!(
+                "skipping build_validity: need arm-none-eabi-ld and \
+                 arm-none-eabi-gcc (for soft-float libgcc)"
+            );
+            return;
+        }
+        let base = std::env::var("BML_PROP_SEED")
+            .ok()
+            .and_then(|s| match s.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => s.parse().ok(),
+            })
+            .unwrap_or(0x0BAD_C0DE_1234_5678u64);
+
+        // Sweep several deterministic sub-seeds so one CI run explores more
+        // structural variety; each is reproducible from the base via BML_PROP_SEED.
+        let name = "_generated_build.bml";
+        for round in 0..8u64 {
+            let seed = base ^ round.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let program = build_program(seed, 150);
+            let path = write_generated(name, &program);
+
+            let mut failures = Vec::new();
+            for opt in OPT_LEVELS {
+                let (ok, log) = bml_build_link(name, opt);
+                if !ok {
+                    failures.push(log);
+                }
+            }
+            let _ = std::fs::remove_file(&path);
+
+            assert!(
+                failures.is_empty(),
+                "build-validity failed (seed {seed:#018x}):\n{}\n--- generated source ---\n{program}",
+                failures.join("\n")
+            );
+        }
     }
 }
