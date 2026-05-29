@@ -80,10 +80,15 @@ fn bml_run(fixture: &str, opt: &str) -> String {
     let pid = std::process::id();
     let elf = std::env::temp_dir().join(format!("bml-exec-{stem}-O{opt}-{pid}.elf"));
     let out_path = std::env::temp_dir().join(format!("bml-exec-{stem}-O{opt}-{pid}.out"));
-    let link = Command::new(ld_bin())
-        .arg("-T")
-        .arg(&lds)
-        .arg(&obj)
+    let mut link_cmd = Command::new(ld_bin());
+    link_cmd.arg("-T").arg(&lds).arg(&obj);
+    // Float fixtures lower to soft-float `__aeabi_*` runtime calls (the cortex-m3
+    // has no FPU); pull in libgcc to resolve them. Harmless for integer-only
+    // fixtures -- the linker pulls nothing from it.
+    if let Some(libgcc) = libgcc_path() {
+        link_cmd.arg(&libgcc);
+    }
+    let link = link_cmd
         .arg("-o")
         .arg(&elf)
         .output()
@@ -269,6 +274,32 @@ assert_exec!(exec_div_mod_ops, "div_mod_ops.bml");
 assert_exec!(exec_shift_ops, "shift_ops.bml");
 assert_exec!(exec_compare_ops, "compare_ops.bml");
 assert_exec!(exec_bool_ops, "bool_ops.bml");
+
+// ─── float arithmetic / casts compute correct values (language.md §1) ─────────
+// Unlike the build-validity fuzzer (which only checks float IR is *valid*), this
+// runs the program and checks the results. Float ops lower to soft-float
+// `__aeabi_*` calls, so it additionally needs libgcc; skips if absent.
+#[test]
+fn exec_float_ops() {
+    if !tools_available() || libgcc_path().is_none() {
+        eprintln!(
+            "skipping exec_float_ops: needs qemu, arm-none-eabi-ld, and \
+             arm-none-eabi-gcc (for soft-float libgcc)"
+        );
+        return;
+    }
+    for opt in OPT_LEVELS {
+        let out = bml_run("float_ops.bml", opt);
+        assert!(
+            out.contains("OK"),
+            "expected OK from float_ops at -O{opt}; got:\n{out}"
+        );
+        assert!(
+            !out.contains("FAIL"),
+            "float_ops reported a FAIL at -O{opt}; got:\n{out}"
+        );
+    }
+}
 
 // ─── const-valued array lengths (language.md §1) ─────────────────────────────
 assert_exec!(exec_const_array_len, "const_array_len.bml");

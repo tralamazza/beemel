@@ -1,0 +1,29 @@
+// Float arithmetic, casts, and negation actually compute the right values
+// (language.md §1). Companion to the build-validity fuzzer, which only checks
+// that float IR is *valid*; this checks it is *correct*. Results are chosen to
+// be exact non-negative integers so they round-trip through `expect_u32`
+// (a negative value cast to u32 would be poison).
+import harness.semihost;
+
+// Opaque identity: defeats constant-folding so the -O0 build exercises the
+// real runtime (soft-float) arithmetic instead of a folded constant.
+fn idf(x: f32) -> f32 { return x; }
+fn idd(x: f64) -> f64 { return x; }
+
+fn main() @context(thread) {
+    expect_u32((idf(2.0f) + idf(3.0f)) as u32, 5);
+    expect_u32((idf(10.0f) - idf(4.0f)) as u32, 6);
+    expect_u32((idf(2.5f) * idf(4.0f)) as u32, 10);
+    expect_u32((idf(9.0f) / idf(2.0f)) as u32, 4);          // 4.5 truncates to 4
+    expect_u32((-idf(3.0f) * -idf(2.0f)) as u32, 6);        // fneg
+    expect_u32((idd(1.5d) + idd(2.5d)) as u32, 4);
+    expect_u32((idd(1.25d) * idd(8.0d)) as u32, 10);
+    expect_u32((idf(5.5f) as i32) as u32, 5);               // fptosi
+    expect_u32((idf(1000.0f) as u32), 1000);                // fptoui
+    expect_u32((idf(300.0f) as f64 as f32) as u32, 300);    // fpext/fptrunc
+    expect_u32(((7i32 as f64) as i32) as u32, 7);           // sitofp roundtrip
+    expect_u32((300u32 as f32) as u32, 300);                // uitofp roundtrip
+    expect_u32((true as f32) as u32, 1);                    // bool->float
+    expect_u32((false as f64) as u32, 0);
+    done();
+}
