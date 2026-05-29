@@ -812,24 +812,6 @@ from context and is compatible with any `*T` or `*mut T`.
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |
 | E340  | `assume` condition must be b1 |
 | E341  | `assert` condition must be b1 |
-| V100  | IKOS: buffer/array out of bounds (error) |
-| V101  | IKOS: buffer/array out of bounds (warning) |
-| V110  | IKOS: null pointer dereference |
-| V111  | IKOS: null pointer comparison |
-| V112  | IKOS: invalid pointer dereference |
-| V113  | IKOS: pointer arithmetic overflow |
-| V114  | IKOS: unknown memory access |
-| V115  | IKOS: pointer comparison across unrelated objects |
-| V116  | IKOS: store with no effect |
-| V120  | IKOS: division by zero |
-| V130  | IKOS: signed/unsigned integer overflow |
-| V140  | IKOS: shift count exceeds bit width |
-| V150  | IKOS: unaligned pointer access |
-| V160  | IKOS: undefined value access |
-| V170  | IKOS: dead code |
-| V180  | IKOS: dangling function pointer call |
-| V190  | IKOS: function call argument mismatch |
-| V191  | IKOS: recursive function call |
-| V192  | IKOS: call through inline asm |
-| V200  | IKOS: user assert statement violated |
-| V999  | IKOS: other check finding (catch-all) |
+
+Verification (`bml verify`) findings use V-series codes (V100–V999). They are
+listed separately in [verification-codes.md](./verification-codes.md).

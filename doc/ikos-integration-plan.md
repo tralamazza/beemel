@@ -262,7 +262,7 @@ Status `Safe` is silent. Status `Unreachable` becomes an info diagnostic.
 Deduplicate findings: IKOS reports per-callsite and can flag the same span
 repeatedly when functions are analyzed under multiple entry points.
 
-Add new V-series codes to `doc/language.md` error table.
+Add new V-series codes to `doc/verification-codes.md`.
 
 ## Phase 8: Concurrency shim
 
@@ -378,7 +378,7 @@ stabilizes.
    - Domain selection guide (interval vs octagon vs apron).
    - Command examples.
 2. Update `doc/language.md` section 11 grammar with `assume` / `assert`.
-3. Update `doc/language.md` section 12 error table with V100-V200 codes.
+3. Update `doc/verification-codes.md` with V100-V200 codes.
 4. Update `README.md` Quick-start with a `bml verify` example.
 
 ## Effort and ordering
