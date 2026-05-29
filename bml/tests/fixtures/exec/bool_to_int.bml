@@ -1,0 +1,10 @@
+// bool → int cast (language.md §1): a bool widened to an integer zero-extends to
+// 0 or 1. Regression test for a cast that used to emit an invalid `bitcast i1 to
+// i32` instead of `zext`.
+import harness.semihost;
+
+fn main() @context(thread) {
+    expect_u32(true as u32, 1);
+    expect_u32(false as u32, 0);
+    done();
+}

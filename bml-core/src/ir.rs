@@ -1948,6 +1948,23 @@ impl IrEmitter {
                         }
                         std::cmp::Ordering::Equal => return inner_reg,
                     }
+                } else if matches!(inner_num, Type::B1 | Type::B8)
+                    && crate::types::is_int(&target_num)
+                {
+                    // bool → int: a bool is 0 or 1, so always zero-extend the
+                    // i1/i8 value to the target width (never sext, never an
+                    // invalid same-family bitcast).
+                    let inner_bits = if matches!(inner_num, Type::B1) { 1 } else { 8 };
+                    let target_bits = int_bit_width(&llvm_target);
+                    match target_bits.cmp(&inner_bits) {
+                        std::cmp::Ordering::Greater => self.line(&format!(
+                            "{reg} = zext {inner_llvm} {inner_reg} to {llvm_target}"
+                        )),
+                        std::cmp::Ordering::Less => self.line(&format!(
+                            "{reg} = trunc {inner_llvm} {inner_reg} to {llvm_target}"
+                        )),
+                        std::cmp::Ordering::Equal => return inner_reg,
+                    }
                 } else if crate::types::is_float(&inner_ty) && crate::types::is_float(&target_ty) {
                     let inner_bits = float_bit_width(&inner_llvm);
                     let target_bits = float_bit_width(&llvm_target);

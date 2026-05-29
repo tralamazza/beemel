@@ -1,0 +1,37 @@
+// if- and block-expressions yield values (language.md §11). Selection is driven
+// by runtime values so the optimizer cannot fold the branch away.
+import harness.semihost;
+
+fn pick(n: u32) -> u32 {
+    return if n == 0 { 10 } else if n == 1 { 20 } else { 30 };
+}
+
+fn main() @context(thread) {
+    // if as an expression, both arms
+    var a = true;
+    expect_u32(if a { 1u32 } else { 2u32 }, 1);
+    expect_u32(if !a { 1u32 } else { 2u32 }, 2);
+
+    // else-if chain, each branch selected at runtime
+    expect_u32(pick(0), 10);
+    expect_u32(pick(1), 20);
+    expect_u32(pick(2), 30);
+
+    // block expression evaluates to its trailing value
+    var x: u32 = {
+        var t: u32 = 6;
+        t * 7
+    };
+    expect_u32(x, 42);
+
+    // block nested inside an if-expression arm
+    var y: u32 = if pick(2) == 30 {
+        var q: u32 = 5;
+        q + 1
+    } else {
+        0
+    };
+    expect_u32(y, 6);
+
+    done();
+}

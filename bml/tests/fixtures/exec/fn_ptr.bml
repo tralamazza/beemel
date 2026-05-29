@@ -1,0 +1,38 @@
+// Function pointers (language.md §5): dispatch through a variable, reassignment,
+// passing as a parameter, and calling through a struct field. The compiler has
+// check/IR tests for these shapes; this verifies the call actually lands on the
+// right target at runtime.
+import harness.semihost;
+
+fn inc(x: u32) -> u32 {
+    return x + 1;
+}
+
+fn triple(x: u32) -> u32 {
+    return x * 3;
+}
+
+fn apply(op: fn(u32) -> u32, x: u32) -> u32 {
+    return op(x);
+}
+
+struct Ops {
+    f: fn(u32) -> u32,
+}
+
+fn main() @context(thread) {
+    var fp: fn(u32) -> u32 = &inc;
+    expect_u32(fp(41), 42); // direct dispatch
+
+    fp = &triple;
+    expect_u32(fp(4), 12); // reassignment retargets
+
+    expect_u32(apply(&inc, 10), 11); // through a parameter
+    expect_u32(apply(&triple, 10), 30);
+
+    var ops = Ops { f: &inc };
+    var g = ops.f;
+    expect_u32(g(7), 8); // through a struct field
+
+    done();
+}

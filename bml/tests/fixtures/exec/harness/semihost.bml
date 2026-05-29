@@ -2,12 +2,17 @@
 //
 // Execution fixtures import this module, compute a value, and self-check it
 // against the spec-mandated answer with `expect_u32` / `expect_b1`. Each check
-// prints "OK\n" or "FAIL\n" through semihosting SYS_WRITE0; the Rust harness
-// asserts the captured output contains "OK" and never "FAIL". `done()` ends the
-// run via SYS_EXIT so QEMU terminates instead of spinning in the reset loop.
+// prints "OK\n" on success or "FAIL got=0x.. want=0x..\n" on mismatch through
+// semihosting SYS_WRITE0; the Rust harness asserts the captured output contains
+// "OK" and never "FAIL". `done()` ends the run via SYS_EXIT so QEMU terminates
+// instead of spinning in the reset loop.
 //
 // Kept deliberately tiny and obviously correct: it is the oracle path, so a bug
-// here would surface immediately across every fixture.
+// here would surface immediately across every fixture. Note the pass/fail
+// verdict is decided solely by the direct `actual == expected` comparison; the
+// hex formatter is used only to render the failing values, so even if shifts or
+// indexing were miscompiled the verdict stays trustworthy -- only the printed
+// detail could be wrong.
 
 export fn ok;
 export fn fail;
@@ -37,11 +42,30 @@ fn fail() {
     write0("FAIL\n");
 }
 
+// Write `val` as "0x" followed by 8 hex digits. Uses a fixed 11-byte buffer
+// ("0x" + 8 digits + NUL). 48 is '0', 87 makes 10..15 land on 'a'..'f'.
+fn write_hex(n: u32) {
+    var buf: [u8; 11] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+    buf[0] = 48u8;
+    buf[1] = 120u8;
+    for i: u32 in 0 upto 8 {
+        var nib: u32 = (n >> ((7 - i) * 4)) & 15;
+        var c: u32 = if nib < 10 { nib + 48 } else { nib + 87 };
+        buf[2 + i] = c as u8;
+    }
+    buf[10] = 0u8;
+    write0(&mut buf[0]);
+}
+
 fn expect_u32(actual: u32, expected: u32) {
     if actual == expected {
         ok();
     } else {
-        fail();
+        write0("FAIL got=");
+        write_hex(actual);
+        write0(" want=");
+        write_hex(expected);
+        write0("\n");
     }
 }
 
@@ -49,7 +73,13 @@ fn expect_b1(actual: b1, expected: b1) {
     if actual == expected {
         ok();
     } else {
-        fail();
+        // Map to 0/1 by branching rather than `b1 as u32`, so the harness does
+        // not depend on the bool-to-int cast path it might be checking.
+        write0("FAIL got=");
+        write_hex(if actual { 1u32 } else { 0u32 });
+        write0(" want=");
+        write_hex(if expected { 1u32 } else { 0u32 });
+        write0("\n");
     }
 }
 

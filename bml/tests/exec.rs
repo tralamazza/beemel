@@ -248,6 +248,21 @@ assert_exec!(exec_bool_ops, "bool_ops.bml");
 // ─── const-valued array lengths (language.md §1) ─────────────────────────────
 assert_exec!(exec_const_array_len, "const_array_len.bml");
 
+// ─── array values: init / index read / index write / var index (language.md §6)
+assert_exec!(exec_arrays, "arrays.bml");
+
+// ─── match as an expression (language.md §11, §7) ────────────────────────────
+assert_exec!(exec_match_expr, "match_expr.bml");
+
+// ─── if- and block-expressions yield values (language.md §11) ────────────────
+assert_exec!(exec_if_block_expr, "if_block_expr.bml");
+
+// ─── function-pointer dispatch (language.md §5) ──────────────────────────────
+assert_exec!(exec_fn_ptr, "fn_ptr.bml");
+
+// ─── bool → int cast zero-extends to 0/1 (language.md §1) ────────────────────
+assert_exec!(exec_bool_to_int, "bool_to_int.bml");
+
 // ─── property / differential test for integer arithmetic ─────────────────────
 //
 // Generate random integer expressions, evaluate each with a Rust oracle that

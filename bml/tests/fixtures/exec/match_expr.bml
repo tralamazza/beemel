@@ -1,0 +1,28 @@
+// match as an expression (language.md §11, §7): each arm yields a value and the
+// match evaluates to the selected arm's value. Driven through a function
+// parameter so the scrutinee is not a compile-time constant at the use site,
+// which would let const-folding sidestep real dispatch.
+import harness.semihost;
+
+enum Cmd: u32 {
+    Stop = 0,
+    Go = 1,
+    Pause = 2,
+    Reset = 7,
+}
+
+fn code(c: Cmd) -> u32 {
+    return match c {
+        Cmd@Stop { 100 }
+        Cmd@Go { 200 }
+        _ { 300 }
+    };
+}
+
+fn main() @context(thread) {
+    expect_u32(code(Cmd@Stop), 100);
+    expect_u32(code(Cmd@Go), 200);
+    expect_u32(code(Cmd@Pause), 300); // falls to wildcard
+    expect_u32(code(Cmd@Reset), 300); // non-contiguous discriminant, wildcard
+    done();
+}
