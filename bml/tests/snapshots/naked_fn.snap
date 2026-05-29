@@ -1,0 +1,13 @@
+define void @naked_fn() #0 {
+  entry:
+  br label %loop.0
+  
+loop.0:
+  br label %loop_body.1
+  
+loop_body.1:
+  br label %loop.0
+  
+loop_end.2:
+  unreachable
+}

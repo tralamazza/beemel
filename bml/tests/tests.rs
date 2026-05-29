@@ -93,6 +93,39 @@ fn bml_ir_with_target(fixture: &str, target: Option<&str>) -> String {
     ir
 }
 
+/// Compare `actual` against a committed snapshot under `tests/snapshots/`.
+///
+/// Snapshots capture the emitted IR for a fixture so that changes to lowering
+/// show up as a reviewable diff instead of silently breaking a substring
+/// assertion (or passing when behavior is wrong). Regenerate after an
+/// intentional change with `UPDATE_SNAPSHOTS=1 cargo test`, then review the
+/// diff before committing.
+fn check_snapshot(name: &str, actual: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("snapshots")
+        .join(format!("{name}.snap"));
+    let actual = actual.trim_end();
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{actual}\n")).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!("missing snapshot `{name}`; run `UPDATE_SNAPSHOTS=1 cargo test` to create it")
+    });
+    assert_eq!(
+        actual,
+        expected.trim_end(),
+        "snapshot `{name}` mismatch; if intended, run `UPDATE_SNAPSHOTS=1 cargo test` and review the diff"
+    );
+}
+
+/// Snapshot a single function's emitted IR from a fixture.
+fn snapshot_fn(snapshot: &str, fixture: &str, fn_name: &str) {
+    check_snapshot(snapshot, &extract_fn_body(&bml_ir(fixture), fn_name));
+}
+
 macro_rules! assert_pass {
     ($name:ident, $fixture:expr) => {
         #[test]
@@ -614,44 +647,34 @@ fn test_vector_default_handler() {
 // Startup routine tests
 #[test]
 fn test_startup_basic() {
+    // Auto-generated reset_handler: copies .data, zeroes .bss, calls main.
     let ir = bml_ir_with_target("startup_basic.bml", Some("stm32f401.target"));
-    assert!(
-        ir.contains("define void @reset_handler()"),
-        "expected auto-generated reset_handler\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("@_sidata = external global i8"),
-        "expected .data load symbol\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("@_ebss = external global i8"),
-        "expected .bss symbol\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("call void @main()"),
-        "expected call to main\n--- IR ---\n{ir}\n-----------"
-    );
     assert!(
         ir.contains("ptr @reset_handler,\n  ptr"),
         "expected vector table entry\n--- IR ---\n{ir}\n-----------"
+    );
+    check_snapshot(
+        "startup_basic_reset",
+        &extract_fn_body(&ir, "@reset_handler"),
     );
 }
 
 #[test]
 fn test_startup_user_reset() {
+    // A user-defined reset_handler is used directly: no auto-generated .data/.bss
+    // startup code, which the snapshot of its body confirms.
     let ir = bml_ir_with_target("startup_user_reset.bml", Some("stm32f401.target"));
-    // User-defined reset_handler is used directly, no auto-generated startup symbols
-    assert!(
-        ir.contains("define void @reset_handler()"),
-        "expected user reset_handler\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        !ir.contains("@_sidata = external"),
-        "expected NO auto-generated startup\n--- IR ---\n{ir}\n-----------"
-    );
     assert!(
         ir.contains("ptr @reset_handler,\n  ptr"),
         "expected vector table entry\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        !ir.contains("@_sidata = external"),
+        "expected NO auto-generated startup symbols\n--- IR ---\n{ir}\n-----------"
+    );
+    check_snapshot(
+        "startup_user_reset",
+        &extract_fn_body(&ir, "@reset_handler"),
     );
 }
 
@@ -701,156 +724,64 @@ fn test_array_write() {
 }
 
 // Bit-band field read: single-bit fields use alias load instead of RMW
+// Single-bit bit-band fields read through their alias address (e.g. ODR3 ->
+// 0x4200028C); multi-bit fields do not. The snapshot pins the alias addresses
+// and the absence of masking on the read path.
 #[test]
 fn test_bitband_field_read() {
-    let ir = bml_ir("bitband_field_read.bml");
-    // GPIOA.ODR at 0x40020014, ODR3 bit 3 → alias 0x4200028C = 1111491212
-    assert!(
-        ir.contains("i32 1111491212 to ptr)"),
-        "expected bit-band alias for ODR3\n--- IR ---\n{ir}\n-----------"
-    );
-    // GPIOA.ODR at 0x40020014, ODR0 bit 0 → alias 0x42000280 = 1111491200
-    assert!(
-        ir.contains("i32 1111491200 to ptr)"),
-        "expected bit-band alias for ODR0\n--- IR ---\n{ir}\n-----------"
-    );
-    // No masking/shifting in main() -- only the reset_handler uses `and` for .data copy
-    let main_end = ir
-        .find("define void @default_handler()")
-        .unwrap_or(ir.len());
-    let main_ir = &ir[..main_end];
-    assert!(
-        !main_ir.contains("and i32"),
-        "expected no masking for bit-band read in main\n--- IR ---\n{ir}\n-----------"
-    );
+    snapshot_fn("bitband_field_read_main", "bitband_field_read.bml", "@main");
 }
 
-// Bit-band field write: single-bit fields use alias store instead of RMW
+// Multi-bit field (MODER0, bit[0..1]) uses volatile RMW; single-bit fields
+// (ODR0/ODR3) use bit-band alias stores.
 #[test]
 fn test_bitband_field_write() {
-    let ir = bml_ir("bitband_field_write.bml");
-    // GPIOA.MODER.MODER0 is multi-bit (bit[0..1]), should use RMW (not bit-band)
-    // MODER at offset 0x00 → addr 0x40020000 = 1073872896
-    assert!(
-        ir.contains("load volatile i32, ptr inttoptr (i32 1073872896 to ptr)"),
-        "expected RMW load for MODER0\n--- IR ---\n{ir}\n-----------"
-    );
-    // GPIOA.ODR.ODR3 alias 0x4200028C = 1111491212
-    assert!(
-        ir.contains("1111491212 to ptr)"),
-        "expected bit-band alias for ODR3 store\n--- IR ---\n{ir}\n-----------"
-    );
-    // GPIOA.ODR.ODR0 alias 0x42000280 = 1111491200
-    assert!(
-        ir.contains("1111491200 to ptr)"),
-        "expected bit-band alias for ODR0 store\n--- IR ---\n{ir}\n-----------"
+    snapshot_fn(
+        "bitband_field_write_main",
+        "bitband_field_write.bml",
+        "@main",
     );
 }
 
-// u8 field: i32 RMW math, trunc on read, zext on write
+// Narrow fields do i32 RMW math with trunc on read and zext on write; the
+// snapshot pins the exact width conversions.
 #[test]
 fn test_field_u8_rmw_widths() {
-    let ir = bml_ir("peripheral_field_u8.bml");
-    assert!(
-        ir.contains("trunc i32") && ir.contains(" to i8"),
-        "expected i32→i8 trunc on read\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("zext i8") && ir.contains(" to i32"),
-        "expected i8→i32 zext on write\n--- IR ---\n{ir}\n-----------"
-    );
+    snapshot_fn("field_u8_main", "peripheral_field_u8.bml", "@main");
 }
 
 #[test]
 fn test_field_u16_rmw_widths() {
-    let ir = bml_ir("peripheral_field_u16.bml");
-    assert!(
-        ir.contains("trunc i32") && ir.contains(" to i16"),
-        "expected i32→i16 trunc on read\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("zext i16") && ir.contains(" to i32"),
-        "expected i16→i32 zext on write\n--- IR ---\n{ir}\n-----------"
-    );
+    snapshot_fn("field_u16_main", "peripheral_field_u16.bml", "@main");
 }
 
 #[test]
 fn test_field_enum_u8_rmw_widths() {
-    let ir = bml_ir("peripheral_field_enum.bml");
-    assert!(
-        ir.contains("trunc i32") && ir.contains(" to i8"),
-        "expected i32→i8 trunc for u8-backed enum read\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("zext i8") && ir.contains(" to i32"),
-        "expected i8→i32 zext for u8-backed enum write\n--- IR ---\n{ir}\n-----------"
-    );
+    snapshot_fn("field_enum_u8_main", "peripheral_field_enum.bml", "@main");
 }
 
-// Multi-bit field range still uses RMW (not bit-band)
+// Multi-bit field range uses RMW (load/mask/or/store), not bit-band.
 #[test]
 fn test_bitband_multi_bit_rmw() {
-    let ir = bml_ir("peripheral_field_range.bml");
-    // MODER at offset 0x00 → addr 0x40020000 = 1073872896
-    assert!(
-        ir.contains("load volatile i32, ptr inttoptr (i32 1073872896 to ptr)"),
-        "expected RMW load\n--- IR ---\n{ir}\n-----------"
-    );
-    // Range[0..1] mask = 0x3, Range[2..3] inv_mask = 0xFFFFFFF3 = 4294967283
-    assert!(
-        ir.contains("and i32"),
-        "expected masking in RMW\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("or i32"),
-        "expected combine in RMW\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        ir.contains("store volatile i32"),
-        "expected RMW store\n--- IR ---\n{ir}\n-----------"
-    );
+    snapshot_fn("field_range_main", "peripheral_field_range.bml", "@main");
 }
 
-// @naked function: attribute group #0 (not "interrupt"), no default ret
+// @naked function: attribute group #0 (not "interrupt"), unreachable fallback.
 #[test]
 fn test_naked_fn() {
-    let ir = bml_ir("naked_fn.bml");
-    // naked_fn uses #0 = nounwind, no "interrupt"
-    let fn_body = extract_fn_body(&ir, "@naked_fn");
-    assert!(
-        fn_body.contains("#0 {\n  entry:"),
-        "expected attr group #0\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        !fn_body.contains("\"interrupt\""),
-        "expected no interrupt attr\n--- IR ---\n{ir}\n-----------"
-    );
-    // Should contain unreachable (fallback terminator for naked)
-    assert!(
-        fn_body.contains("unreachable"),
-        "expected unreachable terminator\n--- IR ---\n{fn_body}\n-----------"
-    );
+    snapshot_fn("naked_fn", "naked_fn.bml", "@naked_fn");
 }
 
-// @naked + @isr: still in vector table, but no interrupt attribute on the fn def
+// @naked + @isr: still placed in the vector table, but no interrupt attribute
+// on the function definition.
 #[test]
 fn test_naked_isr() {
     let ir = bml_ir("naked_isr.bml");
-    // Check vector table entry
     assert!(
         ir.contains("@naked_isr"),
         "expected naked_isr in vector table\n--- IR ---\n{ir}\n-----------"
     );
-    // Check function definition has no interrupt attribute
-    let fn_body = extract_fn_body(&ir, "@naked_isr");
-    assert!(
-        !fn_body.contains("\"interrupt\""),
-        "expected no interrupt attr on naked ISR\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        fn_body.contains("#0 {"),
-        "expected attr group #0\n--- IR ---\n{ir}\n-----------"
-    );
+    check_snapshot("naked_isr", &extract_fn_body(&ir, "@naked_isr"));
 }
 
 // @section() on function
@@ -871,62 +802,26 @@ fn test_static_section() {
     );
 }
 
-// tailchain=true leaf ISR: bx lr, no interrupt attribute, in vector table
+// tailchain=true leaf ISR: `bx lr`, no interrupt attribute, no push {lr}.
 #[test]
 fn test_tailchain_leaf() {
     let ir = bml_ir("tailchain_leaf.bml");
-    // In vector table
     assert!(
         ir.contains("@leaf_isr"),
         "expected leaf_isr in vector table\n--- IR ---\n{ir}\n-----------"
     );
-    // Function uses bx lr, not interrupt
-    let fn_body = extract_fn_body(&ir, "@leaf_isr");
-    assert!(
-        fn_body.contains("asm sideeffect \"bx lr\""),
-        "expected bx lr in leaf tailchain ISR\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        !fn_body.contains("\"interrupt\""),
-        "expected no interrupt attr\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        fn_body.contains("#0 {"),
-        "expected attr group #0\n--- IR ---\n{ir}\n-----------"
-    );
-    // Should NOT have push lr (leaf has no calls)
-    assert!(
-        !fn_body.contains("push {lr}"),
-        "expected no push lr for leaf\n--- IR ---\n{ir}\n-----------"
-    );
+    check_snapshot("tailchain_leaf", &extract_fn_body(&ir, "@leaf_isr"));
 }
 
-// tailchain=true ISR with calls: push/pop + no interrupt attribute
+// tailchain=true ISR with calls: push {lr} / pop {pc}, no interrupt attribute.
 #[test]
 fn test_tailchain_calls() {
     let ir = bml_ir("tailchain_calls.bml");
-    // In vector table
     assert!(
         ir.contains("@call_isr"),
         "expected call_isr in vector table\n--- IR ---\n{ir}\n-----------"
     );
-    let fn_body = extract_fn_body(&ir, "@call_isr");
-    assert!(
-        fn_body.contains("push {lr}"),
-        "expected push lr in non-leaf tailchain ISR\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        fn_body.contains("pop {pc}"),
-        "expected pop pc in non-leaf tailchain ISR\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        !fn_body.contains("\"interrupt\""),
-        "expected no interrupt attr\n--- IR ---\n{ir}\n-----------"
-    );
-    assert!(
-        fn_body.contains("#0 {"),
-        "expected attr group #0\n--- IR ---\n{ir}\n-----------"
-    );
+    check_snapshot("tailchain_calls", &extract_fn_body(&ir, "@call_isr"));
 }
 
 // ─── Stack analysis tests ─────────────────────────────────────────────

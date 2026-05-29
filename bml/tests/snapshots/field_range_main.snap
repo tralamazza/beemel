@@ -1,0 +1,16 @@
+define void @main() #0 {
+  entry:
+  %__mode.0 = alloca i32
+  %0 = load volatile i32, ptr inttoptr (i32 1073872896 to ptr)
+  %1 = and i32 %0, 3
+  %2 = add i32 %1, 0
+  store i32 %2, ptr %__mode.0
+  %3 = add i32 0, 3
+  %4 = load volatile i32, ptr inttoptr (i32 1073872896 to ptr)
+  %5 = and i32 %4, 4294967283
+  %6 = shl i32 %3, 2
+  %7 = and i32 %6, 12
+  %8 = or i32 %5, %7
+  store volatile i32 %8, ptr inttoptr (i32 1073872896 to ptr)
+  ret void
+}

@@ -221,6 +221,25 @@ reproducibility; rerun a specific case with `BML_PROP_SEED=<n> cargo test
 --test exec exec_property_arith` (decimal or `0x...`). On failure it prints the
 seed and the full generated source.
 
+## IR snapshot tests
+
+Structural codegen (bit-band aliasing, register RMW field widths, `@naked` /
+tailchain ISR prologues, the auto-generated reset handler) is checked with
+snapshot tests in `tests/tests.rs` rather than fragile substring assertions. A
+test extracts the relevant function from the emitted IR and calls
+`check_snapshot(name, ir)`, which compares against `tests/snapshots/<name>.snap`.
+
+After an intentional codegen change, regenerate and review the diff:
+
+```sh
+UPDATE_SNAPSHOTS=1 cargo test --test tests
+git diff bml/tests/snapshots/      # review before committing
+```
+
+A changed snapshot is a prompt to confirm the new lowering is correct, not an
+automatic pass. This is a tiny in-repo mechanism (no external snapshot crate) to
+keep the dependency set minimal.
+
 ## Code conventions
 
 - Hand-written recursive descent, no parser generators

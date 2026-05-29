@@ -1,0 +1,13 @@
+define void @call_isr() #0 {
+  entry:
+  call void asm sideeffect "push {lr}", ""()
+  %__x.0 = alloca i32
+  %0 = call i32 @helper()
+  store i32 %0, ptr %__x.0
+  %1 = load i32, ptr %__x.0
+  %2 = add i32 0, 1
+  %3 = add i32 %1, %2
+  store i32 %3, ptr %__x.0
+  call void asm sideeffect "pop {pc}", ""()
+  unreachable
+}

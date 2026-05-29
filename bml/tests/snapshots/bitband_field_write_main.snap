@@ -1,0 +1,19 @@
+define void @main() #0 {
+  entry:
+  %0 = add i32 0, 0
+  %1 = load volatile i32, ptr inttoptr (i32 1073872896 to ptr)
+  %2 = and i32 %1, 4294967292
+  %3 = add i32 %0, 0
+  %4 = and i32 %3, 3
+  %5 = or i32 %2, %4
+  store volatile i32 %5, ptr inttoptr (i32 1073872896 to ptr)
+  %6 = add i32 0, 1
+  %7 = trunc i32 %6 to i1
+  %8 = zext i1 %7 to i32
+  store volatile i32 %8, ptr inttoptr (i32 1111491212 to ptr)
+  %9 = add i32 0, 0
+  %10 = trunc i32 %9 to i1
+  %11 = zext i1 %10 to i32
+  store volatile i32 %11, ptr inttoptr (i32 1111491200 to ptr)
+  ret void
+}

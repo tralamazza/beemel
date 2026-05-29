@@ -1,0 +1,41 @@
+define void @reset_handler() #2 {
+  entry:
+    br label %data_copy_test
+  
+data_copy_test:
+  %0 = phi ptr [ @_sidata, %entry ], [ %__phi.data_src_next, %data_copy_body ]
+  %1 = phi ptr [ @_sdata, %entry ], [ %__phi.data_dst_next, %data_copy_body ]
+  %2 = ptrtoint ptr %1 to i32
+  %3 = ptrtoint ptr @_edata to i32
+  %4 = icmp eq i32 %2, %3
+  br i1 %4, label %bss_zero_init, label %data_copy_body
+  
+  data_copy_body:
+  %5 = load volatile i8, ptr %0
+  store volatile i8 %5, ptr %1
+  %__phi.data_src_next = getelementptr i8, ptr %0, i32 1
+  %__phi.data_dst_next = getelementptr i8, ptr %1, i32 1
+  br label %data_copy_test
+  
+  bss_zero_init:
+    br label %bss_test
+  
+bss_test:
+  %6 = phi ptr [ @_sbss, %bss_zero_init ], [ %__phi.bss_next, %bss_body ]
+  %7 = ptrtoint ptr %6 to i32
+  %8 = ptrtoint ptr @_ebss to i32
+  %9 = icmp eq i32 %7, %8
+  br i1 %9, label %call_main, label %bss_body
+  
+  bss_body:
+  store volatile i8 0, ptr %6
+  %__phi.bss_next = getelementptr i8, ptr %6, i32 1
+  br label %bss_test
+  
+  call_main:
+    call void @main()
+    br label %halt_loop
+  
+  halt_loop:
+    br label %halt_loop
+}

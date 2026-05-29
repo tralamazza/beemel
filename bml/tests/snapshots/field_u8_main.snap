@@ -1,0 +1,18 @@
+define void @main() #0 {
+  entry:
+  %__m.0 = alloca i8
+  %0 = load volatile i32, ptr inttoptr (i32 1073887232 to ptr)
+  %1 = and i32 %0, 12
+  %2 = lshr i32 %1, 2
+  %3 = trunc i32 %2 to i8
+  store i8 %3, ptr %__m.0
+  %4 = add i8 0, 3
+  %5 = load volatile i32, ptr inttoptr (i32 1073887232 to ptr)
+  %6 = and i32 %5, 4294967283
+  %7 = zext i8 %4 to i32
+  %8 = shl i32 %7, 2
+  %9 = and i32 %8, 12
+  %10 = or i32 %6, %9
+  store volatile i32 %10, ptr inttoptr (i32 1073887232 to ptr)
+  ret void
+}

@@ -1,0 +1,12 @@
+define void @main() #0 {
+  entry:
+  %__x.0 = alloca i1
+  %__y.1 = alloca i1
+  %0 = load volatile i32, ptr inttoptr (i32 1111491212 to ptr)
+  %1 = trunc i32 %0 to i1
+  store i1 %1, ptr %__x.0
+  %2 = load volatile i32, ptr inttoptr (i32 1111491200 to ptr)
+  %3 = trunc i32 %2 to i1
+  store i1 %3, ptr %__y.1
+  ret void
+}

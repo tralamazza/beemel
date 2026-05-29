@@ -1,0 +1,7 @@
+define void @reset_handler() #0 {
+  entry:
+  %__x.0 = alloca i32
+  %0 = add i32 0, 0
+  store i32 %0, ptr %__x.0
+  ret void
+}
