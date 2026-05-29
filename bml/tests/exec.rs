@@ -190,6 +190,7 @@ macro_rules! assert_exec {
 /// fixture exercises documented behavior that currently miscompiles, so the test
 /// fails today; it will start passing once the bug is fixed. Run them on demand
 /// with `cargo test --test exec -- --ignored`.
+#[allow(unused_macros)]
 macro_rules! known_bug {
     ($name:ident, $fixture:expr, $reason:expr) => {
         #[test]
@@ -244,14 +245,8 @@ assert_exec!(exec_shift_ops, "shift_ops.bml");
 assert_exec!(exec_compare_ops, "compare_ops.bml");
 assert_exec!(exec_bool_ops, "bool_ops.bml");
 
-// ─── known compiler bugs surfaced by the documentation-driven fixtures ────────
-// #[ignore]d so the suite stays green; run `-- --ignored` to confirm they still
-// reproduce. Each has a minimal fixture documenting the symptom.
-known_bug!(
-    bug_array_size_const,
-    "array_size_const_known_bug.bml",
-    "a const used as an array length evaluates to 0"
-);
+// ─── const-valued array lengths (language.md §1) ─────────────────────────────
+assert_exec!(exec_const_array_len, "const_array_len.bml");
 
 // ─── property / differential test for integer arithmetic ─────────────────────
 //

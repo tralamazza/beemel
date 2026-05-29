@@ -56,7 +56,10 @@ impl ImportResolver {
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         // Track root in visiting so circular imports involving the root are detected
         self.visiting.push(canonicalize(root_path));
-        let program = self.resolve_imports(root_program, &parent_dir);
+        let mut program = self.resolve_imports(root_program, &parent_dir);
+        // With all modules flattened in, fold const-valued array lengths
+        // (e.g. `[u8; N]`) into literals so type resolution sees a concrete size.
+        crate::constfold::fold_array_lengths(&mut program);
         let aliases = std::mem::take(&mut self.aliases);
         (program, aliases)
     }
