@@ -3474,17 +3474,72 @@ fn expr_const_val(expr: &Expr) -> String {
     }
 }
 
-/// Format a f64 as a valid LLVM IR float constant.
-/// LLVM requires 16 hex digits for all float types; for narrower types
-/// the bits are placed in the upper half and the lower half is zero.
+/// Format a f64 as a valid LLVM IR floating-point constant.
+///
+/// LLVM's hex float syntax is type-specific: `double` and `float` are written
+/// as the *64-bit double* bit pattern of the value (for `float` the value must
+/// be exactly representable, so it is snapped through f32 first), while `half`
+/// uses the `0xH` prefix followed by its 16-bit encoding. The previous version
+/// left-padded the f32 bits into 64 bits, which is a different (usually wrong)
+/// double value -- e.g. `1000.0f` became ~1.6e21.
 fn float_to_llvm(f: f64, suffix: crate::ast::FloatSuffix) -> String {
-    let bits = match suffix {
-        crate::ast::FloatSuffix::H | crate::ast::FloatSuffix::F | crate::ast::FloatSuffix::None => {
-            (u64::from((f as f32).to_bits())) << 32
+    match suffix {
+        crate::ast::FloatSuffix::H => format!("0xH{:04X}", f32_to_f16_bits(f as f32)),
+        crate::ast::FloatSuffix::F | crate::ast::FloatSuffix::None => {
+            format!("0x{:016X}", f64::from(f as f32).to_bits())
         }
-        crate::ast::FloatSuffix::D => f.to_bits(),
-    };
-    format!("0x{bits:016X}")
+        crate::ast::FloatSuffix::D => format!("0x{:016X}", f.to_bits()),
+    }
+}
+
+/// Convert an `f32` to its IEEE-754 half-precision (binary16) bit pattern,
+/// round-to-nearest-even. Rust has no stable `f16`, so this is done by hand.
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let x = value.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = i32::try_from((x >> 23) & 0xFF).unwrap();
+    let mant = x & 0x007F_FFFF;
+
+    if exp == 0xFF {
+        // Inf or NaN (preserve NaN-ness with a set mantissa bit).
+        return sign | 0x7C00 | if mant != 0 { 0x0200 } else { 0 };
+    }
+
+    // Rebias the exponent from f32 (bias 127) to f16 (bias 15): e = exp - 112.
+    let e = exp - 112;
+    if e >= 0x1F {
+        return sign | 0x7C00; // overflow -> Inf
+    }
+    if e <= 0 {
+        // Subnormal or zero.
+        if e < -10 {
+            return sign; // underflow -> signed zero
+        }
+        let full = mant | 0x0080_0000; // restore implicit leading 1
+        let shift = u32::try_from(14 - e).unwrap(); // 14..=24 for e in 0..=-10
+        let mut h = full >> shift;
+        let round = 1u32 << (shift - 1);
+        if (full & round) != 0 && ((full & (round - 1)) != 0 || (h & 1) != 0) {
+            h += 1;
+        }
+        return sign | h as u16;
+    }
+
+    // Normal.
+    let mut h = mant >> 13;
+    let mut e16 = u16::try_from(e).unwrap();
+    let round = 1u32 << 12;
+    if (mant & round) != 0 && ((mant & (round - 1)) != 0 || (h & 1) != 0) {
+        h += 1;
+        if h == 0x0400 {
+            h = 0;
+            e16 += 1;
+            if e16 >= 0x1F {
+                return sign | 0x7C00;
+            }
+        }
+    }
+    sign | (e16 << 10) | h as u16
 }
 
 fn int_bit_width_from_suffix(suffix: crate::ast::IntSuffix) -> u32 {
