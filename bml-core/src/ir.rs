@@ -1524,7 +1524,15 @@ impl IrEmitter {
 
                 let left_reg = self.emit_expr(left, symbols, fn_name);
                 let right_reg = self.emit_expr(right, symbols, fn_name);
-                // Types are guaranteed same by checker when strict mode is on
+                // Arithmetic operands are same-typed by the checker, but bitwise
+                // and shift ops only require both sides to be integers, so the
+                // shift count / operand may be a different width -- reconcile it
+                // to the left operand's type (LLVM requires matching widths).
+                let right_reg = if crate::types::is_int(&left_ty) {
+                    self.coerce_int(right_reg, &right_ty, &left_ty)
+                } else {
+                    right_reg
+                };
                 let lty = llvm_type(&left_ty);
                 let reg = self.new_reg();
 
@@ -1616,7 +1624,8 @@ impl IrEmitter {
                             ("icmp", iop)
                         }
                     }
-                    BinaryOp::And | BinaryOp::Or => ("and", "i1"),
+                    BinaryOp::And => ("and", "i1"),
+                    BinaryOp::Or => ("or", "i1"),
                     BinaryOp::BitAnd => ("and", lty.as_str()),
                     BinaryOp::BitOr => ("or", lty.as_str()),
                     BinaryOp::BitXor => ("xor", lty.as_str()),

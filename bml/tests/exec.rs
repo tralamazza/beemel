@@ -238,6 +238,12 @@ assert_exec!(exec_const_eval, "const_eval.bml");
 // ─── unsuffixed literals adopt the narrow context type (language.md §1) ───────
 assert_exec!(exec_narrow_literals, "narrow_literals.bml");
 
+// ─── operator / signedness matrix (language.md §1) ───────────────────────────
+assert_exec!(exec_div_mod_ops, "div_mod_ops.bml");
+assert_exec!(exec_shift_ops, "shift_ops.bml");
+assert_exec!(exec_compare_ops, "compare_ops.bml");
+assert_exec!(exec_bool_ops, "bool_ops.bml");
+
 // ─── known compiler bugs surfaced by the documentation-driven fixtures ────────
 // #[ignore]d so the suite stays green; run `-- --ignored` to confirm they still
 // reproduce. Each has a minimal fixture documenting the symptom.

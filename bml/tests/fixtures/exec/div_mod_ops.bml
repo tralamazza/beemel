@@ -1,0 +1,19 @@
+// Division and remainder pick signed vs unsigned ops by operand type
+// (sdiv/udiv, srem/urem). Signed division truncates toward zero.
+import harness.semihost;
+
+fn main() @context(thread) {
+    // unsigned
+    expect_u32(17 / 5, 3);
+    expect_u32(17 % 5, 2);
+    var b: u8 = 200u8;
+    expect_u32((b / 7u8) as u32, 28); // udiv 200/7
+    expect_u32((b % 7u8) as u32, 4); // urem 200%7
+
+    // signed: truncates toward zero, remainder takes the dividend's sign
+    expect_b1((-17i32 / 5i32) == -3i32, true); // sdiv
+    expect_b1((-17i32 % 5i32) == -2i32, true); // srem
+    expect_b1((-7i32 / 2i32) == -3i32, true);
+
+    done();
+}

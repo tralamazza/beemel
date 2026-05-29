@@ -1,0 +1,21 @@
+// Comparisons pick signed vs unsigned predicates by operand type. The classic
+// trap: an all-ones unsigned value is large (ult/ugt), not negative.
+import harness.semihost;
+
+fn main() @context(thread) {
+    // unsigned: 0xFFFFFFFF compares as a large positive value
+    var big: u32 = 0xFFFFFFFF;
+    expect_b1(big > 1, true); // ugt
+    expect_b1(big < 1, false); // ult
+
+    // signed: -1 is less than 0 and 1
+    expect_b1(-1i32 < 0i32, true); // slt
+    expect_b1(-1i32 < 1i32, true);
+    expect_b1(-1i8 < 1i8, true);
+
+    // unsigned u8 ordering
+    var x: u8 = 200u8;
+    expect_b1(x > 100u8, true);
+
+    done();
+}
