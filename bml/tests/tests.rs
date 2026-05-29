@@ -1004,6 +1004,17 @@ assert_ir_contains!(
 // ─── verify integration (requires BML_IKOS_BIN) ───────────────────────
 
 fn bml_verify(fixture: &str) -> (bool, String) {
+    let (ok, stdout, stderr) = bml_verify_args(fixture, &[]);
+    (ok, format!("{stdout}{stderr}"))
+}
+
+/// Run `bml verify` on a fixture with extra CLI flags, returning
+/// (success, stdout, stderr) separately. JSON output goes to stdout and text
+/// diagnostics to stderr, so the split lets contract tests check each stream.
+fn bml_verify_args(fixture: &str, extra: &[&str]) -> (bool, String, String) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
@@ -1011,14 +1022,17 @@ fn bml_verify(fixture: &str) -> (bool, String) {
 
     let ikos_bin = std::env::var("BML_IKOS_BIN").unwrap_or_else(|_| "ikos-analyzer".into());
 
-    // Unique temp dir per fixture to avoid IKOS DB lock contention
-    let tmpdir = std::env::temp_dir().join(format!("bml_test_{}", fixture.replace('.', "_")));
+    // Unique temp dir per call (the same fixture is verified with different
+    // flags) to avoid IKOS DB lock contention when tests run in parallel.
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmpdir = std::env::temp_dir().join(format!("bml_test_{}_{seq}", fixture.replace('.', "_")));
     let _ = std::fs::create_dir_all(&tmpdir);
 
     let output = Command::new(env!("CARGO_BIN_EXE_bml"))
         .arg("verify")
         .arg("--ikos-bin")
         .arg(&ikos_bin)
+        .args(extra)
         .arg(&path)
         .env("TMPDIR", &tmpdir)
         // The Homebrew LLVM 18 prefix is macOS-only; non-existent paths are
@@ -1033,9 +1047,8 @@ fn bml_verify(fixture: &str) -> (bool, String) {
         .output()
         .expect("failed to run bml verify");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     // Clean up temp files from the fixture dir (created by --save-temps)
     let fixture_dir = path.parent().unwrap();
@@ -1054,7 +1067,23 @@ fn bml_verify(fixture: &str) -> (bool, String) {
 
     let _ = std::fs::remove_dir_all(&tmpdir);
 
-    (output.status.success(), combined)
+    (output.status.success(), stdout, stderr)
+}
+
+/// Run `bml verify <args>` directly with no IKOS setup, returning
+/// (success, stdout, stderr). For CLI-contract tests whose argument errors are
+/// reported before IKOS is ever invoked, so they need no toolchain.
+fn run_verify_raw(args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("verify")
+        .args(args)
+        .output()
+        .expect("failed to run bml verify");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 macro_rules! assert_verify_fail {
@@ -1187,5 +1216,129 @@ fn test_verify_cond_loose() {
     assert!(
         output.contains("[V101]"),
         "expected V101 buffer-overflow warning, got:\n{output}"
+    );
+}
+
+// ─── verify CLI contract: argument parsing (no toolchain needed) ───────────
+//
+// These errors are reported during argument parsing, before IKOS is invoked,
+// so they run regardless of BML_IKOS_BIN.
+
+#[test]
+fn test_verify_format_unknown() {
+    let (ok, _stdout, stderr) = run_verify_raw(&["--format", "xml"]);
+    assert!(!ok, "unknown --format should exit non-zero");
+    assert!(
+        stderr.contains("unknown format `xml`"),
+        "expected an unknown-format message, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_verify_fail_on_unknown() {
+    let (ok, _stdout, stderr) = run_verify_raw(&["--fail-on", "sometimes"]);
+    assert!(!ok, "unknown --fail-on level should exit non-zero");
+    assert!(
+        stderr.contains("unknown level `sometimes`"),
+        "expected an unknown-level message, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_verify_missing_source() {
+    let (ok, _stdout, stderr) = run_verify_raw(&[]);
+    assert!(!ok, "missing source path should exit non-zero");
+    assert!(
+        stderr.contains("Usage: bml verify"),
+        "expected usage text, got:\n{stderr}"
+    );
+}
+
+// ─── verify CLI contract: --format json / --fail-on (requires BML_IKOS_BIN) ─
+
+fn ikos_available() -> bool {
+    std::env::var("BML_IKOS_BIN").is_ok()
+}
+
+// JSON output goes to stdout; a clean program is an empty findings array.
+#[test]
+fn test_verify_json_empty() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, _stderr) = bml_verify_args("verify_no_findings.bml", &["--format", "json"]);
+    assert!(ok, "a clean program should exit 0");
+    assert_eq!(
+        stdout.trim(),
+        "{\"findings\":[]}",
+        "expected an empty findings array on stdout"
+    );
+}
+
+// A real finding is rendered as a JSON object on stdout with the documented
+// fields, and JSON mode keeps the text diagnostics off stderr.
+#[test]
+fn test_verify_json_error_finding() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args("verify_assert_fail.bml", &["--format", "json"]);
+    assert!(!ok, "an error finding should exit 1");
+    let s = stdout.trim();
+    assert!(
+        s.starts_with("{\"findings\":[") && s.ends_with("]}"),
+        "expected a findings array on stdout, got:\n{stdout}"
+    );
+    for field in [
+        "\"check\":\"assert\"",
+        "\"severity\":\"error\"",
+        "\"line\":",
+        "\"column\":",
+    ] {
+        assert!(
+            s.contains(field),
+            "expected JSON to contain {field}, got:\n{stdout}"
+        );
+    }
+    // text-format diagnostics must not leak to stderr in JSON mode
+    assert!(
+        !stderr.contains("error[assert]"),
+        "JSON mode should not also emit text diagnostics on stderr, got:\n{stderr}"
+    );
+}
+
+// --fail-on sets the severity threshold for a non-zero exit. A warning-level
+// finding passes under the default `error` threshold but fails under `warning`.
+#[test]
+fn test_verify_fail_on_threshold() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok_default, _, _) = bml_verify_args("verify_loop_oob.bml", &[]);
+    assert!(
+        ok_default,
+        "a warning finding should not fail under the default --fail-on error"
+    );
+    let (ok_warn, _, _) = bml_verify_args("verify_loop_oob.bml", &["--fail-on", "warning"]);
+    assert!(
+        !ok_warn,
+        "--fail-on warning should exit 1 on a warning finding"
+    );
+}
+
+// --fail-on never suppresses the non-zero exit even for an error finding.
+#[test]
+fn test_verify_fail_on_never() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, _, _) = bml_verify_args("verify_assert_fail.bml", &["--fail-on", "never"]);
+    assert!(
+        ok,
+        "--fail-on never should exit 0 even with an error finding"
     );
 }
