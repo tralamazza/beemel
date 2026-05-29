@@ -189,11 +189,15 @@ How it works:
   (print `OK` / `FAIL` via semihosting `SYS_WRITE0`) and `done()` (terminate via
   `SYS_EXIT`). Fixtures `import harness.semihost;` -- imports flatten into one
   object, so there is nothing extra to link.
-- `tests/exec.rs` runs `bml build --opt=0 --save-temps --target exec/qemu.target`,
+- `tests/exec.rs` runs `bml build --save-temps --target exec/qemu.target`,
   links the object with `arm-none-eabi-ld` using the generated linker script, and
   runs `qemu-system-arm -M stm32vldiscovery -semihosting`. QEMU sends semihosting
   output to its stderr; the harness captures that and asserts it contains `OK`
   and never `FAIL`.
+- Every fixture is run at both `-O0` and `-O2` (see `OPT_LEVELS`). The optimized
+  run is what guards the wrapping contract (no `nsw`/`nuw`, per
+  design-decisions.md §8) and MMIO/volatile non-elision: a regression there
+  passes at `-O0` but miscompiles under the optimizer.
 
 Requirements: `qemu-system-arm` and `arm-none-eabi-ld` on `PATH` (override with
 `BML_QEMU_BIN` / `BML_ARM_LD_BIN`). When either is missing the tests skip with a

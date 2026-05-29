@@ -51,7 +51,7 @@ fn fixtures_dir() -> PathBuf {
 }
 
 /// Compile, link, and run `fixture` under QEMU; return the semihosting output.
-fn bml_run(fixture: &str) -> String {
+fn bml_run(fixture: &str, opt: &str) -> String {
     let dir = fixtures_dir();
     let src = dir.join(fixture);
     let target = dir.join("qemu.target");
@@ -59,7 +59,7 @@ fn bml_run(fixture: &str) -> String {
     // 1. Compile to an object file (and linker script) next to the fixture.
     let build = Command::new(env!("CARGO_BIN_EXE_bml"))
         .arg("build")
-        .arg("--opt=0")
+        .arg(format!("--opt={opt}"))
         .arg("--save-temps")
         .arg("--target")
         .arg(&target)
@@ -70,15 +70,16 @@ fn bml_run(fixture: &str) -> String {
     let lds = src.with_extension("ld");
     assert!(
         build.status.success() && obj.exists(),
-        "bml build failed for {fixture}:\n{}{}",
+        "bml build failed for {fixture} at -O{opt}:\n{}{}",
         String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr),
     );
 
     // 2. Link to an ELF in a temp location.
     let stem = src.file_stem().unwrap().to_string_lossy().to_string();
-    let elf = std::env::temp_dir().join(format!("bml-exec-{stem}-{}.elf", std::process::id()));
-    let out_path = std::env::temp_dir().join(format!("bml-exec-{stem}-{}.out", std::process::id()));
+    let pid = std::process::id();
+    let elf = std::env::temp_dir().join(format!("bml-exec-{stem}-O{opt}-{pid}.elf"));
+    let out_path = std::env::temp_dir().join(format!("bml-exec-{stem}-O{opt}-{pid}.out"));
     let link = Command::new(ld_bin())
         .arg("-T")
         .arg(&lds)
@@ -97,8 +98,9 @@ fn bml_run(fixture: &str) -> String {
         String::new()
     };
 
-    // 4. Clean up intermediates.
+    // 4. Clean up intermediates (incl. the optimized IR from --save-temps).
     let _ = std::fs::remove_file(src.with_extension("ll"));
+    let _ = std::fs::remove_file(src.with_extension("opt.ll"));
     let _ = std::fs::remove_file(&obj);
     let _ = std::fs::remove_file(&lds);
     let _ = std::fs::remove_file(&elf);
@@ -106,7 +108,7 @@ fn bml_run(fixture: &str) -> String {
 
     assert!(
         link_ok,
-        "link failed for {fixture}:\n{}",
+        "link failed for {fixture} at -O{opt}:\n{}",
         String::from_utf8_lossy(&link.stderr),
     );
     output
@@ -146,7 +148,15 @@ fn run_qemu(elf: &std::path::Path, out_path: &std::path::Path) -> String {
     std::fs::read_to_string(out_path).unwrap_or_default()
 }
 
-/// Run a fixture and assert it reported success: at least one `OK` and no `FAIL`.
+/// Optimization levels every fixture is run at. `-O0` checks the unoptimized
+/// lowering; `-O2` checks that the program still behaves correctly through the
+/// LLVM optimizer -- e.g. that wrapping arithmetic is preserved (no nsw/nuw is
+/// emitted, per design-decisions.md §8) and MMIO/volatile accesses aren't
+/// elided.
+const OPT_LEVELS: &[&str] = &["0", "2"];
+
+/// Run a fixture at every opt level and assert it reported success at each: at
+/// least one `OK` and no `FAIL`.
 macro_rules! assert_exec {
     ($name:ident, $fixture:expr) => {
         #[test]
@@ -159,17 +169,19 @@ macro_rules! assert_exec {
                 );
                 return;
             }
-            let out = bml_run($fixture);
-            assert!(
-                out.contains("OK"),
-                "expected at least one OK from {}; captured output:\n{out}",
-                $fixture
-            );
-            assert!(
-                !out.contains("FAIL"),
-                "{} reported a FAIL; captured output:\n{out}",
-                $fixture
-            );
+            for opt in OPT_LEVELS {
+                let out = bml_run($fixture, opt);
+                assert!(
+                    out.contains("OK"),
+                    "expected at least one OK from {} at -O{opt}; captured output:\n{out}",
+                    $fixture
+                );
+                assert!(
+                    !out.contains("FAIL"),
+                    "{} reported a FAIL at -O{opt}; captured output:\n{out}",
+                    $fixture
+                );
+            }
         }
     };
 }
@@ -187,7 +199,7 @@ macro_rules! known_bug {
                 eprintln!("skipping {}: toolchain not found", $fixture);
                 return;
             }
-            let out = bml_run($fixture);
+            let out = bml_run($fixture, "0");
             assert!(out.contains("OK") && !out.contains("FAIL"), "{}", $reason);
         }
     };
