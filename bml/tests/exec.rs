@@ -252,3 +252,293 @@ known_bug!(
     "array_size_const_known_bug.bml",
     "a const used as an array length evaluates to 0"
 );
+
+// ─── property / differential test for integer arithmetic ─────────────────────
+//
+// Generate random integer expressions, evaluate each with a Rust oracle that
+// mirrors bml's semantics (two's-complement wrapping; signed vs unsigned
+// div/rem/shr), then emit one program that self-checks every expression and
+// run it under QEMU. This explores far more of the arithmetic space than the
+// hand-written fixtures. The seed is fixed for reproducibility (override with
+// BML_PROP_SEED); on failure the generated source is printed.
+
+// The generator does deliberate two's-complement bit reinterpretation and uses
+// short mathematical names, so the usual pedantic cast/naming lints are noise.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names,
+    clippy::doc_markdown,
+    clippy::format_push_string
+)]
+mod property {
+    use super::{OPT_LEVELS, bml_run, fixtures_dir, tools_available};
+    use std::path::PathBuf;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ty {
+        U32,
+        I32,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+        Div,
+        Rem,
+        And,
+        Or,
+        Xor,
+        Shl,
+        Shr,
+    }
+
+    enum Expr {
+        Lit(i64),
+        Bin(Box<Expr>, Op, Box<Expr>),
+    }
+
+    /// xorshift64* — small deterministic PRNG so failures reproduce from a seed.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    const U32_EDGES: &[i64] = &[
+        0,
+        1,
+        2,
+        255,
+        256,
+        65535,
+        65536,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0xFFFF_FFFF,
+    ];
+    const I32_EDGES: &[i64] = &[
+        0,
+        1,
+        -1,
+        2,
+        -2,
+        255,
+        -256,
+        32767,
+        -32768,
+        2_147_483_647,
+        -2_147_483_647,
+    ];
+
+    fn gen_lit(rng: &mut Rng, ty: Ty) -> i64 {
+        if rng.below(100) < 50 {
+            let pool = match ty {
+                Ty::U32 => U32_EDGES,
+                Ty::I32 => I32_EDGES,
+            };
+            pool[rng.below(pool.len() as u64) as usize]
+        } else {
+            match ty {
+                Ty::U32 => i64::from(rng.next() as u32),
+                // full i32 range except MIN (which has no writable negative literal)
+                Ty::I32 => (i64::from(rng.next() as u32) % 4_294_967_295) - 2_147_483_647,
+            }
+        }
+    }
+
+    /// A nonzero divisor; for signed, also avoid -1 (INT_MIN / -1 overflows).
+    fn gen_divisor(rng: &mut Rng, ty: Ty) -> i64 {
+        loop {
+            let v = gen_lit(rng, ty);
+            match ty {
+                Ty::U32 if (v as u32) != 0 => return v,
+                Ty::I32 if (v as i32) != 0 && (v as i32) != -1 => return v,
+                _ => {}
+            }
+        }
+    }
+
+    fn gen_expr(rng: &mut Rng, ty: Ty, depth: u32) -> Expr {
+        if depth == 0 || rng.below(100) < 30 {
+            return Expr::Lit(gen_lit(rng, ty));
+        }
+        let op = [
+            Op::Add,
+            Op::Sub,
+            Op::Mul,
+            Op::Div,
+            Op::Rem,
+            Op::And,
+            Op::Or,
+            Op::Xor,
+            Op::Shl,
+            Op::Shr,
+        ][rng.below(10) as usize];
+        let l = gen_expr(rng, ty, depth - 1);
+        let r = match op {
+            Op::Div | Op::Rem => Expr::Lit(gen_divisor(rng, ty)),
+            // shift count in 0..32 keeps the shift well-defined
+            Op::Shl | Op::Shr => Expr::Lit(rng.below(32) as i64),
+            _ => gen_expr(rng, ty, depth - 1),
+        };
+        Expr::Bin(Box::new(l), op, Box::new(r))
+    }
+
+    /// Evaluate to the u32 bit pattern, using `ty`'s arithmetic.
+    fn eval(e: &Expr, ty: Ty) -> u32 {
+        match e {
+            Expr::Lit(n) => match ty {
+                Ty::U32 => *n as u32,
+                Ty::I32 => *n as i32 as u32,
+            },
+            Expr::Bin(l, op, r) => {
+                let a = eval(l, ty);
+                let b = eval(r, ty);
+                match ty {
+                    Ty::U32 => match op {
+                        Op::Add => a.wrapping_add(b),
+                        Op::Sub => a.wrapping_sub(b),
+                        Op::Mul => a.wrapping_mul(b),
+                        Op::Div => a / b,
+                        Op::Rem => a % b,
+                        Op::And => a & b,
+                        Op::Or => a | b,
+                        Op::Xor => a ^ b,
+                        Op::Shl => a.wrapping_shl(b),
+                        Op::Shr => a.wrapping_shr(b),
+                    },
+                    Ty::I32 => {
+                        let (x, y) = (a as i32, b as i32);
+                        let v = match op {
+                            Op::Add => x.wrapping_add(y),
+                            Op::Sub => x.wrapping_sub(y),
+                            Op::Mul => x.wrapping_mul(y),
+                            Op::Div => x.wrapping_div(y),
+                            Op::Rem => x.wrapping_rem(y),
+                            Op::And => x & y,
+                            Op::Or => x | y,
+                            Op::Xor => x ^ y,
+                            Op::Shl => x.wrapping_shl(b),
+                            Op::Shr => x.wrapping_shr(b),
+                        };
+                        v as u32
+                    }
+                }
+            }
+        }
+    }
+
+    fn op_str(op: Op) -> &'static str {
+        match op {
+            Op::Add => "+",
+            Op::Sub => "-",
+            Op::Mul => "*",
+            Op::Div => "/",
+            Op::Rem => "%",
+            Op::And => "&",
+            Op::Or => "|",
+            Op::Xor => "^",
+            Op::Shl => "<<",
+            Op::Shr => ">>",
+        }
+    }
+
+    fn render(e: &Expr, ty: Ty) -> String {
+        match e {
+            Expr::Lit(n) => match ty {
+                Ty::U32 => format!("{}", *n as u32),
+                Ty::I32 => {
+                    let v = *n as i32;
+                    if v < 0 {
+                        format!("({v}i32)")
+                    } else {
+                        format!("{v}i32")
+                    }
+                }
+            },
+            Expr::Bin(l, op, r) => {
+                format!("({} {} {})", render(l, ty), op_str(*op), render(r, ty))
+            }
+        }
+    }
+
+    fn write_generated(name: &str, source: &str) -> PathBuf {
+        let path = fixtures_dir().join(name);
+        std::fs::write(&path, source).expect("write generated fixture");
+        path
+    }
+
+    #[test]
+    fn exec_property_arith() {
+        if !tools_available() {
+            eprintln!("skipping property test: toolchain not found");
+            return;
+        }
+        let seed = std::env::var("BML_PROP_SEED")
+            .ok()
+            .and_then(|s| match s.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => s.parse().ok(),
+            })
+            .unwrap_or(0x1234_5678_9ABC_DEF0u64);
+        let mut rng = Rng(seed);
+
+        let mut body = String::new();
+        for _ in 0..120 {
+            for ty in [Ty::U32, Ty::I32] {
+                let e = gen_expr(&mut rng, ty, 4);
+                let expected = eval(&e, ty);
+                let src = render(&e, ty);
+                match ty {
+                    Ty::U32 => body.push_str(&format!("    expect_u32({src}, {expected});\n")),
+                    Ty::I32 => {
+                        body.push_str(&format!("    expect_u32(({src}) as u32, {expected});\n"));
+                    }
+                }
+            }
+        }
+        let program = format!(
+            "// GENERATED by exec_property_arith (seed {seed:#018x}). Do not edit.\n\
+         import harness.semihost;\n\
+         fn main() @context(thread) {{\n{body}    done();\n}}\n"
+        );
+
+        let name = "_generated_arith.bml";
+        let path = write_generated(name, &program);
+        let mut failures = Vec::new();
+        for opt in OPT_LEVELS {
+            let out = bml_run(name, opt);
+            if !out.contains("OK") || out.contains("FAIL") {
+                failures.push(format!(
+                    "-O{opt}: {} OK / {} FAIL",
+                    count(&out, "OK"),
+                    count(&out, "FAIL")
+                ));
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            failures.is_empty(),
+            "property test failed (seed {seed:#018x}): {}\n--- generated source ---\n{program}",
+            failures.join("; ")
+        );
+    }
+
+    fn count(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+}

@@ -3,3 +3,5 @@
 *.o
 *.ld
 *.elf
+# Sources emitted by the property test (exec_property_arith).
+_generated*.bml

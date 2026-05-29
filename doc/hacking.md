@@ -213,6 +213,14 @@ Known compiler bugs surfaced by this layer are pinned as `#[ignore]`d
 suite is green; run `cargo test --test exec -- --ignored` to confirm they still
 reproduce, and delete the `#[ignore]` once fixed.
 
+`exec_property_arith` is a differential test: it generates random integer
+expressions, evaluates each with a Rust oracle that mirrors bml's semantics
+(two's-complement wrapping; signed vs unsigned div/rem/shr), and checks the
+compiled program agrees at `-O0` and `-O2`. The seed is fixed for
+reproducibility; rerun a specific case with `BML_PROP_SEED=<n> cargo test
+--test exec exec_property_arith` (decimal or `0x...`). On failure it prints the
+seed and the full generated source.
+
 ## Code conventions
 
 - Hand-written recursive descent, no parser generators
