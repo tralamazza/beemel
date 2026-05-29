@@ -1,0 +1,5 @@
+# Build artifacts produced by the execution tests (bml build --save-temps).
+*.ll
+*.o
+*.ld
+*.elf

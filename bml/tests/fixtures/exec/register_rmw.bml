@@ -1,0 +1,51 @@
+// Peripheral register read-modify-write (language.md §9).
+// "periph.reg.field = v -> RMW: load, clear bits, mask/shift new value,
+//  volatile store." We map a fake peripheral over plain RAM so register reads
+// return exactly what was written; that makes the masking/shifting directly
+// observable without relying on QEMU modelling any specific device.
+import harness.semihost;
+
+peripheral FAKE at 0x20001000 {
+    reg CR offset 0x00 {
+        field LOW: u32 bit[0..3]
+        field MID: u32 bit[4..7]
+        field HIGH: u32 bit[8..11]
+    }
+    reg FLAGS offset 0x04 {
+        field EN: b1 bit[0]
+        field MODE: u32 bit[1..2]
+    }
+}
+
+fn main() @context(thread) {
+    // known starting value
+    FAKE.CR = 0;
+
+    // write one field, read it back
+    FAKE.CR.MID = 5;
+    expect_u32(FAKE.CR.MID, 5);
+
+    // writing a neighbouring field preserves the first (RMW keeps other bits)
+    FAKE.CR.LOW = 3;
+    expect_u32(FAKE.CR.MID, 5);
+    expect_u32(FAKE.CR.LOW, 3);
+
+    // full register packs both fields at their offsets: MID(5)<<4 | LOW(3) = 0x53
+    expect_u32(FAKE.CR, 0x53);
+
+    // overwriting a field clears its old bits first
+    FAKE.CR.MID = 2;
+    expect_u32(FAKE.CR.MID, 2);
+    expect_u32(FAKE.CR.LOW, 3);
+
+    // single-bit and multi-bit fields in a second register
+    FAKE.FLAGS = 0;
+    FAKE.FLAGS.EN = true;
+    FAKE.FLAGS.MODE = 3;
+    expect_b1(FAKE.FLAGS.EN, true);
+    expect_u32(FAKE.FLAGS.MODE, 3);
+    // EN(1) | MODE(3)<<1 = 1 | 6 = 0x7
+    expect_u32(FAKE.FLAGS, 0x7);
+
+    done();
+}

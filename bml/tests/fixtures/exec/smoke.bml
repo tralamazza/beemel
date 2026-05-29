@@ -1,0 +1,7 @@
+// Smoke test: proves the build -> link -> QEMU semihosting flow end to end.
+import harness.semihost;
+
+fn main() @context(thread) {
+    expect_u32(2 + 2, 4);
+    done();
+}

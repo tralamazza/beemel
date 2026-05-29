@@ -1,0 +1,12 @@
+# QEMU stm32vldiscovery (Cortex-M3) target for execution tests.
+# Mirrors the proven blue-pill/stm32f103c8.target used by run-qemu.sh.
+# Run with: qemu-system-arm -M stm32vldiscovery -semihosting -nographic -kernel <elf>
+arch = armv7m
+cpu = cortex-m3
+priority_bits = 4
+has_bitband = true
+flash_base = 0x08000000
+flash_size = 64K
+ram_base = 0x20000000
+ram_size = 20K
+vector_table_offset = 0x08000000

@@ -1,0 +1,59 @@
+// Minimal ARM semihosting harness for QEMU execution tests.
+//
+// Execution fixtures import this module, compute a value, and self-check it
+// against the spec-mandated answer with `expect_u32` / `expect_b1`. Each check
+// prints "OK\n" or "FAIL\n" through semihosting SYS_WRITE0; the Rust harness
+// asserts the captured output contains "OK" and never "FAIL". `done()` ends the
+// run via SYS_EXIT so QEMU terminates instead of spinning in the reset loop.
+//
+// Kept deliberately tiny and obviously correct: it is the oracle path, so a bug
+// here would surface immediately across every fixture.
+
+export fn ok;
+export fn fail;
+export fn expect_u32;
+export fn expect_b1;
+export fn done;
+
+// Generic semihosting trap. Per AAPCS the operation goes in r0 and the
+// parameter in r1, exactly where the two arguments already sit at the trap.
+fn semihost(op: u32, param: u32) {
+    asm {
+        bkpt 0xAB
+    }
+}
+
+// SYS_WRITE0: write a NUL-terminated string. BML string literals are emitted
+// NUL-terminated, so they can be passed straight through.
+fn write0(msg: *u8) {
+    semihost(0x04, msg as u32);
+}
+
+fn ok() {
+    write0("OK\n");
+}
+
+fn fail() {
+    write0("FAIL\n");
+}
+
+fn expect_u32(actual: u32, expected: u32) {
+    if actual == expected {
+        ok();
+    } else {
+        fail();
+    }
+}
+
+fn expect_b1(actual: b1, expected: b1) {
+    if actual == expected {
+        ok();
+    } else {
+        fail();
+    }
+}
+
+// SYS_EXIT with ADP_Stopped_ApplicationExit -> QEMU exits cleanly.
+fn done() {
+    semihost(0x18, 0x20026);
+}

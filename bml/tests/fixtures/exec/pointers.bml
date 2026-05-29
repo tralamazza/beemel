@@ -1,0 +1,29 @@
+// Pointer arithmetic and dereference (language.md §5).
+// "p + n where n: int -> element-scaled offset"; indexing p[i] is element-scaled
+// access. (Pointer-difference `p - q` lives in a known-bug fixture: its result
+// is currently mistyped as a pointer.)
+import harness.semihost;
+
+fn main() @context(thread) {
+    var arr: [u32; 4] = [10, 20, 30, 40];
+    var p: *mut u32 = &mut arr[0];
+
+    // element-scaled: p + 2 points at arr[2]
+    var p2: *mut u32 = p + 2;
+    expect_u32(*p2, 30);
+
+    // write through the pointer, read back via index
+    *p2 = 99;
+    expect_u32(arr[2], 99);
+
+    // indexing is element-scaled
+    expect_u32(p[3], 40);
+
+    // deref round-trip
+    var x: u32 = 7;
+    var px: *mut u32 = &mut x;
+    *px = 123;
+    expect_u32(x, 123);
+
+    done();
+}

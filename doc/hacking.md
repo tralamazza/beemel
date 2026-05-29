@@ -173,6 +173,42 @@ When adding cross-cutting features:
 - **New analysis**: add a pass between existing ones in `main.rs`
 - **IR-only feature**: only touch `ir.rs`
 
+## Execution tests (black-box, on QEMU)
+
+`tests/tests.rs` checks accept/reject behavior and inspects emitted IR. To check
+that compiled programs actually *compute the right values*, `tests/exec.rs`
+compiles fixtures under `tests/fixtures/exec/`, links them, and runs them on a
+Cortex-M3 under QEMU with semihosting. The fixtures are documentation-driven:
+each one computes a value and self-checks it against the answer mandated by
+`doc/language.md` / `doc/design-decisions.md`, so a passing test means the
+program behaves correctly, not merely that the compiler lowered it a certain way.
+
+How it works:
+
+- `tests/fixtures/exec/harness/semihost.bml` exports `expect_u32` / `expect_b1`
+  (print `OK` / `FAIL` via semihosting `SYS_WRITE0`) and `done()` (terminate via
+  `SYS_EXIT`). Fixtures `import harness.semihost;` -- imports flatten into one
+  object, so there is nothing extra to link.
+- `tests/exec.rs` runs `bml build --opt=0 --save-temps --target exec/qemu.target`,
+  links the object with `arm-none-eabi-ld` using the generated linker script, and
+  runs `qemu-system-arm -M stm32vldiscovery -semihosting`. QEMU sends semihosting
+  output to its stderr; the harness captures that and asserts it contains `OK`
+  and never `FAIL`.
+
+Requirements: `qemu-system-arm` and `arm-none-eabi-ld` on `PATH` (override with
+`BML_QEMU_BIN` / `BML_ARM_LD_BIN`). When either is missing the tests skip with a
+notice, mirroring how `bml verify` tests gate on `BML_IKOS_BIN`. Set these up in
+CI so the layer actually runs.
+
+To add a behavior: write a fixture in `tests/fixtures/exec/` that imports the
+harness, exercises the construct, calls `expect_*` against the spec value, then
+`done()`, and register it in `tests/exec.rs` with `assert_exec!`.
+
+Known compiler bugs surfaced by this layer are pinned as `#[ignore]`d
+`known_bug!` tests (minimal `*_known_bug.bml` fixtures). They stay ignored so the
+suite is green; run `cargo test --test exec -- --ignored` to confirm they still
+reproduce, and delete the `#[ignore]` once fixed.
+
 ## Code conventions
 
 - Hand-written recursive descent, no parser generators

@@ -1,0 +1,50 @@
+// For-loop semantics (language.md §11).
+// "Ranges are half-open in both directions: 0 upto 10 excludes 10;
+//  10 downto 0 excludes 0." step defaults to 1. `continue` advances the
+// induction variable. (The step-1 type-boundary case lives in a known-bug
+// fixture because narrow induction variables currently miscompile.)
+import harness.semihost;
+
+fn main() @context(thread) {
+    // half-open upto: visits 0..9, sum = 45
+    var sum: u32 = 0;
+    for i: u32 in 0 upto 10 {
+        sum = sum + i;
+    }
+    expect_u32(sum, 45);
+
+    // half-open downto with custom step: 10, 8, 6, 4, 2 -> 30 (step lands on 0
+    // exactly; a step that skipped past 0 would underflow the unsigned counter,
+    // which the spec leaves as the user's responsibility for step != 1)
+    var s2: u32 = 0;
+    for j: u32 in 10 downto 0 step 2 {
+        s2 = s2 + j;
+    }
+    expect_u32(s2, 30);
+
+    // signed counter: -2..2 sums to 0
+    var s3: i32 = 0;
+    for k: i32 in -2 upto 3 {
+        s3 = s3 + k;
+    }
+    expect_b1(s3 == 0i32, true);
+
+    // empty range runs zero times
+    var cnt: u32 = 0;
+    for m: u32 in 5 upto 5 {
+        cnt = cnt + 1;
+    }
+    expect_u32(cnt, 0);
+
+    // continue advances by step (skips i == 2): 0 + 1 + 3 + 4 = 8
+    var s4: u32 = 0;
+    for p: u32 in 0 upto 5 {
+        if p == 2 {
+            continue;
+        }
+        s4 = s4 + p;
+    }
+    expect_u32(s4, 8);
+
+    done();
+}

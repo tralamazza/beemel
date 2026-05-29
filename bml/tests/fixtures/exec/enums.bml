@@ -1,0 +1,45 @@
+// Enum semantics (language.md §7): explicit and auto-incremented discriminants,
+// sizeof reflects the underlying type, match selects the correct arm.
+import harness.semihost;
+
+enum Status: u32 {
+    A = 10,
+    B,        // auto-increment -> 11
+    C = 20,
+    D,        // auto-increment -> 21
+}
+
+enum Small: u8 {
+    X,        // 0
+    Y,        // 1
+    Z,        // 2
+}
+
+fn main() @context(thread) {
+    expect_u32(Status@A as u32, 10);
+    expect_u32(Status@B as u32, 11);
+    expect_u32(Status@C as u32, 20);
+    expect_u32(Status@D as u32, 21);
+
+    // sizeof reflects the underlying integer type
+    expect_u32(sizeof(Status), 4);
+    expect_u32(sizeof(Small), 1);
+
+    // match selects the right arm
+    var s = Status@C;
+    var r: u32 = 0;
+    match s {
+        Status@A | Status@B {
+            r = 1;
+        }
+        Status@C {
+            r = 2;
+        }
+        _ {
+            r = 3;
+        }
+    }
+    expect_u32(r, 2);
+
+    done();
+}

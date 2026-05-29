@@ -1,0 +1,13 @@
+// KNOWN BUG: unary negation ignores operand width.
+// ir.rs lowers `-x` as `sub i32 0, <x>` regardless of x's type, so negating an
+// i8/i16 emits a type-mismatched `sub i32 0, <i8>` and llc rejects the module.
+// Expected: emit `sub <T> 0, <x>` using the operand's own width.
+import harness.semihost;
+
+fn main() @context(thread) {
+    var x: i8 = 5i8;
+    var y: i8 = -x;
+    // -5 reinterpreted as u8 is 251 (256 - 5)
+    expect_u32((y as u8) as u32, 251);
+    done();
+}

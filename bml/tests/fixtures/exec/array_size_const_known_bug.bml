@@ -1,0 +1,13 @@
+// KNOWN BUG: a const used as an array length is not evaluated.
+// `[u32; N]` where `const N: u32 = 4` resolves the length to 0 (Array(U32, 0)),
+// producing a spurious E300 type mismatch against the 4-element initializer.
+// Expected: const expressions usable as array lengths are folded to their value.
+import harness.semihost;
+
+const N: u32 = 4;
+
+fn main() @context(thread) {
+    var arr: [u32; N] = [1, 2, 3, 4];
+    expect_u32(arr[3], 4);
+    done();
+}

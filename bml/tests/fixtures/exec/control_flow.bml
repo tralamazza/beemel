@@ -1,0 +1,48 @@
+// Control flow and value-producing expressions (language.md §11).
+// if-expressions and block-expressions yield their trailing value; while/break
+// terminate as expected; recursion and function-pointer calls return correctly.
+import harness.semihost;
+
+fn fib(n: u32) -> u32 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn add_one(x: u32) -> u32 {
+    return x + 1;
+}
+
+fn main() @context(thread) {
+    // if-expression yields the trailing value of the taken branch
+    var a: u32 = 5;
+    var m: u32 = if a > 3 { 10 } else { 20 };
+    expect_u32(m, 10);
+
+    // block-expression yields its trailing value
+    var b: u32 = {
+        var t: u32 = 6;
+        t * 7
+    };
+    expect_u32(b, 42);
+
+    // while loop with break
+    var i: u32 = 0;
+    while i < 100 {
+        i = i + 1;
+        if i == 7 {
+            break;
+        }
+    }
+    expect_u32(i, 7);
+
+    // recursion
+    expect_u32(fib(10), 55);
+
+    // call through a function pointer
+    var fp: fn(u32) -> u32 = &add_one;
+    expect_u32(fp(41), 42);
+
+    done();
+}

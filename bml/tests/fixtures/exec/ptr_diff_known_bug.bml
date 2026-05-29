@@ -1,0 +1,13 @@
+// KNOWN BUG: pointer difference is mistyped as a pointer.
+// `q - p` correctly computes the element count as an i32, but the expression's
+// type is recorded as a pointer, so `(q - p) as u32` emits `ptrtoint ptr <i32>`
+// (invalid; llc rejects it). Expected: pointer-minus-pointer has integer type.
+import harness.semihost;
+
+fn main() @context(thread) {
+    var arr: [u32; 4] = [10, 20, 30, 40];
+    var p: *mut u32 = &mut arr[0];
+    var q: *mut u32 = &mut arr[3];
+    expect_u32((q - p) as u32, 3);
+    done();
+}

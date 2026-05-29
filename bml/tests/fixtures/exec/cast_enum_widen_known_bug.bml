@@ -1,0 +1,16 @@
+// KNOWN BUG: casting an enum value to a wider integer uses bitcast.
+// In ir.rs the cast path checks `is_int(inner)`, which is false for an enum
+// type, so `Small@Z as u32` falls through to `bitcast i8 ... to i32` (invalid;
+// llc rejects it). Expected: treat the enum as its underlying integer and zext.
+import harness.semihost;
+
+enum Small: u8 {
+    X,
+    Y,
+    Z,
+}
+
+fn main() @context(thread) {
+    expect_u32(Small@Z as u32, 2);
+    done();
+}
