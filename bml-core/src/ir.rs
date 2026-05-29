@@ -826,8 +826,6 @@ impl IrEmitter {
     ) -> (Option<String>, bool) {
         match stmt {
             Stmt::VarDecl(vd) => {
-                let init_reg = self.emit_expr(&vd.init, symbols, fn_name);
-                let init_ty = self.expr_type(&vd.init, symbols);
                 let (alloca_name, llvm_ty, bml_type) = {
                     let info = self
                         .locals
@@ -839,6 +837,27 @@ impl IrEmitter {
                         info.bml_type.clone(),
                     )
                 };
+                // Array literal with a declared element type: store each element
+                // coerced to that type, so `var b: [u8; 4] = [0, 0, 0, 0]` works
+                // (bare literals are typed i32 and would otherwise mismatch).
+                if let (Expr::ArrayInit(elems, _), Type::Array(elem_ty, _)) = (&vd.init, &bml_type)
+                {
+                    let ll_elem = llvm_type(elem_ty);
+                    for (i, e) in elems.iter().enumerate() {
+                        let r = self.emit_expr(e, symbols, fn_name);
+                        let ety = self.expr_type(e, symbols);
+                        let r = self.coerce_int(r, &ety, elem_ty);
+                        let gep = self.new_reg();
+                        self.line(&format!(
+                            "{gep} = getelementptr {llvm_ty}, ptr {alloca_name}, i32 0, i32 {i}"
+                        ));
+                        self.line(&format!("store {ll_elem} {r}, ptr {gep}"));
+                    }
+                    self.dbg_declare(&alloca_name, &vd.name.0, &bml_type, vd.name.1);
+                    return (None, false);
+                }
+                let init_reg = self.emit_expr(&vd.init, symbols, fn_name);
+                let init_ty = self.expr_type(&vd.init, symbols);
                 let init_llvm = llvm_type(&init_ty);
                 let final_reg = if init_llvm == llvm_ty {
                     init_reg
@@ -954,7 +973,16 @@ impl IrEmitter {
                 };
                 if let Some(val) = &ret.value {
                     let reg = self.emit_expr(val, symbols, fn_name);
-                    let ty = llvm_type(&self.expr_type(val, symbols));
+                    let val_ty = self.expr_type(val, symbols);
+                    // Return the value at the function's declared return width,
+                    // coercing (e.g. an i32 literal returned from an i8 fn).
+                    let ret_ty = symbols
+                        .functions
+                        .get(fn_name)
+                        .and_then(|f| f.ret.clone())
+                        .unwrap_or_else(|| val_ty.clone());
+                    let reg = self.coerce_int(reg, &val_ty, &ret_ty);
+                    let ty = llvm_type(&ret_ty);
                     self.line(&format!("ret {ty} {reg}{dbg_sfx}"));
                 } else {
                     self.line(&format!("ret void{dbg_sfx}"));
@@ -1657,15 +1685,25 @@ impl IrEmitter {
                 };
 
                 if let Some(direct_name) = direct_name {
-                    let fn_sym = symbols.functions.get(&direct_name);
+                    let param_tys: Option<Vec<Type>> = symbols
+                        .functions
+                        .get(&direct_name)
+                        .map(|s| s.params.iter().map(|(_, t)| t.clone()).collect());
                     let mut arg_parts = Vec::new();
-                    for arg in args {
+                    for (i, arg) in args.iter().enumerate() {
                         let reg = self.emit_expr(arg, symbols, fn_name);
                         let ty = self.expr_type(arg, symbols);
-                        let llty = llvm_type(&ty);
-                        arg_parts.push(format!("{llty} {reg}"));
+                        // Pass each argument at its parameter's width so an i32
+                        // literal lands correctly in a narrower parameter slot.
+                        if let Some(pty) = param_tys.as_ref().and_then(|p| p.get(i)) {
+                            let reg = self.coerce_int(reg, &ty, pty);
+                            arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+                        } else {
+                            arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
+                        }
                     }
                     let arg_str = arg_parts.join(", ");
+                    let fn_sym = symbols.functions.get(&direct_name);
 
                     let ret_ty = fn_sym
                         .and_then(|s| s.ret.as_ref())
@@ -1690,13 +1728,21 @@ impl IrEmitter {
                     // defined before appearing in the call instruction.
                     let callee_reg = self.emit_expr(func_expr, symbols, fn_name);
                     let callee_ty = self.expr_type(func_expr, symbols);
+                    let param_tys = match &callee_ty {
+                        Type::Fn(ps, _) => Some(ps.clone()),
+                        _ => None,
+                    };
 
                     let mut arg_parts = Vec::new();
-                    for arg in args {
+                    for (i, arg) in args.iter().enumerate() {
                         let reg = self.emit_expr(arg, symbols, fn_name);
                         let ty = self.expr_type(arg, symbols);
-                        let llty = llvm_type(&ty);
-                        arg_parts.push(format!("{llty} {reg}"));
+                        if let Some(pty) = param_tys.as_ref().and_then(|p| p.get(i)) {
+                            let reg = self.coerce_int(reg, &ty, pty);
+                            arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+                        } else {
+                            arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
+                        }
                     }
                     let arg_str = arg_parts.join(", ");
 
@@ -2116,6 +2162,8 @@ impl IrEmitter {
                 for (idx, (fname, ftype)) in struct_fields.iter().enumerate() {
                     if let Some((_, init_expr)) = fields.iter().find(|(n, _)| n.0 == *fname) {
                         let init_reg = self.emit_expr(init_expr, symbols, fn_name);
+                        let init_ty = self.expr_type(init_expr, symbols);
+                        let init_reg = self.coerce_int(init_reg, &init_ty, ftype);
                         let ll_field = llvm_type(ftype);
                         let gep = self.new_reg();
                         self.line(&format!(
@@ -2308,16 +2356,19 @@ impl IrEmitter {
             LValue::Name((name, _)) => {
                 // Local variable
                 if let Some(info) = self.locals.get(name) {
-                    self.line(&format!(
-                        "store {} {val_reg}, ptr {}{dbg}",
-                        info.llvm_ty, info.alloca
-                    ));
-                    return val_reg.to_string();
+                    let target_ty = info.bml_type.clone();
+                    let llvm_ty = info.llvm_ty.clone();
+                    let alloca = info.alloca.clone();
+                    let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &target_ty);
+                    self.line(&format!("store {llvm_ty} {val_reg}, ptr {alloca}{dbg}"));
+                    return val_reg;
                 }
                 // Static
                 if let Some(sym) = symbols.statics.get(name) {
-                    let ty = llvm_type(sym.ty.inner());
+                    let target_ty = sym.ty.inner().clone();
+                    let ty = llvm_type(&target_ty);
                     let needs_cs = self.static_needs_critical_section(name, symbols);
+                    let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &target_ty);
                     if needs_cs {
                         crate::arch::arm::emit_critical_enter(self);
                     }
@@ -2325,7 +2376,7 @@ impl IrEmitter {
                     if needs_cs {
                         crate::arch::arm::emit_critical_leave(self);
                     }
-                    return val_reg.to_string();
+                    return val_reg;
                 }
                 val_reg.to_string()
             }
@@ -2403,16 +2454,17 @@ impl IrEmitter {
                         && let Type::Struct(_, fields) = &info.bml_type
                         && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                     {
-                        let field_ty = &fields[idx].1;
-                        let ll_field = llvm_type(field_ty);
+                        let field_ty = fields[idx].1.clone();
+                        let ll_field = llvm_type(&field_ty);
                         let llvm_ty = info.llvm_ty.clone();
                         let alloca = info.alloca.clone();
                         let gep = self.new_reg();
                         self.line(&format!(
                             "{gep} = getelementptr {llvm_ty}, ptr {alloca}, i32 0, i32 {idx}"
                         ));
+                        let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &field_ty);
                         self.line(&format!("store {ll_field} {val_reg}, ptr {gep}{dbg}"));
-                        return val_reg.to_string();
+                        return val_reg;
                     }
                 }
                 val_reg.to_string()
@@ -2436,19 +2488,21 @@ impl IrEmitter {
                     "{gep} = getelementptr {ll_elem}, ptr {base_ptr}, {} {idx_reg}",
                     llvm_type(&idx_ty)
                 ));
+                let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &elem_ty);
                 self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
-                val_reg.to_string()
+                val_reg
             }
             LValue::Deref(inner) => {
                 let ptr_reg = self.emit_expr(inner, symbols, fn_name);
                 let inner_ty = self.expr_type(inner, symbols);
                 let pointee_ty = match &inner_ty {
-                    Type::Ptr(t) | Type::ConstPtr(t) => t.as_ref(),
-                    _ => &crate::types::Type::I32,
+                    Type::Ptr(t) | Type::ConstPtr(t) => (**t).clone(),
+                    _ => crate::types::Type::I32,
                 };
-                let llty = llvm_type(pointee_ty);
+                let llty = llvm_type(&pointee_ty);
+                let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &pointee_ty);
                 self.line(&format!("store {llty} {val_reg}, ptr {ptr_reg}{dbg}"));
-                val_reg.to_string()
+                val_reg
             }
         }
     }

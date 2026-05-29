@@ -1679,6 +1679,11 @@ fn unsuffixed_literal_fits(expr: &Expr, target_ty: &Type) -> bool {
             }
             _ => false,
         },
+        // An array literal of unsuffixed elements adopts the declared element
+        // type, e.g. `var b: [u8; 4] = [0, 0, 0, 0]`.
+        (Expr::ArrayInit(elems, _), Type::Array(elem, n)) => {
+            elems.len() == *n && elems.iter().all(|e| unsuffixed_literal_fits(e, elem))
+        }
         _ => false,
     }
 }

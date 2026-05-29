@@ -663,13 +663,14 @@ fn test_array_init() {
         ir.contains("alloca [4 x i32]"),
         "expected array alloca\n--- IR ---\n{ir}\n-----------"
     );
+    // elements are initialized by indexed GEPs directly into the array alloca
     assert!(
         ir.contains("getelementptr [4 x i32], ptr"),
         "expected typed GEP into array\n--- IR ---\n{ir}\n-----------"
     );
     assert!(
-        ir.contains("load [4 x i32], ptr"),
-        "expected array load\n--- IR ---\n{ir}\n-----------"
+        ir.contains("store i32"),
+        "expected element stores\n--- IR ---\n{ir}\n-----------"
     );
 }
 
@@ -694,8 +695,8 @@ fn test_array_write() {
         "expected GEP for array write\n--- IR ---\n{ir}\n-----------"
     );
     assert!(
-        ir.contains("store i32 %9, ptr %12"),
-        "expected element store\n--- IR ---\n{ir}\n-----------"
+        ir.contains("add i32 0, 42"),
+        "expected the written value to be materialized\n--- IR ---\n{ir}\n-----------"
     );
 }
 

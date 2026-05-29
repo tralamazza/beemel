@@ -223,6 +223,9 @@ assert_exec!(exec_control_flow, "control_flow.bml");
 // ─── const evaluation (language.md §1) ───────────────────────────────────────
 assert_exec!(exec_const_eval, "const_eval.bml");
 
+// ─── unsuffixed literals adopt the narrow context type (language.md §1) ───────
+assert_exec!(exec_narrow_literals, "narrow_literals.bml");
+
 // ─── known compiler bugs surfaced by the documentation-driven fixtures ────────
 // #[ignore]d so the suite stays green; run `-- --ignored` to confirm they still
 // reproduce. Each has a minimal fixture documenting the symptom.
