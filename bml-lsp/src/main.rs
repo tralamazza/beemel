@@ -711,11 +711,7 @@ fn find_ident_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Ident> {
             .then_some(f.var.clone())
             .or_else(|| find_ident_in_expr(&f.start, offset))
             .or_else(|| find_ident_in_expr(&f.end, offset))
-            .or_else(|| {
-                f.step
-                    .as_ref()
-                    .and_then(|s| find_ident_in_expr(s, offset))
-            })
+            .or_else(|| f.step.as_ref().and_then(|s| find_ident_in_expr(s, offset)))
             .or_else(|| find_ident_in_block(&f.body, offset)),
         ast::Stmt::Return(r) => r.value.as_ref().and_then(|e| find_ident_in_expr(e, offset)),
         ast::Stmt::Match(m) => find_ident_in_expr(&m.scrutinee, offset).or_else(|| {
@@ -1561,11 +1557,7 @@ fn find_call_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Expr> {
         }
         ast::Stmt::For(f) => find_call_in_expr(&f.start, offset)
             .or_else(|| find_call_in_expr(&f.end, offset))
-            .or_else(|| {
-                f.step
-                    .as_ref()
-                    .and_then(|s| find_call_in_expr(s, offset))
-            })
+            .or_else(|| f.step.as_ref().and_then(|s| find_call_in_expr(s, offset)))
             .or_else(|| find_call_in_block(&f.body, offset)),
         ast::Stmt::Match(m) => find_call_in_expr(&m.scrutinee, offset).or_else(|| {
             m.arms
