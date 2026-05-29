@@ -1,0 +1,3 @@
+fn main() @context(thread) {
+    var b = 1u8 == 1u32;
+}

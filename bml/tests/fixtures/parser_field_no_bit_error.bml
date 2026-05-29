@@ -1,0 +1,5 @@
+peripheral GPIOA at 0x40020000 {
+    reg MODER offset 0x00 {
+        field MODER0: u32 nope[0..1]
+    }
+}

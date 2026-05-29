@@ -1,0 +1,1 @@
+fn dma_isr() @isr(priority=1, tailchain=5) { }

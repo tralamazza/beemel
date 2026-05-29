@@ -1,0 +1,3 @@
+fn main() @context(thread) {
+    const X: u32 = 1;
+}

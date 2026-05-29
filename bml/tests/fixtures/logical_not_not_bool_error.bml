@@ -1,0 +1,3 @@
+fn main() @context(thread) {
+    var x = !5u32;
+}

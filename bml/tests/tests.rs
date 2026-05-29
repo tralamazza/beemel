@@ -575,6 +575,81 @@ assert_error!(
 
 assert_warn!(test_int_narrowing, "int_narrowing_warn.bml", "W301");
 
+// ─── parser diagnostics (added to close diagnostic-coverage gaps) ──────────
+assert_error!(
+    test_parser_expected_item,
+    "parser_expected_item_error.bml",
+    "E101"
+);
+assert_error!(
+    test_parser_match_no_at,
+    "parser_match_no_at_error.bml",
+    "E100"
+);
+assert_error!(
+    test_parser_bad_fn_annotation,
+    "parser_bad_fn_annotation_error.bml",
+    "E103"
+);
+assert_error!(
+    test_parser_bad_storage_annotation,
+    "parser_bad_storage_annotation_error.bml",
+    "E104"
+);
+assert_error!(
+    test_parser_field_no_bit,
+    "parser_field_no_bit_error.bml",
+    "E105"
+);
+assert_error!(
+    test_parser_tailchain_not_bool,
+    "parser_tailchain_not_bool_error.bml",
+    "E106"
+);
+assert_error!(
+    test_parser_expected_integer,
+    "parser_expected_integer_error.bml",
+    "E107"
+);
+assert_error!(
+    test_parser_dup_context,
+    "parser_dup_context_error.bml",
+    "E108"
+);
+assert_error!(
+    test_parser_const_in_fn,
+    "parser_const_in_fn_error.bml",
+    "E112"
+);
+
+// ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
+assert_error!(
+    test_assign_type_mismatch,
+    "assign_type_mismatch_error.bml",
+    "E301"
+);
+assert_error!(
+    test_while_cond_not_bool,
+    "while_cond_not_bool_error.bml",
+    "E303"
+);
+assert_error!(
+    test_logical_not_not_bool,
+    "logical_not_not_bool_error.bml",
+    "E306"
+);
+assert_error!(
+    test_call_arg_type_mismatch,
+    "call_arg_type_mismatch_error.bml",
+    "E308"
+);
+assert_error!(
+    test_comparison_type_mismatch,
+    "comparison_type_mismatch_error.bml",
+    "E311"
+);
+assert_error!(test_bitwise_non_int, "bitwise_non_int_error.bml", "E317");
+
 // Critical section codegen tests
 assert_ir_contains!(
     test_shared_cs_thread,
@@ -919,6 +994,10 @@ fn test_stack_recursive() {
         output.contains("recursive call chain"),
         "expected recursion warning\n{output}"
     );
+    assert!(
+        output.contains("W600"),
+        "expected W600 recursion warning code\n{output}"
+    );
 }
 
 #[test]
@@ -1116,8 +1195,35 @@ macro_rules! assert_verify_pass {
 
 assert_verify_fail!(test_verify_assert_fails, "verify_assert_fail.bml");
 assert_verify_pass!(test_verify_assert_holds, "verify_assert_pass.bml");
-assert_verify_fail!(test_verify_boa_oob, "verify_boa_oob.bml");
-assert_verify_fail!(test_verify_dbz, "verify_dbz.bml");
+// Unconditional out-of-bounds access -> V100 (buffer-overflow, error severity).
+#[test]
+fn test_verify_boa_oob() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_boa_oob.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V100]"),
+        "expected V100 buffer-overflow finding, got:\n{output}"
+    );
+}
+
+// Unconditional division by zero -> V120.
+#[test]
+fn test_verify_dbz() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_dbz.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V120]"),
+        "expected V120 division-by-zero finding, got:\n{output}"
+    );
+}
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 assert_verify_pass!(test_verify_no_findings, "verify_no_findings.bml");
 // assume_narrows: assume(b != 0) before a/b should prevent dbz

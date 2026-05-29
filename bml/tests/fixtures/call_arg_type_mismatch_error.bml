@@ -1,0 +1,5 @@
+fn takes(x: u8) { }
+fn main() @context(thread) {
+    var y: u32 = 5u32;
+    takes(y);
+}
