@@ -542,6 +542,27 @@ fn check_expr(
             );
         }
 
+        Expr::ViewNew { ptr, len, .. } => {
+            check_expr(
+                ptr,
+                current_fn,
+                current_ctx,
+                symbols,
+                moved,
+                scope_stack,
+                diags,
+            );
+            check_expr(
+                len,
+                current_fn,
+                current_ctx,
+                symbols,
+                moved,
+                scope_stack,
+                diags,
+            );
+        }
+
         // Literals never need borrow checks
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)

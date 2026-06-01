@@ -1116,6 +1116,7 @@ fn check_expr(
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
+                Type::LinearView(inner) => *inner,
                 other => {
                     let guard = diags.error(
                         format!("cannot index value of type `{other:?}`"),
@@ -1175,6 +1176,28 @@ fn check_expr(
                 diags.error(format!("undefined type: `{name}`"), "E305", *type_span);
             }
             Type::U32
+        }
+        Expr::ViewNew { ptr, len, span } => {
+            let ptr_ty = check_expr(ptr, symbols, scope, fn_name, expected_ret, diags);
+            let len_ty = check_expr(len, symbols, scope, fn_name, expected_ret, diags);
+            if !types::is_int(&len_ty) {
+                diags.error(
+                    format!("`view` length must be an integer, got `{len_ty}`"),
+                    "E332",
+                    len.span(),
+                );
+            }
+            match ptr_ty {
+                Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
+                other => {
+                    let guard = diags.error(
+                        format!("`view` first argument must be a pointer, got `{other}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
+                }
+            }
         }
         Expr::Group(inner) => check_expr(inner, symbols, scope, fn_name, expected_ret, diags),
         Expr::Match(match_expr) => {
@@ -1576,6 +1599,15 @@ fn check_lvalue(
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
+                Type::LinearView(_) => {
+                    let guard = diags.error(
+                        "cannot write through a readonly `view`; only reads are allowed"
+                            .to_string(),
+                        "E334",
+                        base.span(),
+                    );
+                    Type::Error(guard)
+                }
                 other => {
                     let guard = diags.error(
                         format!("cannot index value of type `{other:?}`"),

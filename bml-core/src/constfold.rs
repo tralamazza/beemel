@@ -85,7 +85,9 @@ fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
                 **size = Expr::IntLiteral(n, IntSuffix::None, span);
             }
         }
-        TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) => fold_type(inner, consts),
+        TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) | TypeExpr::View(inner) => {
+            fold_type(inner, consts);
+        }
         TypeExpr::Fn(params, ret) => {
             for p in params.iter_mut() {
                 fold_type(p, consts);

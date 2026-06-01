@@ -733,6 +733,11 @@ impl<'a> Parser<'a> {
                     Some(TypeExpr::ConstPtr(Box::new(inner)))
                 }
             }
+            TokenKind::View => {
+                self.advance();
+                let inner = self.parse_type_expr()?;
+                Some(TypeExpr::View(Box::new(inner)))
+            }
             TokenKind::LBracket => {
                 self.advance();
                 let inner = self.parse_type_expr()?;
@@ -1256,6 +1261,23 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::RParen, "expected `)` after type in `sizeof`")
                     .ok()?;
                 Some(Expr::SizeOf(ty, span))
+            }
+            TokenKind::View => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `view`")
+                    .ok()?;
+                let ptr = self.parse_expr()?;
+                self.expect(&TokenKind::Comma, "expected `,` after view pointer")
+                    .ok()?;
+                let len = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)` to close `view(...)`")
+                    .ok()?;
+                Some(Expr::ViewNew {
+                    ptr: Box::new(ptr),
+                    len: Box::new(len),
+                    span,
+                })
             }
             TokenKind::Match => {
                 let span = self.peek_span();

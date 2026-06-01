@@ -1,0 +1,7 @@
+// Writing through a readonly view must be rejected (E329). `var` is used so
+// the immutable-binding error (E309) does not mask the view-specific check.
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    var v: view u32 = view(&buf[0], 4u32);
+    v[0u32] = 99u32;
+}

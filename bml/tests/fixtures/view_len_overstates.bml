@@ -1,0 +1,8 @@
+// Soundness: the index assume narrows i against len, but it cannot override
+// the real allocation size when the verifier knows the backing buffer. A len
+// that overstates the 4-element buffer is still caught (V100).
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    val v: view u32 = view(&buf[0], 100u32);
+    var x: u32 = v[50u32];
+}

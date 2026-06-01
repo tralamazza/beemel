@@ -232,6 +232,13 @@ pub enum Expr {
     Group(Box<Expr>),
     Cast(Box<Expr>, TypeExpr),
     SizeOf(TypeExpr, Span),
+    /// Readonly linear view constructor: `view(ptr, len)`. The element type is
+    /// inferred from `ptr`'s pointee type during checking.
+    ViewNew {
+        ptr: Box<Expr>,
+        len: Box<Expr>,
+        span: Span,
+    },
     EnumVariant {
         enum_name: Ident,
         variant: Ident,
@@ -266,6 +273,7 @@ impl Expr {
             Expr::Group(e) => e.span(),
             Expr::Cast(e, _) => e.span(),
             Expr::SizeOf(_, s) => *s,
+            Expr::ViewNew { span, .. } => *span,
             Expr::EnumVariant { span, .. } => *span,
             Expr::ArrayInit(_, s) => *s,
             Expr::StructInit { span, .. } => *span,
@@ -335,6 +343,7 @@ pub enum TypeExpr {
     Named(Ident),
     Ptr(Box<TypeExpr>),
     ConstPtr(Box<TypeExpr>),
+    View(Box<TypeExpr>),
     Array(Box<TypeExpr>, Box<Expr>),
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>),
     Void(Span),
@@ -345,7 +354,9 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named((_, s)) => *s,
-            TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) => inner.span(),
+            TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) | TypeExpr::View(inner) => {
+                inner.span()
+            }
             TypeExpr::Array(inner, _) => inner.span(),
             TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
             TypeExpr::Void(s) => *s,
@@ -359,6 +370,7 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Named((name, _)) => write!(f, "{name}"),
             TypeExpr::Ptr(t) => write!(f, "*{t}"),
             TypeExpr::ConstPtr(t) => write!(f, "&{t}"),
+            TypeExpr::View(t) => write!(f, "view {t}"),
             TypeExpr::Array(t, _) => write!(f, "[{t}]"),
             TypeExpr::Fn(params, ret) => {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();

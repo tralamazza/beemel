@@ -573,6 +573,9 @@ fn expr_contribution(
         | Expr::Ident(_) => Contribution::empty(),
 
         Expr::EnumVariant { .. } => Contribution::empty(),
+
+        Expr::ViewNew { ptr, len, .. } => expr_contribution(ptr, symbols, defined_fns)
+            .merge(expr_contribution(len, symbols, defined_fns)),
     }
 }
 

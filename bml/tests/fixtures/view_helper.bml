@@ -1,0 +1,14 @@
+// A view built by the owner and passed to a helper. The helper indexes it;
+// IKOS propagates the backing allocation through the call, so the bounds are
+// proven without the helper knowing the concrete buffer.
+fn sum_first(v: view u32) -> u32 {
+    var a: u32 = v[0u32];
+    var b: u32 = v[1u32];
+    return a + b;
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    val v: view u32 = view(&buf[0], 4u32);
+    var s: u32 = sum_first(v);
+}

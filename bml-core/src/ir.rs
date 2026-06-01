@@ -1869,7 +1869,46 @@ impl IrEmitter {
             Expr::Index(base, index) => {
                 let base_ty = self.expr_type(base, symbols);
                 let dbg = self.dbg_loc(expr.span());
-                if crate::types::is_ptr(&base_ty) {
+                if let Type::LinearView(elem_ty) = &base_ty {
+                    // Read a readonly linear view: pull { ptr, len } out of the
+                    // descriptor, assume the index is in range so the verifier
+                    // can prove the access, then typed GEP + load.
+                    let agg = self.emit_expr(base, symbols, fn_name);
+                    let ptr_field = self.new_reg();
+                    self.line(&format!(
+                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
+                    ));
+                    let len_field = self.new_reg();
+                    self.line(&format!(
+                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
+                    ));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    // assume(idx < len), unsigned: also rules out negative idx.
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("view_idx_ok");
+                    let oob_lbl = self.new_label("view_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let ll_elem = llvm_type(elem_ty);
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {idx_i32}{dbg}"
+                    ));
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
+                    reg
+                } else if crate::types::is_ptr(&base_ty) {
                     // Pointer index: GEP + load
                     let base_reg = self.emit_expr(base, symbols, fn_name);
                     let idx_reg = self.emit_expr(index, symbols, fn_name);
@@ -2039,6 +2078,22 @@ impl IrEmitter {
                 let reg = self.new_reg();
                 self.line(&format!("{reg} = add i32 0, {size}"));
                 reg
+            }
+            Expr::ViewNew { ptr, len, .. } => {
+                // Build the { ptr, i32 } descriptor as a first-class aggregate.
+                let ptr_reg = self.emit_expr(ptr, symbols, fn_name);
+                let len_reg = self.emit_expr(len, symbols, fn_name);
+                let len_ty = self.expr_type(len, symbols);
+                let len_i32 = self.coerce_int(len_reg, &len_ty, &Type::U32);
+                let agg0 = self.new_reg();
+                self.line(&format!(
+                    "{agg0} = insertvalue {{ ptr, i32 }} undef, ptr {ptr_reg}, 0"
+                ));
+                let agg1 = self.new_reg();
+                self.line(&format!(
+                    "{agg1} = insertvalue {{ ptr, i32 }} {agg0}, i32 {len_i32}, 1"
+                ));
+                agg1
             }
             Expr::ArrayInit(elems, _) => {
                 let elem_ty = elems
@@ -2852,6 +2907,31 @@ impl IrEmitter {
                 return id;
             }
             Type::Enum(_, inner_ty, _) => return self.dbg_type(inner_ty),
+            Type::LinearView(elem) => {
+                // Descriptor is { data: ptr-to-elem, len: u32 }. Emit it as a
+                // 2-field structure so the debug type matches the { ptr, i32 }
+                // aggregate (an integer DIBasicType here makes IKOS reject the
+                // module).
+                let data_ptr_ty = Type::ConstPtr(elem.clone());
+                let data_id = self.dbg_type(&data_ptr_ty);
+                let len_id = self.dbg_type(&Type::U32);
+                let data_member = format!(
+                    "!DIDerivedType(tag: DW_TAG_member, name: \"data\", scope: !{id}, file: !{f}, line: 0, baseType: !{data_id}, size: 32, offset: 0)",
+                    f = self.cu_file_id.unwrap_or(0)
+                );
+                let len_member = format!(
+                    "!DIDerivedType(tag: DW_TAG_member, name: \"len\", scope: !{id}, file: !{f}, line: 0, baseType: !{len_id}, size: 32, offset: 32)",
+                    f = self.cu_file_id.unwrap_or(0)
+                );
+                writeln!(
+                    self.debug_metadata,
+                    "!{id} = !DICompositeType(tag: DW_TAG_structure_type, name: \"view\", file: !{f}, line: 0, size: 64, elements: !{{{data_member}, {len_member}}})",
+                    f = self.cu_file_id.unwrap_or(0)
+                )
+                .unwrap();
+                self.type_dbg_id.insert(key, id);
+                return id;
+            }
             _ => ("i32", 32, 5),
         };
         writeln!(
@@ -3044,9 +3124,14 @@ impl IrEmitter {
                 match &base_ty {
                     Type::Array(inner, _) => *inner.clone(),
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
+                    Type::LinearView(inner) => *inner.clone(),
                     _ => Type::U32,
                 }
             }
+            Expr::ViewNew { ptr, .. } => match self.expr_type(ptr, symbols) {
+                Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
+                _ => Type::LinearView(Box::new(Type::U32)),
+            },
             Expr::Cast(_, ty_expr) => {
                 crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums)
             }
@@ -3235,6 +3320,10 @@ fn llvm_type(ty: &Type) -> String {
         Type::Ptr(_inner) => "ptr".to_string(),
         Type::ConstPtr(_inner) => "ptr".to_string(),
         Type::Fn(..) => "ptr".to_string(),
+        // Readonly linear view descriptor: { data pointer, length }. Kept as a
+        // first-class aggregate (not boxed behind a pointer) so mem2reg/sroa
+        // preserve pointer provenance for the verifier.
+        Type::LinearView(_) => "{ ptr, i32 }".to_string(),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
@@ -3267,7 +3356,7 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::B8 => "0".to_string(),
         Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
-        Type::Array(..) | Type::Struct(..) => "zeroinitializer".to_string(),
+        Type::Array(..) | Type::Struct(..) | Type::LinearView(_) => "zeroinitializer".to_string(),
         Type::Enum(_, inner, _) => default_value_literal(inner),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)

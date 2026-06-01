@@ -23,6 +23,9 @@ pub enum Type {
     Array(Box<Type>, usize),
     Ptr(Box<Type>),
     ConstPtr(Box<Type>),
+    /// Readonly linear view over `T`: a `{ ptr, len }` descriptor. Copy
+    /// semantics. Mutable views are intentionally not modeled yet.
+    LinearView(Box<Type>),
     Void,
     // Wrapper types carrying borrow semantics
     Exclusive(Box<Type>),
@@ -72,6 +75,7 @@ impl fmt::Display for Type {
             Type::Array(t, n) => write!(f, "[{t}; {n}]"),
             Type::Ptr(t) => write!(f, "*mut {t}"),
             Type::ConstPtr(t) => write!(f, "*{t}"),
+            Type::LinearView(t) => write!(f, "view {t}"),
             Type::Exclusive(t) => write!(f, "@exclusive({t})"),
             Type::Shared(t, c) => write!(f, "@shared({t}, ceiling={c})"),
             Type::Mmio(t) => write!(f, "@mmio({t})"),
@@ -117,6 +121,9 @@ impl Type {
             | Type::Unresolved(_)
             | Type::Fn(..)
             | Type::Null
+            // Readonly view: Copy regardless of element type. Mutable views
+            // (Move) are not modeled yet.
+            | Type::LinearView(_)
             | Type::Error(_) => Semantics::Copy,
             Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => inner.semantics(),
             Type::Struct(_, fields) => {
@@ -197,6 +204,9 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
                 }
             }
         },
+        TypeExpr::View(inner) => {
+            Type::LinearView(Box::new(resolve_type_expr(inner, structs, enums)))
+        }
         TypeExpr::Ptr(inner) => Type::Ptr(Box::new(resolve_type_expr(inner, structs, enums))),
         TypeExpr::ConstPtr(inner) => {
             Type::ConstPtr(Box::new(resolve_type_expr(inner, structs, enums)))
@@ -399,6 +409,8 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::I64 | Type::U64 | Type::F64 => 8,
         Type::B1 | Type::Void => 1,
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => 4,
+        // `{ ptr, i32 }` descriptor on a 32-bit target: 4 + 4.
+        Type::LinearView(_) => 8,
         Type::Struct(_, fields) => fields.iter().map(|(_, ty)| element_size(ty)).sum(),
         Type::Enum(_, inner_ty, _) => element_size(inner_ty),
         _ => 4,
