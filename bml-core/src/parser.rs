@@ -1267,15 +1267,19 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.expect(&TokenKind::LParen, "expected `(` after `view`")
                     .ok()?;
-                let ptr = self.parse_expr()?;
-                self.expect(&TokenKind::Comma, "expected `,` after view pointer")
-                    .ok()?;
-                let len = self.parse_expr()?;
+                let base = self.parse_expr()?;
+                // `view(arr)` derives len from the array type; `view(ptr, len)`
+                // takes an explicit length.
+                let len = if self.eat(&TokenKind::Comma) {
+                    Some(Box::new(self.parse_expr()?))
+                } else {
+                    None
+                };
                 self.expect(&TokenKind::RParen, "expected `)` to close `view(...)`")
                     .ok()?;
                 Some(Expr::ViewNew {
-                    ptr: Box::new(ptr),
-                    len: Box::new(len),
+                    base: Box::new(base),
+                    len,
                     span,
                 })
             }

@@ -542,9 +542,9 @@ fn check_expr(
             );
         }
 
-        Expr::ViewNew { ptr, len, .. } => {
+        Expr::ViewNew { base, len, .. } => {
             check_expr(
-                ptr,
+                base,
                 current_fn,
                 current_ctx,
                 symbols,
@@ -552,15 +552,17 @@ fn check_expr(
                 scope_stack,
                 diags,
             );
-            check_expr(
-                len,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            if let Some(len) = len {
+                check_expr(
+                    len,
+                    current_fn,
+                    current_ctx,
+                    symbols,
+                    moved,
+                    scope_stack,
+                    diags,
+                );
+            }
         }
 
         // Literals never need borrow checks

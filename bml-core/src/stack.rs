@@ -574,8 +574,13 @@ fn expr_contribution(
 
         Expr::EnumVariant { .. } => Contribution::empty(),
 
-        Expr::ViewNew { ptr, len, .. } => expr_contribution(ptr, symbols, defined_fns)
-            .merge(expr_contribution(len, symbols, defined_fns)),
+        Expr::ViewNew { base, len, .. } => {
+            let c = expr_contribution(base, symbols, defined_fns);
+            match len {
+                Some(len) => c.merge(expr_contribution(len, symbols, defined_fns)),
+                None => c,
+            }
+        }
     }
 }
 

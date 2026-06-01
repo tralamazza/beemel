@@ -2079,12 +2079,25 @@ impl IrEmitter {
                 self.line(&format!("{reg} = add i32 0, {size}"));
                 reg
             }
-            Expr::ViewNew { ptr, len, .. } => {
+            Expr::ViewNew { base, len, .. } => {
                 // Build the { ptr, i32 } descriptor as a first-class aggregate.
-                let ptr_reg = self.emit_expr(ptr, symbols, fn_name);
-                let len_reg = self.emit_expr(len, symbols, fn_name);
-                let len_ty = self.expr_type(len, symbols);
-                let len_i32 = self.coerce_int(len_reg, &len_ty, &Type::U32);
+                let (ptr_reg, len_i32) = if let Some(len) = len {
+                    // view(ptr, len): explicit pointer and length.
+                    let ptr_reg = self.emit_expr(base, symbols, fn_name);
+                    let len_reg = self.emit_expr(len, symbols, fn_name);
+                    let len_ty = self.expr_type(len, symbols);
+                    (ptr_reg, self.coerce_int(len_reg, &len_ty, &Type::U32))
+                } else {
+                    // view(arr): pointer to element 0, compile-known length.
+                    let ptr_reg = self.emit_lvalue_ptr(base, symbols);
+                    let n = match self.expr_type(base, symbols) {
+                        Type::Array(_, n) => n,
+                        _ => 0,
+                    };
+                    let len_reg = self.new_reg();
+                    self.line(&format!("{len_reg} = add i32 0, {n}"));
+                    (ptr_reg, len_reg)
+                };
                 let agg0 = self.new_reg();
                 self.line(&format!(
                     "{agg0} = insertvalue {{ ptr, i32 }} undef, ptr {ptr_reg}, 0"
@@ -3128,8 +3141,10 @@ impl IrEmitter {
                     _ => Type::U32,
                 }
             }
-            Expr::ViewNew { ptr, .. } => match self.expr_type(ptr, symbols) {
-                Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
+            Expr::ViewNew { base, .. } => match self.expr_type(base, symbols) {
+                Type::Ptr(inner) | Type::ConstPtr(inner) | Type::Array(inner, _) => {
+                    Type::LinearView(inner)
+                }
                 _ => Type::LinearView(Box::new(Type::U32)),
             },
             Expr::Cast(_, ty_expr) => {

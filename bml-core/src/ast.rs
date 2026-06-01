@@ -232,11 +232,14 @@ pub enum Expr {
     Group(Box<Expr>),
     Cast(Box<Expr>, TypeExpr),
     SizeOf(TypeExpr, Span),
-    /// Readonly linear view constructor: `view(ptr, len)`. The element type is
-    /// inferred from `ptr`'s pointee type during checking.
+    /// Readonly linear view constructor. Two forms:
+    /// - `view(ptr, len)`: `base` is a pointer, `len` is `Some`; the element
+    ///   type is inferred from the pointee.
+    /// - `view(arr)`: `base` is an array, `len` is `None`; both the element
+    ///   type and a compile-known length come from the array type.
     ViewNew {
-        ptr: Box<Expr>,
-        len: Box<Expr>,
+        base: Box<Expr>,
+        len: Option<Box<Expr>>,
         span: Span,
     },
     EnumVariant {

@@ -208,9 +208,11 @@ fn collect_expr_writes(expr: &Expr, shared_statics: &HashSet<String>, out: &mut 
             collect_written_statics(&if_expr.then_block, shared_statics, out);
             collect_expr_writes(&if_expr.else_branch, shared_statics, out);
         }
-        Expr::ViewNew { ptr, len, .. } => {
-            collect_expr_writes(ptr, shared_statics, out);
-            collect_expr_writes(len, shared_statics, out);
+        Expr::ViewNew { base, len, .. } => {
+            collect_expr_writes(base, shared_statics, out);
+            if let Some(len) = len {
+                collect_expr_writes(len, shared_statics, out);
+            }
         }
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)

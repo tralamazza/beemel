@@ -1177,25 +1177,43 @@ fn check_expr(
             }
             Type::U32
         }
-        Expr::ViewNew { ptr, len, span } => {
-            let ptr_ty = check_expr(ptr, symbols, scope, fn_name, expected_ret, diags);
-            let len_ty = check_expr(len, symbols, scope, fn_name, expected_ret, diags);
-            if !types::is_int(&len_ty) {
-                diags.error(
-                    format!("`view` length must be an integer, got `{len_ty}`"),
-                    "E332",
-                    len.span(),
-                );
-            }
-            match ptr_ty {
-                Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
-                other => {
-                    let guard = diags.error(
-                        format!("`view` first argument must be a pointer, got `{other}`"),
-                        "E333",
-                        *span,
+        Expr::ViewNew { base, len, span } => {
+            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
+            if let Some(len) = len {
+                // `view(ptr, len)`: base must be a pointer, len an integer.
+                let len_ty = check_expr(len, symbols, scope, fn_name, expected_ret, diags);
+                if !types::is_int(&len_ty) {
+                    diags.error(
+                        format!("`view` length must be an integer, got `{len_ty}`"),
+                        "E332",
+                        len.span(),
                     );
-                    Type::Error(guard)
+                }
+                match base_ty {
+                    Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
+                    other => {
+                        let guard = diags.error(
+                            format!(
+                                "`view(ptr, len)` first argument must be a pointer, got `{other}`"
+                            ),
+                            "E333",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    }
+                }
+            } else {
+                // `view(arr)`: base must be an array; length is taken from it.
+                match base_ty {
+                    Type::Array(inner, _) => Type::LinearView(inner),
+                    other => {
+                        let guard = diags.error(
+                            format!("`view(x)` argument must be an array (or use `view(ptr, len)`), got `{other}`"),
+                            "E333",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    }
                 }
             }
         }
