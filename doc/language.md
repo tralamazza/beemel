@@ -31,6 +31,9 @@
 | `*mut T`| 32-bit | `ptr`  | Mutable pointer to `T` -- read+write |
 | `*void` | 32-bit | `ptr`  | Opaque const pointer (C interop, no deref) |
 | `*mut void`| 32-bit | `ptr`  | Opaque mutable pointer (C interop, no deref) |
+| `view T` / `view mut T` | 64-bit | `{ptr, i32}` | Linear view (bounds-checked span) over `T` -- see §5 Memory views |
+| `ring T` / `ring mut T` | 128-bit | `{ptr, i32, i32, i32}` | Ring (circular) view over `T` |
+| `bits` / `bits mut` | 96-bit | `{ptr, i32, i32}` | Bit view -- one bit per index over a byte buffer |
 
 Pointers are immutable by default (`*T` = `*const T`). Use `*mut T`
 to allow writing through the pointer. `*const T` is not a valid syntax
@@ -337,10 +340,76 @@ E408. Function pointers are pointer-like: they can be `null`, compared with
 - **No runtime null checks.** Dereferencing null triggers a HardFault on
   Cortex-M -- same as C. Use `if p != null { ... }` guards explicitly.
 - **No fat pointers.** `*T` is always 32 bits (a single address). For
-  slice-like types, use a separate `struct` with pointer + length fields.
+  slice-like (pointer + length) access, use a memory view (below), which is a
+  bounds-checked descriptor.
 - **No `&T` in type position.** The `&` sigil is reserved for the addr-of
   expression operator. It does not appear in type annotations. This avoids
   confusion with C++/Rust references which carry non-null guarantees.
+
+### Memory views
+
+A *view* is a small descriptor (a first-class aggregate, not a boxed pointer)
+that gives bounds-checked, indexed access to a region of memory. Three kinds
+ship today; all are contiguous (v1):
+
+| Type | Descriptor | Element | Indexing |
+|------|-----------|---------|----------|
+| `view T` / `view mut T` | `{ ptr, len }` | `T` | `v[i]` -> element `i`, for `i < len` |
+| `ring T` / `ring mut T` | `{ ptr, capacity, head, len }` | `T` | logical `i` maps to physical `(head + i) % capacity` |
+| `bits` / `bits mut` | `{ ptr, bit_offset, len_bits }` | `b1` | bit `i` is byte `(bit_offset + i) / 8`, bit `(bit_offset + i) % 8` |
+
+`bits` carries no element type -- the element is always a single bit (`b1`).
+
+**Mutability and semantics.** A readonly view (`view T`) allows index *reads*
+only and is **Copy**. A mutable view (`view mut T`) also allows index *writes*
+and is **Move** (see §3): passing it to a function, returning it, or rebinding it
+transfers it, and the source is then moved-out and unusable (E304). A mutable
+view coerces implicitly to its readonly form (`view mut T` -> `view T`); the
+reverse is rejected. Indexing *borrows* the view -- `v[i]` does not consume it,
+so a `view mut` can be indexed repeatedly (e.g. in a loop). Only a binding
+transfer consumes it.
+
+Move tracks a single binding; it does **not** prevent constructing two
+independent mutable views over the same buffer (each constructor takes a fresh
+pointer). Avoiding such aliasing is currently the programmer's responsibility.
+
+**Construction.** Constructors are compiler builtins. The array form derives the
+length (and, for `ring`, the capacity) from the backing array's type, giving the
+verifier a compile-known bound with direct provenance:
+
+```
+view(arr)                      view(ptr, len)
+ring(arr, head, len)           ring(ptr, capacity, head, len)
+bits(arr)                      bits(ptr, bit_offset, len_bits)
+```
+
+The array form's mutability follows the backing place (a `var` array or a static
+is mutable; a `val` binding is readonly); the pointer form's follows the
+pointer's constness (`*mut T` -> mutable, `*T` -> readonly). `bits` requires a
+byte backing (`[u8; N]`/`[b8; N]` or `*u8`/`&u8`).
+
+**Verification.** Each index lowers an `assume(i < len)` (a branch to
+`unreachable`) ahead of the access, so IKOS can re-derive the bound and prove the
+access in range. The array form is the verifiable path: its length is a
+compile-time constant tracing to the backing allocation. Views built from a
+runtime pointer/length lower and run, but the verifier cannot bound them (the
+backing is outside the call graph -- a trust boundary); an overstated length is
+still caught as a buffer overflow (V100). A `bits` write is a read-modify-write
+of one byte.
+
+**Backing storage.** Views can be built over storage-class arrays
+(`@dma`/`@external`/`@exclusive`); the storage class is unwrapped at construction
+and kept out of the view's type. A view over a `@shared` static is **rejected**
+(E405): the `@shared` ceiling protocol is enforced by a critical section emitted
+around *direct* static access, and a view's access (through the descriptor
+pointer) would not receive it, so it would be a silent unprotected race. Direct
+access to a scalar `@shared` static gets the critical section automatically;
+bounds-checked indexed access to a `@shared` *array* is not available yet (a
+protected-view-access mechanism is future work).
+
+**Limitations (v1).** Contiguous only -- no strided/segmented views yet. `bits`
+writes are a non-atomic read-modify-write, so a `bits mut` shared between an ISR
+and thread (same byte) can lose updates; the v1 bit view is single-context.
 
 ## 6. Struct types
 
@@ -665,6 +734,9 @@ type          = ident                   (* named type: u32, i8, ... *)
               | "*" type               (* const pointer (default) *)
               | "*" "mut" type         (* mutable pointer *)
               | "[" type ";" expr "]"  (* array type *)
+              | "view" ["mut"] type    (* linear view *)
+              | "ring" ["mut"] type    (* ring view *)
+              | "bits" ["mut"]         (* bit view (element is always b1) *)
               | "fn" "(" [type {"," type}] ")" ["->" type]  (* function pointer *)
 
 ;; Expression parsing uses Pratt precedence climbing.
@@ -678,6 +750,12 @@ cast_expr     = expr "as" type
 enum_variant  = expr "@" ident
 
 sizeof_expr   = "sizeof" "(" type ")"
+
+view_expr     = "view" "(" expr ["," expr] ")"   (* view(arr) | view(ptr, len) *)
+              | "ring" "(" expr "," expr "," expr ["," expr] ")"
+                                                  (* ring(arr, head, len) | ring(ptr, capacity, head, len) *)
+              | "bits" "(" expr ["," expr "," expr] ")"
+                                                  (* bits(arr) | bits(ptr, bit_offset, len_bits) *)
 
 struct_init   = ident "{" { ident ":" expr "," } "}"
 
@@ -767,6 +845,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E106  | Expected identifier |
 | E107  | Expected integer |
 | E108  | Invalid annotation (duplicate, missing, or malformed) |
+| E112  | `const`/`static` cannot be declared inside a function body |
+| E114  | Register-field bit index or range out of range (must be 0..32) |
 | E200  | Duplicate name |
 | E201  | `@exclusive` references unknown function |
 | E300  | Type mismatch in var declaration |
@@ -795,15 +875,22 @@ from context and is compatible with any `*T` or `*mut T`.
 | E323  | Invalid enum underlying type or discriminant out of range |
 | E324  | Match scrutinee must be an enum type |
 | E325  | Non-exhaustive match (missing variants) |
-| E326  | Wildcard `_` cannot be combined with other patterns |
+| E326  | Cannot index a non-indexable type; also: wildcard `_` cannot be combined with other patterns |
 | E327  | Expression arm type mismatch (match arm, if branch, or fn pointer call) |
 | E328  | Block used as expression has no value |
+| E329  | Function may exit without returning a value of the declared type |
+| E330  | Cannot read from a writeonly register/field |
+| E331  | Cannot write to a readonly register/field |
+| E332  | `view`/`ring`/`bits` length, capacity, head, or bit-offset must be an integer |
+| E333  | `view`/`ring`/`bits` constructor base has the wrong type (not the expected pointer / array / byte type) |
+| E334  | Cannot write through a readonly view (`view`/`ring`/`bits`); only reads are allowed |
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E400  | Use of moved value (borrow checker) |
 | E401  | `@exclusive` access from wrong function |
 | E402  | `@shared` ceiling violation |
 | E403  | Context-incompatible function call (ISR→thread or thread→ISR) |
 | E404  | Access to thread-only static from ISR |
+| E405  | Cannot build a view over `@shared` memory (view access bypasses the ceiling critical-section) |
 | E500  | Circular import |
 | E501  | Module not found |
 | E503  | Item is not exported from module (private access) |
