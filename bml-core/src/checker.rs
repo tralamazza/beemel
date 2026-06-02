@@ -1289,7 +1289,9 @@ fn check_expr(
                 // view over a storage-class array is allowed; the storage stays
                 // out of the view's type identity.
                 let mutable = is_mutable_place(base, scope, symbols);
-                if let Type::Array(inner, _) = base_ty.inner() {
+                if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
+                    Type::Error(guard)
+                } else if let Type::Array(inner, _) = base_ty.inner() {
                     Type::LinearView(Box::new((**inner).clone()), mutable)
                 } else {
                     let guard = diags.error(
@@ -1349,7 +1351,9 @@ fn check_expr(
                 // through a storage wrapper so a ring over a storage-class array
                 // is allowed.
                 let mutable = is_mutable_place(base, scope, symbols);
-                if let Type::Array(inner, _) = base_ty.inner() {
+                if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
+                    Type::Error(guard)
+                } else if let Type::Array(inner, _) = base_ty.inner() {
                     Type::RingView(Box::new((**inner).clone()), mutable)
                 } else {
                     let guard = diags.error(
@@ -1405,7 +1409,9 @@ fn check_expr(
                 // place. `.inner()` sees through a storage wrapper so a bit view
                 // over a storage-class byte array is allowed.
                 let is_byte_array = matches!(base_ty.inner(), Type::Array(inner, _) if matches!(**inner, Type::U8 | Type::B8));
-                if is_byte_array {
+                if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
+                    Type::Error(guard)
+                } else if is_byte_array {
                     Type::BitView(is_mutable_place(base, scope, symbols))
                 } else {
                     let guard = diags.error(
@@ -1975,6 +1981,35 @@ fn is_mutable_place(expr: &Expr, scope: &ScopeStack, symbols: &SymbolTable) -> b
         // places we can prove mutable.
         Expr::Unary(crate::ast::UnaryOp::Deref, _) => false,
         _ => false,
+    }
+}
+
+/// A view over `@shared` memory is rejected: the `@shared` ceiling protocol is
+/// enforced by a critical section emitted around *direct* static access, but a
+/// view loads/stores through the descriptor pointer with no static name, so it
+/// receives no critical section. Allowing it would silently produce an
+/// unprotected race. The other storage classes (`@dma`/`@external`/`@exclusive`)
+/// carry no ceiling protocol, so views over them are unaffected. Returns the
+/// error guard when the backing is `@shared`, otherwise `None`.
+fn reject_shared_view_backing(
+    base_ty: &Type,
+    span: crate::source::Span,
+    diags: &mut DiagnosticBag,
+) -> Option<crate::errors::ErrorGuaranteed> {
+    if matches!(base_ty, Type::Shared(..)) {
+        Some(
+            diags.error(
+                "cannot build a view over `@shared` memory: view access does not carry \
+             the ceiling critical-section that direct access does, so it would be an \
+             unprotected race. Access the static directly, or back the view with \
+             non-`@shared` storage."
+                    .to_string(),
+                "E405",
+                span,
+            ),
+        )
+    } else {
+        None
     }
 }
 

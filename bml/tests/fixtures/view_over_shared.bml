@@ -1,14 +1,10 @@
-// Views can be constructed over storage-wrapped arrays: the storage class
-// (@shared/@dma/@external/@exclusive) is unwrapped at construction and kept out
-// of the view's type identity. All three view kinds work over such backings.
-static SBUF: [u32; 4] @shared(ceiling = 1) = [10u32, 20u32, 30u32, 40u32];
-static DBUF: [u8; 8] @dma = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+// A view over @shared memory is rejected (E405). The @shared ceiling protocol is
+// enforced by a critical section around direct static access; a view loads/stores
+// through the descriptor pointer with no static name, so it gets no critical
+// section and would be a silent unprotected race.
+static SBUF: [u8; 4] @shared(ceiling = 1) = [0u8, 0u8, 0u8, 0u8];
 
 fn main() @context(thread) {
-    val v: view u32 = view(SBUF);
-    var a: u32 = v[1u32];
-    var r: ring mut u32 = ring(SBUF, 0u32, 4u32);
-    r[0u32] = 99u32;
-    var b: bits mut = bits(DBUF);
-    b[5u32] = true;
+    var b: bits mut = bits(SBUF);
+    b[0u32] = true;
 }

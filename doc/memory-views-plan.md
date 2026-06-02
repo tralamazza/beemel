@@ -294,14 +294,24 @@ Storage class interaction: the type system encodes storage (`@dma`, `@shared`,
 
 Resolved (shipped, `feature/ikos`): storage stays **out** of view type identity.
 The array-form constructors (`view`/`ring`/`bits`) unwrap the storage wrapper via
-`.inner()` at construction, so `view(SHARED_ARR)` yields a plain `view T`; the
-backing's storage class is a construction-time fact (to be recorded for the race
-analysis, the next step). `@mmio` is not a valid static annotation, so views
-never silently drop volatile semantics. This also surfaced and fixed a latent
-bug: array (and nested-array) static initializers were emitted as a scalar `0`
-(`expr_const_val` had no `ArrayInit` arm); a type-aware `const_init` now emits the
-real aggregate constant. Verified end to end (type-check, bounds-verify over a
-shared backing, and a QEMU read of an array static through a view).
+`.inner()` at construction, so a view over a storage-class array yields a plain
+`view T`. `@mmio` is not a valid static annotation, so views never silently drop
+volatile semantics. This also surfaced and fixed a latent bug: array (and
+nested-array) static initializers were emitted as a scalar `0` (`expr_const_val`
+had no `ArrayInit` arm); a type-aware `const_init` now emits the real aggregate
+constant.
+
+Concurrency caveat (shipped): a view over a `@shared` static is **rejected**
+(E405). The `@shared` ceiling protocol is enforced by a critical section emitted
+around *direct* static access (`static_needs_critical_section`); a view
+loads/stores through the descriptor pointer with no static name, so it receives no
+critical section and would be a silent unprotected race. The other storage
+classes (`@dma`/`@external`/`@exclusive`) carry no ceiling protocol, so views over
+them are allowed. Lifting the `@shared` restriction needs either critical-section
+codegen around view access (requires backing-static provenance, which leaks across
+calls) or atomic bit-band writes; both are future work. Verified end to end
+(type-check, bounds-verify over a `@dma`/`@external` backing, a QEMU read of an
+array static through a view, and the E405 rejection).
 
 ## Stage 2: View Construction
 
