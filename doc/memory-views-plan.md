@@ -289,14 +289,19 @@ only (`stride == sizeof(T)`, lowered as a typed GEP). Adding strided views later
 reintroduces the third field and bumps the size to 12.
 
 Storage class interaction: the type system encodes storage (`@dma`, `@shared`,
-`@external`) as a wrapper *around* the element type (`Type::Dma(Box<Type>)`
-etc.), and `Type::inner()` (types.rs:140) unwraps it. Decide explicitly whether
-a view over DMA memory is `view (@dma T)` (storage in the type) or whether the
-storage class is a value-level fact read from the backing object at construction
-(consistent with assumption: "runtime descriptor fields are value-level facts").
-Recommended: keep storage out of view type identity and propagate it as a
-construction-time fact, so `view T` and `view (@dma T)` are the same type but the
-constructor records the storage class for verification. Pick one before Stage 2.
+`@external`, `@exclusive`) as a wrapper *around* the element type
+(`Type::Dma(Box<Type>)` etc.), and `Type::inner()` unwraps it.
+
+Resolved (shipped, `feature/ikos`): storage stays **out** of view type identity.
+The array-form constructors (`view`/`ring`/`bits`) unwrap the storage wrapper via
+`.inner()` at construction, so `view(SHARED_ARR)` yields a plain `view T`; the
+backing's storage class is a construction-time fact (to be recorded for the race
+analysis, the next step). `@mmio` is not a valid static annotation, so views
+never silently drop volatile semantics. This also surfaced and fixed a latent
+bug: array (and nested-array) static initializers were emitted as a scalar `0`
+(`expr_const_val` had no `ArrayInit` arm); a type-aware `const_init` now emits the
+real aggregate constant. Verified end to end (type-check, bounds-verify over a
+shared backing, and a QEMU read of an array static through a view).
 
 ## Stage 2: View Construction
 

@@ -256,13 +256,11 @@ impl IrEmitter {
         for item in &program.items {
             match item {
                 ast::Item::StaticDef(s) => {
-                    let llvm_ty = llvm_type(&crate::types::resolve_type_expr(
-                        &s.ty,
-                        &symbols.structs,
-                        &symbols.enums,
-                    ));
+                    let resolved_ty =
+                        crate::types::resolve_type_expr(&s.ty, &symbols.structs, &symbols.enums);
+                    let llvm_ty = llvm_type(&resolved_ty);
                     let init_val = if let Some(init) = &s.init {
-                        expr_const_val(init)
+                        const_init(&resolved_ty, init)
                     } else {
                         "zeroinitializer".to_string()
                     };
@@ -2170,7 +2168,10 @@ impl IrEmitter {
                 } else {
                     // view(arr): pointer to element 0, compile-known length.
                     let ptr_reg = self.emit_lvalue_ptr(base, symbols);
-                    let n = match self.expr_type(base, symbols) {
+                    // `.inner()` sees through a storage wrapper (`@shared`/`@dma`
+                    // /`@external`/`@exclusive`) so a view over a storage-class
+                    // array still gets its compile-known length.
+                    let n = match self.expr_type(base, symbols).inner().clone() {
                         Type::Array(_, n) => n,
                         _ => 0,
                     };
@@ -2206,7 +2207,10 @@ impl IrEmitter {
                     (ptr_reg, self.coerce_int(cap_reg, &cap_ty, &Type::U32))
                 } else {
                     let ptr_reg = self.emit_lvalue_ptr(base, symbols);
-                    let n = match self.expr_type(base, symbols) {
+                    // `.inner()` sees through a storage wrapper (`@shared`/`@dma`
+                    // /`@external`/`@exclusive`) so a view over a storage-class
+                    // array still gets its compile-known length.
+                    let n = match self.expr_type(base, symbols).inner().clone() {
                         Type::Array(_, n) => n,
                         _ => 0,
                     };
@@ -2261,7 +2265,9 @@ impl IrEmitter {
                         (ptr_reg, off_i32, len_i32)
                     } else {
                         let ptr_reg = self.emit_lvalue_ptr(base, symbols);
-                        let n = match self.expr_type(base, symbols) {
+                        // `.inner()` sees through a storage wrapper so a bit view
+                        // over a storage-class byte array gets its length.
+                        let n = match self.expr_type(base, symbols).inner().clone() {
                             Type::Array(_, n) => n,
                             _ => 0,
                         };
@@ -3507,12 +3513,14 @@ impl IrEmitter {
             // The mutability flag is irrelevant to lowering (the descriptor and
             // index math are identical); a view over `*mut T` is reported as
             // mutable, everything else as readonly, only for completeness.
-            Expr::ViewNew { base, .. } => match self.expr_type(base, symbols) {
+            // `.inner()` sees through a storage wrapper so a view over a
+            // storage-class array reports the right element type.
+            Expr::ViewNew { base, .. } => match self.expr_type(base, symbols).inner().clone() {
                 Type::Ptr(inner) => Type::LinearView(inner, true),
                 Type::ConstPtr(inner) | Type::Array(inner, _) => Type::LinearView(inner, false),
                 _ => Type::LinearView(Box::new(Type::U32), false),
             },
-            Expr::RingNew { base, .. } => match self.expr_type(base, symbols) {
+            Expr::RingNew { base, .. } => match self.expr_type(base, symbols).inner().clone() {
                 Type::Ptr(inner) => Type::RingView(inner, true),
                 Type::ConstPtr(inner) | Type::Array(inner, _) => Type::RingView(inner, false),
                 _ => Type::RingView(Box::new(Type::U32), false),
@@ -3944,6 +3952,26 @@ fn fn_ret_llvm_type(fn_def: &ast::FnDef, symbols: &SymbolTable) -> String {
             &symbols.enums,
         )),
         None => "void".into(),
+    }
+}
+
+/// Emit an LLVM constant initializer for a global of type `ty`. Needed for
+/// aggregate statics (arrays): `expr_const_val` only knows scalars, so an array
+/// initializer like `[1, 2, 3, 4]` would otherwise collapse to `0`. The element
+/// type is taken from `ty` (so unsuffixed literals get the right width), and
+/// `.inner()` sees through a storage wrapper. Falls back to the scalar path for
+/// non-aggregate types.
+fn const_init(ty: &Type, expr: &Expr) -> String {
+    match (ty.inner(), expr) {
+        (Type::Array(elem, _), Expr::ArrayInit(elems, _)) => {
+            let ell = llvm_type(elem);
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|e| format!("{ell} {}", const_init(elem, e)))
+                .collect();
+            format!("[{}]", parts.join(", "))
+        }
+        _ => expr_const_val(expr),
     }
 }
 

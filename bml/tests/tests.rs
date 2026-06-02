@@ -251,6 +251,9 @@ assert_error!(test_view_bad_len, "view_bad_len.bml", "E332");
 assert_error!(test_view_bad_ptr, "view_bad_ptr.bml", "E333");
 assert_pass!(test_view_from_array, "view_from_array.bml");
 assert_error!(test_view_from_nonarray, "view_from_nonarray.bml", "E333");
+// All three view kinds can be built over a storage-wrapped array (@shared/@dma/
+// etc.): the storage class is unwrapped at construction, kept out of view type.
+assert_pass!(test_view_over_shared, "view_over_shared.bml");
 // Mutable linear views (contiguous): write through index, coerce to readonly,
 // and the move gate (a mutable view is Move, so reuse after a call is E304).
 assert_pass!(test_view_mut_write, "view_mut_write.bml");
@@ -1490,6 +1493,9 @@ assert_verify_pass!(test_verify_ring_mut_param_write, "ring_mut_param_write.bml"
 // Bit views: the byte address (bit_offset + i) / 8 is bounded by assume(i <
 // len_bits), so with the array-derived constant length IKOS proves both the
 // read (bit extract) and the read-modify-write store.
+// Views over a storage-wrapped (`@shared`/`@dma`) array still prove in bounds:
+// the backing is a known in-program allocation, storage class aside.
+assert_verify_pass!(test_verify_view_over_shared, "view_over_shared.bml");
 assert_verify_pass!(test_verify_bit_read, "bit_read.bml");
 assert_verify_pass!(test_verify_bit_mut_write, "bit_mut_write.bml");
 assert_verify_pass!(test_verify_bit_mut_param_write, "bit_mut_param_write.bml");

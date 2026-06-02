@@ -268,6 +268,10 @@ assert_exec!(exec_bit_view, "bit_view.bml");
 // the view), with the summed values checked.
 assert_exec!(exec_view_mut_loop, "view_mut_loop.bml");
 
+// A view over an array static reads the right elements, which also pins that an
+// array static emits its real initializer (not a scalar 0).
+assert_exec!(exec_static_array_view, "static_array_view.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 

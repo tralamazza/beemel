@@ -1284,18 +1284,20 @@ fn check_expr(
             } else {
                 // `view(arr)`: base must be an array; length is taken from it.
                 // A view over a mutable place (a `var` array or a static) is
-                // mutable; otherwise it is readonly.
+                // mutable; otherwise it is readonly. `.inner()` sees through a
+                // storage wrapper (`@shared`/`@dma`/`@external`/`@exclusive`) so a
+                // view over a storage-class array is allowed; the storage stays
+                // out of the view's type identity.
                 let mutable = is_mutable_place(base, scope, symbols);
-                match base_ty {
-                    Type::Array(inner, _) => Type::LinearView(inner, mutable),
-                    other => {
-                        let guard = diags.error(
-                            format!("`view(x)` argument must be an array (or use `view(ptr, len)`), got `{other}`"),
-                            "E333",
-                            *span,
-                        );
-                        Type::Error(guard)
-                    }
+                if let Type::Array(inner, _) = base_ty.inner() {
+                    Type::LinearView(Box::new((**inner).clone()), mutable)
+                } else {
+                    let guard = diags.error(
+                        format!("`view(x)` argument must be an array (or use `view(ptr, len)`), got `{base_ty}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
                 }
             }
         }
@@ -1343,18 +1345,19 @@ fn check_expr(
                 }
             } else {
                 // `ring(arr, head, len)`: capacity comes from the array; the ring
-                // is mutable iff the array is a mutable place.
+                // is mutable iff the array is a mutable place. `.inner()` sees
+                // through a storage wrapper so a ring over a storage-class array
+                // is allowed.
                 let mutable = is_mutable_place(base, scope, symbols);
-                match base_ty {
-                    Type::Array(inner, _) => Type::RingView(inner, mutable),
-                    other => {
-                        let guard = diags.error(
-                            format!("`ring(x, head, len)` first argument must be an array (or use `ring(ptr, capacity, head, len)`), got `{other}`"),
-                            "E333",
-                            *span,
-                        );
-                        Type::Error(guard)
-                    }
+                if let Type::Array(inner, _) = base_ty.inner() {
+                    Type::RingView(Box::new((**inner).clone()), mutable)
+                } else {
+                    let guard = diags.error(
+                        format!("`ring(x, head, len)` first argument must be an array (or use `ring(ptr, capacity, head, len)`), got `{base_ty}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
                 }
             }
         }
@@ -1399,8 +1402,9 @@ fn check_expr(
                 }
             } else {
                 // `bits(arr)`: byte array; mutable iff the array is a mutable
-                // place.
-                let is_byte_array = matches!(&base_ty, Type::Array(inner, _) if matches!(**inner, Type::U8 | Type::B8));
+                // place. `.inner()` sees through a storage wrapper so a bit view
+                // over a storage-class byte array is allowed.
+                let is_byte_array = matches!(base_ty.inner(), Type::Array(inner, _) if matches!(**inner, Type::U8 | Type::B8));
                 if is_byte_array {
                     Type::BitView(is_mutable_place(base, scope, symbols))
                 } else {
