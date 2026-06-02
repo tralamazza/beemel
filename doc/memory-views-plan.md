@@ -107,16 +107,50 @@ Shipped (ring view, contiguous, `feature/ikos`):
 - Tests: `ring_read`, `ring_mut_write` (both + verify), `ring_readonly_write`
   (E334), `ring_mut_move_error` (E304), `ring_read` IR (urem + 4-field descr).
 
+Shipped (bit view, contiguous, `feature/ikos`):
+
+- Syntax: `bits` / `bits mut` (no element type; the element is always `b1`).
+  Type `Type::BitView(bool)` / `TypeExpr::Bits`. Descriptor `{ ptr, bit_offset,
+  len_bits }` (size 12), SSA-transparent like the other views. Readonly Copy,
+  mutable Move; coercion `bits mut -> bits`.
+- Constructors: `bits(arr)` over a byte array `[u8; N]`/`[b8; N]` (offset 0,
+  `len_bits = N*8`, the verifiable form) and `bits(ptr, bit_offset, len_bits)`
+  over a byte pointer (`*u8`/`&u8`). Mutability derived the same way as the other
+  views (pointer constness / place mutability). Backing is restricted to byte
+  types in v1.
+- Index: `bits[i]` yields a bit. Read lowers to `assume(i < len_bits)`, then
+  `byte = (bit_offset + i) / 8` (lshr 3), `load i8`, shift/mask, `trunc to i1`.
+  Write is a non-atomic read-modify-write of that one byte (clear the target bit,
+  OR in the value). The assume bounds the byte access for `boa`.
+- Verification (measured): array-backed bit read and mutable write prove clean
+  through IKOS (de-risked before building: the byte address derived from `i >> 3`
+  is bounded, and a deliberately overflowing variant is flagged). Runtime
+  pointer/length forms are subject to the same trust-boundary limitation as
+  escaped views.
+- Tests: `bit_read`, `bit_mut_write` (both + verify), `bit_mut_param_write`
+  (+ verify, the E309-exemption regression class), `bit_readonly_write` (E334),
+  `bit_mut_move_error` (E304), `bit_bad_argcount` (E100), `bit_non_int` (E332),
+  `bit_runtime`, plus read IR (3-field descr + lshr + bit extract) and write IR
+  (RMW: xor/zext/or).
+
+Shipped deviation (v1): the bit-view descriptor is `{ ptr, i32, i32 }` (no
+`bit_stride` field). v1 is contiguous only (logical stride 1). Strided bit views
+(the GPIO-matrix case: "pin N at the same bit position across a word array")
+reintroduce the fourth field. Bit-band (atomic single-bit alias) is also not
+emitted yet; the v1 RMW write is single-context-safe only.
+
 Not yet built:
 
 - Strided views (`view(ptr, len, stride)`) and the third descriptor field.
   Deferred: raw byte-GEP indexing is not bounded by IKOS `boa`, and the DMA use
   case has an external backing pointer anyway (trust boundary). See the
   bound-enforcement discussion in Stage 5.
-- Ring power-of-two mask optimization and segmented/bit views.
+- Strided bit views (GPIO matrices) and bit-band (atomic) bit-view writes.
+- Ring power-of-two mask optimization and segmented views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
-  `ViewNew`/`RingNew` via a wildcard arm; fine for current cases, revisit if a
-  view is constructed in lvalue/addr position or with an allocating operand.
+  `ViewNew`/`RingNew`/`BitNew` via a wildcard arm; fine for current cases,
+  revisit if a view is constructed in lvalue/addr position or with an allocating
+  operand.
 
 ## Primitive Model
 

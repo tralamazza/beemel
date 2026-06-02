@@ -1,0 +1,6 @@
+// Writing through a readonly bit view must be rejected (E334).
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    var b: bits = bits(buf);
+    b[0u32] = true;
+}

@@ -1,0 +1,10 @@
+// A mutable bit view is Move: passing it consumes it, so reuse is use-after-move.
+fn reads(b: bits) -> b1 {
+    return b[0u32];
+}
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    var b: bits mut = bits(buf);
+    var a: b1 = reads(b);   // moves b
+    var c: b1 = reads(b);   // E304
+}

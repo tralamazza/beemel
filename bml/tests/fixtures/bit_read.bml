@@ -1,0 +1,7 @@
+// Readonly bit view over a local byte array: read a bit by index.
+// Intra-procedural, so the verifier sees the backing allocation directly.
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    val b: bits = bits(buf);
+    var x: b1 = b[5u32];
+}

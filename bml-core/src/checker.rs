@@ -1202,6 +1202,8 @@ fn check_expr(
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
                 Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner,
+                // A bit view yields a single bit regardless of mutability.
+                Type::BitView(_) => Type::B1,
                 other => {
                     let guard = diags.error(
                         format!("cannot index value of type `{other:?}`"),
@@ -1363,6 +1365,61 @@ fn check_expr(
                         );
                         Type::Error(guard)
                     }
+                }
+            }
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            span,
+        } => {
+            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
+            // bit_offset and len_bits (explicit form) must be integers.
+            for arg in [bit_offset.as_deref(), len_bits.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                let ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
+                if !types::is_int(&ty) {
+                    diags.error(
+                        format!("`bits` bit_offset/len_bits must be an integer, got `{ty}`"),
+                        "E332",
+                        arg.span(),
+                    );
+                }
+            }
+            if bit_offset.is_some() {
+                // `bits(ptr, bit_offset, len_bits)`: byte pointer; a `*mut u8`
+                // is mutable, a `&u8` readonly.
+                let mutability = match &base_ty {
+                    Type::Ptr(inner) if matches!(**inner, Type::U8 | Type::B8) => Some(true),
+                    Type::ConstPtr(inner) if matches!(**inner, Type::U8 | Type::B8) => Some(false),
+                    _ => None,
+                };
+                if let Some(mutable) = mutability {
+                    Type::BitView(mutable)
+                } else {
+                    let guard = diags.error(
+                        format!("`bits(ptr, ...)` first argument must be a byte pointer (`*u8`/`&u8`), got `{base_ty}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
+                }
+            } else {
+                // `bits(arr)`: byte array; mutable iff the array is a mutable
+                // place.
+                let is_byte_array = matches!(&base_ty, Type::Array(inner, _) if matches!(**inner, Type::U8 | Type::B8));
+                if is_byte_array {
+                    Type::BitView(is_mutable_place(base, scope, symbols))
+                } else {
+                    let guard = diags.error(
+                        format!("`bits(x)` argument must be a byte array (`[u8; N]`/`[b8; N]`), got `{base_ty}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
                 }
             }
         }
@@ -1679,7 +1736,10 @@ fn check_lvalue(
                 // No use-after-move check here: assigning to a name *defines* it,
                 // reviving a previously-moved local (see `mark_assigned`). Reads
                 // on the value side are checked in `check_expr`.
-                let is_view = matches!(info.ty, Type::LinearView(..) | Type::RingView(..));
+                let is_view = matches!(
+                    info.ty,
+                    Type::LinearView(..) | Type::RingView(..) | Type::BitView(..)
+                );
                 if !info.mutable && (root || !is_view) {
                     diags.error(
                         format!("cannot assign to immutable variable `{name}`"),
@@ -1795,7 +1855,9 @@ fn check_lvalue(
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
                 // A mutable view permits index writes; a readonly view does not.
                 Type::LinearView(inner, true) | Type::RingView(inner, true) => *inner,
-                Type::LinearView(_, false) | Type::RingView(_, false) => {
+                // A mutable bit view permits writes; the assigned value is a bit.
+                Type::BitView(true) => Type::B1,
+                Type::LinearView(_, false) | Type::RingView(_, false) | Type::BitView(false) => {
                     let guard = diags.error(
                         "cannot write through a readonly `view`; only reads are allowed"
                             .to_string(),

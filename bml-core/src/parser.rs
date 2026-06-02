@@ -746,6 +746,13 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_type_expr()?;
                 Some(TypeExpr::Ring(Box::new(inner), mutable))
             }
+            TokenKind::Bits => {
+                self.advance();
+                // `bits mut` is a mutable bit view; `bits` is readonly. No
+                // element type: the element is always a single bit.
+                let mutable = self.eat(&TokenKind::Mut);
+                Some(TypeExpr::Bits(mutable))
+            }
             TokenKind::LBracket => {
                 self.advance();
                 let inner = self.parse_type_expr()?;
@@ -1335,6 +1342,49 @@ impl<'a> Parser<'a> {
                     capacity,
                     head: Box::new(head),
                     len: Box::new(len),
+                    span,
+                })
+            }
+            TokenKind::Bits => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `bits`")
+                    .ok()?;
+                // Collect the comma-separated arguments, then map by count:
+                // 1 = bits(arr), 3 = bits(ptr, bit_offset, len_bits).
+                let mut args = vec![self.parse_expr()?];
+                while self.eat(&TokenKind::Comma) {
+                    args.push(self.parse_expr()?);
+                }
+                self.expect(&TokenKind::RParen, "expected `)` to close `bits(...)`")
+                    .ok()?;
+                let mut it = args.into_iter();
+                let (base, bit_offset, len_bits) = match it.len() {
+                    1 => {
+                        let base = it.next().unwrap();
+                        (base, None, None)
+                    }
+                    3 => {
+                        let base = it.next().unwrap();
+                        let bit_offset = it.next().unwrap();
+                        let len_bits = it.next().unwrap();
+                        (base, Some(Box::new(bit_offset)), Some(Box::new(len_bits)))
+                    }
+                    n => {
+                        self.diags.error(
+                            format!(
+                                "`bits(...)` expects 1 (arr) or 3 (ptr, bit_offset, len_bits) arguments, got {n}"
+                            ),
+                            "E100",
+                            span,
+                        );
+                        return None;
+                    }
+                };
+                Some(Expr::BitNew {
+                    base: Box::new(base),
+                    bit_offset,
+                    len_bits,
                     span,
                 })
             }

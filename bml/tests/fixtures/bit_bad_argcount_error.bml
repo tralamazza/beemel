@@ -1,0 +1,6 @@
+// `bits(...)` accepts only 1 (arr) or 3 (ptr, bit_offset, len_bits) arguments.
+// Two arguments is an error. (E100)
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    var b = bits(buf, 0u32);
+}

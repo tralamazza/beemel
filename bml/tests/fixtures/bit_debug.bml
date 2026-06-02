@@ -1,0 +1,7 @@
+// Dedicated fixture for the bit-view debug-info test (separate .ll file so it
+// does not race the bit IR-lowering test).
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    val b: bits = bits(buf);
+    var x: b1 = b[2u32];
+}

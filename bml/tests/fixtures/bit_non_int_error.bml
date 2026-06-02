@@ -1,0 +1,5 @@
+// The explicit form's bit_offset/len_bits must be integers (E332).
+fn read_at(p: *u8) -> b1 @context(thread) {
+    var b: bits = bits(p, 0.0f, 32u32);
+    return b[0u32];
+}

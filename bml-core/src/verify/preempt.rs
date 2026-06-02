@@ -228,6 +228,20 @@ fn collect_expr_writes(expr: &Expr, shared_statics: &HashSet<String>, out: &mut 
             collect_expr_writes(head, shared_statics, out);
             collect_expr_writes(len, shared_statics, out);
         }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            collect_expr_writes(base, shared_statics, out);
+            if let Some(bit_offset) = bit_offset {
+                collect_expr_writes(bit_offset, shared_statics, out);
+            }
+            if let Some(len_bits) = len_bits {
+                collect_expr_writes(len_bits, shared_statics, out);
+            }
+        }
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)
         | Expr::BoolLiteral(..)

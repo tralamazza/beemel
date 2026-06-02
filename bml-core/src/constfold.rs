@@ -99,7 +99,7 @@ fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
                 fold_type(r, consts);
             }
         }
-        TypeExpr::Named(_) | TypeExpr::Void(_) => {}
+        TypeExpr::Named(_) | TypeExpr::Void(_) | TypeExpr::Bits(_) => {}
     }
 }
 

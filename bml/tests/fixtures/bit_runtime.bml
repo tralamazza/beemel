@@ -1,0 +1,8 @@
+// Runtime bit view form: bits(ptr, bit_offset, len_bits). This type-checks and
+// lowers, but the backing pointer is an entry-point parameter and the length is
+// runtime, so the verifier cannot prove the access. Use the array form for
+// verified code. (`*u8` is a readonly pointer in BML, so the view is readonly.)
+fn read_at(p: *u8, bit_offset: u32, len_bits: u32, i: u32) -> b1 @context(thread) {
+    var b: bits = bits(p, bit_offset, len_bits);
+    return b[i];
+}

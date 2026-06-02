@@ -595,6 +595,21 @@ fn expr_contribution(
             c.merge(expr_contribution(head, symbols, defined_fns))
                 .merge(expr_contribution(len, symbols, defined_fns))
         }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            let mut c = expr_contribution(base, symbols, defined_fns);
+            if let Some(bit_offset) = bit_offset {
+                c = c.merge(expr_contribution(bit_offset, symbols, defined_fns));
+            }
+            if let Some(len_bits) = len_bits {
+                c = c.merge(expr_contribution(len_bits, symbols, defined_fns));
+            }
+            c
+        }
     }
 }
 

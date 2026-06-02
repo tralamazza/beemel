@@ -254,6 +254,21 @@ fn check_expr(
             check_expr(len, current_fn, current_ctx, symbols, diags);
         }
 
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            check_expr(base, current_fn, current_ctx, symbols, diags);
+            if let Some(bit_offset) = bit_offset {
+                check_expr(bit_offset, current_fn, current_ctx, symbols, diags);
+            }
+            if let Some(len_bits) = len_bits {
+                check_expr(len_bits, current_fn, current_ctx, symbols, diags);
+            }
+        }
+
         // Literals never need borrow checks
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)

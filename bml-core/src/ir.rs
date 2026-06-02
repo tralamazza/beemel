@@ -1937,6 +1937,57 @@ impl IrEmitter {
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
+                } else if let Type::BitView(_) = &base_ty {
+                    // Read a bit view: assume(i < len_bits), then byte =
+                    // (bit_offset + i) / 8, load that byte, extract the bit. The
+                    // assume bounds the byte access so the verifier proves it.
+                    let agg = self.emit_expr(base, symbols, fn_name);
+                    let ty = "{ ptr, i32, i32 }";
+                    let ptr_field = self.new_reg();
+                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
+                    let off_field = self.new_reg();
+                    self.line(&format!("{off_field} = extractvalue {ty} {agg}, 1"));
+                    let len_field = self.new_reg();
+                    self.line(&format!("{len_field} = extractvalue {ty} {agg}, 2"));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    // assume(idx < len_bits), unsigned.
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("bit_idx_ok");
+                    let oob_lbl = self.new_label("bit_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let bit = self.new_reg();
+                    self.line(&format!("{bit} = add i32 {off_field}, {idx_i32}"));
+                    let byteidx = self.new_reg();
+                    self.line(&format!("{byteidx} = lshr i32 {bit}, 3"));
+                    let bib = self.new_reg();
+                    self.line(&format!("{bib} = and i32 {bit}, 7"));
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr i8, ptr {ptr_field}, i32 {byteidx}{dbg}"
+                    ));
+                    let byte = self.new_reg();
+                    self.line(&format!("{byte} = load i8, ptr {gep}{dbg}"));
+                    let bib8 = self.new_reg();
+                    self.line(&format!("{bib8} = trunc i32 {bib} to i8"));
+                    let shifted = self.new_reg();
+                    self.line(&format!("{shifted} = lshr i8 {byte}, {bib8}"));
+                    let masked = self.new_reg();
+                    self.line(&format!("{masked} = and i8 {shifted}, 1"));
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = trunc i8 {masked} to i1"));
+                    reg
                 } else if crate::types::is_ptr(&base_ty) {
                     // Pointer index: GEP + load
                     let base_reg = self.emit_expr(base, symbols, fn_name);
@@ -2187,6 +2238,53 @@ impl IrEmitter {
                     "{agg3} = insertvalue {ty} {agg2}, i32 {len_i32}, 3"
                 ));
                 agg3
+            }
+            Expr::BitNew {
+                base,
+                bit_offset,
+                len_bits,
+                ..
+            } => {
+                // Build the { ptr, bit_offset, len_bits } descriptor. For the
+                // array form bit_offset is 0 and len_bits is the compile-known
+                // byte count times 8, emitted as a constant so sroa propagates
+                // it and IKOS bounds the `(off+i)/8` byte access.
+                let (ptr_reg, off_i32, len_i32) =
+                    if let (Some(bit_offset), Some(len_bits)) = (bit_offset, len_bits) {
+                        let ptr_reg = self.emit_expr(base, symbols, fn_name);
+                        let off_reg = self.emit_expr(bit_offset, symbols, fn_name);
+                        let off_ty = self.expr_type(bit_offset, symbols);
+                        let off_i32 = self.coerce_int(off_reg, &off_ty, &Type::U32);
+                        let len_reg = self.emit_expr(len_bits, symbols, fn_name);
+                        let len_ty = self.expr_type(len_bits, symbols);
+                        let len_i32 = self.coerce_int(len_reg, &len_ty, &Type::U32);
+                        (ptr_reg, off_i32, len_i32)
+                    } else {
+                        let ptr_reg = self.emit_lvalue_ptr(base, symbols);
+                        let n = match self.expr_type(base, symbols) {
+                            Type::Array(_, n) => n,
+                            _ => 0,
+                        };
+                        let off_reg = self.new_reg();
+                        self.line(&format!("{off_reg} = add i32 0, 0"));
+                        let len_reg = self.new_reg();
+                        self.line(&format!("{len_reg} = add i32 0, {}", n * 8));
+                        (ptr_reg, off_reg, len_reg)
+                    };
+                let ty = "{ ptr, i32, i32 }";
+                let agg0 = self.new_reg();
+                self.line(&format!(
+                    "{agg0} = insertvalue {ty} undef, ptr {ptr_reg}, 0"
+                ));
+                let agg1 = self.new_reg();
+                self.line(&format!(
+                    "{agg1} = insertvalue {ty} {agg0}, i32 {off_i32}, 1"
+                ));
+                let agg2 = self.new_reg();
+                self.line(&format!(
+                    "{agg2} = insertvalue {ty} {agg1}, i32 {len_i32}, 2"
+                ));
+                agg2
             }
             Expr::ArrayInit(elems, _) => {
                 let elem_ty = elems
@@ -2756,6 +2854,67 @@ impl IrEmitter {
                     self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
                     return val_reg;
                 }
+                // Write through a mutable bit view: assume(i < len_bits), then
+                // read-modify-write the single byte holding bit (off+i). NOTE:
+                // the RMW is not atomic; concurrent writers to the same byte race.
+                if let Type::BitView(_) = &base_ty {
+                    let ty = "{ ptr, i32, i32 }";
+                    let agg = self.new_reg();
+                    self.line(&format!("{agg} = load {ty}, ptr {base_ptr}"));
+                    let ptr_field = self.new_reg();
+                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
+                    let off_field = self.new_reg();
+                    self.line(&format!("{off_field} = extractvalue {ty} {agg}, 1"));
+                    let len_field = self.new_reg();
+                    self.line(&format!("{len_field} = extractvalue {ty} {agg}, 2"));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("bit_idx_ok");
+                    let oob_lbl = self.new_label("bit_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let bit = self.new_reg();
+                    self.line(&format!("{bit} = add i32 {off_field}, {idx_i32}"));
+                    let byteidx = self.new_reg();
+                    self.line(&format!("{byteidx} = lshr i32 {bit}, 3"));
+                    let bib = self.new_reg();
+                    self.line(&format!("{bib} = and i32 {bit}, 7"));
+                    let bib8 = self.new_reg();
+                    self.line(&format!("{bib8} = trunc i32 {bib} to i8"));
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr i8, ptr {ptr_field}, i32 {byteidx}{dbg}"
+                    ));
+                    let old = self.new_reg();
+                    self.line(&format!("{old} = load i8, ptr {gep}{dbg}"));
+                    let mask = self.new_reg();
+                    self.line(&format!("{mask} = shl i8 1, {bib8}"));
+                    let notmask = self.new_reg();
+                    self.line(&format!("{notmask} = xor i8 {mask}, -1"));
+                    let cleared = self.new_reg();
+                    self.line(&format!("{cleared} = and i8 {old}, {notmask}"));
+                    // Coerce the assigned value to a single bit, then place it.
+                    let val_i1 = self.coerce_int(val_reg.to_string(), val_ty, &Type::B1);
+                    let val8 = self.new_reg();
+                    self.line(&format!("{val8} = zext i1 {val_i1} to i8"));
+                    let valsh = self.new_reg();
+                    self.line(&format!("{valsh} = shl i8 {val8}, {bib8}"));
+                    let newbyte = self.new_reg();
+                    self.line(&format!("{newbyte} = or i8 {cleared}, {valsh}"));
+                    self.line(&format!("store i8 {newbyte}, ptr {gep}{dbg}"));
+                    return val_i1;
+                }
                 let elem_ty = match &base_ty {
                     Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => {
                         inner.as_ref().clone()
@@ -3121,6 +3280,33 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
+            Type::BitView(_) => {
+                // Descriptor is { data: byte ptr, bit_offset, len_bits }. Emit a
+                // 3-field structure (matching the { ptr, i32, i32 } aggregate) so
+                // IKOS accepts the module.
+                let f = self.cu_file_id.unwrap_or(0);
+                let data_id = self.dbg_type(&Type::ConstPtr(Box::new(Type::U8)));
+                let u32_id = self.dbg_type(&Type::U32);
+                let members = ["data", "bit_offset", "len_bits"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let base = if i == 0 { data_id } else { u32_id };
+                        format!(
+                            "!DIDerivedType(tag: DW_TAG_member, name: \"{name}\", scope: !{id}, file: !{f}, line: 0, baseType: !{base}, size: 32, offset: {})",
+                            i * 32
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    self.debug_metadata,
+                    "!{id} = !DICompositeType(tag: DW_TAG_structure_type, name: \"bits\", file: !{f}, line: 0, size: 96, elements: !{{{members}}})"
+                )
+                .unwrap();
+                self.type_dbg_id.insert(key, id);
+                return id;
+            }
             _ => ("i32", 32, 5),
         };
         writeln!(
@@ -3314,6 +3500,7 @@ impl IrEmitter {
                     Type::Array(inner, _) => *inner.clone(),
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
                     Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner.clone(),
+                    Type::BitView(_) => Type::B1,
                     _ => Type::U32,
                 }
             }
@@ -3329,6 +3516,10 @@ impl IrEmitter {
                 Type::Ptr(inner) => Type::RingView(inner, true),
                 Type::ConstPtr(inner) | Type::Array(inner, _) => Type::RingView(inner, false),
                 _ => Type::RingView(Box::new(Type::U32), false),
+            },
+            Expr::BitNew { base, .. } => match self.expr_type(base, symbols) {
+                Type::Ptr(_) => Type::BitView(true),
+                _ => Type::BitView(false),
             },
             Expr::Cast(_, ty_expr) => {
                 crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums)
@@ -3526,6 +3717,9 @@ fn llvm_type(ty: &Type) -> String {
         // Ring view descriptor: { data pointer, capacity, head, len }. Same
         // SSA-transparent aggregate treatment as the linear view.
         Type::RingView(_, _) => "{ ptr, i32, i32, i32 }".to_string(),
+        // Bit view descriptor: { byte pointer, bit_offset, len_bits }. Same
+        // SSA-transparent aggregate treatment as the other views.
+        Type::BitView(_) => "{ ptr, i32, i32 }".to_string(),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
@@ -3558,9 +3752,11 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::B8 => "0".to_string(),
         Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
-        Type::Array(..) | Type::Struct(..) | Type::LinearView(_, _) | Type::RingView(_, _) => {
-            "zeroinitializer".to_string()
-        }
+        Type::Array(..)
+        | Type::Struct(..)
+        | Type::LinearView(_, _)
+        | Type::RingView(_, _)
+        | Type::BitView(_) => "zeroinitializer".to_string(),
         Type::Enum(_, inner, _) => default_value_literal(inner),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)

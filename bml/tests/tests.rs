@@ -319,6 +319,59 @@ fn test_ring_ir_lowering() {
         );
     }
 }
+// Bit views (contiguous): one bit per index over a byte array. Read extracts a
+// bit, write is a read-modify-write of one byte. Readonly write rejected and the
+// move gate, mirroring the linear/ring views.
+assert_pass!(test_bit_read, "bit_read.bml");
+assert_pass!(test_bit_mut_write, "bit_mut_write.bml");
+assert_error!(
+    test_bit_readonly_write,
+    "bit_readonly_write_error.bml",
+    "E334"
+);
+assert_error!(test_bit_mut_move, "bit_mut_move_error.bml", "E304");
+// Writing through a `bits mut` parameter (immutable binding). Regression for the
+// BitView case of the binding-mutability exemption.
+assert_pass!(test_bit_mut_param_write, "bit_mut_param_write.bml");
+// The runtime pointer form bits(ptr, bit_offset, len_bits) type-checks.
+assert_pass!(test_bit_runtime, "bit_runtime.bml");
+// `bits(...)` accepts only 1 or 3 arguments; bit_offset/len_bits must be ints.
+assert_error!(test_bit_bad_argcount, "bit_bad_argcount_error.bml", "E100");
+assert_error!(test_bit_non_int, "bit_non_int_error.bml", "E332");
+#[test]
+fn test_bit_debug_type() {
+    let ir = bml_ir_debug("bit_debug.bml");
+    // The bit-view descriptor emits a 3-field DWARF composite so IKOS (and
+    // debuggers) see { data, bit_offset, len_bits } rather than an opaque blob.
+    assert!(
+        ir.contains(r#"name: "bits""#) && ir.contains(r#"name: "bit_offset""#),
+        "expected bits DICompositeType with a bit_offset member\n--- IR ---\n{ir}\n---"
+    );
+}
+#[test]
+fn test_bit_ir_lowering() {
+    let ir = bml_ir("bit_read.bml");
+    // 3-field descriptor and the byte/bit address math (byte = bit/8 via lshr 3,
+    // bit-in-byte via and 7), ending in a single-bit extract.
+    for pattern in ["extractvalue { ptr, i32, i32 }", "lshr i32", "trunc i8"] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
+#[test]
+fn test_bit_write_ir_lowering() {
+    let ir = bml_ir("bit_mut_write.bml");
+    // The mutable write lowers to a read-modify-write of one byte: clear the
+    // target bit (xor mask, and) then set it (zext value, shl, or, store).
+    for pattern in ["xor i8", "zext i1", "or i8"] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
 // Both checks share one build to avoid racing on the fixture's `.ll` file
 // (two `bml_ir` calls on the same fixture would write/read/delete it
 // concurrently under the parallel test runner).
@@ -1392,6 +1445,12 @@ assert_verify_pass!(test_verify_ring_mut_write, "ring_mut_write.bml");
 // through the call, so IKOS still proves the store in bounds.
 assert_verify_pass!(test_verify_view_mut_param_write, "view_mut_param_write.bml");
 assert_verify_pass!(test_verify_ring_mut_param_write, "ring_mut_param_write.bml");
+// Bit views: the byte address (bit_offset + i) / 8 is bounded by assume(i <
+// len_bits), so with the array-derived constant length IKOS proves both the
+// read (bit extract) and the read-modify-write store.
+assert_verify_pass!(test_verify_bit_read, "bit_read.bml");
+assert_verify_pass!(test_verify_bit_mut_write, "bit_mut_write.bml");
+assert_verify_pass!(test_verify_bit_mut_param_write, "bit_mut_param_write.bml");
 // Characterize the runtime-capacity ring form: unlike the array-backed form, the
 // backing pointer is an entry-point param and the capacity is runtime, so the
 // verifier cannot prove the access. The `urem` by a runtime capacity admits a

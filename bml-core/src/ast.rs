@@ -254,6 +254,17 @@ pub enum Expr {
         len: Box<Expr>,
         span: Span,
     },
+    /// Bit view constructor. Two forms:
+    /// - `bits(arr)`: `base` is a `[u8; N]`/`[b8; N]` array; `bit_offset` and
+    ///   `len_bits` are `None` (offset 0, length `N*8` taken from the array).
+    /// - `bits(ptr, bit_offset, len_bits)`: `base` is a byte pointer; the other
+    ///   two are `Some`. Mutability follows the pointer's constness.
+    BitNew {
+        base: Box<Expr>,
+        bit_offset: Option<Box<Expr>>,
+        len_bits: Option<Box<Expr>>,
+        span: Span,
+    },
     EnumVariant {
         enum_name: Ident,
         variant: Ident,
@@ -290,6 +301,7 @@ impl Expr {
             Expr::SizeOf(_, s) => *s,
             Expr::ViewNew { span, .. } => *span,
             Expr::RingNew { span, .. } => *span,
+            Expr::BitNew { span, .. } => *span,
             Expr::EnumVariant { span, .. } => *span,
             Expr::ArrayInit(_, s) => *s,
             Expr::StructInit { span, .. } => *span,
@@ -364,6 +376,9 @@ pub enum TypeExpr {
     View(Box<TypeExpr>, bool),
     /// Ring view type. The `bool` is `mutable`, like `View`.
     Ring(Box<TypeExpr>, bool),
+    /// Bit view type. Carries no element type (the element is always `b1`). The
+    /// `bool` is `mutable`, like `View`.
+    Bits(bool),
     Array(Box<TypeExpr>, Box<Expr>),
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>),
     Void(Span),
@@ -379,7 +394,7 @@ impl TypeExpr {
             | TypeExpr::View(inner, _)
             | TypeExpr::Ring(inner, _) => inner.span(),
             TypeExpr::Array(inner, _) => inner.span(),
-            TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
+            TypeExpr::Bits(_) | TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
             TypeExpr::Void(s) => *s,
         }
     }
@@ -395,6 +410,8 @@ impl fmt::Display for TypeExpr {
             TypeExpr::View(t, false) => write!(f, "view {t}"),
             TypeExpr::Ring(t, true) => write!(f, "ring mut {t}"),
             TypeExpr::Ring(t, false) => write!(f, "ring {t}"),
+            TypeExpr::Bits(true) => write!(f, "bits mut"),
+            TypeExpr::Bits(false) => write!(f, "bits"),
             TypeExpr::Array(t, _) => write!(f, "[{t}]"),
             TypeExpr::Fn(params, ret) => {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();

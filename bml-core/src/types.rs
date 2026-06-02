@@ -31,6 +31,12 @@ pub enum Type {
     /// is logical: element `i` is at physical `(head + i) % capacity`. The
     /// `bool` is `mutable`, with the same Copy/Move rule as `LinearView`.
     RingView(Box<Type>, bool),
+    /// Bit view: a `{ ptr, bit_offset, len_bits }` descriptor over a byte
+    /// buffer. The element is always a single bit (`b1`); indexing element `i`
+    /// touches byte `(bit_offset + i) / 8`. Contiguous only in v1 (logical
+    /// stride 1). The `bool` is `mutable`, with the same Copy/Move rule as the
+    /// other views. Unlike the linear/ring views it carries no element type.
+    BitView(bool),
     Void,
     // Wrapper types carrying borrow semantics
     Exclusive(Box<Type>),
@@ -84,6 +90,8 @@ impl fmt::Display for Type {
             Type::LinearView(t, false) => write!(f, "view {t}"),
             Type::RingView(t, true) => write!(f, "ring mut {t}"),
             Type::RingView(t, false) => write!(f, "ring {t}"),
+            Type::BitView(true) => write!(f, "bits mut"),
+            Type::BitView(false) => write!(f, "bits"),
             Type::Exclusive(t) => write!(f, "@exclusive({t})"),
             Type::Shared(t, c) => write!(f, "@shared({t}, ceiling={c})"),
             Type::Mmio(t) => write!(f, "@mmio({t})"),
@@ -132,7 +140,7 @@ impl Type {
             | Type::Error(_) => Semantics::Copy,
             // A readonly view is Copy; a mutable view is Move (so the move
             // checker forbids use-after-move and aliasing two mutable views).
-            Type::LinearView(_, mutable) | Type::RingView(_, mutable) => {
+            Type::LinearView(_, mutable) | Type::RingView(_, mutable) | Type::BitView(mutable) => {
                 if *mutable {
                     Semantics::Move
                 } else {
@@ -224,6 +232,7 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
         TypeExpr::Ring(inner, mutable) => {
             Type::RingView(Box::new(resolve_type_expr(inner, structs, enums)), *mutable)
         }
+        TypeExpr::Bits(mutable) => Type::BitView(*mutable),
         TypeExpr::Ptr(inner) => Type::Ptr(Box::new(resolve_type_expr(inner, structs, enums))),
         TypeExpr::ConstPtr(inner) => {
             Type::ConstPtr(Box::new(resolve_type_expr(inner, structs, enums)))
@@ -350,6 +359,10 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     {
         return true;
     }
+    // `bits mut` → `bits` implicit coercion (same rule as views).
+    if let (Type::BitView(false), Type::BitView(_)) = (expected, actual) {
+        return true;
+    }
     // Function pointer types: structural comparison
     if let (Type::Fn(expected_params, expected_ret), Type::Fn(actual_params, actual_ret)) =
         (expected, actual)
@@ -445,6 +458,8 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::LinearView(_, _) => 8,
         // `{ ptr, capacity, head, len }` on a 32-bit target: 4 + 4 + 4 + 4.
         Type::RingView(_, _) => 16,
+        // `{ ptr, bit_offset, len_bits }` on a 32-bit target: 4 + 4 + 4.
+        Type::BitView(_) => 12,
         Type::Struct(_, fields) => fields.iter().map(|(_, ty)| element_size(ty)).sum(),
         Type::Enum(_, inner_ty, _) => element_size(inner_ty),
         _ => 4,
