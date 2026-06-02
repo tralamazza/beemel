@@ -1,0 +1,8 @@
+// Runtime-capacity ring form: ring(ptr, capacity, head, len). This type-checks
+// and lowers, but the backing pointer is an entry-point parameter and the
+// capacity is runtime, so the verifier cannot prove the access (and the urem
+// admits division-by-zero). See ring_runtime verify characterization.
+fn read_at(p: *u32, capacity: u32, head: u32, i: u32) -> u32 @context(thread) {
+    var r: ring u32 = ring(p, capacity, head, 4u32);
+    return r[i];
+}

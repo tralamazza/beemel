@@ -253,6 +253,8 @@ assert_error!(test_ring_mut_move, "ring_mut_move_error.bml", "E304");
 // Writing through a `ring mut` parameter (immutable binding). Regression for the
 // RingView case of the binding-mutability exemption.
 assert_pass!(test_ring_mut_param_write, "ring_mut_param_write.bml");
+// The runtime-capacity ring form ring(ptr, capacity, head, len) type-checks.
+assert_pass!(test_ring_runtime, "ring_runtime.bml");
 #[test]
 fn test_ring_ir_lowering() {
     let ir = bml_ir("ring_read.bml");
@@ -438,6 +440,8 @@ assert_error!(test_move_in_branch, "move_in_branch_error.bml", "E304");
 assert_pass!(test_move_in_loop_revive, "move_in_loop_revive_ok.bml");
 // Move unioned across match arms (the `if` form is covered above).
 assert_error!(test_move_in_match, "move_in_match_error.bml", "E304");
+// Taking the address of a Move-typed local borrows it without consuming.
+assert_pass!(test_addrof_move_no_consume, "addrof_move_no_consume.bml");
 assert_error!(test_type_mismatch, "type_mismatch_error.bml", "E310");
 assert_error!(
     test_return_type_mismatch,
@@ -1329,6 +1333,22 @@ assert_verify_pass!(test_verify_ring_mut_write, "ring_mut_write.bml");
 // through the call, so IKOS still proves the store in bounds.
 assert_verify_pass!(test_verify_view_mut_param_write, "view_mut_param_write.bml");
 assert_verify_pass!(test_verify_ring_mut_param_write, "ring_mut_param_write.bml");
+// Characterize the runtime-capacity ring form: unlike the array-backed form, the
+// backing pointer is an entry-point param and the capacity is runtime, so the
+// verifier cannot prove the access. The `urem` by a runtime capacity admits a
+// division-by-zero (V120). This documents the trust-boundary limitation.
+#[test]
+fn test_verify_ring_runtime_flags_div_by_zero() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("ring_runtime.bml");
+    assert!(
+        output.contains("V120"),
+        "expected a division-by-zero (V120) finding for the runtime ring form:\n{output}"
+    );
+}
 // Preempt shim: no ISR writer → no forget_mem → prover can fold the value.
 assert_verify_pass!(test_verify_shared_no_writer, "verify_shared_no_writer.bml");
 
