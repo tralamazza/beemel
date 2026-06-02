@@ -1869,8 +1869,8 @@ impl IrEmitter {
             Expr::Index(base, index) => {
                 let base_ty = self.expr_type(base, symbols);
                 let dbg = self.dbg_loc(expr.span());
-                if let Type::LinearView(elem_ty) = &base_ty {
-                    // Read a readonly linear view: pull { ptr, len } out of the
+                if let Type::LinearView(elem_ty, _) = &base_ty {
+                    // Read a linear view: pull { ptr, len } out of the
                     // descriptor, assume the index is in range so the verifier
                     // can prove the access, then typed GEP + load.
                     let agg = self.emit_expr(base, symbols, fn_name);
@@ -2607,6 +2607,47 @@ impl IrEmitter {
                 else {
                     return val_reg.to_string();
                 };
+                // Write through a mutable linear view: load the descriptor,
+                // extract { ptr, len }, assume the index is in range (so the
+                // verifier can prove the access), then typed GEP + store. The
+                // assume mirrors the read path (ir.rs Index/load).
+                if let Type::LinearView(elem_ty, _) = &base_ty {
+                    let ll_elem = llvm_type(elem_ty);
+                    let agg = self.new_reg();
+                    self.line(&format!("{agg} = load {{ ptr, i32 }}, ptr {base_ptr}"));
+                    let ptr_field = self.new_reg();
+                    self.line(&format!(
+                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
+                    ));
+                    let len_field = self.new_reg();
+                    self.line(&format!(
+                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
+                    ));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("view_idx_ok");
+                    let oob_lbl = self.new_label("view_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {idx_i32}{dbg}"
+                    ));
+                    let val_reg = self.coerce_int(val_reg.to_string(), val_ty, elem_ty);
+                    self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
+                    return val_reg;
+                }
                 let elem_ty = match &base_ty {
                     Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => {
                         inner.as_ref().clone()
@@ -2920,7 +2961,7 @@ impl IrEmitter {
                 return id;
             }
             Type::Enum(_, inner_ty, _) => return self.dbg_type(inner_ty),
-            Type::LinearView(elem) => {
+            Type::LinearView(elem, _) => {
                 // Descriptor is { data: ptr-to-elem, len: u32 }. Emit it as a
                 // 2-field structure so the debug type matches the { ptr, i32 }
                 // aggregate (an integer DIBasicType here makes IKOS reject the
@@ -3137,15 +3178,17 @@ impl IrEmitter {
                 match &base_ty {
                     Type::Array(inner, _) => *inner.clone(),
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
-                    Type::LinearView(inner) => *inner.clone(),
+                    Type::LinearView(inner, _) => *inner.clone(),
                     _ => Type::U32,
                 }
             }
+            // The mutability flag is irrelevant to lowering (the descriptor and
+            // index math are identical); a view over `*mut T` is reported as
+            // mutable, everything else as readonly, only for completeness.
             Expr::ViewNew { base, .. } => match self.expr_type(base, symbols) {
-                Type::Ptr(inner) | Type::ConstPtr(inner) | Type::Array(inner, _) => {
-                    Type::LinearView(inner)
-                }
-                _ => Type::LinearView(Box::new(Type::U32)),
+                Type::Ptr(inner) => Type::LinearView(inner, true),
+                Type::ConstPtr(inner) | Type::Array(inner, _) => Type::LinearView(inner, false),
+                _ => Type::LinearView(Box::new(Type::U32), false),
             },
             Expr::Cast(_, ty_expr) => {
                 crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums)
@@ -3335,10 +3378,11 @@ fn llvm_type(ty: &Type) -> String {
         Type::Ptr(_inner) => "ptr".to_string(),
         Type::ConstPtr(_inner) => "ptr".to_string(),
         Type::Fn(..) => "ptr".to_string(),
-        // Readonly linear view descriptor: { data pointer, length }. Kept as a
+        // Linear view descriptor: { data pointer, length }. Kept as a
         // first-class aggregate (not boxed behind a pointer) so mem2reg/sroa
-        // preserve pointer provenance for the verifier.
-        Type::LinearView(_) => "{ ptr, i32 }".to_string(),
+        // preserve pointer provenance for the verifier. Same layout for
+        // readonly and mutable views.
+        Type::LinearView(_, _) => "{ ptr, i32 }".to_string(),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
@@ -3371,7 +3415,9 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::B8 => "0".to_string(),
         Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
-        Type::Array(..) | Type::Struct(..) | Type::LinearView(_) => "zeroinitializer".to_string(),
+        Type::Array(..) | Type::Struct(..) | Type::LinearView(_, _) => {
+            "zeroinitializer".to_string()
+        }
         Type::Enum(_, inner, _) => default_value_literal(inner),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)

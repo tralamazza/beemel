@@ -1,0 +1,12 @@
+// A mutable view is Move: passing it to a function consumes it, so reusing it
+// afterwards is a use-after-move. This is the Stage 0 move gate for views.
+fn reads(v: view u32) -> u32 {
+    return v[0u32];
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    var v: view mut u32 = view(&mut buf[0], 4u32);
+    var a: u32 = reads(v);   // moves v
+    var b: u32 = reads(v);   // E304: use of moved value `v`
+}

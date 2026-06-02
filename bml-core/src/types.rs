@@ -23,9 +23,10 @@ pub enum Type {
     Array(Box<Type>, usize),
     Ptr(Box<Type>),
     ConstPtr(Box<Type>),
-    /// Readonly linear view over `T`: a `{ ptr, len }` descriptor. Copy
-    /// semantics. Mutable views are intentionally not modeled yet.
-    LinearView(Box<Type>),
+    /// Linear view over `T`: a `{ ptr, len }` descriptor. The `bool` is
+    /// `mutable`: a readonly view (`false`) is Copy and allows index reads
+    /// only; a mutable view (`true`) is Move and also allows index writes.
+    LinearView(Box<Type>, bool),
     Void,
     // Wrapper types carrying borrow semantics
     Exclusive(Box<Type>),
@@ -75,7 +76,8 @@ impl fmt::Display for Type {
             Type::Array(t, n) => write!(f, "[{t}; {n}]"),
             Type::Ptr(t) => write!(f, "*mut {t}"),
             Type::ConstPtr(t) => write!(f, "*{t}"),
-            Type::LinearView(t) => write!(f, "view {t}"),
+            Type::LinearView(t, true) => write!(f, "view mut {t}"),
+            Type::LinearView(t, false) => write!(f, "view {t}"),
             Type::Exclusive(t) => write!(f, "@exclusive({t})"),
             Type::Shared(t, c) => write!(f, "@shared({t}, ceiling={c})"),
             Type::Mmio(t) => write!(f, "@mmio({t})"),
@@ -121,10 +123,16 @@ impl Type {
             | Type::Unresolved(_)
             | Type::Fn(..)
             | Type::Null
-            // Readonly view: Copy regardless of element type. Mutable views
-            // (Move) are not modeled yet.
-            | Type::LinearView(_)
             | Type::Error(_) => Semantics::Copy,
+            // A readonly view is Copy; a mutable view is Move (so the move
+            // checker forbids use-after-move and aliasing two mutable views).
+            Type::LinearView(_, mutable) => {
+                if *mutable {
+                    Semantics::Move
+                } else {
+                    Semantics::Copy
+                }
+            }
             Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => inner.semantics(),
             Type::Struct(_, fields) => {
                 if fields.iter().all(|(_, ty)| ty.is_copy()) {
@@ -204,8 +212,8 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
                 }
             }
         },
-        TypeExpr::View(inner) => {
-            Type::LinearView(Box::new(resolve_type_expr(inner, structs, enums)))
+        TypeExpr::View(inner, mutable) => {
+            Type::LinearView(Box::new(resolve_type_expr(inner, structs, enums)), *mutable)
         }
         TypeExpr::Ptr(inner) => Type::Ptr(Box::new(resolve_type_expr(inner, structs, enums))),
         TypeExpr::ConstPtr(inner) => {
@@ -318,6 +326,15 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     {
         return true;
     }
+    // `view mut T` → `view T` implicit coercion (mutable → readonly). The
+    // reverse (readonly → mutable) is rejected. Coercing consumes the mutable
+    // view at the call/assignment site; that is a move, enforced by the move
+    // checker because mutable views are Move-typed.
+    if let (Type::LinearView(e_inner, false), Type::LinearView(a_inner, _)) = (expected, actual)
+        && e_inner == a_inner
+    {
+        return true;
+    }
     // Function pointer types: structural comparison
     if let (Type::Fn(expected_params, expected_ret), Type::Fn(actual_params, actual_ret)) =
         (expected, actual)
@@ -410,7 +427,7 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::B1 | Type::Void => 1,
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => 4,
         // `{ ptr, i32 }` descriptor on a 32-bit target: 4 + 4.
-        Type::LinearView(_) => 8,
+        Type::LinearView(_, _) => 8,
         Type::Struct(_, fields) => fields.iter().map(|(_, ty)| element_size(ty)).sum(),
         Type::Enum(_, inner_ty, _) => element_size(inner_ty),
         _ => 4,

@@ -1,0 +1,7 @@
+// Mutable linear view: build from a local array via `*mut` and write by index.
+// Intra-procedural, so the verifier sees the backing allocation directly.
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    var v: view mut u32 = view(&mut buf[0], 4u32);
+    v[2u32] = 99u32;
+}

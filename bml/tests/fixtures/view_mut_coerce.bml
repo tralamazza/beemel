@@ -1,0 +1,11 @@
+// A mutable view coerces to a readonly view at a call boundary (`view mut T`
+// -> `view T`). The coercion consumes the mutable view (it is a move).
+fn reads(v: view u32) -> u32 {
+    return v[0u32];
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+    var v: view mut u32 = view(&mut buf[0], 4u32);
+    var s: u32 = reads(v);
+}

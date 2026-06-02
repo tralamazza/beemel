@@ -199,8 +199,15 @@ fn check_block(
             Stmt::Assign(assign) => {
                 let val_ty =
                     check_expr(&assign.value, symbols, scope, fn_name, expected_ret, diags);
-                let target_ty =
-                    check_lvalue(&assign.target, symbols, scope, fn_name, expected_ret, diags);
+                let target_ty = check_lvalue(
+                    &assign.target,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                    true,
+                );
 
                 // Type compatibility check
                 // (unsuffixed literals are allowed if their value fits)
@@ -1194,7 +1201,7 @@ fn check_expr(
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                Type::LinearView(inner) => *inner,
+                Type::LinearView(inner, _) => *inner,
                 other => {
                     let guard = diags.error(
                         format!("cannot index value of type `{other:?}`"),
@@ -1267,8 +1274,10 @@ fn check_expr(
                         len.span(),
                     );
                 }
+                // A view over `*mut T` is mutable; over `*T` it is readonly.
                 match base_ty {
-                    Type::Ptr(inner) | Type::ConstPtr(inner) => Type::LinearView(inner),
+                    Type::Ptr(inner) => Type::LinearView(inner, true),
+                    Type::ConstPtr(inner) => Type::LinearView(inner, false),
                     other => {
                         let guard = diags.error(
                             format!(
@@ -1282,8 +1291,11 @@ fn check_expr(
                 }
             } else {
                 // `view(arr)`: base must be an array; length is taken from it.
+                // A view over a mutable place (a `var` array or a static) is
+                // mutable; otherwise it is readonly.
+                let mutable = is_mutable_place(base, scope, symbols);
                 match base_ty {
-                    Type::Array(inner, _) => Type::LinearView(inner),
+                    Type::Array(inner, _) => Type::LinearView(inner, mutable),
                     other => {
                         let guard = diags.error(
                             format!("`view(x)` argument must be an array (or use `view(ptr, len)`), got `{other}`"),
@@ -1595,6 +1607,12 @@ fn check_lvalue(
     fn_name: &str,
     expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
+    // True when this lvalue is the whole assignment target. False when it is a
+    // base being projected through (an index/field base). The binding-mutability
+    // check only fires for the root or for non-view bases; writing *through* a
+    // view does not require a mutable binding (the view's own `mut` flag, checked
+    // at the index site, governs that), the same way `*mut T` deref-writes do.
+    root: bool,
 ) -> Type {
     match lval {
         LValue::Name((name, span)) => {
@@ -1602,7 +1620,8 @@ fn check_lvalue(
                 // No use-after-move check here: assigning to a name *defines* it,
                 // reviving a previously-moved local (see `mark_assigned`). Reads
                 // on the value side are checked in `check_expr`.
-                if !info.mutable {
+                let is_view = matches!(info.ty, Type::LinearView(..));
+                if !info.mutable && (root || !is_view) {
                     diags.error(
                         format!("cannot assign to immutable variable `{name}`"),
                         "E309",
@@ -1693,7 +1712,7 @@ fn check_lvalue(
                 _ => {}
             }
 
-            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags);
+            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags, false);
             // Check if it's a struct field write
             if let Type::Struct(name, fields) = &base_ty {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
@@ -1710,12 +1729,14 @@ fn check_lvalue(
             Type::U32
         }
         LValue::Index(base, index) => {
-            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags);
+            let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags, false);
             check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                Type::LinearView(_) => {
+                // A mutable view permits index writes; a readonly view does not.
+                Type::LinearView(inner, true) => *inner,
+                Type::LinearView(_, false) => {
                     let guard = diags.error(
                         "cannot write through a readonly `view`; only reads are allowed"
                             .to_string(),
@@ -1813,6 +1834,28 @@ fn check_loop_body(
     scope.restore(entry.clone());
     check_block(body, symbols, scope, fn_name, expected_ret, diags);
     scope.restore(entry);
+}
+
+/// Is `expr` a mutable place? Used to decide whether `view(arr)` yields a
+/// mutable or readonly view: a view over a `var` array (or a static, which is
+/// assignable in this model) is mutable; over a `val` binding it is readonly.
+/// Conservative: anything not recognized as a place is treated as immutable.
+fn is_mutable_place(expr: &Expr, scope: &ScopeStack, symbols: &SymbolTable) -> bool {
+    match expr {
+        Expr::Ident((name, _)) => {
+            if let Some(info) = scope.lookup(name) {
+                info.mutable
+            } else {
+                symbols.statics.contains_key(name)
+            }
+        }
+        Expr::Index(base, _) | Expr::FieldAccess(base, _) => is_mutable_place(base, scope, symbols),
+        Expr::Group(inner) => is_mutable_place(inner, scope, symbols),
+        // `*mut T` deref is a mutable place; `*T` is not. Other forms are not
+        // places we can prove mutable.
+        Expr::Unary(crate::ast::UnaryOp::Deref, _) => false,
+        _ => false,
+    }
 }
 
 /// Read the type of an operand of `&`/`&mut` without consuming it. Taking an

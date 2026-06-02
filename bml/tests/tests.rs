@@ -220,6 +220,23 @@ assert_error!(test_view_bad_len, "view_bad_len.bml", "E332");
 assert_error!(test_view_bad_ptr, "view_bad_ptr.bml", "E333");
 assert_pass!(test_view_from_array, "view_from_array.bml");
 assert_error!(test_view_from_nonarray, "view_from_nonarray.bml", "E333");
+// Mutable linear views (contiguous): write through index, coerce to readonly,
+// and the move gate (a mutable view is Move, so reuse after a call is E304).
+assert_pass!(test_view_mut_write, "view_mut_write.bml");
+assert_pass!(test_view_mut_coerce, "view_mut_coerce.bml");
+assert_error!(test_view_mut_move, "view_mut_move_error.bml", "E304");
+#[test]
+fn test_view_mut_write_ir_lowering() {
+    let ir = bml_ir("view_mut_write.bml");
+    // The write path extracts { ptr, len }, asserts the index is in range via
+    // the same branch-to-unreachable assume as reads, then stores.
+    for pattern in ["extractvalue { ptr, i32 }", "icmp ult i32", "store i32"] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
 // Both checks share one build to avoid racing on the fixture's `.ll` file
 // (two `bml_ir` calls on the same fixture would write/read/delete it
 // concurrently under the parallel test runner).
@@ -1272,6 +1289,9 @@ assert_verify_pass!(test_verify_view_read, "view_read.bml");
 assert_verify_pass!(test_verify_view_helper, "view_helper.bml");
 assert_verify_pass!(test_verify_view_from_array, "view_from_array.bml");
 assert_verify_fail!(test_verify_view_len_overstates, "view_len_overstates.bml");
+// A mutable-view index write: IKOS proves the store is in bounds (the
+// descriptor stays SSA-transparent, so provenance to the backing array holds).
+assert_verify_pass!(test_verify_view_mut_write, "view_mut_write.bml");
 // Preempt shim: no ISR writer → no forget_mem → prover can fold the value.
 assert_verify_pass!(test_verify_shared_no_writer, "verify_shared_no_writer.bml");
 

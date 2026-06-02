@@ -346,7 +346,9 @@ pub enum TypeExpr {
     Named(Ident),
     Ptr(Box<TypeExpr>),
     ConstPtr(Box<TypeExpr>),
-    View(Box<TypeExpr>),
+    /// Linear view type. The `bool` is `mutable`: `view T` is readonly (Copy),
+    /// `view mut T` is mutable (Move) and allows index writes.
+    View(Box<TypeExpr>, bool),
     Array(Box<TypeExpr>, Box<Expr>),
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>),
     Void(Span),
@@ -357,7 +359,7 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named((_, s)) => *s,
-            TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) | TypeExpr::View(inner) => {
+            TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) | TypeExpr::View(inner, _) => {
                 inner.span()
             }
             TypeExpr::Array(inner, _) => inner.span(),
@@ -373,7 +375,8 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Named((name, _)) => write!(f, "{name}"),
             TypeExpr::Ptr(t) => write!(f, "*{t}"),
             TypeExpr::ConstPtr(t) => write!(f, "&{t}"),
-            TypeExpr::View(t) => write!(f, "view {t}"),
+            TypeExpr::View(t, true) => write!(f, "view mut {t}"),
+            TypeExpr::View(t, false) => write!(f, "view {t}"),
             TypeExpr::Array(t, _) => write!(f, "[{t}]"),
             TypeExpr::Fn(params, ret) => {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();

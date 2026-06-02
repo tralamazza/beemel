@@ -63,9 +63,31 @@ Shipped (local move tracking, Stage 0, `feature/ikos`):
 - Known limitation: revival is modeled only for whole-name assignment, and the
   non-consuming addr-of path is special-cased to the direct `&ident` form.
 
+Shipped (mutable contiguous linear view, `feature/ikos`):
+
+- Syntax: `view mut T` (parser eats `mut` after `view`). Type repr
+  `Type::LinearView(Box<Type>, bool)` / `TypeExpr::View(Box<TypeExpr>, bool)`
+  where the bool is `mutable`. Readonly view is Copy, mutable view is Move
+  (`semantics()`), so the Stage 0 move checker governs reuse.
+- Construction mutability is derived, not annotated: `view(*mut T, len)` is
+  mutable, `view(*T, len)` readonly; `view(arr)` is mutable iff `arr` is a
+  mutable place (a `var` array or a static), else readonly.
+- Coercion `view mut T -> view T` in `types_compatible` (mutable to readonly;
+  the reverse is rejected). The coercion consumes the mutable view (a move).
+- Checker: `view mut`[i] = x writes allowed; readonly write still E334. A view
+  used as an index base does not require a mutable *binding* (like a `*mut T`
+  param) -- `check_lvalue` takes a `root` flag so the E309 binding check fires
+  only for the assignment root or non-view bases.
+- IR: write path loads the descriptor, extracts `{ptr,len}`, emits the same
+  `assume(i < len)` branch-to-unreachable as reads, then typed GEP + store.
+  Descriptor layout unchanged (`{ptr, i32}`, SSA-transparent).
+- Verification (measured): mutable index write proves clean through IKOS
+  (`test_verify_view_mut_write`).
+- Tests: `view_mut_write` (pass + IR), `view_mut_coerce` (pass), and
+  `view_mut_move_error` (E304, the Stage 0 move gate for views).
+
 Not yet built:
 
-- Mutable views (Stage 0 unblocks them; the view type itself is still readonly).
 - Strided views (`view(ptr, len, stride)`) and the third descriptor field.
 - Ring, segmented, and bit views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
@@ -442,8 +464,8 @@ Minimum tests:
 
 0. **Local move tracking (Stage 0).** Done. Checker-authoritative,
    flow-sensitive, validated against storage-wrapped Move locals (E304).
-1. Linear view, readonly first (no Stage 0 dependency), then mutable + stride
-   once Stage 0 is in.
+1. Linear view: readonly (done), mutable contiguous (done). Stride still
+   pending (adds the third descriptor field and byte-offset index math).
 2. Ring view, with compile-time capacity optimization.
 3. Verifier integration for linear and ring (the bound-enforcement mechanism;
    couple with the linear/ring lowering above rather than treating it as a

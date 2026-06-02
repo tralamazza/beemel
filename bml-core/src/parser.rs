@@ -735,8 +735,10 @@ impl<'a> Parser<'a> {
             }
             TokenKind::View => {
                 self.advance();
+                // `view mut T` is a mutable view; `view T` is readonly.
+                let mutable = self.eat(&TokenKind::Mut);
                 let inner = self.parse_type_expr()?;
-                Some(TypeExpr::View(Box::new(inner)))
+                Some(TypeExpr::View(Box::new(inner), mutable))
             }
             TokenKind::LBracket => {
                 self.advance();
