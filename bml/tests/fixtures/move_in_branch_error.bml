@@ -1,0 +1,11 @@
+// `x` is moved on one path of the `if`. After the branch it is maybe-moved,
+// which the analysis treats as moved, so the later read is rejected. (E304)
+static dbuf: u32 @dma;
+
+fn main(c: b1) @context(thread) {
+    var x = dbuf;
+    if c {
+        var a = x;   // moves x on this path only
+    }
+    var b = x;       // E304: maybe-moved
+}

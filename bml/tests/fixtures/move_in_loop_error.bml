@@ -1,0 +1,10 @@
+// A move inside a loop body is a use-after-move on the next iteration: `x` is
+// consumed in iteration 1 and read again at the top of iteration 2. (E304)
+static dbuf: u32 @dma;
+
+fn main() @context(thread) {
+    var x = dbuf;
+    loop {
+        var a = x;   // E304 across iterations
+    }
+}

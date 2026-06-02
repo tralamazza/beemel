@@ -1,0 +1,12 @@
+// Reassigning `x` before each use inside the loop revives it every iteration,
+// so there is no cross-iteration use-after-move. Guards against the loop
+// fixpoint over-rejecting reassigned locals.
+static dbuf: u32 @dma;
+
+fn main() @context(thread) {
+    var x = dbuf;
+    loop {
+        x = dbuf;    // revived before use each iteration
+        var a = x;
+    }
+}

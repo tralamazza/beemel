@@ -56,6 +56,44 @@ impl ScopeStack {
         }
         None
     }
+
+    /// Capture the current move-state so it can be restored or merged. Used to
+    /// analyze branches independently and to drive the loop-body fixpoint.
+    fn snapshot(&self) -> Vec<HashMap<String, VarInfo>> {
+        self.scopes.clone()
+    }
+
+    /// Restore a previously captured move-state. The snapshot must have been
+    /// taken at the same program point (same scope nesting), which holds for
+    /// every call site here: branch bodies and loop bodies push and pop their
+    /// own inner scopes, leaving the outer scopes structurally unchanged.
+    fn restore(&mut self, snap: Vec<HashMap<String, VarInfo>>) {
+        self.scopes = snap;
+    }
+
+    /// OR the moved flags from `other` into self. A local is considered moved
+    /// after a branch if it was moved on *any* path reaching this point
+    /// (maybe-moved == moved), which is the sound direction for rejecting
+    /// use-after-move.
+    fn merge_moved(&mut self, other: &[HashMap<String, VarInfo>]) {
+        for (scope, oscope) in self.scopes.iter_mut().zip(other.iter()) {
+            for (name, info) in scope.iter_mut() {
+                if let Some(oinfo) = oscope.get(name) {
+                    info.moved |= oinfo.moved;
+                }
+            }
+        }
+    }
+
+    /// Total number of currently-moved locals. Used to detect fixpoint
+    /// convergence of the loop-body analysis.
+    fn moved_count(&self) -> usize {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .filter(|info| info.moved)
+            .count()
+    }
 }
 
 impl Checker {
@@ -201,6 +239,9 @@ fn check_block(
                 if cond_ty != Type::B1 {
                     diags.error("if condition must be b1", "E302", if_stmt.cond.span());
                 }
+                // Analyze each branch from the same pre-branch move-state, then
+                // union: a local moved on either path is moved afterward.
+                let before = scope.snapshot();
                 check_block(
                     &if_stmt.then_block,
                     symbols,
@@ -209,6 +250,8 @@ fn check_block(
                     expected_ret,
                     diags,
                 );
+                let after_then = scope.snapshot();
+                scope.restore(before);
                 if let Some(else_branch) = &if_stmt.else_branch {
                     match else_branch.as_ref() {
                         Stmt::Block(block) => {
@@ -232,6 +275,9 @@ fn check_block(
                         _ => {}
                     }
                 }
+                // scope now holds the else-path state (or the pre-branch state
+                // when there is no else); fold in the then-path moves.
+                scope.merge_moved(&after_then);
                 last_type = None;
             }
 
@@ -286,12 +332,12 @@ fn check_block(
                         moved: false,
                     },
                 );
-                check_block(&for_stmt.body, symbols, scope, fn_name, expected_ret, diags);
+                check_loop_body(&for_stmt.body, symbols, scope, fn_name, expected_ret, diags);
                 last_type = None;
             }
 
             Stmt::Loop(loop_stmt) => {
-                check_block(
+                check_loop_body(
                     &loop_stmt.body,
                     symbols,
                     scope,
@@ -314,7 +360,7 @@ fn check_block(
                 if cond_ty != Type::B1 {
                     diags.error("while condition must be b1", "E303", while_stmt.cond.span());
                 }
-                check_block(
+                check_loop_body(
                     &while_stmt.body,
                     symbols,
                     scope,
@@ -414,6 +460,11 @@ fn check_block(
                     std::collections::HashSet::new();
                 let mut has_wildcard = false;
 
+                // Each arm runs from the same pre-match move-state; the
+                // post-match state is the union of all arm exits (a local moved
+                // in any arm is moved afterward).
+                let before = scope.snapshot();
+                let mut merged: Option<Vec<HashMap<String, VarInfo>>> = None;
                 for arm in &match_stmt.arms {
                     for pat in &arm.patterns {
                         match pat {
@@ -441,7 +492,19 @@ fn check_block(
                             }
                         }
                     }
+                    scope.restore(before.clone());
                     check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
+                    let after = scope.snapshot();
+                    merged = Some(match merged {
+                        None => after,
+                        Some(mut acc) => {
+                            or_moved(&mut acc, &after);
+                            acc
+                        }
+                    });
+                }
+                if let Some(merged) = merged {
+                    scope.restore(merged);
                 }
 
                 if !has_wildcard && covered.len() < variants.len() {
@@ -684,11 +747,20 @@ fn check_expr(
         Expr::Ident((name, span)) => {
             // Check local scope first
             if let Some(info) = scope.lookup(name) {
+                let ty = info.ty.clone();
                 if info.moved {
                     diags.error(format!("use of moved value: `{name}`"), "E304", *span);
-                    return info.ty.clone();
+                    return ty;
                 }
-                return info.ty.clone();
+                // Reading a Move-typed local consumes it: any later read is a
+                // use-after-move until the local is reassigned (see
+                // `mark_assigned`). Copy-typed locals are unaffected.
+                if ty.is_move()
+                    && let Some(info) = scope.lookup_mut(name)
+                {
+                    info.moved = true;
+                }
+                return ty;
             }
             // Check static symbols
             if let Some(sym) = symbols.statics.get(name) {
@@ -716,7 +788,13 @@ fn check_expr(
 
         Expr::Unary(op, inner) => {
             use crate::ast::UnaryOp;
-            let inner_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
+            // Taking the address of a local borrows it; it does not consume a
+            // Move-typed value. So read the operand's type without consuming.
+            let inner_ty = if matches!(op, UnaryOp::AddrOf | UnaryOp::AddrOfMut) {
+                read_place_type(inner, symbols, scope, fn_name, expected_ret, diags)
+            } else {
+                check_expr(inner, symbols, scope, fn_name, expected_ret, diags)
+            };
             match op {
                 UnaryOp::Neg => {
                     if inner_ty != Type::U32 && inner_ty != Type::U64 && inner_ty != Type::U16 {
@@ -1242,6 +1320,9 @@ fn check_expr(
             let mut has_wildcard = false;
             let mut arm_type: Option<Type> = None;
 
+            // Union the move-state across all arms (see the statement-form match).
+            let before = scope.snapshot();
+            let mut merged: Option<Vec<HashMap<String, VarInfo>>> = None;
             for arm in &match_expr.arms {
                 for pat in &arm.patterns {
                     match pat {
@@ -1269,8 +1350,17 @@ fn check_expr(
                         }
                     }
                 }
+                scope.restore(before.clone());
                 let arm_result =
                     check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
+                let after = scope.snapshot();
+                merged = Some(match merged.take() {
+                    None => after,
+                    Some(mut acc) => {
+                        or_moved(&mut acc, &after);
+                        acc
+                    }
+                });
                 // An arm that directly terminates (e.g. `Pat => { return; }`)
                 // contributes no value to the match expression. BML has no
                 // never/bottom type, so unlike Rust's `!` such arms cannot
@@ -1310,6 +1400,9 @@ fn check_expr(
                         );
                     }
                 }
+            }
+            if let Some(merged) = merged {
+                scope.restore(merged);
             }
 
             if !has_wildcard && covered.len() < variants.len() {
@@ -1359,6 +1452,8 @@ fn check_expr(
                     if_expr.cond.span(),
                 );
             }
+            // Analyze both arms from the same pre-branch move-state, then union.
+            let before = scope.snapshot();
             let then_result = check_block(
                 &if_expr.then_block,
                 symbols,
@@ -1378,6 +1473,8 @@ fn check_expr(
             } else {
                 then_result.expect("check_block returns Some when trailing.is_some()")
             };
+            let after_then = scope.snapshot();
+            scope.restore(before);
             let else_ty = check_expr(
                 &if_expr.else_branch,
                 symbols,
@@ -1386,6 +1483,7 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
+            scope.merge_moved(&after_then);
 
             if !types::types_compatible(&then_ty, &else_ty) {
                 diags.error(
@@ -1501,9 +1599,9 @@ fn check_lvalue(
     match lval {
         LValue::Name((name, span)) => {
             if let Some(info) = scope.lookup(name) {
-                if info.moved {
-                    diags.error(format!("use of moved value: `{name}`"), "E304", *span);
-                }
+                // No use-after-move check here: assigning to a name *defines* it,
+                // reviving a previously-moved local (see `mark_assigned`). Reads
+                // on the value side are checked in `check_expr`.
                 if !info.mutable {
                     diags.error(
                         format!("cannot assign to immutable variable `{name}`"),
@@ -1658,21 +1756,96 @@ fn check_lvalue(
     }
 }
 
-fn mark_assigned(
-    lval: &LValue,
-    _scope: &mut ScopeStack,
-    _val_ty: Type,
-    _diags: &mut DiagnosticBag,
-) {
-    match lval {
-        LValue::Name((_name, _)) => {
-            // For move types, mark the variable as moved
-            // Actually, assignment to a variable doesn't move it -- it reassigns.
-            // Move only happens when you use a move-typed value in a `var x = moved_val;`
-            // For now, assignments don't affect moved status.
-            // We only track moves on `read` of a move-typed value.
+/// Number of moved locals in a captured move-state snapshot.
+fn count_moved(snap: &[HashMap<String, VarInfo>]) -> usize {
+    snap.iter()
+        .flat_map(HashMap::values)
+        .filter(|info| info.moved)
+        .count()
+}
+
+/// OR the moved flags from `other` into `into` (per local, by name and scope
+/// depth). Used to accumulate the maybe-moved state across match arms.
+fn or_moved(into: &mut [HashMap<String, VarInfo>], other: &[HashMap<String, VarInfo>]) {
+    for (scope, oscope) in into.iter_mut().zip(other.iter()) {
+        for (name, info) in scope.iter_mut() {
+            if let Some(oinfo) = oscope.get(name) {
+                info.moved |= oinfo.moved;
+            }
         }
-        LValue::Field(..) | LValue::Index(..) | LValue::Deref(..) => {}
+    }
+}
+
+/// Check a loop body with cross-iteration move awareness.
+///
+/// A move inside a loop body is a use-after-move on the next iteration. We find
+/// the locals that leak as moved by running the body to a fixpoint over the
+/// entry move-state (a dry run into a throwaway diagnostic bag), then do one
+/// real pass from the converged state so use-after-move is reported once.
+/// Reassignment revives a local within a single pass, so a local reassigned
+/// before use each iteration does not leak and is not flagged.
+fn check_loop_body(
+    body: &ast::Block,
+    symbols: &SymbolTable,
+    scope: &mut ScopeStack,
+    fn_name: &str,
+    expected_ret: Option<&Type>,
+    diags: &mut DiagnosticBag,
+) {
+    let before = scope.snapshot();
+    let mut entry = before;
+
+    loop {
+        scope.restore(entry.clone());
+        let mut throwaway = DiagnosticBag::new();
+        check_block(body, symbols, scope, fn_name, expected_ret, &mut throwaway);
+        let exit = scope.snapshot();
+        let prev = count_moved(&entry);
+        or_moved(&mut entry, &exit);
+        if count_moved(&entry) == prev {
+            break;
+        }
+    }
+
+    // Real pass from the converged entry state, with diagnostics. The loop may
+    // run zero times (while/for) or many, so `entry` (pre-loop state unioned
+    // with everything moved across iterations) is the sound after-loop state.
+    scope.restore(entry.clone());
+    check_block(body, symbols, scope, fn_name, expected_ret, diags);
+    scope.restore(entry);
+}
+
+/// Read the type of an operand of `&`/`&mut` without consuming it. Taking an
+/// address borrows the place; it must not flip a Move-typed local to moved.
+/// Only the direct `&ident` form is handled specially (the common case);
+/// other operands fall back to the normal consuming read.
+fn read_place_type(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    scope: &mut ScopeStack,
+    fn_name: &str,
+    expected_ret: Option<&Type>,
+    diags: &mut DiagnosticBag,
+) -> Type {
+    if let Expr::Ident((name, span)) = expr
+        && let Some(info) = scope.lookup(name)
+    {
+        if info.moved {
+            diags.error(format!("use of moved value: `{name}`"), "E304", *span);
+        }
+        return info.ty.clone();
+    }
+    check_expr(expr, symbols, scope, fn_name, expected_ret, diags)
+}
+
+/// Reassigning a whole local fully overwrites it, so it revives a previously
+/// moved Move-typed local. Only plain `name = ...` targets revive; assignments
+/// through a field/index/deref project into an existing value and do not.
+fn mark_assigned(lval: &LValue, scope: &mut ScopeStack, _val_ty: Type, _diags: &mut DiagnosticBag) {
+    if let LValue::Name((name, _)) = lval
+        && let Some(info) = scope.lookup_mut(name)
+    {
+        info.moved = false;
     }
 }
 

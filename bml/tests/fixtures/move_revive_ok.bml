@@ -1,0 +1,10 @@
+// Reassigning a whole local revives a moved Move-typed local: reading `x`
+// after the reassignment is fine. Exercises move tracking accepting valid code.
+static dbuf: u32 @dma;
+
+fn main() @context(thread) {
+    var x = dbuf;
+    var a = x;      // moves x
+    x = dbuf;       // revives x
+    var b = x;      // ok
+}

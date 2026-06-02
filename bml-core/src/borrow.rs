@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::ast::{self, Expr, LValue, Program, Stmt, StorageAnnotation};
 use crate::context::Context;
 use crate::errors::DiagnosticBag;
@@ -7,6 +5,11 @@ use crate::resolver::{FnSymbol, SymbolTable};
 use crate::source::Span;
 
 pub struct BorrowChecker;
+
+// Move tracking lives in the type checker (`checker.rs`), which is already
+// type-aware and is the single authority for use-after-move (E304). This pass
+// only enforces storage-class access rules (E401/E402/E404) and call-context
+// compatibility (E403).
 
 impl BorrowChecker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
@@ -18,18 +21,7 @@ impl BorrowChecker {
                     .get(fn_name)
                     .map_or(Context::Thread, |s| s.context);
 
-                let mut moved: HashSet<String> = HashSet::new();
-                let mut scope_stack: Vec<HashSet<String>> = vec![HashSet::new()];
-
-                check_fn_body(
-                    &fn_def.body,
-                    fn_name,
-                    context,
-                    symbols,
-                    &mut moved,
-                    &mut scope_stack,
-                    diags,
-                );
+                check_fn_body(&fn_def.body, fn_name, context, symbols, diags);
             }
         }
     }
@@ -40,37 +32,15 @@ fn check_fn_body(
     current_fn: &str,
     current_ctx: Context,
     symbols: &SymbolTable,
-    moved: &mut HashSet<String>,
-    scope_stack: &mut Vec<HashSet<String>>,
     diags: &mut DiagnosticBag,
 ) {
-    scope_stack.push(HashSet::new());
-
     for stmt in &block.stmts {
-        check_stmt(
-            stmt,
-            current_fn,
-            current_ctx,
-            symbols,
-            moved,
-            scope_stack,
-            diags,
-        );
+        check_stmt(stmt, current_fn, current_ctx, symbols, diags);
     }
 
     if let Some(ref trailing) = block.trailing {
-        check_expr(
-            trailing,
-            current_fn,
-            current_ctx,
-            symbols,
-            moved,
-            scope_stack,
-            diags,
-        );
+        check_expr(trailing, current_fn, current_ctx, symbols, diags);
     }
-
-    scope_stack.pop();
 }
 
 fn check_stmt(
@@ -78,88 +48,30 @@ fn check_stmt(
     current_fn: &str,
     current_ctx: Context,
     symbols: &SymbolTable,
-    moved: &mut HashSet<String>,
-    scope_stack: &mut Vec<HashSet<String>>,
     diags: &mut DiagnosticBag,
 ) {
     match stmt {
         Stmt::VarDecl(vd) => {
-            check_expr(
-                &vd.init,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            // Track the new variable in the current scope for move tracking
-            scope_stack.last_mut().unwrap().insert(vd.name.0.clone());
+            check_expr(&vd.init, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Assign(assign) => {
-            check_lvalue(
-                &assign.target,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_expr(
-                &assign.value,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_lvalue(&assign.target, current_fn, current_ctx, symbols, diags);
+            check_expr(&assign.value, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Expr(expr) => {
-            check_expr(
-                expr,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(expr, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::If(if_stmt) => {
-            check_expr(
-                &if_stmt.cond,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_fn_body(
-                &if_stmt.then_block,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&if_stmt.cond, current_fn, current_ctx, symbols, diags);
+            check_fn_body(&if_stmt.then_block, current_fn, current_ctx, symbols, diags);
             if let Some(else_branch) = &if_stmt.else_branch {
                 match else_branch.as_ref() {
-                    Stmt::Block(block) => check_fn_body(
-                        block,
-                        current_fn,
-                        current_ctx,
-                        symbols,
-                        moved,
-                        scope_stack,
-                        diags,
-                    ),
+                    Stmt::Block(block) => {
+                        check_fn_body(block, current_fn, current_ctx, symbols, diags);
+                    }
                     Stmt::If(inner_if) => {
                         // else if -- wrap in a block and recurse
                         let wrapper = ast::Block {
@@ -167,15 +79,7 @@ fn check_stmt(
                             trailing: None,
                             span: inner_if.cond.span(),
                         };
-                        check_fn_body(
-                            &wrapper,
-                            current_fn,
-                            current_ctx,
-                            symbols,
-                            moved,
-                            scope_stack,
-                            diags,
-                        );
+                        check_fn_body(&wrapper, current_fn, current_ctx, symbols, diags);
                     }
                     _ => {}
                 }
@@ -183,81 +87,21 @@ fn check_stmt(
         }
 
         Stmt::For(for_stmt) => {
-            check_expr(
-                &for_stmt.start,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_expr(
-                &for_stmt.end,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&for_stmt.start, current_fn, current_ctx, symbols, diags);
+            check_expr(&for_stmt.end, current_fn, current_ctx, symbols, diags);
             if let Some(step) = &for_stmt.step {
-                check_expr(
-                    step,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_expr(step, current_fn, current_ctx, symbols, diags);
             }
-            scope_stack
-                .last_mut()
-                .unwrap()
-                .insert(for_stmt.var.0.clone());
-            check_fn_body(
-                &for_stmt.body,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_fn_body(&for_stmt.body, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Loop(loop_stmt) => {
-            check_fn_body(
-                &loop_stmt.body,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_fn_body(&loop_stmt.body, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::While(while_stmt) => {
-            check_expr(
-                &while_stmt.cond,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_fn_body(
-                &while_stmt.body,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&while_stmt.cond, current_fn, current_ctx, symbols, diags);
+            check_fn_body(&while_stmt.body, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Match(match_stmt) => {
@@ -266,73 +110,31 @@ fn check_stmt(
                 current_fn,
                 current_ctx,
                 symbols,
-                moved,
-                scope_stack,
                 diags,
             );
             for arm in &match_stmt.arms {
-                check_fn_body(
-                    &arm.body,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_fn_body(&arm.body, current_fn, current_ctx, symbols, diags);
             }
         }
 
         Stmt::Return(ret) => {
             if let Some(val) = &ret.value {
-                check_expr(
-                    val,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_expr(val, current_fn, current_ctx, symbols, diags);
             }
         }
 
         Stmt::Assume(assume) => {
-            check_expr(
-                &assume.cond,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&assume.cond, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Assert(assert) => {
-            check_expr(
-                &assert.cond,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&assert.cond, current_fn, current_ctx, symbols, diags);
         }
 
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
 
         Stmt::Block(inner) => {
-            check_fn_body(
-                inner,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_fn_body(inner, current_fn, current_ctx, symbols, diags);
         }
     }
 }
@@ -342,8 +144,6 @@ fn check_expr(
     current_fn: &str,
     current_ctx: Context,
     symbols: &SymbolTable,
-    moved: &mut HashSet<String>,
-    scope_stack: &mut Vec<HashSet<String>>,
     diags: &mut DiagnosticBag,
 ) {
     match expr {
@@ -352,49 +152,15 @@ fn check_expr(
             if let Some(sym) = symbols.statics.get(name) {
                 check_static_access(name, span, sym, current_fn, current_ctx, diags);
             }
-
-            // Check if this variable was moved
-            if moved.contains(name) {
-                diags.error(format!("use of moved value: `{name}`"), "E400", *span);
-            }
-
-            // If this is a Move-typed local, mark it as moved
-            if is_move_typed_local(name, symbols) && is_local_in_scope(name, scope_stack) {
-                moved.insert(name.clone());
-            }
         }
 
         Expr::Unary(_, inner) => {
-            check_expr(
-                inner,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(inner, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::Binary(left, _, right) => {
-            check_expr(
-                left,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_expr(
-                right,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(left, current_fn, current_ctx, symbols, diags);
+            check_expr(right, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::Call(func_expr, args) => {
@@ -420,61 +186,21 @@ fn check_expr(
                 );
             }
             for arg in args {
-                check_expr(
-                    arg,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_expr(arg, current_fn, current_ctx, symbols, diags);
             }
         }
 
         Expr::FieldAccess(base, _) => {
-            check_expr(
-                base,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(base, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::Index(base, index) => {
-            check_expr(
-                base,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_expr(
-                index,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(base, current_fn, current_ctx, symbols, diags);
+            check_expr(index, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::Group(inner) => {
-            check_expr(
-                inner,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(inner, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::Match(match_expr) => {
@@ -483,85 +209,33 @@ fn check_expr(
                 current_fn,
                 current_ctx,
                 symbols,
-                moved,
-                scope_stack,
                 diags,
             );
             for arm in &match_expr.arms {
-                check_fn_body(
-                    &arm.body,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_fn_body(&arm.body, current_fn, current_ctx, symbols, diags);
             }
         }
 
         Expr::Block(block_expr) => {
-            check_fn_body(
-                &block_expr.block,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_fn_body(&block_expr.block, current_fn, current_ctx, symbols, diags);
         }
 
         Expr::If(if_expr) => {
-            check_expr(
-                &if_expr.cond,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_fn_body(
-                &if_expr.then_block,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(&if_expr.cond, current_fn, current_ctx, symbols, diags);
+            check_fn_body(&if_expr.then_block, current_fn, current_ctx, symbols, diags);
             check_expr(
                 &if_expr.else_branch,
                 current_fn,
                 current_ctx,
                 symbols,
-                moved,
-                scope_stack,
                 diags,
             );
         }
 
         Expr::ViewNew { base, len, .. } => {
-            check_expr(
-                base,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(base, current_fn, current_ctx, symbols, diags);
             if let Some(len) = len {
-                check_expr(
-                    len,
-                    current_fn,
-                    current_ctx,
-                    symbols,
-                    moved,
-                    scope_stack,
-                    diags,
-                );
+                check_expr(len, current_fn, current_ctx, symbols, diags);
             }
         }
 
@@ -584,8 +258,6 @@ fn check_lvalue(
     current_fn: &str,
     current_ctx: Context,
     symbols: &SymbolTable,
-    moved: &mut HashSet<String>,
-    scope_stack: &mut Vec<HashSet<String>>,
     diags: &mut DiagnosticBag,
 ) {
     match lval {
@@ -594,52 +266,16 @@ fn check_lvalue(
             if let Some(sym) = symbols.statics.get(name) {
                 check_static_access(name, span, sym, current_fn, current_ctx, diags);
             }
-            // Check moved
-            if moved.contains(name) {
-                diags.error(format!("use of moved value: `{name}`"), "E400", *span);
-            }
         }
         LValue::Field(base, _) => {
-            check_lvalue(
-                base,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_lvalue(base, current_fn, current_ctx, symbols, diags);
         }
         LValue::Index(base, index) => {
-            check_lvalue(
-                base,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
-            check_expr(
-                index,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_lvalue(base, current_fn, current_ctx, symbols, diags);
+            check_expr(index, current_fn, current_ctx, symbols, diags);
         }
         LValue::Deref(inner) => {
-            check_expr(
-                inner,
-                current_fn,
-                current_ctx,
-                symbols,
-                moved,
-                scope_stack,
-                diags,
-            );
+            check_expr(inner, current_fn, current_ctx, symbols, diags);
         }
     }
 }
@@ -778,24 +414,4 @@ fn context_from_ast(ctx: &ast::ContextExpr) -> Context {
         ast::ContextExpr::Thread => Context::Thread,
         ast::ContextExpr::Any => Context::Any,
     }
-}
-
-/// Is the given name a local variable with Move type?
-fn is_move_typed_local(name: &str, symbols: &SymbolTable) -> bool {
-    // Statics with move semantics aren't consumed (they persist)
-    if let Some(_sym) = symbols.statics.get(name) {
-        return false; // statics are never "moved" away
-    }
-    // For now, only statics carry storage annotations.
-    // Locals of storage-wrapper types would be move-typed.
-    false
-}
-
-fn is_local_in_scope(name: &str, scope_stack: &[HashSet<String>]) -> bool {
-    for scope in scope_stack.iter().rev() {
-        if scope.contains(name) {
-            return true;
-        }
-    }
-    false
 }

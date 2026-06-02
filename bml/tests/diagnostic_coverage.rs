@@ -20,16 +20,6 @@ use std::path::{Path, PathBuf};
 /// is actually tested (remove it) or no longer emitted (remove it). Keep this
 /// list shrinking.
 const ALLOWLIST: &[(&str, &str)] = &[
-    // Move-checker diagnostics: triggering them needs a @exclusive/@shared/@dma
-    // value that is moved and then reused; no fixture exercises moves yet.
-    (
-        "E304",
-        "move-checker: use-after-move (checker) has no fixture",
-    ),
-    (
-        "E400",
-        "move-checker: use-after-move (borrow) has no fixture",
-    ),
     // V-series come from IKOS abstract-interpretation findings; each needs a
     // program that provokes that specific finding. Tracked separately; only a
     // handful are pinned so far.

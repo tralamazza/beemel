@@ -44,10 +44,28 @@ Shipped (readonly linear view, commits `aaf6262` and `dd15b20` on
   still caught against the real buffer (V100). See Stage 5.
 - Tests: check, IR-substring, and verify fixtures under `bml/tests/fixtures`.
 
+Shipped (local move tracking, Stage 0, `feature/ikos`):
+
+- The checker is now the single move-tracking authority. Reading a Move-typed
+  local consumes it; a later read is a use-after-move (E304). Reassigning the
+  whole local (`name = ...`) revives it. Taking its address (`&x`/`&mut x`)
+  borrows without consuming.
+- Flow-sensitive: move state is unioned across `if`/`match` arms (maybe-moved
+  is treated as moved) and a loop body is analyzed to a fixpoint so a move in
+  the body flags a use-after-move on the next iteration. Reassignment before
+  use each iteration does not leak.
+- `borrow.rs` no longer tracks moves (E400 removed); it keeps only storage-class
+  (E401/E402/E404) and call-context (E403) checks.
+- Testable today without mutable views: a local bound to a storage-wrapped
+  static (`@dma`, `@exclusive`, ...) is Move-typed. Fixtures
+  `move_after_move_error.bml` (E304) and `move_revive_ok.bml`; E304 removed from
+  the diagnostic-coverage allowlist.
+- Known limitation: revival is modeled only for whole-name assignment, and the
+  non-consuming addr-of path is special-cased to the direct `&ident` form.
+
 Not yet built:
 
-- Mutable views. Blocked on Stage 0 (local move tracking), which is currently
-  two inert mechanisms, not a tweak. See Stage 0.
+- Mutable views (Stage 0 unblocks them; the view type itself is still readonly).
 - Strided views (`view(ptr, len, stride)`) and the third descriptor field.
 - Ring, segmented, and bit views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
@@ -107,6 +125,10 @@ generic-looking syntax appears. The `<>` form can be added later as sugar
 without changing the type representation.
 
 ## Stage 0: Local Move Tracking (prerequisite for mutable views)
+
+**Status: shipped** (checker authoritative). See the Implementation Status
+section above for what landed. The rest of this section is the original design
+notes that drove it.
 
 This is a standalone milestone that must land before mutable views are claimed
 to be safe. It is not a tweak to existing code.
@@ -418,9 +440,8 @@ Minimum tests:
 
 ## Recommended Delivery Order
 
-0. **Local move tracking (Stage 0).** Prerequisite for any mutable view. Can
-   start now; independent of the rest. Until this lands, ship readonly views
-   only.
+0. **Local move tracking (Stage 0).** Done. Checker-authoritative,
+   flow-sensitive, validated against storage-wrapped Move locals (E304).
 1. Linear view, readonly first (no Stage 0 dependency), then mutable + stride
    once Stage 0 is in.
 2. Ring view, with compile-time capacity optimization.
@@ -439,6 +460,6 @@ completes, which de-risks the early milestones.
 | Decision | Blocks | Recommendation |
 |---|---|---|
 | syntax: keyword vs `<>` | parser, all stages | keyword (`view T`) |
-| move tracking home: checker vs borrow.rs | Stage 0/3 | checker authoritative |
+| move tracking home: checker vs borrow.rs | Stage 0/3 | RESOLVED: checker authoritative (shipped) |
 | storage class in view type vs value-level fact | Stage 1/2 | value-level fact |
 | bound enforcement: assume / const-prop / runtime | Stage 4/5 | const-prop when known, assume otherwise |

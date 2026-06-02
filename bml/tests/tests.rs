@@ -381,6 +381,17 @@ assert_error!(
     "E403"
 );
 assert_error!(test_val_immutability, "val_immutability_error.bml", "E309");
+// Move tracking: reading a Move-typed local (here a @dma value) consumes it,
+// so a later read is a use-after-move.
+assert_error!(test_move_after_move, "move_after_move_error.bml", "E304");
+// Reassigning the whole local revives it; the later read is valid.
+assert_pass!(test_move_revive, "move_revive_ok.bml");
+// Flow-sensitive: a move inside a loop body is a use-after-move next iteration.
+assert_error!(test_move_in_loop, "move_in_loop_error.bml", "E304");
+// Flow-sensitive: maybe-moved after an `if` arm is treated as moved.
+assert_error!(test_move_in_branch, "move_in_branch_error.bml", "E304");
+// Reassigning before use each iteration revives the local; no false positive.
+assert_pass!(test_move_in_loop_revive, "move_in_loop_revive_ok.bml");
 assert_error!(test_type_mismatch, "type_mismatch_error.bml", "E310");
 assert_error!(
     test_return_type_mismatch,
