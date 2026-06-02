@@ -581,6 +581,20 @@ fn expr_contribution(
                 None => c,
             }
         }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            let mut c = expr_contribution(base, symbols, defined_fns);
+            if let Some(capacity) = capacity {
+                c = c.merge(expr_contribution(capacity, symbols, defined_fns));
+            }
+            c.merge(expr_contribution(head, symbols, defined_fns))
+                .merge(expr_contribution(len, symbols, defined_fns))
+        }
     }
 }
 

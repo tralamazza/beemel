@@ -1908,6 +1908,35 @@ impl IrEmitter {
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
+                } else if let Type::RingView(elem_ty, _) = &base_ty {
+                    // Read a ring view: physical = (head + i) % capacity. The
+                    // urem bounds physical to [0, capacity); with a constant
+                    // capacity tracing to the backing array, the verifier proves
+                    // the typed GEP in range. (Array form: capacity is constant,
+                    // so no division-by-zero either.)
+                    let agg = self.emit_expr(base, symbols, fn_name);
+                    let ty = "{ ptr, i32, i32, i32 }";
+                    let ptr_field = self.new_reg();
+                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
+                    let cap_field = self.new_reg();
+                    self.line(&format!("{cap_field} = extractvalue {ty} {agg}, 1"));
+                    let head_field = self.new_reg();
+                    self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let sum = self.new_reg();
+                    self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
+                    let phys = self.new_reg();
+                    self.line(&format!("{phys} = urem i32 {sum}, {cap_field}"));
+                    let ll_elem = llvm_type(elem_ty);
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {phys}{dbg}"
+                    ));
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
+                    reg
                 } else if crate::types::is_ptr(&base_ty) {
                     // Pointer index: GEP + load
                     let base_reg = self.emit_expr(base, symbols, fn_name);
@@ -2107,6 +2136,57 @@ impl IrEmitter {
                     "{agg1} = insertvalue {{ ptr, i32 }} {agg0}, i32 {len_i32}, 1"
                 ));
                 agg1
+            }
+            Expr::RingNew {
+                base,
+                capacity,
+                head,
+                len,
+                ..
+            } => {
+                // Build the { ptr, capacity, head, len } descriptor. For the
+                // array form the capacity is the compile-known array length
+                // emitted as a constant, which lets sroa propagate it so IKOS
+                // bounds the `(head+i) % capacity` access.
+                let (ptr_reg, cap_i32) = if let Some(capacity) = capacity {
+                    let ptr_reg = self.emit_expr(base, symbols, fn_name);
+                    let cap_reg = self.emit_expr(capacity, symbols, fn_name);
+                    let cap_ty = self.expr_type(capacity, symbols);
+                    (ptr_reg, self.coerce_int(cap_reg, &cap_ty, &Type::U32))
+                } else {
+                    let ptr_reg = self.emit_lvalue_ptr(base, symbols);
+                    let n = match self.expr_type(base, symbols) {
+                        Type::Array(_, n) => n,
+                        _ => 0,
+                    };
+                    let cap_reg = self.new_reg();
+                    self.line(&format!("{cap_reg} = add i32 0, {n}"));
+                    (ptr_reg, cap_reg)
+                };
+                let head_reg = self.emit_expr(head, symbols, fn_name);
+                let head_ty = self.expr_type(head, symbols);
+                let head_i32 = self.coerce_int(head_reg, &head_ty, &Type::U32);
+                let len_reg = self.emit_expr(len, symbols, fn_name);
+                let len_ty = self.expr_type(len, symbols);
+                let len_i32 = self.coerce_int(len_reg, &len_ty, &Type::U32);
+                let ty = "{ ptr, i32, i32, i32 }";
+                let agg0 = self.new_reg();
+                self.line(&format!(
+                    "{agg0} = insertvalue {ty} undef, ptr {ptr_reg}, 0"
+                ));
+                let agg1 = self.new_reg();
+                self.line(&format!(
+                    "{agg1} = insertvalue {ty} {agg0}, i32 {cap_i32}, 1"
+                ));
+                let agg2 = self.new_reg();
+                self.line(&format!(
+                    "{agg2} = insertvalue {ty} {agg1}, i32 {head_i32}, 2"
+                ));
+                let agg3 = self.new_reg();
+                self.line(&format!(
+                    "{agg3} = insertvalue {ty} {agg2}, i32 {len_i32}, 3"
+                ));
+                agg3
             }
             Expr::ArrayInit(elems, _) => {
                 let elem_ty = elems
@@ -2648,6 +2728,34 @@ impl IrEmitter {
                     self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
                     return val_reg;
                 }
+                // Write through a mutable ring view: physical = (head+i) % cap,
+                // then typed GEP + store. Mirrors the ring read path.
+                if let Type::RingView(elem_ty, _) = &base_ty {
+                    let ll_elem = llvm_type(elem_ty);
+                    let ty = "{ ptr, i32, i32, i32 }";
+                    let agg = self.new_reg();
+                    self.line(&format!("{agg} = load {ty}, ptr {base_ptr}"));
+                    let ptr_field = self.new_reg();
+                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
+                    let cap_field = self.new_reg();
+                    self.line(&format!("{cap_field} = extractvalue {ty} {agg}, 1"));
+                    let head_field = self.new_reg();
+                    self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let sum = self.new_reg();
+                    self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
+                    let phys = self.new_reg();
+                    self.line(&format!("{phys} = urem i32 {sum}, {cap_field}"));
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {phys}{dbg}"
+                    ));
+                    let val_reg = self.coerce_int(val_reg.to_string(), val_ty, elem_ty);
+                    self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
+                    return val_reg;
+                }
                 let elem_ty = match &base_ty {
                     Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => {
                         inner.as_ref().clone()
@@ -2986,6 +3094,33 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
+            Type::RingView(elem, _) => {
+                // Descriptor is { data: ptr-to-elem, capacity, head, len }, all
+                // i32 after the pointer. Emit a 4-field structure (matching the
+                // { ptr, i32, i32, i32 } aggregate) so IKOS accepts the module.
+                let f = self.cu_file_id.unwrap_or(0);
+                let data_id = self.dbg_type(&Type::ConstPtr(elem.clone()));
+                let u32_id = self.dbg_type(&Type::U32);
+                let members = ["data", "capacity", "head", "len"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let base = if i == 0 { data_id } else { u32_id };
+                        format!(
+                            "!DIDerivedType(tag: DW_TAG_member, name: \"{name}\", scope: !{id}, file: !{f}, line: 0, baseType: !{base}, size: 32, offset: {})",
+                            i * 32
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(
+                    self.debug_metadata,
+                    "!{id} = !DICompositeType(tag: DW_TAG_structure_type, name: \"ring\", file: !{f}, line: 0, size: 128, elements: !{{{members}}})"
+                )
+                .unwrap();
+                self.type_dbg_id.insert(key, id);
+                return id;
+            }
             _ => ("i32", 32, 5),
         };
         writeln!(
@@ -3178,7 +3313,7 @@ impl IrEmitter {
                 match &base_ty {
                     Type::Array(inner, _) => *inner.clone(),
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
-                    Type::LinearView(inner, _) => *inner.clone(),
+                    Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner.clone(),
                     _ => Type::U32,
                 }
             }
@@ -3189,6 +3324,11 @@ impl IrEmitter {
                 Type::Ptr(inner) => Type::LinearView(inner, true),
                 Type::ConstPtr(inner) | Type::Array(inner, _) => Type::LinearView(inner, false),
                 _ => Type::LinearView(Box::new(Type::U32), false),
+            },
+            Expr::RingNew { base, .. } => match self.expr_type(base, symbols) {
+                Type::Ptr(inner) => Type::RingView(inner, true),
+                Type::ConstPtr(inner) | Type::Array(inner, _) => Type::RingView(inner, false),
+                _ => Type::RingView(Box::new(Type::U32), false),
             },
             Expr::Cast(_, ty_expr) => {
                 crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums)
@@ -3383,6 +3523,9 @@ fn llvm_type(ty: &Type) -> String {
         // preserve pointer provenance for the verifier. Same layout for
         // readonly and mutable views.
         Type::LinearView(_, _) => "{ ptr, i32 }".to_string(),
+        // Ring view descriptor: { data pointer, capacity, head, len }. Same
+        // SSA-transparent aggregate treatment as the linear view.
+        Type::RingView(_, _) => "{ ptr, i32, i32, i32 }".to_string(),
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
@@ -3415,7 +3558,7 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::B8 => "0".to_string(),
         Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
-        Type::Array(..) | Type::Struct(..) | Type::LinearView(_, _) => {
+        Type::Array(..) | Type::Struct(..) | Type::LinearView(_, _) | Type::RingView(_, _) => {
             "zeroinitializer".to_string()
         }
         Type::Enum(_, inner, _) => default_value_literal(inner),

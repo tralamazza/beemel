@@ -86,13 +86,37 @@ Shipped (mutable contiguous linear view, `feature/ikos`):
 - Tests: `view_mut_write` (pass + IR), `view_mut_coerce` (pass), and
   `view_mut_move_error` (E304, the Stage 0 move gate for views).
 
+Shipped (ring view, contiguous, `feature/ikos`):
+
+- Syntax: `ring T` / `ring mut T`. Type `Type::RingView(Box<Type>, bool)` /
+  `TypeExpr::Ring`. Descriptor `{ ptr, capacity, head, len }` (size 16),
+  SSA-transparent like the linear view. Readonly Copy, mutable Move; coercion
+  `ring mut T -> ring T`.
+- Constructors: `ring(arr, head, len)` (capacity from the array, the verifiable
+  form) and `ring(ptr, capacity, head, len)` (explicit/runtime capacity).
+  Mutability derived the same way as views (pointer constness / place).
+- Index: logical `i` maps to physical `(head + i) % capacity` (urem), then a
+  typed GEP + load/store. The urem bounds the physical index into `[0,
+  capacity)`; v1 does not yet emit the power-of-two `& (capacity-1)` mask (needs
+  the deferred compile-time capacity carrier).
+- Verification (measured): array-backed ring read and mutable write prove clean
+  through IKOS -- the constant capacity sroa-propagates so `boa` bounds the
+  access. Runtime-capacity rings over external pointers are subject to the same
+  trust-boundary limitation as escaped views, plus a potential div-by-zero on
+  `urem` by a non-constant capacity.
+- Tests: `ring_read`, `ring_mut_write` (both + verify), `ring_readonly_write`
+  (E334), `ring_mut_move_error` (E304), `ring_read` IR (urem + 4-field descr).
+
 Not yet built:
 
 - Strided views (`view(ptr, len, stride)`) and the third descriptor field.
-- Ring, segmented, and bit views.
+  Deferred: raw byte-GEP indexing is not bounded by IKOS `boa`, and the DMA use
+  case has an external backing pointer anyway (trust boundary). See the
+  bound-enforcement discussion in Stage 5.
+- Ring power-of-two mask optimization and segmented/bit views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
-  `ViewNew` via a wildcard arm; fine for current cases, revisit if a view is
-  constructed in lvalue/addr position or with an allocating operand.
+  `ViewNew`/`RingNew` via a wildcard arm; fine for current cases, revisit if a
+  view is constructed in lvalue/addr position or with an allocating operand.
 
 ## Primitive Model
 
@@ -466,7 +490,8 @@ Minimum tests:
    flow-sensitive, validated against storage-wrapped Move locals (E304).
 1. Linear view: readonly (done), mutable contiguous (done). Stride still
    pending (adds the third descriptor field and byte-offset index math).
-2. Ring view, with compile-time capacity optimization.
+2. Ring view (done, contiguous): modulo physical index, array-backed form
+   verifies. Power-of-two mask form still pending (needs the capacity carrier).
 3. Verifier integration for linear and ring (the bound-enforcement mechanism;
    couple with the linear/ring lowering above rather than treating it as a
    separate late phase).

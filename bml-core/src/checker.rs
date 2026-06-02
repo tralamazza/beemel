@@ -1201,7 +1201,7 @@ fn check_expr(
             match base_ty {
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                Type::LinearView(inner, _) => *inner,
+                Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner,
                 other => {
                     let guard = diags.error(
                         format!("cannot index value of type `{other:?}`"),
@@ -1299,6 +1299,65 @@ fn check_expr(
                     other => {
                         let guard = diags.error(
                             format!("`view(x)` argument must be an array (or use `view(ptr, len)`), got `{other}`"),
+                            "E333",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    }
+                }
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            span,
+        } => {
+            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
+            // capacity (when explicit), head, and len must be integers.
+            for (arg, present) in [
+                (capacity.as_deref(), capacity.is_some()),
+                (Some(head.as_ref()), true),
+                (Some(len.as_ref()), true),
+            ] {
+                if present && let Some(arg) = arg {
+                    let ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
+                    if !types::is_int(&ty) {
+                        diags.error(
+                            format!("`ring` capacity/head/len must be an integer, got `{ty}`"),
+                            "E332",
+                            arg.span(),
+                        );
+                    }
+                }
+            }
+            if capacity.is_some() {
+                // `ring(ptr, capacity, head, len)`: a view over `*mut T` is
+                // mutable, over `*T` readonly.
+                match base_ty {
+                    Type::Ptr(inner) => Type::RingView(inner, true),
+                    Type::ConstPtr(inner) => Type::RingView(inner, false),
+                    other => {
+                        let guard = diags.error(
+                            format!(
+                                "`ring(ptr, ...)` first argument must be a pointer, got `{other}`"
+                            ),
+                            "E333",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    }
+                }
+            } else {
+                // `ring(arr, head, len)`: capacity comes from the array; the ring
+                // is mutable iff the array is a mutable place.
+                let mutable = is_mutable_place(base, scope, symbols);
+                match base_ty {
+                    Type::Array(inner, _) => Type::RingView(inner, mutable),
+                    other => {
+                        let guard = diags.error(
+                            format!("`ring(x, head, len)` first argument must be an array (or use `ring(ptr, capacity, head, len)`), got `{other}`"),
                             "E333",
                             *span,
                         );
@@ -1735,8 +1794,8 @@ fn check_lvalue(
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
                 // A mutable view permits index writes; a readonly view does not.
-                Type::LinearView(inner, true) => *inner,
-                Type::LinearView(_, false) => {
+                Type::LinearView(inner, true) | Type::RingView(inner, true) => *inner,
+                Type::LinearView(_, false) | Type::RingView(_, false) => {
                     let guard = diags.error(
                         "cannot write through a readonly `view`; only reads are allowed"
                             .to_string(),

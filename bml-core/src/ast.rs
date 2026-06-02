@@ -242,6 +242,18 @@ pub enum Expr {
         len: Option<Box<Expr>>,
         span: Span,
     },
+    /// Ring view constructor. Two forms:
+    /// - `ring(arr, head, len)`: `base` is an array, `capacity` is `None` and
+    ///   taken from the array type; element type comes from the array.
+    /// - `ring(ptr, capacity, head, len)`: `base` is a pointer, `capacity` is
+    ///   `Some`; element type comes from the pointee.
+    RingNew {
+        base: Box<Expr>,
+        capacity: Option<Box<Expr>>,
+        head: Box<Expr>,
+        len: Box<Expr>,
+        span: Span,
+    },
     EnumVariant {
         enum_name: Ident,
         variant: Ident,
@@ -277,6 +289,7 @@ impl Expr {
             Expr::Cast(e, _) => e.span(),
             Expr::SizeOf(_, s) => *s,
             Expr::ViewNew { span, .. } => *span,
+            Expr::RingNew { span, .. } => *span,
             Expr::EnumVariant { span, .. } => *span,
             Expr::ArrayInit(_, s) => *s,
             Expr::StructInit { span, .. } => *span,
@@ -349,6 +362,8 @@ pub enum TypeExpr {
     /// Linear view type. The `bool` is `mutable`: `view T` is readonly (Copy),
     /// `view mut T` is mutable (Move) and allows index writes.
     View(Box<TypeExpr>, bool),
+    /// Ring view type. The `bool` is `mutable`, like `View`.
+    Ring(Box<TypeExpr>, bool),
     Array(Box<TypeExpr>, Box<Expr>),
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>),
     Void(Span),
@@ -359,9 +374,10 @@ impl TypeExpr {
     pub fn span(&self) -> Span {
         match self {
             TypeExpr::Named((_, s)) => *s,
-            TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) | TypeExpr::View(inner, _) => {
-                inner.span()
-            }
+            TypeExpr::Ptr(inner)
+            | TypeExpr::ConstPtr(inner)
+            | TypeExpr::View(inner, _)
+            | TypeExpr::Ring(inner, _) => inner.span(),
             TypeExpr::Array(inner, _) => inner.span(),
             TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
             TypeExpr::Void(s) => *s,
@@ -377,6 +393,8 @@ impl fmt::Display for TypeExpr {
             TypeExpr::ConstPtr(t) => write!(f, "&{t}"),
             TypeExpr::View(t, true) => write!(f, "view mut {t}"),
             TypeExpr::View(t, false) => write!(f, "view {t}"),
+            TypeExpr::Ring(t, true) => write!(f, "ring mut {t}"),
+            TypeExpr::Ring(t, false) => write!(f, "ring {t}"),
             TypeExpr::Array(t, _) => write!(f, "[{t}]"),
             TypeExpr::Fn(params, ret) => {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();

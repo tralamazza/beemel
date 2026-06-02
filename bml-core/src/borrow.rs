@@ -239,6 +239,21 @@ fn check_expr(
             }
         }
 
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            check_expr(base, current_fn, current_ctx, symbols, diags);
+            if let Some(capacity) = capacity {
+                check_expr(capacity, current_fn, current_ctx, symbols, diags);
+            }
+            check_expr(head, current_fn, current_ctx, symbols, diags);
+            check_expr(len, current_fn, current_ctx, symbols, diags);
+        }
+
         // Literals never need borrow checks
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)

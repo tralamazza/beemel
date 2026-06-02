@@ -740,6 +740,12 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_type_expr()?;
                 Some(TypeExpr::View(Box::new(inner), mutable))
             }
+            TokenKind::Ring => {
+                self.advance();
+                let mutable = self.eat(&TokenKind::Mut);
+                let inner = self.parse_type_expr()?;
+                Some(TypeExpr::Ring(Box::new(inner), mutable))
+            }
             TokenKind::LBracket => {
                 self.advance();
                 let inner = self.parse_type_expr()?;
@@ -1282,6 +1288,53 @@ impl<'a> Parser<'a> {
                 Some(Expr::ViewNew {
                     base: Box::new(base),
                     len,
+                    span,
+                })
+            }
+            TokenKind::Ring => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `ring`")
+                    .ok()?;
+                // Collect the comma-separated arguments, then map by count:
+                // 3 = ring(arr, head, len), 4 = ring(ptr, capacity, head, len).
+                let mut args = vec![self.parse_expr()?];
+                while self.eat(&TokenKind::Comma) {
+                    args.push(self.parse_expr()?);
+                }
+                self.expect(&TokenKind::RParen, "expected `)` to close `ring(...)`")
+                    .ok()?;
+                let mut it = args.into_iter();
+                let (base, capacity, head, len) = match it.len() {
+                    3 => {
+                        let base = it.next().unwrap();
+                        let head = it.next().unwrap();
+                        let len = it.next().unwrap();
+                        (base, None, head, len)
+                    }
+                    4 => {
+                        let base = it.next().unwrap();
+                        let capacity = it.next().unwrap();
+                        let head = it.next().unwrap();
+                        let len = it.next().unwrap();
+                        (base, Some(Box::new(capacity)), head, len)
+                    }
+                    n => {
+                        self.diags.error(
+                            format!(
+                                "`ring(...)` expects 3 (arr, head, len) or 4 (ptr, capacity, head, len) arguments, got {n}"
+                            ),
+                            "E100",
+                            span,
+                        );
+                        return None;
+                    }
+                };
+                Some(Expr::RingNew {
+                    base: Box::new(base),
+                    capacity,
+                    head: Box::new(head),
+                    len: Box::new(len),
                     span,
                 })
             }

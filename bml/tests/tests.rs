@@ -237,6 +237,27 @@ fn test_view_mut_write_ir_lowering() {
         );
     }
 }
+// Ring views (contiguous): logical-to-physical indexing via (head+i) % capacity,
+// readonly read + mutable write, readonly write rejected, and the move gate.
+assert_pass!(test_ring_read, "ring_read.bml");
+assert_pass!(test_ring_mut_write, "ring_mut_write.bml");
+assert_error!(
+    test_ring_readonly_write,
+    "ring_readonly_write_error.bml",
+    "E334"
+);
+assert_error!(test_ring_mut_move, "ring_mut_move_error.bml", "E304");
+#[test]
+fn test_ring_ir_lowering() {
+    let ir = bml_ir("ring_read.bml");
+    // 4-field descriptor and modulo physical-index math.
+    for pattern in ["extractvalue { ptr, i32, i32, i32 }", "urem i32"] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
 // Both checks share one build to avoid racing on the fixture's `.ll` file
 // (two `bml_ir` calls on the same fixture would write/read/delete it
 // concurrently under the parallel test runner).
@@ -1292,6 +1313,10 @@ assert_verify_fail!(test_verify_view_len_overstates, "view_len_overstates.bml");
 // A mutable-view index write: IKOS proves the store is in bounds (the
 // descriptor stays SSA-transparent, so provenance to the backing array holds).
 assert_verify_pass!(test_verify_view_mut_write, "view_mut_write.bml");
+// Ring views: the (head+i) % capacity physical index is bounded by the urem,
+// and with the array-derived constant capacity IKOS proves read and write.
+assert_verify_pass!(test_verify_ring_read, "ring_read.bml");
+assert_verify_pass!(test_verify_ring_mut_write, "ring_mut_write.bml");
 // Preempt shim: no ISR writer → no forget_mem → prover can fold the value.
 assert_verify_pass!(test_verify_shared_no_writer, "verify_shared_no_writer.bml");
 

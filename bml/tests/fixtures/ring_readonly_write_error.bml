@@ -1,0 +1,6 @@
+// Writing through a readonly ring must be rejected (E334).
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32];
+    var r: ring u32 = ring(&buf[0], 8u32, 0u32, 8u32);
+    r[0u32] = 99u32;
+}
