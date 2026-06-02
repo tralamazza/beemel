@@ -1,0 +1,11 @@
+// Index-*read* of a view that was moved away is a use-after-move (E304), the
+// read-side counterpart to view_mut_moved_index_write_error.
+fn consume(v: view u32) -> u32 {
+    return v[0u32];
+}
+fn main() @context(thread) {
+    var buf: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
+    var v: view mut u32 = view(buf);
+    var a: u32 = consume(v);   // moves v
+    var b: u32 = v[0u32];      // E304
+}

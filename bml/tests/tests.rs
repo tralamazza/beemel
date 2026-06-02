@@ -264,9 +264,33 @@ assert_pass!(
     "view_mut_index_read_twice.bml"
 );
 assert_error!(
+    test_view_mut_moved_index_read,
+    "view_mut_moved_index_read_error.bml",
+    "E304"
+);
+assert_error!(
     test_view_mut_moved_index_write,
     "view_mut_moved_index_write_error.bml",
     "E304"
+);
+// The place-chain read is non-consuming through addr-of and nested indices too:
+// `&mut v[i]` borrows the view (no move), but addr-of an element of a moved view
+// is still E304; and a two-level index place type-checks.
+assert_pass!(test_addrof_index_no_consume, "addrof_index_no_consume.bml");
+assert_error!(
+    test_addrof_index_moved,
+    "addrof_index_moved_error.bml",
+    "E304"
+);
+assert_pass!(test_nested_index_read_twice, "nested_index_read_twice.bml");
+// The index-borrow fix is shared across view kinds, not just `view mut`.
+assert_pass!(
+    test_ring_mut_index_read_twice,
+    "ring_mut_index_read_twice.bml"
+);
+assert_pass!(
+    test_bit_mut_index_read_twice,
+    "bit_mut_index_read_twice.bml"
 );
 // Writing through a `view mut` *parameter* (immutable binding) is allowed, like
 // a `*mut T` param. Also covers the `view(arr)` mutable array-form derivation.

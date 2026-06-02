@@ -1,0 +1,7 @@
+// A two-level index place: read_place_type recurses through the inner index, so
+// the root is read once per access and indexing yields the right element type.
+fn main() @context(thread) {
+    var m: [[u32; 2]; 2] = [[1u32, 2u32], [3u32, 4u32]];
+    var a: u32 = m[0u32][1u32];
+    var b: u32 = m[1u32][0u32];
+}
