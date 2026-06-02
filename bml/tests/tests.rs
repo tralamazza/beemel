@@ -256,6 +256,18 @@ assert_error!(test_view_from_nonarray, "view_from_nonarray.bml", "E333");
 assert_pass!(test_view_mut_write, "view_mut_write.bml");
 assert_pass!(test_view_mut_coerce, "view_mut_coerce.bml");
 assert_error!(test_view_mut_move, "view_mut_move_error.bml", "E304");
+// Indexing borrows the view, it does not move it: two index reads of a `view
+// mut` are valid (so read/RMW loops type-check). But indexing a view that was
+// moved away is still a use-after-move, on both the read and the write side.
+assert_pass!(
+    test_view_mut_index_read_twice,
+    "view_mut_index_read_twice.bml"
+);
+assert_error!(
+    test_view_mut_moved_index_write,
+    "view_mut_moved_index_write_error.bml",
+    "E304"
+);
 // Writing through a `view mut` *parameter* (immutable binding) is allowed, like
 // a `*mut T` param. Also covers the `view(arr)` mutable array-form derivation.
 assert_pass!(test_view_mut_param_write, "view_mut_param_write.bml");

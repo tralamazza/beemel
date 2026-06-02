@@ -1,0 +1,22 @@
+// A mutable view indexed in a loop: fill via writes, then sum via reads. Pins
+// that index-read does not consume the view (so the read loop type-checks) and
+// that values round-trip correctly through the optimizer.
+import harness.semihost;
+
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var v: view mut u32 = view(buf);
+    var i: u32 = 0u32;
+    while i < 4u32 {
+        v[i] = i + 1u32;
+        i = i + 1u32;
+    }
+    var sum: u32 = 0u32;
+    var k: u32 = 0u32;
+    while k < 4u32 {
+        sum = sum + v[k];
+        k = k + 1u32;
+    }
+    expect_u32(sum, 10u32);
+    done();
+}

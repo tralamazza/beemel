@@ -1,0 +1,12 @@
+// Writing through a view that was moved away is a use-after-move (E304). An
+// index write projects into the value; it does not revive the binding (only a
+// whole-name assignment does).
+fn consume(v: view u32) -> u32 {
+    return v[0u32];
+}
+fn main() @context(thread) {
+    var buf: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
+    var v: view mut u32 = view(buf);
+    var a: u32 = consume(v);   // moves v
+    v[0u32] = 9u32;            // E304
+}

@@ -1195,24 +1195,14 @@ fn check_expr(
         }
 
         Expr::Index(base, index) => {
-            let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
+            // Indexing addresses a place through `base`; it borrows the
+            // container, it does not move it. Read the base non-consuming so a
+            // Move-typed view (`view mut`/`ring mut`/`bits mut`) can be indexed
+            // repeatedly (e.g. in a loop). Only a binding transfer of the view
+            // consumes it.
+            let base_ty = read_place_type(base, symbols, scope, fn_name, expected_ret, diags);
             check_expr(index, symbols, scope, fn_name, expected_ret, diags);
-            // Array indexing returns the element type
-            match base_ty {
-                Type::Array(inner, _) => *inner,
-                Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-                Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner,
-                // A bit view yields a single bit regardless of mutability.
-                Type::BitView(_) => Type::B1,
-                other => {
-                    let guard = diags.error(
-                        format!("cannot index value of type `{other:?}`"),
-                        "E326",
-                        base.span(),
-                    );
-                    Type::Error(guard)
-                }
-            }
+            index_element_type(base_ty, base, diags)
         }
 
         Expr::ArrayInit(elems, _) => {
@@ -1733,9 +1723,14 @@ fn check_lvalue(
     match lval {
         LValue::Name((name, span)) => {
             if let Some(info) = scope.lookup(name) {
-                // No use-after-move check here: assigning to a name *defines* it,
-                // reviving a previously-moved local (see `mark_assigned`). Reads
-                // on the value side are checked in `check_expr`.
+                // A whole-name assignment (`root`) *defines* the local, reviving a
+                // previously-moved value (see `mark_assigned`), so no use-after-move
+                // check there. But projecting into a moved value (`b[i] = x` after
+                // `b` was moved away) is a use-after-move: the place no longer
+                // exists. Writes do not consume, so this only reports, never moves.
+                if !root && info.moved {
+                    diags.error(format!("use of moved value: `{name}`"), "E304", *span);
+                }
                 let is_view = matches!(
                     info.ty,
                     Type::LinearView(..) | Type::RingView(..) | Type::BitView(..)
@@ -1979,10 +1974,33 @@ fn is_mutable_place(expr: &Expr, scope: &ScopeStack, symbols: &SymbolTable) -> b
     }
 }
 
-/// Read the type of an operand of `&`/`&mut` without consuming it. Taking an
-/// address borrows the place; it must not flip a Move-typed local to moved.
-/// Only the direct `&ident` form is handled specially (the common case);
-/// other operands fall back to the normal consuming read.
+/// The element type produced by indexing a value of type `base_ty`. Shared by
+/// the `Expr::Index` read path and `read_place_type` so both agree on what
+/// `base[i]` yields (and on the E326 "cannot index" diagnostic).
+fn index_element_type(base_ty: Type, base: &Expr, diags: &mut DiagnosticBag) -> Type {
+    match base_ty {
+        Type::Array(inner, _) => *inner,
+        Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
+        Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner,
+        // A bit view yields a single bit regardless of mutability.
+        Type::BitView(_) => Type::B1,
+        other => {
+            let guard = diags.error(
+                format!("cannot index value of type `{other:?}`"),
+                "E326",
+                base.span(),
+            );
+            Type::Error(guard)
+        }
+    }
+}
+
+/// Read the type of a place expression without consuming it. Used for the
+/// operand of `&`/`&mut` and for the base of an index: both borrow the place
+/// rather than transferring it, so a Move-typed local must not be flipped to
+/// moved. Recurses through `(p)`, `p[i]`, and `&`-style chains so the *root*
+/// local of a place is never consumed; a non-place operand falls back to the
+/// normal consuming read (a temporary, where consuming is correct).
 fn read_place_type(
     expr: &Expr,
     symbols: &SymbolTable,
@@ -1991,15 +2009,25 @@ fn read_place_type(
     expected_ret: Option<&Type>,
     diags: &mut DiagnosticBag,
 ) -> Type {
-    if let Expr::Ident((name, span)) = expr
-        && let Some(info) = scope.lookup(name)
-    {
-        if info.moved {
-            diags.error(format!("use of moved value: `{name}`"), "E304", *span);
+    match expr {
+        Expr::Ident((name, span)) => {
+            if let Some(info) = scope.lookup(name) {
+                if info.moved {
+                    diags.error(format!("use of moved value: `{name}`"), "E304", *span);
+                }
+                return info.ty.clone();
+            }
+            // Not a local (static/const/peripheral/fn): no move state to guard.
+            check_expr(expr, symbols, scope, fn_name, expected_ret, diags)
         }
-        return info.ty.clone();
+        Expr::Group(inner) => read_place_type(inner, symbols, scope, fn_name, expected_ret, diags),
+        Expr::Index(base, index) => {
+            let base_ty = read_place_type(base, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+            index_element_type(base_ty, base, diags)
+        }
+        _ => check_expr(expr, symbols, scope, fn_name, expected_ret, diags),
     }
-    check_expr(expr, symbols, scope, fn_name, expected_ret, diags)
 }
 
 /// Reassigning a whole local fully overwrites it, so it revives a previously

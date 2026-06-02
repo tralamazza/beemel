@@ -264,6 +264,10 @@ assert_exec!(exec_register_rmw, "register_rmw.bml");
 // crossing, and a nonzero bit_offset, checked by behavior under QEMU.
 assert_exec!(exec_bit_view, "bit_view.bml");
 
+// A mutable view indexed in write and read loops (index-read does not consume
+// the view), with the summed values checked.
+assert_exec!(exec_view_mut_loop, "view_mut_loop.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 
