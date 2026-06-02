@@ -1,0 +1,7 @@
+// The array form requires a byte array; a word array is rejected (E333). The
+// byte-width restriction keeps the i8 byte-address math well-defined.
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    val b: bits = bits(buf);
+    var x: b1 = b[0u32];
+}

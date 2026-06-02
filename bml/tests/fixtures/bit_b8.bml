@@ -1,0 +1,7 @@
+// A `[b8; N]` (byte-sized boolean) array is a valid bit-view backing, same as
+// `[u8; N]`. Exercises the B8 arm of the byte-type restriction.
+fn main() @context(thread) {
+    var buf: [b8; 4] = [true as b8, true as b8, true as b8, true as b8];
+    var b: bits mut = bits(buf);
+    b[5u32] = true;
+}

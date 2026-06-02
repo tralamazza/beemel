@@ -1,0 +1,9 @@
+// Soundness: the index assume narrows i against len_bits, but it cannot override
+// the real allocation size when the verifier knows the backing buffer. A
+// len_bits that overstates the 4-byte (32-bit) buffer is still caught (V100):
+// bit 600 lands in byte 75, far past the 4-byte backing.
+fn main() @context(thread) {
+    var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
+    val b: bits = bits(&buf[0u32], 0u32, 1024u32);
+    var x: b1 = b[600u32];
+}

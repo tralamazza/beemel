@@ -260,6 +260,10 @@ assert_exec!(exec_enums, "enums.bml");
 // ─── register read-modify-write (language.md §9) ─────────────────────────────
 assert_exec!(exec_register_rmw, "register_rmw.bml");
 
+// ─── bit view (memory-views): set/clear, RMW neighbor preservation, byte ─────
+// crossing, and a nonzero bit_offset, checked by behavior under QEMU.
+assert_exec!(exec_bit_view, "bit_view.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 

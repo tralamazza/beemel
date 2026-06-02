@@ -1,0 +1,6 @@
+// The explicit form's first argument must be a byte pointer; a non-pointer is
+// rejected (E333).
+fn main() @context(thread) {
+    val b: bits = bits(5u32, 0u32, 8u32);
+    var x: b1 = b[0u32];
+}

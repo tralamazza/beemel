@@ -338,6 +338,12 @@ assert_pass!(test_bit_runtime, "bit_runtime.bml");
 // `bits(...)` accepts only 1 or 3 arguments; bit_offset/len_bits must be ints.
 assert_error!(test_bit_bad_argcount, "bit_bad_argcount_error.bml", "E100");
 assert_error!(test_bit_non_int, "bit_non_int_error.bml", "E332");
+// The backing must be a byte array / byte pointer (the byte-type restriction):
+// a word array and a non-pointer base are both rejected (E333).
+assert_error!(test_bit_nonbyte, "bit_nonbyte_error.bml", "E333");
+assert_error!(test_bit_bad_base, "bit_bad_base_error.bml", "E333");
+// A `[b8; N]` array is also a valid backing.
+assert_pass!(test_bit_b8, "bit_b8.bml");
 #[test]
 fn test_bit_debug_type() {
     let ir = bml_ir_debug("bit_debug.bml");
@@ -1451,6 +1457,9 @@ assert_verify_pass!(test_verify_ring_mut_param_write, "ring_mut_param_write.bml"
 assert_verify_pass!(test_verify_bit_read, "bit_read.bml");
 assert_verify_pass!(test_verify_bit_mut_write, "bit_mut_write.bml");
 assert_verify_pass!(test_verify_bit_mut_param_write, "bit_mut_param_write.bml");
+// Soundness: a len_bits that overstates the backing buffer does not let the
+// assume mask a real out-of-bounds byte access; IKOS still catches it (V100).
+assert_verify_fail!(test_verify_bit_len_overstates, "bit_len_overstates.bml");
 // Characterize the runtime-capacity ring form: unlike the array-backed form, the
 // backing pointer is an entry-point param and the capacity is runtime, so the
 // verifier cannot prove the access. The `urem` by a runtime capacity admits a
