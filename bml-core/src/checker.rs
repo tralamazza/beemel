@@ -1679,7 +1679,7 @@ fn check_lvalue(
                 // No use-after-move check here: assigning to a name *defines* it,
                 // reviving a previously-moved local (see `mark_assigned`). Reads
                 // on the value side are checked in `check_expr`.
-                let is_view = matches!(info.ty, Type::LinearView(..));
+                let is_view = matches!(info.ty, Type::LinearView(..) | Type::RingView(..));
                 if !info.mutable && (root || !is_view) {
                     diags.error(
                         format!("cannot assign to immutable variable `{name}`"),

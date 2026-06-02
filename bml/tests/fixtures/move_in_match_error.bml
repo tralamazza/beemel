@@ -1,0 +1,18 @@
+// Flow-sensitive move across match arms: a value moved in one arm is
+// maybe-moved after the match, so the later use is rejected. Exercises the
+// match-arm union path (the `if` form is covered separately).
+enum Sel: u8 { A = 0, B = 1 }
+
+fn reads(v: view u32) -> u32 {
+    return v[0u32];
+}
+
+fn main(s: Sel) @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var v: view mut u32 = view(buf);
+    match s {
+        Sel@A { var a: u32 = reads(v); }   // moves v on this arm
+        Sel@B { }
+    }
+    var b: u32 = reads(v);   // E304: maybe-moved after the match
+}

@@ -225,6 +225,9 @@ assert_error!(test_view_from_nonarray, "view_from_nonarray.bml", "E333");
 assert_pass!(test_view_mut_write, "view_mut_write.bml");
 assert_pass!(test_view_mut_coerce, "view_mut_coerce.bml");
 assert_error!(test_view_mut_move, "view_mut_move_error.bml", "E304");
+// Writing through a `view mut` *parameter* (immutable binding) is allowed, like
+// a `*mut T` param. Also covers the `view(arr)` mutable array-form derivation.
+assert_pass!(test_view_mut_param_write, "view_mut_param_write.bml");
 #[test]
 fn test_view_mut_write_ir_lowering() {
     let ir = bml_ir("view_mut_write.bml");
@@ -247,6 +250,9 @@ assert_error!(
     "E334"
 );
 assert_error!(test_ring_mut_move, "ring_mut_move_error.bml", "E304");
+// Writing through a `ring mut` parameter (immutable binding). Regression for the
+// RingView case of the binding-mutability exemption.
+assert_pass!(test_ring_mut_param_write, "ring_mut_param_write.bml");
 #[test]
 fn test_ring_ir_lowering() {
     let ir = bml_ir("ring_read.bml");
@@ -430,6 +436,8 @@ assert_error!(test_move_in_loop, "move_in_loop_error.bml", "E304");
 assert_error!(test_move_in_branch, "move_in_branch_error.bml", "E304");
 // Reassigning before use each iteration revives the local; no false positive.
 assert_pass!(test_move_in_loop_revive, "move_in_loop_revive_ok.bml");
+// Move unioned across match arms (the `if` form is covered above).
+assert_error!(test_move_in_match, "move_in_match_error.bml", "E304");
 assert_error!(test_type_mismatch, "type_mismatch_error.bml", "E310");
 assert_error!(
     test_return_type_mismatch,
@@ -1317,6 +1325,10 @@ assert_verify_pass!(test_verify_view_mut_write, "view_mut_write.bml");
 // and with the array-derived constant capacity IKOS proves read and write.
 assert_verify_pass!(test_verify_ring_read, "ring_read.bml");
 assert_verify_pass!(test_verify_ring_mut_write, "ring_mut_write.bml");
+// Writing through a mutable view/ring passed to a helper: provenance flows
+// through the call, so IKOS still proves the store in bounds.
+assert_verify_pass!(test_verify_view_mut_param_write, "view_mut_param_write.bml");
+assert_verify_pass!(test_verify_ring_mut_param_write, "ring_mut_param_write.bml");
 // Preempt shim: no ISR writer → no forget_mem → prover can fold the value.
 assert_verify_pass!(test_verify_shared_no_writer, "verify_shared_no_writer.bml");
 

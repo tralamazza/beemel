@@ -1,0 +1,12 @@
+// Writing through a `view mut` parameter (an immutable binding) must be allowed,
+// like a `*mut T` param. Regression: the binding-mutability check must not fire
+// for a view used as an index base. Built from an array so it verifies.
+fn fill(v: view mut u32, n: u32) @context(thread) {
+    v[0u32] = n;
+    v[1u32] = n;
+}
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var v: view mut u32 = view(buf);
+    fill(v, 9u32);
+}
