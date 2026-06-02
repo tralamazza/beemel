@@ -23,6 +23,37 @@ the external verifier (IKOS) can recover bounds. See Stage 5 for what
   `head`/`capacity` are `i32`. `len` as signed `i32` interacts with IKOS signed
   overflow checks (`sio`); construction should constrain it to be non-negative.
 
+## Implementation Status
+
+Updated 2026-06-02.
+
+Shipped (readonly linear view, commits `aaf6262` and `dd15b20` on
+`feature/ikos`):
+
+- Syntax: `view T` type (keyword form, as recommended). Constructors
+  `view(ptr, len)` and `view(arr)`.
+- Type system: `Type::LinearView(Box<Type>)`, Copy semantics, descriptor
+  `{ ptr, i32 }` (size 8). Display `view T`. Kept out of `is_ptr`.
+- Checker: index read yields `T`; readonly write rejected (E334); bad
+  constructor args rejected (E332 non-int len, E333 non-pointer/array base).
+- IR: SSA-transparent `{ ptr, i32 }` aggregate; index lowers to
+  `assume(i < len)` (branch-to-unreachable) then typed GEP + load; composite
+  debug type so IKOS accepts the module.
+- Verification (measured, not assumed): intra-procedural read clean; view
+  passed to a helper clean (provenance through the call); overstated `len`
+  still caught against the real buffer (V100). See Stage 5.
+- Tests: check, IR-substring, and verify fixtures under `bml/tests/fixtures`.
+
+Not yet built:
+
+- Mutable views. Blocked on Stage 0 (local move tracking), which is currently
+  two inert mechanisms, not a tweak. See Stage 0.
+- Strided views (`view(ptr, len, stride)`) and the third descriptor field.
+- Ring, segmented, and bit views.
+- The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
+  `ViewNew` via a wildcard arm; fine for current cases, revisit if a view is
+  constructed in lvalue/addr position or with an allocating operand.
+
 ## Primitive Model
 
 | Primitive | Logical layout | Main use |
@@ -80,13 +111,22 @@ without changing the type representation.
 This is a standalone milestone that must land before mutable views are claimed
 to be safe. It is not a tweak to existing code.
 
-Current state in `bml-core/src/borrow.rs`:
+Current state: there are TWO parallel, half-built move-tracking mechanisms, and
+neither one fires.
 
-- `is_move_typed_local` (borrow.rs:761) unconditionally returns `false`. Nothing
-  is ever inserted into the `moved` set for locals, so the "use of moved value"
-  diagnostic (E400, borrow.rs:357) is effectively dead for locals today.
-- `borrow.rs` has no local type information. It consults only `symbols.statics`
-  and `symbols.functions`. It cannot currently tell whether a local is Move-typed.
+- `bml-core/src/borrow.rs`: threads a `moved: HashSet<String>` through the walk
+  and reports E400 on `moved.contains(name)`, inserting a local on use only when
+  `is_move_typed_local` is true. But that function unconditionally returns
+  `false`, and `borrow.rs` has no local type info (it consults only
+  `symbols.statics`/`symbols.functions`). Dead path.
+- `bml-core/src/checker.rs`: `VarInfo { ty, mutable, moved }` is checked at
+  Ident reads and reports E304 (different code, same message). But every
+  `VarInfo` is built with `moved: false` and the function meant to flip it,
+  `mark_assigned`, is a documented no-op. Dead path.
+
+So the move-error plumbing exists in two places with two error codes (E304,
+E400) and `moved` is never set to `true` anywhere. Reconciling these into one
+authority is part of the work.
 
 Required work:
 
@@ -94,8 +134,10 @@ Required work:
 |---|---|
 | local type awareness | give `borrow.rs` access to resolved local types, or make the checker's move tracking authoritative and have `borrow.rs` defer to it |
 | `is_move_typed_local` | return true for Move-typed locals (storage wrappers, mutable views) |
-| move on use | insert into `moved` when a Move-typed local is consumed; keep the existing scope-stack discipline |
+| move on use | flip `moved` when a Move-typed local is consumed (read into a binding, passed by value, returned) |
 | coercion sites | mutable-to-readonly coercion consumes the mutable value (it is a move, not a copy) |
+| control flow | the hard part: move state must merge across `if`/`match` branches and account for moves inside loop bodies (a move in a loop is a use-after-move on the next iteration). This is the flow-sensitive analysis that decides soundness, not the per-site flip. |
+| error codes | collapse E304 and E400 to one code and keep the diagnostic-coverage ratchet green |
 
 Decision to make now: does move tracking live in `borrow.rs` (needs local type
 plumbing) or in `checker.rs` (already type-aware, then `borrow.rs` reads its
@@ -134,10 +176,15 @@ Descriptor sizes for `element_size()` (32-bit target, 4-byte ptr):
 
 | Primitive | Layout | Size |
 |---|---|---|
-| `view T` | `{ ptr, i32, i32 }` | 12 |
+| `view T` (full, with stride) | `{ ptr, i32, i32 }` | 12 |
 | `ring T` | `{ ptr, i32, i32, i32, i32 }` | 20 |
 | `segments T` | `{ ptr, i32 }` | 8 |
 | `bits` | `{ ptr, i32, i32, i32 }` | 16 |
+
+Shipped deviation (v1): the readonly linear view descriptor is `{ ptr, i32 }`
+(size 8), not `{ ptr, i32, i32 }`. Stride was dropped because v1 is contiguous
+only (`stride == sizeof(T)`, lowered as a typed GEP). Adding strided views later
+reintroduces the third field and bumps the size to 12.
 
 Storage class interaction: the type system encodes storage (`@dma`, `@shared`,
 `@external`) as a wrapper *around* the element type (`Type::Dma(Box<Type>)`
@@ -151,9 +198,7 @@ constructor records the storage class for verification. Pick one before Stage 2.
 
 ## Stage 2: View Construction
 
-Add explicit construction forms before adding implicit sugar.
-
-Initial constructors can be compiler builtins:
+Constructors are compiler builtins:
 
 ```bml
 view(ptr, len)
@@ -163,6 +208,13 @@ ring(ptr, capacity, head, len, stride)
 segments(ptr_to_segments, count)
 bits(ptr, bit_offset, len_bits)
 ```
+
+Shipped (v1): `view(ptr, len)` and the array-sugar form `view(arr)` are
+implemented. The original "explicit forms before sugar" sequencing was relaxed
+because the array form is both trivial to lower (pointer to element 0, length
+from the array type) and the strongest case for the verifier: it yields a
+compile-known `len` with direct provenance to the backing alloca. The strided
+`view(ptr, len, stride)` form is deferred with strided views.
 
 Compiler facts captured at construction:
 
