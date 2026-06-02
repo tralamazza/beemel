@@ -58,6 +58,37 @@ fn bml_ir(fixture: &str) -> String {
     bml_ir_with_target(fixture, None)
 }
 
+/// Build a fixture with debug info (`-g`) and return the emitted `.ll`. Used to
+/// assert DWARF metadata (e.g. view/ring descriptor composite types).
+fn bml_ir_debug(fixture: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(fixture);
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--opt=0")
+        .arg("-g")
+        .arg("--save-temps")
+        .arg(&path)
+        .output()
+        .expect("failed to run bml build -g");
+
+    let ll_path = path.with_extension("ll");
+    let ir = std::fs::read_to_string(&ll_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&ll_path);
+    let _ = std::fs::remove_file(path.with_extension("o"));
+    let _ = std::fs::remove_file(path.with_extension("ld"));
+
+    assert!(
+        output.status.success() || !ir.is_empty(),
+        "build -g failed before IR emission:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    ir
+}
+
 fn bml_ir_with_target(fixture: &str, target: Option<&str>) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -228,6 +259,12 @@ assert_error!(test_view_mut_move, "view_mut_move_error.bml", "E304");
 // Writing through a `view mut` *parameter* (immutable binding) is allowed, like
 // a `*mut T` param. Also covers the `view(arr)` mutable array-form derivation.
 assert_pass!(test_view_mut_param_write, "view_mut_param_write.bml");
+// The reverse coercion (readonly view -> mutable view) is rejected.
+assert_error!(
+    test_view_readonly_to_mut,
+    "view_readonly_to_mut_error.bml",
+    "E300"
+);
 #[test]
 fn test_view_mut_write_ir_lowering() {
     let ir = bml_ir("view_mut_write.bml");
@@ -255,6 +292,22 @@ assert_error!(test_ring_mut_move, "ring_mut_move_error.bml", "E304");
 assert_pass!(test_ring_mut_param_write, "ring_mut_param_write.bml");
 // The runtime-capacity ring form ring(ptr, capacity, head, len) type-checks.
 assert_pass!(test_ring_runtime, "ring_runtime.bml");
+// `ring(...)` accepts only 3 or 4 arguments.
+assert_error!(
+    test_ring_bad_argcount,
+    "ring_bad_argcount_error.bml",
+    "E100"
+);
+#[test]
+fn test_ring_debug_type() {
+    let ir = bml_ir_debug("ring_debug.bml");
+    // The ring descriptor emits a 4-field DWARF composite type so IKOS (and
+    // debuggers) see { data, capacity, head, len } rather than an opaque blob.
+    assert!(
+        ir.contains(r#"name: "ring""#) && ir.contains(r#"name: "capacity""#),
+        "expected ring DICompositeType with a capacity member\n--- IR ---\n{ir}\n---"
+    );
+}
 #[test]
 fn test_ring_ir_lowering() {
     let ir = bml_ir("ring_read.bml");
@@ -442,6 +495,12 @@ assert_pass!(test_move_in_loop_revive, "move_in_loop_revive_ok.bml");
 assert_error!(test_move_in_match, "move_in_match_error.bml", "E304");
 // Taking the address of a Move-typed local borrows it without consuming.
 assert_pass!(test_addrof_move_no_consume, "addrof_move_no_consume.bml");
+// A move inside a nested loop leaks through the outer loop's fixpoint.
+assert_error!(
+    test_move_in_nested_loop,
+    "move_in_nested_loop_error.bml",
+    "E304"
+);
 assert_error!(test_type_mismatch, "type_mismatch_error.bml", "E310");
 assert_error!(
     test_return_type_mismatch,

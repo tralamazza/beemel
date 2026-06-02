@@ -1,0 +1,6 @@
+// `ring(...)` accepts only 3 (arr, head, len) or 4 (ptr, capacity, head, len)
+// arguments. Two arguments is a parse error. (E100)
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var r = ring(buf, 0u32);
+}

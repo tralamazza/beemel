@@ -1,0 +1,7 @@
+// A readonly view must NOT coerce to a mutable view (only mut -> readonly is
+// allowed). The reverse is a type mismatch. (E300)
+fn main() @context(thread) {
+    val buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var ro: view u32 = view(buf);
+    var bad: view mut u32 = ro;   // E300: readonly -> mutable rejected
+}

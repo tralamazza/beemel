@@ -1,0 +1,7 @@
+// Dedicated fixture for the ring debug-info test (separate .ll file so it does
+// not race the ring IR-lowering test).
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32];
+    val r: ring u32 = ring(buf, 0u32, 8u32);
+    var x: u32 = r[2u32];
+}
