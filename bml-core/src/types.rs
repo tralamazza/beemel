@@ -36,8 +36,14 @@ pub enum Type {
     StridedView(Box<Type>, bool, u32),
     /// Ring view over `T`: a `{ ptr, capacity, head, len }` descriptor. Indexing
     /// is logical: element `i` is at physical `(head + i) % capacity`. The
-    /// `bool` is `mutable`, with the same Copy/Move rule as `LinearView`.
-    RingView(Box<Type>, bool),
+    /// `bool` is `mutable`, with the same Copy/Move rule as `LinearView`. The
+    /// `Option<u32>` is a compile-time capacity *hint*, populated only when the
+    /// capacity is a known power of two (the array-backed form over `[T; N]`
+    /// with `N` a power of two). When present it lets indexing lower the
+    /// physical map to `(head + i) & (N - 1)` instead of `urem`. It is a
+    /// value-level optimization fact, *not* part of type identity:
+    /// `types_compatible` ignores it.
+    RingView(Box<Type>, bool, Option<u32>),
     /// Bit view: a `{ ptr, bit_offset, len_bits }` descriptor over a byte
     /// buffer. The element is always a single bit (`b1`); indexing element `i`
     /// touches byte `(bit_offset + i) / 8`. Contiguous only in v1 (logical
@@ -97,8 +103,8 @@ impl fmt::Display for Type {
             Type::LinearView(t, false) => write!(f, "view {t}"),
             Type::StridedView(t, true, k) => write!(f, "view mut {t} stride {k}"),
             Type::StridedView(t, false, k) => write!(f, "view {t} stride {k}"),
-            Type::RingView(t, true) => write!(f, "ring mut {t}"),
-            Type::RingView(t, false) => write!(f, "ring {t}"),
+            Type::RingView(t, true, _) => write!(f, "ring mut {t}"),
+            Type::RingView(t, false, _) => write!(f, "ring {t}"),
             Type::BitView(true) => write!(f, "bits mut"),
             Type::BitView(false) => write!(f, "bits"),
             Type::Exclusive(t) => write!(f, "@exclusive({t})"),
@@ -151,7 +157,7 @@ impl Type {
             // checker forbids use-after-move and aliasing two mutable views).
             Type::LinearView(_, mutable)
             | Type::StridedView(_, mutable, _)
-            | Type::RingView(_, mutable)
+            | Type::RingView(_, mutable, _)
             | Type::BitView(mutable) => {
                 if *mutable {
                     Semantics::Move
@@ -257,7 +263,14 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
             )
         }
         TypeExpr::Ring(inner, mutable) => {
-            Type::RingView(Box::new(resolve_type_expr(inner, structs, enums)), *mutable)
+            // A `ring T` written as a type annotation carries no capacity hint
+            // (it is not in the syntax); the mask optimization only applies to
+            // inferred ring types from the array-backed constructor.
+            Type::RingView(
+                Box::new(resolve_type_expr(inner, structs, enums)),
+                *mutable,
+                None,
+            )
         }
         TypeExpr::Bits(mutable) => Type::BitView(*mutable),
         TypeExpr::Ptr(inner) => Type::Ptr(Box::new(resolve_type_expr(inner, structs, enums))),
@@ -390,9 +403,15 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     {
         return true;
     }
-    // `ring mut T` → `ring T` implicit coercion (same rule as views).
-    if let (Type::RingView(e_inner, false), Type::RingView(a_inner, _)) = (expected, actual)
+    // Ring views: compatible when the element type matches and mutability is
+    // equal or coerces mutable → readonly. The compile-time capacity hint is a
+    // value-level optimization fact, not type identity, so it is ignored here
+    // (a `ring T` from `[T; 8]` is compatible with a `ring T` parameter that
+    // carries no hint).
+    if let (Type::RingView(e_inner, e_mut, _), Type::RingView(a_inner, a_mut, _)) =
+        (expected, actual)
         && e_inner == a_inner
+        && (e_mut == a_mut || (!*e_mut && *a_mut))
     {
         return true;
     }
@@ -496,7 +515,7 @@ pub fn element_size(ty: &Type) -> u32 {
         // type-level, not a runtime field.
         Type::LinearView(_, _) | Type::StridedView(_, _, _) => 8,
         // `{ ptr, capacity, head, len }` on a 32-bit target: 4 + 4 + 4 + 4.
-        Type::RingView(_, _) => 16,
+        Type::RingView(_, _, _) => 16,
         // `{ ptr, bit_offset, len_bits }` on a 32-bit target: 4 + 4 + 4.
         Type::BitView(_) => 12,
         Type::Struct(_, fields) => fields.iter().map(|(_, ty)| element_size(ty)).sum(),

@@ -97,15 +97,37 @@ Shipped (ring view, contiguous, `feature/ikos`):
   Mutability derived the same way as views (pointer constness / place).
 - Index: logical `i` maps to physical `(head + i) % capacity` (urem), then a
   typed GEP + load/store. The urem bounds the physical index into `[0,
-  capacity)`; v1 does not yet emit the power-of-two `& (capacity-1)` mask (needs
-  the deferred compile-time capacity carrier).
+  capacity)`.
+- Power-of-two mask optimization (shipped): when the capacity is a compile-time
+  power of two (the array-backed form over `[T; N]` with `N` a power of two),
+  the physical index lowers to the constant mask `(head + i) & (N - 1)` instead
+  of `urem` -- cheaper on hardware and trivially bounded to `[0, N)` for IKOS.
+  The capacity is carried as an `Option<u32>` *hint* on `Type::RingView`,
+  populated only for the power-of-two array form. It is **not** part of type
+  identity (`types_compatible` ignores it; `ring T` from `[T; 8]` is still
+  compatible with a `ring T` parameter). Because `ring T` has no capacity in its
+  *syntax*, a type annotation (`val r: ring u32 = ring(buf, ...)`) would
+  otherwise erase the hint; the IR builder recovers it from the array-backed
+  initializer at the `let`, so annotated locals still get the mask. The hint
+  does not survive a function boundary (a `ring T` parameter is `None`), so a
+  ring passed to a helper falls back to `urem` -- correct and safe.
 - Verification (measured): array-backed ring read and mutable write prove clean
-  through IKOS -- the constant capacity sroa-propagates so `boa` bounds the
-  access. Runtime-capacity rings over external pointers are subject to the same
+  through IKOS in both forms -- the constant capacity sroa-propagates so `boa`
+  bounds the access (mask form `ring_read`, urem form `ring_npot_read`).
+  Runtime-capacity rings over external pointers are subject to the same
   trust-boundary limitation as escaped views, plus a potential div-by-zero on
   `urem` by a non-constant capacity.
-- Tests: `ring_read`, `ring_mut_write` (both + verify), `ring_readonly_write`
-  (E334), `ring_mut_move_error` (E304), `ring_read` IR (urem + 4-field descr).
+- Tests: `ring_read` (pow2, mask + verify), `ring_npot_read` (len 6, urem +
+  verify), `ring_mut_write` (mask + verify), `ring_readonly_write` (E334),
+  `ring_mut_move_error` (E304), `ring_read` IR (`and i32` + no urem + 4-field
+  descr), `ring_npot_read` IR (urem + 4-field descr), `ring_cap_compat`
+  (capacity-hinted ring passes to a hint-less `ring T` parameter).
+- Blackbox (QEMU exec, `tests/fixtures/exec`): `ring_mask` pins the masked
+  logical->physical map including wraparound (`head + i >= cap`) and exercises
+  the annotation-recovery path; `ring_npot_wrap` is the urem-path counterpart.
+  These run a real ELF, so they also gate `llc` codegen -- they caught a
+  register-numbering regression in the urem lowering that the IR-substring and
+  verify tests did not (neither runs `llc` to a hard failure).
 
 Shipped (bit view, contiguous, `feature/ikos`):
 
@@ -181,7 +203,7 @@ Not yet built:
   the DMA use case has an external backing pointer anyway (trust boundary). See
   the bound-enforcement discussion in Stage 5.
 - Strided bit views (GPIO matrices) and bit-band (atomic) bit-view writes.
-- Ring power-of-two mask optimization and segmented views.
+- Segmented views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
   `ViewNew`/`RingNew`/`BitNew` via a wildcard arm; fine for current cases,
   revisit if a view is constructed in lvalue/addr position or with an allocating
@@ -580,7 +602,8 @@ Minimum tests:
    descriptor field). Runtime-valued stride still pending (the unbounded
    byte-offset case).
 2. Ring view (done, contiguous): modulo physical index, array-backed form
-   verifies. Power-of-two mask form still pending (needs the capacity carrier).
+   verifies. Power-of-two mask form done (compile-time capacity hint on the
+   type, `& (cap-1)` lowering).
 3. Verifier integration for linear and ring (the bound-enforcement mechanism;
    couple with the linear/ring lowering above rather than treating it as a
    separate late phase).

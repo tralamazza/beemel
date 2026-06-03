@@ -381,7 +381,22 @@ impl IrEmitter {
         match stmt {
             Stmt::VarDecl(vd) => {
                 let bml_type = if let Some(ty_ann) = &vd.ty_ann {
-                    crate::types::resolve_type_expr(ty_ann, &symbols.structs, &symbols.enums)
+                    let annotated =
+                        crate::types::resolve_type_expr(ty_ann, &symbols.structs, &symbols.enums);
+                    // A `ring T` annotation carries no capacity hint (capacity
+                    // is not in the type syntax), but the array-backed
+                    // initializer does. Recover it from the init so the
+                    // power-of-two mask optimization still fires on annotated
+                    // ring locals. Sound because the hint is a value-level fact,
+                    // not type identity.
+                    if let Type::RingView(elem, mutable, None) = &annotated
+                        && let Type::RingView(_, _, hint @ Some(_)) =
+                            self.expr_type(&vd.init, symbols)
+                    {
+                        Type::RingView(elem.clone(), *mutable, hint)
+                    } else {
+                        annotated
+                    }
                 } else {
                     self.expr_type(&vd.init, symbols)
                 };
@@ -1948,18 +1963,19 @@ impl IrEmitter {
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
-                } else if let Type::RingView(elem_ty, _) = &base_ty {
+                } else if let Type::RingView(elem_ty, _, cap_hint) = &base_ty {
                     // Read a ring view: physical = (head + i) % capacity. The
                     // urem bounds physical to [0, capacity); with a constant
                     // capacity tracing to the backing array, the verifier proves
                     // the typed GEP in range. (Array form: capacity is constant,
-                    // so no division-by-zero either.)
+                    // so no division-by-zero either.) When the capacity is a
+                    // compile-time power of two we instead mask with the constant
+                    // `(cap - 1)`, which is cheaper than urem and bounds physical
+                    // to [0, cap) trivially for IKOS.
                     let agg = self.emit_expr(base, symbols, fn_name);
                     let ty = "{ ptr, i32, i32, i32 }";
                     let ptr_field = self.new_reg();
                     self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
-                    let cap_field = self.new_reg();
-                    self.line(&format!("{cap_field} = extractvalue {ty} {agg}, 1"));
                     let head_field = self.new_reg();
                     self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
                     let idx_reg = self.emit_expr(index, symbols, fn_name);
@@ -1967,8 +1983,7 @@ impl IrEmitter {
                     let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
                     let sum = self.new_reg();
                     self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
-                    let phys = self.new_reg();
-                    self.line(&format!("{phys} = urem i32 {sum}, {cap_field}"));
+                    let phys = self.ring_physical_index(&agg, ty, *cap_hint, &sum);
                     let ll_elem = llvm_type(elem_ty);
                     let gep = self.new_reg();
                     self.line(&format!(
@@ -2935,15 +2950,13 @@ impl IrEmitter {
                 }
                 // Write through a mutable ring view: physical = (head+i) % cap,
                 // then typed GEP + store. Mirrors the ring read path.
-                if let Type::RingView(elem_ty, _) = &base_ty {
+                if let Type::RingView(elem_ty, _, cap_hint) = &base_ty {
                     let ll_elem = llvm_type(elem_ty);
                     let ty = "{ ptr, i32, i32, i32 }";
                     let agg = self.new_reg();
                     self.line(&format!("{agg} = load {ty}, ptr {base_ptr}"));
                     let ptr_field = self.new_reg();
                     self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
-                    let cap_field = self.new_reg();
-                    self.line(&format!("{cap_field} = extractvalue {ty} {agg}, 1"));
                     let head_field = self.new_reg();
                     self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
                     let idx_reg = self.emit_expr(index, symbols, fn_name);
@@ -2951,8 +2964,7 @@ impl IrEmitter {
                     let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
                     let sum = self.new_reg();
                     self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
-                    let phys = self.new_reg();
-                    self.line(&format!("{phys} = urem i32 {sum}, {cap_field}"));
+                    let phys = self.ring_physical_index(&agg, ty, *cap_hint, &sum);
                     let gep = self.new_reg();
                     self.line(&format!(
                         "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {phys}{dbg}"
@@ -3177,6 +3189,36 @@ impl IrEmitter {
         format!("{prefix}.{n}")
     }
 
+    /// Lower a ring view's physical index from `sum = head + i`. With a
+    /// compile-time power-of-two capacity (`cap_hint`), emit the constant mask
+    /// `sum & (cap - 1)` -- cheaper than `urem` and trivially bounded to
+    /// `[0, cap)` for the verifier. Otherwise extract the runtime capacity
+    /// field (index 1) from the descriptor `agg` and emit `urem`. Returns the
+    /// physical-index register.
+    fn ring_physical_index(
+        &mut self,
+        agg: &str,
+        ty: &str,
+        cap_hint: Option<u32>,
+        sum: &str,
+    ) -> String {
+        // Allocate registers in the same order their defining lines are
+        // emitted: LLVM numbers unnamed temporaries by textual definition order,
+        // so allocating `phys` before `cap_field` while emitting `cap_field`
+        // first produces an out-of-order `%N` that llc rejects.
+        if let Some(cap) = cap_hint {
+            let phys = self.new_reg();
+            self.line(&format!("{phys} = and i32 {sum}, {}", cap - 1));
+            phys
+        } else {
+            let cap_field = self.new_reg();
+            self.line(&format!("{cap_field} = extractvalue {ty} {agg}, 1"));
+            let phys = self.new_reg();
+            self.line(&format!("{phys} = urem i32 {sum}, {cap_field}"));
+            phys
+        }
+    }
+
     pub(crate) fn new_str_id(&mut self) -> u32 {
         let id = self.str_counter;
         self.str_counter += 1;
@@ -3360,7 +3402,7 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
-            Type::RingView(elem, _) => {
+            Type::RingView(elem, _, _) => {
                 // Descriptor is { data: ptr-to-elem, capacity, head, len }, all
                 // i32 after the pointer. Emit a 4-field structure (matching the
                 // { ptr, i32, i32, i32 } aggregate) so IKOS accepts the module.
@@ -3608,7 +3650,7 @@ impl IrEmitter {
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
                     Type::LinearView(inner, _)
                     | Type::StridedView(inner, _, _)
-                    | Type::RingView(inner, _) => *inner.clone(),
+                    | Type::RingView(inner, _, _) => *inner.clone(),
                     Type::BitView(_) => Type::B1,
                     _ => Type::U32,
                 }
@@ -3642,11 +3684,22 @@ impl IrEmitter {
                     }
                 }
             }
-            Expr::RingNew { base, .. } => match self.expr_type(base, symbols).inner().clone() {
-                Type::Ptr(inner) => Type::RingView(inner, true),
-                Type::ConstPtr(inner) | Type::Array(inner, _) => Type::RingView(inner, false),
-                _ => Type::RingView(Box::new(Type::U32), false),
-            },
+            Expr::RingNew { base, capacity, .. } => {
+                match self.expr_type(base, symbols).inner().clone() {
+                    Type::Ptr(inner) => Type::RingView(inner, true, None),
+                    Type::ConstPtr(inner) => Type::RingView(inner, false, None),
+                    // Array-backed form: the capacity is the array length. Carry it
+                    // as a hint only when it is a power of two (and only for the
+                    // array form, where there is no explicit `capacity` argument),
+                    // which enables the `& (n - 1)` mask at the index site.
+                    Type::Array(inner, n) => {
+                        let cap_hint =
+                            (capacity.is_none() && n.is_power_of_two()).then_some(n as u32);
+                        Type::RingView(inner, false, cap_hint)
+                    }
+                    _ => Type::RingView(Box::new(Type::U32), false, None),
+                }
+            }
             Expr::BitNew { base, .. } => match self.expr_type(base, symbols) {
                 Type::Ptr(_) => Type::BitView(true),
                 _ => Type::BitView(false),
@@ -3846,7 +3899,7 @@ fn llvm_type(ty: &Type) -> String {
         Type::LinearView(_, _) | Type::StridedView(_, _, _) => "{ ptr, i32 }".to_string(),
         // Ring view descriptor: { data pointer, capacity, head, len }. Same
         // SSA-transparent aggregate treatment as the linear view.
-        Type::RingView(_, _) => "{ ptr, i32, i32, i32 }".to_string(),
+        Type::RingView(_, _, _) => "{ ptr, i32, i32, i32 }".to_string(),
         // Bit view descriptor: { byte pointer, bit_offset, len_bits }. Same
         // SSA-transparent aggregate treatment as the other views.
         Type::BitView(_) => "{ ptr, i32, i32 }".to_string(),
@@ -3886,7 +3939,7 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::Struct(..)
         | Type::LinearView(_, _)
         | Type::StridedView(_, _, _)
-        | Type::RingView(_, _)
+        | Type::RingView(_, _, _)
         | Type::BitView(_) => "zeroinitializer".to_string(),
         Type::Enum(_, inner, _) => default_value_literal(inner),
         Type::Exclusive(inner)

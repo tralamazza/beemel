@@ -1,0 +1,8 @@
+// Ring view over a non-power-of-two array (len 6): the physical index cannot
+// use the `& (cap-1)` mask, so it lowers to `urem`. Capacity is still the
+// compile-known array length, so the verifier proves the access.
+fn main() @context(thread) {
+    var buf: [u32; 6] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32];
+    val r: ring u32 = ring(buf, 0u32, 6u32);
+    var x: u32 = r[2u32];
+}

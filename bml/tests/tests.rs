@@ -370,6 +370,10 @@ fn test_view_strided_ir_lowering() {
 // Ring views (contiguous): logical-to-physical indexing via (head+i) % capacity,
 // readonly read + mutable write, readonly write rejected, and the move gate.
 assert_pass!(test_ring_read, "ring_read.bml");
+assert_pass!(test_ring_npot_read, "ring_npot_read.bml");
+// A ring with a power-of-two capacity hint stays compatible with a hint-less
+// `ring u32` parameter: the hint is not part of type identity.
+assert_pass!(test_ring_cap_compat, "ring_cap_compat.bml");
 assert_pass!(test_ring_mut_write, "ring_mut_write.bml");
 assert_error!(
     test_ring_readonly_write,
@@ -401,7 +405,23 @@ fn test_ring_debug_type() {
 #[test]
 fn test_ring_ir_lowering() {
     let ir = bml_ir("ring_read.bml");
-    // 4-field descriptor and modulo physical-index math.
+    // 4-field descriptor; capacity 8 is a power of two, so the physical index
+    // lowers to the constant mask `& 7` rather than `urem`.
+    for pattern in ["extractvalue { ptr, i32, i32, i32 }", "and i32"] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+    assert!(
+        !ir.contains("urem"),
+        "power-of-two ring should not emit urem\n--- IR ---\n{ir}\n-----------"
+    );
+}
+#[test]
+fn test_ring_npot_ir_lowering() {
+    let ir = bml_ir("ring_npot_read.bml");
+    // Capacity 6 is not a power of two, so the physical index keeps `urem`.
     for pattern in ["extractvalue { ptr, i32, i32, i32 }", "urem i32"] {
         assert!(
             ir.contains(pattern),
@@ -1544,9 +1564,12 @@ assert_verify_pass!(
     test_verify_view_strided_mut_write,
     "view_strided_mut_write.bml"
 );
-// Ring views: the (head+i) % capacity physical index is bounded by the urem,
-// and with the array-derived constant capacity IKOS proves read and write.
+// Ring views: the (head+i) % capacity physical index is bounded -- by the
+// constant mask `& (cap-1)` when the capacity is a power of two (ring_read,
+// ring_mut_write, len 8), or by `urem` otherwise (ring_npot_read, len 6). With
+// the array-derived constant capacity IKOS proves read and write either way.
 assert_verify_pass!(test_verify_ring_read, "ring_read.bml");
+assert_verify_pass!(test_verify_ring_npot_read, "ring_npot_read.bml");
 assert_verify_pass!(test_verify_ring_mut_write, "ring_mut_write.bml");
 // Writing through a mutable view/ring passed to a helper: provenance flows
 // through the call, so IKOS still proves the store in bounds.

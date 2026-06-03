@@ -1,0 +1,30 @@
+// Non-power-of-two ring (cap 6): the physical index keeps `urem` (no mask). Pin
+// at runtime that `(head + i) % cap` wraps correctly when head + i >= cap.
+// head = 4, so logical i maps to physical (4 + i) % 6: 4, 5, 0, 1, 2, 3. This is
+// the symmetry counterpart to ring_mask.bml (which exercises the mask form).
+import harness.semihost;
+
+fn main() @context(thread) {
+    var buf: [u32; 6] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    var r: ring mut u32 = ring(buf, 4u32, 6u32);
+    r[0u32] = 100u32;  // physical 4
+    r[1u32] = 101u32;  // physical 5
+    r[2u32] = 102u32;  // physical 0 (wrap)
+    r[3u32] = 103u32;  // physical 1 (wrap)
+    r[4u32] = 104u32;  // physical 2 (wrap)
+    r[5u32] = 105u32;  // physical 3 (wrap)
+
+    // Confirm the physical layout in the backing array.
+    expect_u32(buf[4u32], 100u32);
+    expect_u32(buf[5u32], 101u32);
+    expect_u32(buf[0u32], 102u32);
+    expect_u32(buf[1u32], 103u32);
+    expect_u32(buf[2u32], 104u32);
+    expect_u32(buf[3u32], 105u32);
+
+    // And that reads through the ring agree with the writes.
+    expect_u32(r[0u32], 100u32);
+    expect_u32(r[2u32], 102u32);
+    expect_u32(r[5u32], 105u32);
+    done();
+}

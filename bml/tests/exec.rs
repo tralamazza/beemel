@@ -272,6 +272,14 @@ assert_exec!(exec_view_mut_loop, "view_mut_loop.bml");
 // array static emits its real initializer (not a scalar 0).
 assert_exec!(exec_static_array_view, "static_array_view.bml");
 
+// A ring view over a power-of-two array: pins that the `& (cap-1)` mask maps
+// logical -> physical correctly, including wraparound (head + i >= cap).
+assert_exec!(exec_ring_mask, "ring_mask.bml");
+
+// The symmetry counterpart: a non-power-of-two ring keeps the `urem` physical
+// index and must wrap correctly too.
+assert_exec!(exec_ring_npot_wrap, "ring_npot_wrap.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 

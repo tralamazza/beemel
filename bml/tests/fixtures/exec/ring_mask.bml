@@ -1,0 +1,29 @@
+// Ring view over a power-of-two array (cap 4): the physical index uses the
+// `& (cap-1)` mask. Pin at runtime that the masked wraparound maps logical ->
+// physical correctly, including when head + i >= cap. head = 2, so logical i
+// maps to physical (2 + i) & 3: 2, 3, 0, 1. This also exercises the
+// annotation-recovery path (the `ring mut u32` annotation carries no capacity,
+// so the mask only fires if the hint is recovered from the array initializer).
+import harness.semihost;
+
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    var r: ring mut u32 = ring(buf, 2u32, 4u32);
+    r[0u32] = 100u32;  // physical 2
+    r[1u32] = 101u32;  // physical 3
+    r[2u32] = 102u32;  // physical 0 (wrap)
+    r[3u32] = 103u32;  // physical 1 (wrap)
+
+    // Confirm the physical layout in the backing array.
+    expect_u32(buf[2u32], 100u32);
+    expect_u32(buf[3u32], 101u32);
+    expect_u32(buf[0u32], 102u32);
+    expect_u32(buf[1u32], 103u32);
+
+    // And that reads through the ring agree with the writes.
+    expect_u32(r[0u32], 100u32);
+    expect_u32(r[1u32], 101u32);
+    expect_u32(r[2u32], 102u32);
+    expect_u32(r[3u32], 103u32);
+    done();
+}

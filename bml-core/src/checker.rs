@@ -1365,9 +1365,11 @@ fn check_expr(
             if capacity.is_some() {
                 // `ring(ptr, capacity, head, len)`: a view over `*mut T` is
                 // mutable, over `*T` readonly.
+                // Explicit/runtime capacity: no compile-time hint, so the mask
+                // optimization never applies (indexing stays `urem`).
                 match base_ty {
-                    Type::Ptr(inner) => Type::RingView(inner, true),
-                    Type::ConstPtr(inner) => Type::RingView(inner, false),
+                    Type::Ptr(inner) => Type::RingView(inner, true, None),
+                    Type::ConstPtr(inner) => Type::RingView(inner, false, None),
                     other => {
                         let guard = diags.error(
                             format!(
@@ -1387,8 +1389,12 @@ fn check_expr(
                 let mutable = is_mutable_place(base, scope, symbols);
                 if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
                     Type::Error(guard)
-                } else if let Type::Array(inner, _) = base_ty.inner() {
-                    Type::RingView(Box::new((**inner).clone()), mutable)
+                } else if let Type::Array(inner, n) = base_ty.inner() {
+                    // Capacity is the array length. Carry it as a compile-time
+                    // hint only when it is a power of two, which is what lets
+                    // the physical index lower to `& (n - 1)` instead of `urem`.
+                    let cap_hint = n.is_power_of_two().then_some(*n as u32);
+                    Type::RingView(Box::new((**inner).clone()), mutable, cap_hint)
                 } else {
                     let guard = diags.error(
                         format!("`ring(x, head, len)` first argument must be an array (or use `ring(ptr, capacity, head, len)`), got `{base_ty}`"),
@@ -1898,12 +1904,12 @@ fn check_lvalue(
                 // A mutable view permits index writes; a readonly view does not.
                 Type::LinearView(inner, true)
                 | Type::StridedView(inner, true, _)
-                | Type::RingView(inner, true) => *inner,
+                | Type::RingView(inner, true, _) => *inner,
                 // A mutable bit view permits writes; the assigned value is a bit.
                 Type::BitView(true) => Type::B1,
                 Type::LinearView(_, false)
                 | Type::StridedView(_, false, _)
-                | Type::RingView(_, false)
+                | Type::RingView(_, false, _)
                 | Type::BitView(false) => {
                     let guard = diags.error(
                         "cannot write through a readonly `view`; only reads are allowed"
@@ -2062,9 +2068,9 @@ fn index_element_type(base_ty: Type, base: &Expr, diags: &mut DiagnosticBag) -> 
     match base_ty {
         Type::Array(inner, _) => *inner,
         Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-        Type::LinearView(inner, _) | Type::StridedView(inner, _, _) | Type::RingView(inner, _) => {
-            *inner
-        }
+        Type::LinearView(inner, _)
+        | Type::StridedView(inner, _, _)
+        | Type::RingView(inner, _, _) => *inner,
         // A bit view yields a single bit regardless of mutability.
         Type::BitView(_) => Type::B1,
         other => {
