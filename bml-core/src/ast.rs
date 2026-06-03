@@ -237,9 +237,14 @@ pub enum Expr {
     ///   type is inferred from the pointee.
     /// - `view(arr)`: `base` is an array, `len` is `None`; both the element
     ///   type and a compile-known length come from the array type.
+    /// - `view(arr, stride K)`: `base` is an array, `stride` is `Some(K)` (a
+    ///   compile-time element multiplier); the logical length is `N/K`. The
+    ///   element type comes from the array. `len` and `stride` are never both
+    ///   `Some` in v1 (the dynamic pointer+stride form is deferred).
     ViewNew {
         base: Box<Expr>,
         len: Option<Box<Expr>>,
+        stride: Option<Box<Expr>>,
         span: Span,
     },
     /// Ring view constructor. Two forms:
@@ -374,6 +379,11 @@ pub enum TypeExpr {
     /// Linear view type. The `bool` is `mutable`: `view T` is readonly (Copy),
     /// `view mut T` is mutable (Move) and allows index writes.
     View(Box<TypeExpr>, bool),
+    /// Strided linear view type: `view T stride K` / `view mut T stride K`. The
+    /// `bool` is `mutable` (like `View`); the `Expr` is the compile-time stride
+    /// `K` (in elements: logical element `i` lives at backing element `i*K`).
+    /// The stride is part of type identity, not a runtime descriptor field.
+    StridedView(Box<TypeExpr>, bool, Box<Expr>),
     /// Ring view type. The `bool` is `mutable`, like `View`.
     Ring(Box<TypeExpr>, bool),
     /// Bit view type. Carries no element type (the element is always `b1`). The
@@ -392,6 +402,7 @@ impl TypeExpr {
             TypeExpr::Ptr(inner)
             | TypeExpr::ConstPtr(inner)
             | TypeExpr::View(inner, _)
+            | TypeExpr::StridedView(inner, _, _)
             | TypeExpr::Ring(inner, _) => inner.span(),
             TypeExpr::Array(inner, _) => inner.span(),
             TypeExpr::Bits(_) | TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
@@ -408,6 +419,8 @@ impl fmt::Display for TypeExpr {
             TypeExpr::ConstPtr(t) => write!(f, "&{t}"),
             TypeExpr::View(t, true) => write!(f, "view mut {t}"),
             TypeExpr::View(t, false) => write!(f, "view {t}"),
+            TypeExpr::StridedView(t, true, _) => write!(f, "view mut {t} stride"),
+            TypeExpr::StridedView(t, false, _) => write!(f, "view {t} stride"),
             TypeExpr::Ring(t, true) => write!(f, "ring mut {t}"),
             TypeExpr::Ring(t, false) => write!(f, "ring {t}"),
             TypeExpr::Bits(true) => write!(f, "bits mut"),

@@ -350,15 +350,29 @@ E408. Function pointers are pointer-like: they can be `null`, compared with
 
 A *view* is a small descriptor (a first-class aggregate, not a boxed pointer)
 that gives bounds-checked, indexed access to a region of memory. Three kinds
-ship today; all are contiguous (v1):
+ship today:
 
 | Type | Descriptor | Element | Indexing |
 |------|-----------|---------|----------|
 | `view T` / `view mut T` | `{ ptr, len }` | `T` | `v[i]` -> element `i`, for `i < len` |
+| `view T stride K` / `view mut T stride K` | `{ ptr, len }` | `T` | `v[i]` -> backing element `i*K`, for `i < len` |
 | `ring T` / `ring mut T` | `{ ptr, capacity, head, len }` | `T` | logical `i` maps to physical `(head + i) % capacity` |
 | `bits` / `bits mut` | `{ ptr, bit_offset, len_bits }` | `b1` | bit `i` is byte `(bit_offset + i) / 8`, bit `(bit_offset + i) % 8` |
 
 `bits` carries no element type -- the element is always a single bit (`b1`).
+
+**Strided views.** `view T stride K` indexes every `K`-th element (`K` a
+compile-time constant >= 1, in elements): logical element `i` lives at backing
+element `i*K`. The stride is part of the type (not a runtime descriptor field),
+so the descriptor is identical to the contiguous view and indexing lowers to a
+typed GEP with a constant multiplier. That is what keeps the bound provable
+*across a function boundary*: a `view T stride K` parameter bakes the same
+constant `K` into the callee, and the verifier re-derives the bound just like
+the contiguous case. The stride is part of type identity -- views with different
+strides (or a strided vs. a contiguous view) are distinct, incompatible types.
+Useful for interleaved buffers (every N-th ADC sample, a framebuffer row/column,
+fixed-pitch records). A *runtime*-valued stride is deferred (it would be a
+trust boundary, like a runtime pointer/length view).
 
 **Mutability and semantics.** A readonly view (`view T`) allows index *reads*
 only and is **Copy**. A mutable view (`view mut T`) also allows index *writes*
@@ -378,10 +392,14 @@ length (and, for `ring`, the capacity) from the backing array's type, giving the
 verifier a compile-known bound with direct provenance:
 
 ```
-view(arr)                      view(ptr, len)
+view(arr)                      view(ptr, len)        view(arr, stride K)
 ring(arr, head, len)           ring(ptr, capacity, head, len)
 bits(arr)                      bits(ptr, bit_offset, len_bits)
 ```
+
+The strided constructor `view(arr, stride K)` is array-only (its logical length
+`N/K` and the stride are both compile-time, the verifiable path); there is no
+pointer+stride form in v1.
 
 The array form's mutability follows the backing place (a `var` array or a static
 is mutable; a `val` binding is readonly); the pointer form's follows the
@@ -407,7 +425,9 @@ access to a scalar `@shared` static gets the critical section automatically;
 bounds-checked indexed access to a `@shared` *array* is not available yet (a
 protected-view-access mechanism is future work).
 
-**Limitations (v1).** Contiguous only -- no strided/segmented views yet. `bits`
+**Limitations (v1).** Strided linear views exist with a *compile-time* stride;
+runtime-valued strides, strided bit views, and segmented (scatter/gather) views
+are not built yet. `bits`
 writes are a non-atomic read-modify-write, so a `bits mut` shared between an ISR
 and thread (same byte) can lose updates; the v1 bit view is single-context.
 
@@ -734,7 +754,7 @@ type          = ident                   (* named type: u32, i8, ... *)
               | "*" type               (* const pointer (default) *)
               | "*" "mut" type         (* mutable pointer *)
               | "[" type ";" expr "]"  (* array type *)
-              | "view" ["mut"] type    (* linear view *)
+              | "view" ["mut"] type ["stride" expr]  (* linear view; `stride K` = strided *)
               | "ring" ["mut"] type    (* ring view *)
               | "bits" ["mut"]         (* bit view (element is always b1) *)
               | "fn" "(" [type {"," type}] ")" ["->" type]  (* function pointer *)
@@ -751,7 +771,8 @@ enum_variant  = expr "@" ident
 
 sizeof_expr   = "sizeof" "(" type ")"
 
-view_expr     = "view" "(" expr ["," expr] ")"   (* view(arr) | view(ptr, len) *)
+view_expr     = "view" "(" expr ["," (expr | "stride" expr)] ")"
+                                                  (* view(arr) | view(ptr, len) | view(arr, stride K) *)
               | "ring" "(" expr "," expr "," expr ["," expr] ")"
                                                   (* ring(arr, head, len) | ring(ptr, capacity, head, len) *)
               | "bits" "(" expr ["," expr "," expr] ")"

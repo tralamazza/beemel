@@ -738,7 +738,19 @@ impl<'a> Parser<'a> {
                 // `view mut T` is a mutable view; `view T` is readonly.
                 let mutable = self.eat(&TokenKind::Mut);
                 let inner = self.parse_type_expr()?;
-                Some(TypeExpr::View(Box::new(inner), mutable))
+                // `view T stride K`: a strided view. `stride` is a contextual
+                // keyword (a plain identifier), so it stays usable elsewhere.
+                if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "stride") {
+                    self.advance();
+                    let stride = self.parse_expr()?;
+                    Some(TypeExpr::StridedView(
+                        Box::new(inner),
+                        mutable,
+                        Box::new(stride),
+                    ))
+                } else {
+                    Some(TypeExpr::View(Box::new(inner), mutable))
+                }
             }
             TokenKind::Ring => {
                 self.advance();
@@ -1283,18 +1295,28 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::LParen, "expected `(` after `view`")
                     .ok()?;
                 let base = self.parse_expr()?;
-                // `view(arr)` derives len from the array type; `view(ptr, len)`
-                // takes an explicit length.
-                let len = if self.eat(&TokenKind::Comma) {
-                    Some(Box::new(self.parse_expr()?))
+                // Three forms after the base:
+                //   `view(arr)`            -> len/stride both None (contiguous)
+                //   `view(ptr, len)`       -> len Some (contiguous over pointer)
+                //   `view(arr, stride K)`  -> stride Some (strided over array)
+                // The contextual `stride` keyword after the comma selects the
+                // strided form; otherwise the second argument is a length.
+                let (len, stride) = if self.eat(&TokenKind::Comma) {
+                    if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "stride") {
+                        self.advance();
+                        (None, Some(Box::new(self.parse_expr()?)))
+                    } else {
+                        (Some(Box::new(self.parse_expr()?)), None)
+                    }
                 } else {
-                    None
+                    (None, None)
                 };
                 self.expect(&TokenKind::RParen, "expected `)` to close `view(...)`")
                     .ok()?;
                 Some(Expr::ViewNew {
                     base: Box::new(base),
                     len,
+                    stride,
                     span,
                 })
             }

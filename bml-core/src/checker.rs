@@ -1254,9 +1254,43 @@ fn check_expr(
             }
             Type::U32
         }
-        Expr::ViewNew { base, len, span } => {
+        Expr::ViewNew {
+            base,
+            len,
+            stride,
+            span,
+        } => {
             let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
-            if let Some(len) = len {
+            if let Some(stride) = stride {
+                // `view(arr, stride K)`: strided view over an array. The stride
+                // is a compile-time element multiplier (>= 1) carried in the
+                // type, not a runtime descriptor field. Element type comes from
+                // the array; the logical length `N/K` is computed at lowering.
+                let k = match stride.as_ref() {
+                    crate::ast::Expr::IntLiteral(n, _, _) if *n >= 1 => *n as u32,
+                    _ => {
+                        let guard = diags.error(
+                            "`view` stride must be a compile-time integer >= 1".to_string(),
+                            "E332",
+                            stride.span(),
+                        );
+                        return Type::Error(guard);
+                    }
+                };
+                let mutable = is_mutable_place(base, scope, symbols);
+                if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
+                    Type::Error(guard)
+                } else if let Type::Array(inner, _) = base_ty.inner() {
+                    Type::StridedView(Box::new((**inner).clone()), mutable, k)
+                } else {
+                    let guard = diags.error(
+                        format!("`view(x, stride K)` argument must be an array, got `{base_ty}`"),
+                        "E333",
+                        *span,
+                    );
+                    Type::Error(guard)
+                }
+            } else if let Some(len) = len {
                 // `view(ptr, len)`: base must be a pointer, len an integer.
                 let len_ty = check_expr(len, symbols, scope, fn_name, expected_ret, diags);
                 if !types::is_int(&len_ty) {
@@ -1743,7 +1777,10 @@ fn check_lvalue(
                 }
                 let is_view = matches!(
                     info.ty,
-                    Type::LinearView(..) | Type::RingView(..) | Type::BitView(..)
+                    Type::LinearView(..)
+                        | Type::StridedView(..)
+                        | Type::RingView(..)
+                        | Type::BitView(..)
                 );
                 if !info.mutable && (root || !is_view) {
                     diags.error(
@@ -1859,10 +1896,15 @@ fn check_lvalue(
                 Type::Array(inner, _) => *inner,
                 Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
                 // A mutable view permits index writes; a readonly view does not.
-                Type::LinearView(inner, true) | Type::RingView(inner, true) => *inner,
+                Type::LinearView(inner, true)
+                | Type::StridedView(inner, true, _)
+                | Type::RingView(inner, true) => *inner,
                 // A mutable bit view permits writes; the assigned value is a bit.
                 Type::BitView(true) => Type::B1,
-                Type::LinearView(_, false) | Type::RingView(_, false) | Type::BitView(false) => {
+                Type::LinearView(_, false)
+                | Type::StridedView(_, false, _)
+                | Type::RingView(_, false)
+                | Type::BitView(false) => {
                     let guard = diags.error(
                         "cannot write through a readonly `view`; only reads are allowed"
                             .to_string(),
@@ -2020,7 +2062,9 @@ fn index_element_type(base_ty: Type, base: &Expr, diags: &mut DiagnosticBag) -> 
     match base_ty {
         Type::Array(inner, _) => *inner,
         Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
-        Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner,
+        Type::LinearView(inner, _) | Type::StridedView(inner, _, _) | Type::RingView(inner, _) => {
+            *inner
+        }
         // A bit view yields a single bit regardless of mutability.
         Type::BitView(_) => Type::B1,
         other => {

@@ -1906,6 +1906,48 @@ impl IrEmitter {
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
                     reg
+                } else if let Type::StridedView(elem_ty, _, k) = &base_ty {
+                    // Read a strided view: same { ptr, len } descriptor as the
+                    // linear view, but the backing index is `i * K` (K the
+                    // compile-time element stride). The multiply by a constant
+                    // keeps the GEP typed, so the verifier bounds it just like
+                    // the contiguous case. assume(i < len) bounds the logical i.
+                    let agg = self.emit_expr(base, symbols, fn_name);
+                    let ptr_field = self.new_reg();
+                    self.line(&format!(
+                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
+                    ));
+                    let len_field = self.new_reg();
+                    self.line(&format!(
+                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
+                    ));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("view_idx_ok");
+                    let oob_lbl = self.new_label("view_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let scaled = self.new_reg();
+                    self.line(&format!("{scaled} = mul i32 {idx_i32}, {k}"));
+                    let ll_elem = llvm_type(elem_ty);
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {scaled}{dbg}"
+                    ));
+                    let reg = self.new_reg();
+                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
+                    reg
                 } else if let Type::RingView(elem_ty, _) = &base_ty {
                     // Read a ring view: physical = (head + i) % capacity. The
                     // urem bounds physical to [0, capacity); with a constant
@@ -2157,9 +2199,26 @@ impl IrEmitter {
                 self.line(&format!("{reg} = add i32 0, {size}"));
                 reg
             }
-            Expr::ViewNew { base, len, .. } => {
+            Expr::ViewNew {
+                base, len, stride, ..
+            } => {
                 // Build the { ptr, i32 } descriptor as a first-class aggregate.
-                let (ptr_reg, len_i32) = if let Some(len) = len {
+                let (ptr_reg, len_i32) = if let Some(stride) = stride {
+                    // view(arr, stride K): pointer to element 0, logical length
+                    // N/K (the stride lives in the type, not the descriptor).
+                    let ptr_reg = self.emit_lvalue_ptr(base, symbols);
+                    let n = match self.expr_type(base, symbols).inner().clone() {
+                        Type::Array(_, n) => n,
+                        _ => 0,
+                    };
+                    let k = match stride.as_ref() {
+                        Expr::IntLiteral(v, _, _) => (*v as usize).max(1),
+                        _ => 1,
+                    };
+                    let len_reg = self.new_reg();
+                    self.line(&format!("{len_reg} = add i32 0, {}", n / k));
+                    (ptr_reg, len_reg)
+                } else if let Some(len) = len {
                     // view(ptr, len): explicit pointer and length.
                     let ptr_reg = self.emit_expr(base, symbols, fn_name);
                     let len_reg = self.emit_expr(len, symbols, fn_name);
@@ -2832,6 +2891,48 @@ impl IrEmitter {
                     self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
                     return val_reg;
                 }
+                // Write through a mutable strided view: backing index is `i * K`
+                // (K the compile-time stride), typed GEP + store. Mirrors the
+                // strided read path; assume(i < len) bounds the logical index.
+                if let Type::StridedView(elem_ty, _, k) = &base_ty {
+                    let ll_elem = llvm_type(elem_ty);
+                    let agg = self.new_reg();
+                    self.line(&format!("{agg} = load {{ ptr, i32 }}, ptr {base_ptr}"));
+                    let ptr_field = self.new_reg();
+                    self.line(&format!(
+                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
+                    ));
+                    let len_field = self.new_reg();
+                    self.line(&format!(
+                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
+                    ));
+                    let idx_reg = self.emit_expr(index, symbols, fn_name);
+                    let idx_ty = self.expr_type(index, symbols);
+                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+                    let cond = self.new_reg();
+                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+                    let ok_lbl = self.new_label("view_idx_ok");
+                    let oob_lbl = self.new_label("view_idx_oob");
+                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{oob_lbl}:"));
+                    self.indent += 1;
+                    self.line("unreachable");
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{ok_lbl}:"));
+                    self.indent += 1;
+                    let scaled = self.new_reg();
+                    self.line(&format!("{scaled} = mul i32 {idx_i32}, {k}"));
+                    let gep = self.new_reg();
+                    self.line(&format!(
+                        "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {scaled}{dbg}"
+                    ));
+                    let val_reg = self.coerce_int(val_reg.to_string(), val_ty, elem_ty);
+                    self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
+                    return val_reg;
+                }
                 // Write through a mutable ring view: physical = (head+i) % cap,
                 // then typed GEP + store. Mirrors the ring read path.
                 if let Type::RingView(elem_ty, _) = &base_ty {
@@ -3234,7 +3335,7 @@ impl IrEmitter {
                 return id;
             }
             Type::Enum(_, inner_ty, _) => return self.dbg_type(inner_ty),
-            Type::LinearView(elem, _) => {
+            Type::LinearView(elem, _) | Type::StridedView(elem, _, _) => {
                 // Descriptor is { data: ptr-to-elem, len: u32 }. Emit it as a
                 // 2-field structure so the debug type matches the { ptr, i32 }
                 // aggregate (an integer DIBasicType here makes IKOS reject the
@@ -3505,7 +3606,9 @@ impl IrEmitter {
                 match &base_ty {
                     Type::Array(inner, _) => *inner.clone(),
                     Type::Ptr(inner) | Type::ConstPtr(inner) => *inner.clone(),
-                    Type::LinearView(inner, _) | Type::RingView(inner, _) => *inner.clone(),
+                    Type::LinearView(inner, _)
+                    | Type::StridedView(inner, _, _)
+                    | Type::RingView(inner, _) => *inner.clone(),
                     Type::BitView(_) => Type::B1,
                     _ => Type::U32,
                 }
@@ -3515,11 +3618,30 @@ impl IrEmitter {
             // mutable, everything else as readonly, only for completeness.
             // `.inner()` sees through a storage wrapper so a view over a
             // storage-class array reports the right element type.
-            Expr::ViewNew { base, .. } => match self.expr_type(base, symbols).inner().clone() {
-                Type::Ptr(inner) => Type::LinearView(inner, true),
-                Type::ConstPtr(inner) | Type::Array(inner, _) => Type::LinearView(inner, false),
-                _ => Type::LinearView(Box::new(Type::U32), false),
-            },
+            Expr::ViewNew { base, stride, .. } => {
+                let base_inner = self.expr_type(base, symbols).inner().clone();
+                if let Some(stride) = stride {
+                    // Strided view: element type from the array, stride K from
+                    // the literal. Mutability is irrelevant to lowering.
+                    let k = match stride.as_ref() {
+                        Expr::IntLiteral(v, _, _) => (*v as u32).max(1),
+                        _ => 1,
+                    };
+                    let elem = match base_inner {
+                        Type::Array(inner, _) => *inner,
+                        _ => Type::U32,
+                    };
+                    Type::StridedView(Box::new(elem), false, k)
+                } else {
+                    match base_inner {
+                        Type::Ptr(inner) => Type::LinearView(inner, true),
+                        Type::ConstPtr(inner) | Type::Array(inner, _) => {
+                            Type::LinearView(inner, false)
+                        }
+                        _ => Type::LinearView(Box::new(Type::U32), false),
+                    }
+                }
+            }
             Expr::RingNew { base, .. } => match self.expr_type(base, symbols).inner().clone() {
                 Type::Ptr(inner) => Type::RingView(inner, true),
                 Type::ConstPtr(inner) | Type::Array(inner, _) => Type::RingView(inner, false),
@@ -3721,7 +3843,7 @@ fn llvm_type(ty: &Type) -> String {
         // first-class aggregate (not boxed behind a pointer) so mem2reg/sroa
         // preserve pointer provenance for the verifier. Same layout for
         // readonly and mutable views.
-        Type::LinearView(_, _) => "{ ptr, i32 }".to_string(),
+        Type::LinearView(_, _) | Type::StridedView(_, _, _) => "{ ptr, i32 }".to_string(),
         // Ring view descriptor: { data pointer, capacity, head, len }. Same
         // SSA-transparent aggregate treatment as the linear view.
         Type::RingView(_, _) => "{ ptr, i32, i32, i32 }".to_string(),
@@ -3763,6 +3885,7 @@ fn default_value_literal(ty: &Type) -> String {
         Type::Array(..)
         | Type::Struct(..)
         | Type::LinearView(_, _)
+        | Type::StridedView(_, _, _)
         | Type::RingView(_, _)
         | Type::BitView(_) => "zeroinitializer".to_string(),
         Type::Enum(_, inner, _) => default_value_literal(inner),

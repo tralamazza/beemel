@@ -1,0 +1,14 @@
+// A strided view built by the owner and passed to a helper. The stride K=2 is
+// part of the parameter type, so the helper bakes `mul i, 2` into its own IR.
+// IKOS propagates the backing allocation through the call, so the bound is
+// proven without the helper knowing the concrete buffer -- this is the whole
+// point of carrying the stride in the type rather than a runtime descriptor.
+fn third(v: view u32 stride 2) -> u32 {
+    return v[3u32];
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32];
+    val v: view u32 stride 2 = view(buf, stride 2);
+    var x: u32 = third(v);
+}

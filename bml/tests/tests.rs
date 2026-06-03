@@ -320,6 +320,53 @@ fn test_view_mut_write_ir_lowering() {
         );
     }
 }
+// Strided linear views (compile-time stride): backing index is `i * K`, K a
+// type-level constant, descriptor unchanged from the contiguous view. Reads,
+// mutable writes, mut->readonly coercion, plus the readonly-write / bad-stride /
+// move / non-array rejections.
+assert_pass!(test_view_strided_read, "view_strided_read.bml");
+assert_pass!(test_view_strided_helper, "view_strided_helper.bml");
+assert_pass!(test_view_strided_mut_write, "view_strided_mut_write.bml");
+assert_pass!(test_view_strided_coerce, "view_strided_coerce.bml");
+assert_error!(
+    test_view_strided_readonly_write,
+    "view_strided_readonly_write.bml",
+    "E334"
+);
+assert_error!(
+    test_view_strided_bad_stride,
+    "view_strided_bad_stride.bml",
+    "E332"
+);
+assert_error!(
+    test_view_strided_move,
+    "view_strided_move_error.bml",
+    "E304"
+);
+assert_error!(
+    test_view_strided_nonarray,
+    "view_strided_nonarray.bml",
+    "E333"
+);
+#[test]
+fn test_view_strided_ir_lowering() {
+    let ir = bml_ir("view_strided_read.bml");
+    // The strided index scales the logical index by the constant stride and
+    // keeps the GEP typed (so the verifier bounds it), and the constructor
+    // emits the logical length N/K = 8/2 = 4. The descriptor is the same
+    // { ptr, i32 } as the contiguous view (no runtime stride field).
+    for pattern in [
+        "mul i32",
+        "getelementptr i32",
+        "add i32 0, 4",
+        "extractvalue { ptr, i32 }",
+    ] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
 // Ring views (contiguous): logical-to-physical indexing via (head+i) % capacity,
 // readonly read + mutable write, readonly write rejected, and the move gate.
 assert_pass!(test_ring_read, "ring_read.bml");
@@ -1486,6 +1533,17 @@ assert_verify_fail!(test_verify_view_len_overstates, "view_len_overstates.bml");
 // A mutable-view index write: IKOS proves the store is in bounds (the
 // descriptor stays SSA-transparent, so provenance to the backing array holds).
 assert_verify_pass!(test_verify_view_mut_write, "view_mut_write.bml");
+// Strided linear views: the backing index `i * K` stays a typed GEP because K
+// is a compile-time constant, so IKOS proves the bound intra-procedurally and,
+// crucially, across a call (the helper bakes the same constant `* K`, and the
+// backing allocation propagates through the call). A mutable strided write is
+// proven the same way.
+assert_verify_pass!(test_verify_view_strided_read, "view_strided_read.bml");
+assert_verify_pass!(test_verify_view_strided_helper, "view_strided_helper.bml");
+assert_verify_pass!(
+    test_verify_view_strided_mut_write,
+    "view_strided_mut_write.bml"
+);
 // Ring views: the (head+i) % capacity physical index is bounded by the urem,
 // and with the array-derived constant capacity IKOS proves read and write.
 assert_verify_pass!(test_verify_ring_read, "ring_read.bml");

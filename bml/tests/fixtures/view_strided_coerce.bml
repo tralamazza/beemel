@@ -1,0 +1,12 @@
+// `view mut T stride K` coerces to `view T stride K` (same element type and
+// stride). The coercion consumes the mutable view (a move), like the contiguous
+// case. Coercion between different strides is rejected (they are distinct types).
+fn take(v: view u32 stride 2) -> u32 {
+    return v[0u32];
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32];
+    var v: view mut u32 stride 2 = view(buf, stride 2);
+    var x: u32 = take(v);
+}

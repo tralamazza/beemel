@@ -27,6 +27,13 @@ pub enum Type {
     /// `mutable`: a readonly view (`false`) is Copy and allows index reads
     /// only; a mutable view (`true`) is Move and also allows index writes.
     LinearView(Box<Type>, bool),
+    /// Strided linear view over `T`: same `{ ptr, len }` descriptor as
+    /// `LinearView` (the stride is *not* a runtime field), but logical element
+    /// `i` lives at backing element `i * stride`. The `bool` is `mutable`; the
+    /// `u32` is the compile-time stride in elements (>= 1). Carrying the stride
+    /// in the type (not the descriptor) lets indexing lower to a typed GEP with
+    /// a constant multiplier, so the verifier recovers the bound across calls.
+    StridedView(Box<Type>, bool, u32),
     /// Ring view over `T`: a `{ ptr, capacity, head, len }` descriptor. Indexing
     /// is logical: element `i` is at physical `(head + i) % capacity`. The
     /// `bool` is `mutable`, with the same Copy/Move rule as `LinearView`.
@@ -88,6 +95,8 @@ impl fmt::Display for Type {
             Type::ConstPtr(t) => write!(f, "*{t}"),
             Type::LinearView(t, true) => write!(f, "view mut {t}"),
             Type::LinearView(t, false) => write!(f, "view {t}"),
+            Type::StridedView(t, true, k) => write!(f, "view mut {t} stride {k}"),
+            Type::StridedView(t, false, k) => write!(f, "view {t} stride {k}"),
             Type::RingView(t, true) => write!(f, "ring mut {t}"),
             Type::RingView(t, false) => write!(f, "ring {t}"),
             Type::BitView(true) => write!(f, "bits mut"),
@@ -140,7 +149,10 @@ impl Type {
             | Type::Error(_) => Semantics::Copy,
             // A readonly view is Copy; a mutable view is Move (so the move
             // checker forbids use-after-move and aliasing two mutable views).
-            Type::LinearView(_, mutable) | Type::RingView(_, mutable) | Type::BitView(mutable) => {
+            Type::LinearView(_, mutable)
+            | Type::StridedView(_, mutable, _)
+            | Type::RingView(_, mutable)
+            | Type::BitView(mutable) => {
                 if *mutable {
                     Semantics::Move
                 } else {
@@ -228,6 +240,21 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
         },
         TypeExpr::View(inner, mutable) => {
             Type::LinearView(Box::new(resolve_type_expr(inner, structs, enums)), *mutable)
+        }
+        TypeExpr::StridedView(inner, mutable, stride) => {
+            // Stride is a compile-time element multiplier; constfold has already
+            // reduced a const expression to a literal. A non-literal (or 0)
+            // stride is left as 0 here and rejected by the checker, mirroring
+            // how `Array` resolves a non-literal size to 0.
+            let k = match stride.as_ref() {
+                crate::ast::Expr::IntLiteral(n, _, _) => *n as u32,
+                _ => 0,
+            };
+            Type::StridedView(
+                Box::new(resolve_type_expr(inner, structs, enums)),
+                *mutable,
+                k,
+            )
         }
         TypeExpr::Ring(inner, mutable) => {
             Type::RingView(Box::new(resolve_type_expr(inner, structs, enums)), *mutable)
@@ -353,6 +380,16 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     {
         return true;
     }
+    // `view mut T stride K` → `view T stride K` (same rule as the contiguous
+    // view). The element type and the stride must match; the stride is part of
+    // type identity, so views with different strides never coerce.
+    if let (Type::StridedView(e_inner, false, e_k), Type::StridedView(a_inner, _, a_k)) =
+        (expected, actual)
+        && e_inner == a_inner
+        && e_k == a_k
+    {
+        return true;
+    }
     // `ring mut T` → `ring T` implicit coercion (same rule as views).
     if let (Type::RingView(e_inner, false), Type::RingView(a_inner, _)) = (expected, actual)
         && e_inner == a_inner
@@ -455,7 +492,9 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::B1 | Type::Void => 1,
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => 4,
         // `{ ptr, i32 }` descriptor on a 32-bit target: 4 + 4.
-        Type::LinearView(_, _) => 8,
+        // Same `{ ptr, i32 }` descriptor as the contiguous view; the stride is
+        // type-level, not a runtime field.
+        Type::LinearView(_, _) | Type::StridedView(_, _, _) => 8,
         // `{ ptr, capacity, head, len }` on a 32-bit target: 4 + 4 + 4 + 4.
         Type::RingView(_, _) => 16,
         // `{ ptr, bit_offset, len_bits }` on a 32-bit target: 4 + 4 + 4.

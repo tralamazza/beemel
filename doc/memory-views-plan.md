@@ -25,7 +25,7 @@ the external verifier (IKOS) can recover bounds. See Stage 5 for what
 
 ## Implementation Status
 
-Updated 2026-06-02.
+Updated 2026-06-03.
 
 Shipped (readonly linear view, commits `aaf6262` and `dd15b20` on
 `feature/ikos`):
@@ -139,12 +139,47 @@ Shipped deviation (v1): the bit-view descriptor is `{ ptr, i32, i32 }` (no
 reintroduce the fourth field. Bit-band (atomic single-bit alias) is also not
 emitted yet; the v1 RMW write is single-context-safe only.
 
+Shipped (strided linear view, compile-time stride, `feature/ikos`):
+
+- Syntax: `view T stride K` / `view mut T stride K` (`stride` is a *contextual*
+  keyword, postfix after the element type, so it stays usable as an identifier).
+  Constructor `view(arr, stride K)`, array-only. Type repr
+  `Type::StridedView(Box<Type>, bool, u32)` / `TypeExpr::StridedView`, where the
+  `u32` is the stride in elements (>= 1). The stride is part of type identity,
+  so a strided view and a contiguous view (or two different strides) are
+  distinct, non-coercible types.
+- Key decision (resolved): the stride is carried in the **type**, not a runtime
+  descriptor field. The descriptor stays `{ ptr, i32 }` (size 8), identical to
+  the contiguous view. This is what keeps the bound provable across calls:
+  indexing lowers to a typed GEP with a *constant* multiplier
+  (`getelementptr T, ptr, (i*K)`), so K is structural (in the instruction), the
+  same way the contiguous element size is. A runtime-valued stride would move K
+  into a descriptor field and turn the access into the unbounded `i*stride`
+  product IKOS cannot bound (the byte-GEP regression discussed in Stage 5).
+- Construction: element type = backing array element (no reinterpret in v1);
+  logical length `N/K` is computed at lowering (compile-time). Mutability is
+  derived from the backing place like `view(arr)`. The `@shared` rejection
+  (E405) and storage-wrapper unwrap apply unchanged.
+- Checker: index read yields `T`; readonly write rejected (E334); a mutable
+  strided view is Move (E304 reuse gate); `view mut T stride K -> view T stride
+  K` coercion (same elem and K). Stride must be a compile-time integer >= 1, a
+  non-array base is rejected (E332/E333). constfold reduces a `const`-valued
+  stride to a literal in both the type and the constructor.
+- Verification (measured): array-backed strided read and mutable write prove
+  clean through IKOS *and the read proves clean across a function boundary*
+  (`view_strided_helper.bml`) -- the const multiplier survives the call, which
+  is the whole reason for the compile-time-stride design.
+- Tests: `view_strided_{read,helper,mut_write,coerce}` (pass; helper/read/write
+  also verify), `view_strided_readonly_write` (E334), `view_strided_bad_stride`
+  (E332), `view_strided_move_error` (E304), `view_strided_nonarray` (E333), plus
+  an IR test (constant `mul` + typed GEP + `len = N/K`).
+
 Not yet built:
 
-- Strided views (`view(ptr, len, stride)`) and the third descriptor field.
-  Deferred: raw byte-GEP indexing is not bounded by IKOS `boa`, and the DMA use
-  case has an external backing pointer anyway (trust boundary). See the
-  bound-enforcement discussion in Stage 5.
+- *Runtime*-valued strided views (a dynamic stride in the descriptor). Deferred:
+  the `i*stride` access is the unbounded byte-GEP IKOS `boa` cannot bound, and
+  the DMA use case has an external backing pointer anyway (trust boundary). See
+  the bound-enforcement discussion in Stage 5.
 - Strided bit views (GPIO matrices) and bit-band (atomic) bit-view writes.
 - Ring power-of-two mask optimization and segmented views.
 - The two IR walkers (`collect_and_emit_allocas_expr`, addr-of) handle
@@ -283,10 +318,13 @@ Descriptor sizes for `element_size()` (32-bit target, 4-byte ptr):
 | `segments T` | `{ ptr, i32 }` | 8 |
 | `bits` | `{ ptr, i32, i32, i32 }` | 16 |
 
-Shipped deviation (v1): the readonly linear view descriptor is `{ ptr, i32 }`
-(size 8), not `{ ptr, i32, i32 }`. Stride was dropped because v1 is contiguous
-only (`stride == sizeof(T)`, lowered as a typed GEP). Adding strided views later
-reintroduces the third field and bumps the size to 12.
+Shipped deviation (v1): the linear view descriptor is `{ ptr, i32 }` (size 8),
+not `{ ptr, i32, i32 }`. Stride was dropped from the descriptor because the
+contiguous form lowers as a typed GEP (`stride == sizeof(T)`) and the strided
+form (shipped) carries a *compile-time* stride in the type, lowering as a typed
+GEP with a constant multiplier -- so neither needs a runtime stride field. A
+runtime-valued stride (deferred) is the only thing that would reintroduce the
+third field.
 
 Storage class interaction: the type system encodes storage (`@dma`, `@shared`,
 `@external`, `@exclusive`) as a wrapper *around* the element type
@@ -537,8 +575,10 @@ Minimum tests:
 
 0. **Local move tracking (Stage 0).** Done. Checker-authoritative,
    flow-sensitive, validated against storage-wrapped Move locals (E304).
-1. Linear view: readonly (done), mutable contiguous (done). Stride still
-   pending (adds the third descriptor field and byte-offset index math).
+1. Linear view: readonly (done), mutable contiguous (done), compile-time stride
+   (done -- stride in the type, typed GEP with a constant multiplier, no extra
+   descriptor field). Runtime-valued stride still pending (the unbounded
+   byte-offset case).
 2. Ring view (done, contiguous): modulo physical index, array-backed form
    verifies. Power-of-two mask form still pending (needs the capacity carrier).
 3. Verifier integration for linear and ring (the bound-enforcement mechanism;

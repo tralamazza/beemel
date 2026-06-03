@@ -1,0 +1,6 @@
+// The stride must be a compile-time integer >= 1 (E332). A stride of 0 would
+// make the logical length and the backing index degenerate.
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    val v: view u32 stride 0 = view(buf, stride 0);
+}

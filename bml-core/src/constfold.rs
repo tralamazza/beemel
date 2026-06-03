@@ -91,6 +91,18 @@ fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
         | TypeExpr::Ring(inner, _) => {
             fold_type(inner, consts);
         }
+        TypeExpr::StridedView(inner, _, stride) => {
+            fold_type(inner, consts);
+            // Fold a const stride (`view T stride N`) down to a literal, the
+            // same way array sizes are folded above.
+            if !matches!(stride.as_ref(), Expr::IntLiteral(..))
+                && let Some(v) = fold_const_int(stride, consts)
+                && let Ok(n) = u64::try_from(v)
+            {
+                let span = stride.span();
+                **stride = Expr::IntLiteral(n, IntSuffix::None, span);
+            }
+        }
         TypeExpr::Fn(params, ret) => {
             for p in params.iter_mut() {
                 fold_type(p, consts);
@@ -239,6 +251,24 @@ fn fold_expr(expr: &mut Expr, consts: &HashMap<String, i128>) {
             fold_expr(&mut m.scrutinee, consts);
             for arm in &mut m.arms {
                 fold_block(&mut arm.body, consts);
+            }
+        }
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            fold_expr(base, consts);
+            if let Some(len) = len {
+                fold_expr(len, consts);
+            }
+            // Fold a const stride (`view(arr, stride N)`) to a literal so the
+            // checker and IR can read `K` directly.
+            if let Some(stride) = stride
+                && !matches!(stride.as_ref(), Expr::IntLiteral(..))
+                && let Some(v) = fold_const_int(stride, consts)
+                && let Ok(n) = u64::try_from(v)
+            {
+                let span = stride.span();
+                **stride = Expr::IntLiteral(n, IntSuffix::None, span);
             }
         }
         _ => {}

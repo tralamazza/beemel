@@ -1,0 +1,13 @@
+// A mutable strided view is Move-typed: passing it by value consumes it, so a
+// second use is a use-after-move (E304). This is the Stage 0 move gate applied
+// to the strided view, same as the contiguous `view mut`.
+fn take(v: view mut u32 stride 2) -> u32 {
+    return v[0u32];
+}
+
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    var v: view mut u32 stride 2 = view(buf, stride 2);
+    var a: u32 = take(v);
+    var b: u32 = take(v);
+}

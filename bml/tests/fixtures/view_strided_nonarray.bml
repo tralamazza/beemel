@@ -1,0 +1,6 @@
+// The strided constructor form is array-only in v1 (the pointer+stride form is
+// the deferred dynamic case). A non-array base is rejected (E333).
+fn main() @context(thread) {
+    var buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    val v: view u32 stride 2 = view(&buf[0], stride 2);
+}
