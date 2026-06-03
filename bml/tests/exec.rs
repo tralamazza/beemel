@@ -288,6 +288,10 @@ assert_exec!(exec_view_strided, "view_strided.bml");
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 
+// `loop` is a distinct lowering branch from `while` (control_flow covers the
+// latter): checks that `break` exits and `continue` skips the iteration body.
+assert_exec!(exec_loop_break_continue, "loop_break_continue.bml");
+
 // ─── const evaluation (language.md §1) ───────────────────────────────────────
 assert_exec!(exec_const_eval, "const_eval.bml");
 
