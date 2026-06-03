@@ -3491,6 +3491,27 @@ impl IrEmitter {
         if !self.debug || self.fn_scope_id.is_none() {
             return;
         }
+        // In verify mode a view/ring/bits descriptor is an SSA aggregate passed
+        // by value. After `opt`'s mem2reg/sroa, a `dbg.declare` on the
+        // descriptor alloca can become a `dbg.value` whose metadata operand is
+        // the whole aggregate (e.g. `{ ptr, i32, i32, i32 }` for a ring). That
+        // aggregate-typed dbg metadata crashes IKOS's LLVM-AR frontend with
+        // "invalid ar bitcast: from kind=7 to kind=7". IKOS does not need the
+        // descriptor variable for bounds analysis (it reasons over the SSA
+        // struct values and the load-bearing `assume`s), so drop the declare
+        // here. Normal `-g` builds keep it, so the DWARF composite-type tests
+        // are unaffected.
+        if self.verify_mode
+            && matches!(
+                ty,
+                Type::LinearView(..)
+                    | Type::StridedView(..)
+                    | Type::RingView(..)
+                    | Type::BitView(..)
+            )
+        {
+            return;
+        }
         let (line, _col) = if let Some(ref sm) = self.source_map {
             let loc = sm.span_location(span);
             (loc.start.line, 0)
