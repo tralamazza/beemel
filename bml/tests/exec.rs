@@ -280,6 +280,11 @@ assert_exec!(exec_ring_mask, "ring_mask.bml");
 // index and must wrap correctly too.
 assert_exec!(exec_ring_npot_wrap, "ring_npot_wrap.bml");
 
+// A strided view maps logical index i -> physical i*K for reads and writes, at
+// power-of-two and non-power-of-two strides. The IR-substring test for this
+// lowering passes regardless of the stride constant, so this pins the value.
+assert_exec!(exec_view_strided, "view_strided.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 
