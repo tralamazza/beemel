@@ -298,6 +298,16 @@ assert_exec!(exec_const_eval, "const_eval.bml");
 // ─── unsuffixed literals adopt the narrow context type (language.md §1) ───────
 assert_exec!(exec_narrow_literals, "narrow_literals.bml");
 
+// Found by the all-widths property test: the context type narrows literals for
+// small types but is not propagated to *widen* the constant's evaluation, so an
+// unsuffixed literal above 2^32-1 in a u64 context is evaluated at i32 width and
+// truncated. Pinned until the literal-width inference is fixed.
+known_bug!(
+    exec_lit_u64_unsuffixed,
+    "lit_u64_unsuffixed.bml",
+    "unsuffixed >32-bit literal in a 64-bit context is truncated to i32 width"
+);
+
 // ─── operator / signedness matrix (language.md §1) ───────────────────────────
 assert_exec!(exec_div_mod_ops, "div_mod_ops.bml");
 assert_exec!(exec_shift_ops, "shift_ops.bml");
@@ -363,17 +373,53 @@ assert_exec!(exec_bool_to_int, "bool_to_int.bml");
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
+    clippy::cast_lossless,
     clippy::many_single_char_names,
     clippy::doc_markdown,
     clippy::format_push_string
 )]
 mod property {
-    use super::{OPT_LEVELS, Rng, bml_run, tools_available, write_generated};
+    use super::{OPT_LEVELS, Rng, bml_run, libgcc_path, tools_available, write_generated};
 
+    /// Every integer type, not just 32-bit. Each carries its own wrapping /
+    /// signedness rules, so width-dependent bugs (u8 mul wrap, i64 shifts,
+    /// narrow sign-extension on the way to the u32 check) become observable.
     #[derive(Clone, Copy, PartialEq)]
     enum Ty {
+        U8,
+        U16,
         U32,
+        U64,
+        I8,
+        I16,
         I32,
+        I64,
+    }
+    use Ty::{I8, I16, I32, I64, U8, U16, U32, U64};
+    const TYPES: &[Ty] = &[U8, U16, U32, U64, I8, I16, I32, I64];
+
+    fn width(t: Ty) -> u32 {
+        match t {
+            U8 | I8 => 8,
+            U16 | I16 => 16,
+            U32 | I32 => 32,
+            U64 | I64 => 64,
+        }
+    }
+    fn is_signed(t: Ty) -> bool {
+        matches!(t, I8 | I16 | I32 | I64)
+    }
+    fn suffix(t: Ty) -> &'static str {
+        match t {
+            U8 => "u8",
+            U16 => "u16",
+            U32 => "u32",
+            U64 => "u64",
+            I8 => "i8",
+            I16 => "i16",
+            I32 => "i32",
+            I64 => "i64",
+        }
     }
 
     #[derive(Clone, Copy)]
@@ -390,68 +436,79 @@ mod property {
         Shr,
     }
 
+    /// `Lit` holds the `width`-bit value as a zero-extended bit pattern, so it
+    /// can represent any unsigned or signed value across all widths uniformly.
     enum Expr {
-        Lit(i64),
+        Lit(u64),
         Bin(Box<Expr>, Op, Box<Expr>),
     }
 
-    const U32_EDGES: &[i64] = &[
-        0,
-        1,
-        2,
-        255,
-        256,
-        65535,
-        65536,
-        0x7FFF_FFFF,
-        0x8000_0000,
-        0xFFFF_FFFF,
-    ];
-    const I32_EDGES: &[i64] = &[
-        0,
-        1,
-        -1,
-        2,
-        -2,
-        255,
-        -256,
-        32767,
-        -32768,
-        2_147_483_647,
-        -2_147_483_647,
-    ];
-
-    fn gen_lit(rng: &mut Rng, ty: Ty) -> i64 {
-        if rng.below(100) < 50 {
-            let pool = match ty {
-                Ty::U32 => U32_EDGES,
-                Ty::I32 => I32_EDGES,
-            };
-            pool[rng.below(pool.len() as u64) as usize]
+    /// Low `w` bits set.
+    fn mask(w: u32) -> u64 {
+        if w >= 64 { u64::MAX } else { (1u64 << w) - 1 }
+    }
+    /// Sign-extend a `w`-bit pattern to its true signed value.
+    fn sext(bits: u64, w: u32) -> i64 {
+        if w >= 64 {
+            bits as i64
         } else {
-            match ty {
-                Ty::U32 => i64::from(rng.next() as u32),
-                // full i32 range except MIN (which has no writable negative literal)
-                Ty::I32 => (i64::from(rng.next() as u32) % 4_294_967_295) - 2_147_483_647,
+            let shift = 64 - w;
+            ((bits << shift) as i64) >> shift
+        }
+    }
+
+    /// A `width`-bit pattern: half the time a boundary value (0, ±1, min+1,
+    /// max, halfway), otherwise uniform random. The signed minimum is avoided:
+    /// it has no writable negative literal (its magnitude overflows the type).
+    fn gen_lit(rng: &mut Rng, t: Ty) -> u64 {
+        let w = width(t);
+        let m = mask(w);
+        let min_pat = 1u64 << (w - 1); // signed minimum: sign bit only
+        if rng.below(100) < 50 {
+            if is_signed(t) {
+                let max = (m >> 1) as i64; // 2^(w-1) - 1
+                let edges = [0i64, 1, -1, 2, -2, max, -max, max / 2, -max / 2];
+                let v = edges[rng.below(edges.len() as u64) as usize];
+                (v as u64) & m
+            } else {
+                let edges = [0u64, 1, 2, m, m >> 1, (m >> 1) + 1, 0xFF & m, 0xFFFF & m];
+                edges[rng.below(edges.len() as u64) as usize] & m
+            }
+        } else {
+            let bits = rng.next() & m;
+            // Avoid the signed minimum pattern (nudge to min+1).
+            if is_signed(t) && bits == min_pat {
+                min_pat | 1
+            } else {
+                bits
             }
         }
     }
 
-    /// A nonzero divisor; for signed, also avoid -1 (INT_MIN / -1 overflows).
-    fn gen_divisor(rng: &mut Rng, ty: Ty) -> i64 {
+    /// A nonzero divisor; for signed, also avoid -1 (INT_MIN / -1 is UB).
+    fn gen_divisor(rng: &mut Rng, t: Ty) -> u64 {
+        let w = width(t);
         loop {
-            let v = gen_lit(rng, ty);
-            match ty {
-                Ty::U32 if (v as u32) != 0 => return v,
-                Ty::I32 if (v as i32) != 0 && (v as i32) != -1 => return v,
-                _ => {}
+            let bits = gen_lit(rng, t);
+            if is_signed(t) {
+                let v = sext(bits, w);
+                if v != 0 && v != -1 {
+                    return bits;
+                }
+            } else if bits & mask(w) != 0 {
+                return bits;
             }
         }
     }
 
-    fn gen_expr(rng: &mut Rng, ty: Ty, depth: u32) -> Expr {
+    /// A shift count in `0..width`, where the shift is always well-defined.
+    fn gen_shift(rng: &mut Rng, t: Ty) -> u64 {
+        u64::from(rng.below(u64::from(width(t))) as u32)
+    }
+
+    fn gen_expr(rng: &mut Rng, t: Ty, depth: u32) -> Expr {
         if depth == 0 || rng.below(100) < 30 {
-            return Expr::Lit(gen_lit(rng, ty));
+            return Expr::Lit(gen_lit(rng, t));
         }
         let op = [
             Op::Add,
@@ -465,57 +522,65 @@ mod property {
             Op::Shl,
             Op::Shr,
         ][rng.below(10) as usize];
-        let l = gen_expr(rng, ty, depth - 1);
+        let l = gen_expr(rng, t, depth - 1);
         let r = match op {
-            Op::Div | Op::Rem => Expr::Lit(gen_divisor(rng, ty)),
-            // shift count in 0..32 keeps the shift well-defined
-            Op::Shl | Op::Shr => Expr::Lit(rng.below(32) as i64),
-            _ => gen_expr(rng, ty, depth - 1),
+            Op::Div | Op::Rem => Expr::Lit(gen_divisor(rng, t)),
+            Op::Shl | Op::Shr => Expr::Lit(gen_shift(rng, t)),
+            _ => gen_expr(rng, t, depth - 1),
         };
         Expr::Bin(Box::new(l), op, Box::new(r))
     }
 
-    /// Evaluate to the u32 bit pattern, using `ty`'s arithmetic.
-    fn eval(e: &Expr, ty: Ty) -> u32 {
-        match e {
-            Expr::Lit(n) => match ty {
-                Ty::U32 => *n as u32,
-                Ty::I32 => *n as i32 as u32,
-            },
-            Expr::Bin(l, op, r) => {
-                let a = eval(l, ty);
-                let b = eval(r, ty);
-                match ty {
-                    Ty::U32 => match op {
-                        Op::Add => a.wrapping_add(b),
-                        Op::Sub => a.wrapping_sub(b),
-                        Op::Mul => a.wrapping_mul(b),
-                        Op::Div => a / b,
-                        Op::Rem => a % b,
-                        Op::And => a & b,
-                        Op::Or => a | b,
-                        Op::Xor => a ^ b,
-                        Op::Shl => a.wrapping_shl(b),
-                        Op::Shr => a.wrapping_shr(b),
-                    },
-                    Ty::I32 => {
-                        let (x, y) = (a as i32, b as i32);
-                        let v = match op {
-                            Op::Add => x.wrapping_add(y),
-                            Op::Sub => x.wrapping_sub(y),
-                            Op::Mul => x.wrapping_mul(y),
-                            Op::Div => x.wrapping_div(y),
-                            Op::Rem => x.wrapping_rem(y),
-                            Op::And => x & y,
-                            Op::Or => x | y,
-                            Op::Xor => x ^ y,
-                            Op::Shl => x.wrapping_shl(b),
-                            Op::Shr => x.wrapping_shr(b),
+    /// Generate one `eval_*` per Rust integer type. Each interprets `Lit` and
+    /// operand patterns as `$t`, evaluates with `$t`'s native wrapping / signed
+    /// vs unsigned semantics (the trusted oracle), and returns the result's
+    /// zero-extended bit pattern. Using the real Rust type is what makes the
+    /// oracle exact for that width.
+    macro_rules! eval_ty {
+        ($name:ident, $t:ty, $u:ty) => {
+            fn $name(e: &Expr) -> u64 {
+                match e {
+                    Expr::Lit(b) => u64::from(*b as $u),
+                    Expr::Bin(l, op, r) => {
+                        let a = $name(l) as $u as $t;
+                        let b = $name(r) as $u as $t;
+                        let v: $t = match op {
+                            Op::Add => a.wrapping_add(b),
+                            Op::Sub => a.wrapping_sub(b),
+                            Op::Mul => a.wrapping_mul(b),
+                            Op::Div => a.wrapping_div(b),
+                            Op::Rem => a.wrapping_rem(b),
+                            Op::And => a & b,
+                            Op::Or => a | b,
+                            Op::Xor => a ^ b,
+                            Op::Shl => a.wrapping_shl(b as u32),
+                            Op::Shr => a.wrapping_shr(b as u32),
                         };
-                        v as u32
+                        v as $u as u64
                     }
                 }
             }
+        };
+    }
+    eval_ty!(eval_u8, u8, u8);
+    eval_ty!(eval_u16, u16, u16);
+    eval_ty!(eval_u32, u32, u32);
+    eval_ty!(eval_u64, u64, u64);
+    eval_ty!(eval_i8, i8, u8);
+    eval_ty!(eval_i16, i16, u16);
+    eval_ty!(eval_i32, i32, u32);
+    eval_ty!(eval_i64, i64, u64);
+
+    fn eval(e: &Expr, t: Ty) -> u64 {
+        match t {
+            U8 => eval_u8(e),
+            U16 => eval_u16(e),
+            U32 => eval_u32(e),
+            U64 => eval_u64(e),
+            I8 => eval_i8(e),
+            I16 => eval_i16(e),
+            I32 => eval_i32(e),
+            I64 => eval_i64(e),
         }
     }
 
@@ -534,29 +599,37 @@ mod property {
         }
     }
 
-    fn render(e: &Expr, ty: Ty) -> String {
+    fn render(e: &Expr, t: Ty) -> String {
         match e {
-            Expr::Lit(n) => match ty {
-                Ty::U32 => format!("{}", *n as u32),
-                Ty::I32 => {
-                    let v = *n as i32;
+            Expr::Lit(b) => {
+                let s = suffix(t);
+                if is_signed(t) {
+                    let v = sext(*b, width(t));
                     if v < 0 {
-                        format!("({v}i32)")
+                        format!("({v}{s})")
                     } else {
-                        format!("{v}i32")
+                        format!("{v}{s}")
                     }
+                } else {
+                    format!("{}{s}", *b & mask(width(t)))
                 }
-            },
+            }
             Expr::Bin(l, op, r) => {
-                format!("({} {} {})", render(l, ty), op_str(*op), render(r, ty))
+                format!("({} {} {})", render(l, t), op_str(*op), render(r, t))
             }
         }
     }
 
     #[test]
     fn exec_property_arith() {
-        if !tools_available() {
-            eprintln!("skipping property test: toolchain not found");
+        // 32-bit integer division (cortex-m3 has no divide instruction) and all
+        // 64-bit multiply/divide lower to `__aeabi_*` runtime calls in libgcc,
+        // so this needs the soft-float toolchain like `exec_float_ops` does.
+        if !tools_available() || libgcc_path().is_none() {
+            eprintln!(
+                "skipping property test: needs qemu, arm-none-eabi-ld, and \
+                 arm-none-eabi-gcc (libgcc, for __aeabi_* div/mul)"
+            );
             return;
         }
         let seed = std::env::var("BML_PROP_SEED")
@@ -569,16 +642,29 @@ mod property {
         let mut rng = Rng(seed);
 
         let mut body = String::new();
-        for _ in 0..120 {
-            for ty in [Ty::U32, Ty::I32] {
-                let e = gen_expr(&mut rng, ty, 4);
-                let expected = eval(&e, ty);
-                let src = render(&e, ty);
-                match ty {
-                    Ty::U32 => body.push_str(&format!("    expect_u32({src}, {expected});\n")),
-                    Ty::I32 => {
-                        body.push_str(&format!("    expect_u32(({src}) as u32, {expected});\n"));
-                    }
+        for _ in 0..64 {
+            for &t in TYPES {
+                let e = gen_expr(&mut rng, t, 4);
+                let bits = eval(&e, t);
+                let src = render(&e, t);
+                if width(t) <= 32 {
+                    // `as u32` zero-extends an unsigned source and sign-extends a
+                    // signed one; the expected value must match that widening.
+                    let expected = if is_signed(t) {
+                        sext(bits, width(t)) as u32
+                    } else {
+                        bits as u32
+                    };
+                    body.push_str(&format!("    expect_u32(({src}) as u32, {expected});\n"));
+                } else {
+                    // 64-bit: compare the full pattern. `as u64` on a signed
+                    // value is a same-width reinterpretation (the bit pattern).
+                    let lhs = if is_signed(t) {
+                        format!("({src}) as u64")
+                    } else {
+                        src
+                    };
+                    body.push_str(&format!("    expect_u64({lhs}, {bits}u64);\n"));
                 }
             }
         }

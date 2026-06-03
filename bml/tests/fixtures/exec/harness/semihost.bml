@@ -17,6 +17,7 @@
 export fn ok;
 export fn fail;
 export fn expect_u32;
+export fn expect_u64;
 export fn expect_b1;
 export fn done;
 
@@ -65,6 +66,23 @@ fn expect_u32(actual: u32, expected: u32) {
         write_hex(actual);
         write0(" want=");
         write_hex(expected);
+        write0("\n");
+    }
+}
+
+// Like `expect_u32` but for 64-bit values. The verdict is the direct `u64 ==`;
+// the failing value is dumped as two 32-bit hex words (high then low), so even
+// if the shift/truncate used only for that dump were wrong the verdict holds.
+fn expect_u64(actual: u64, expected: u64) {
+    if actual == expected {
+        ok();
+    } else {
+        write0("FAIL got=");
+        write_hex((actual >> 32) as u32);
+        write_hex(actual as u32);
+        write0(" want=");
+        write_hex((expected >> 32) as u32);
+        write_hex(expected as u32);
         write0("\n");
     }
 }
