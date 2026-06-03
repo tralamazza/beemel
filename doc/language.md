@@ -867,6 +867,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E107  | Expected integer |
 | E108  | Invalid annotation (duplicate, missing, or malformed) |
 | E112  | `const`/`static` cannot be declared inside a function body |
+| E113  | Nesting too deep (expression, type, or block) |
 | E114  | Register-field bit index or range out of range (must be 0..32) |
 | E200  | Duplicate name |
 | E201  | `@exclusive` references unknown function |

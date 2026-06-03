@@ -932,6 +932,13 @@ assert_error!(
     "parser_const_in_fn_error.bml",
     "E112"
 );
+// Deeply nested input must be rejected with a diagnostic, never a stack
+// overflow: the recursive-descent parser bounds its depth (MAX_PARSE_DEPTH).
+assert_error!(
+    test_parser_nesting_too_deep,
+    "parser_nesting_too_deep_error.bml",
+    "E113"
+);
 
 // ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
 assert_error!(

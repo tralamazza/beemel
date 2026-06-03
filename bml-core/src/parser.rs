@@ -10,7 +10,20 @@ pub struct Parser<'a> {
     diags: &'a mut DiagnosticBag,
     file: FileId,
     trailing_expr: Option<Expr>,
+    /// Current recursion depth across the mutually-recursive expression, type,
+    /// and block parsers. Bounds stack growth: a deeply nested input would
+    /// otherwise overflow the stack and abort the process (recursive descent
+    /// has no natural limit). See `MAX_PARSE_DEPTH` / `guarded`.
+    depth: u32,
+    /// Emit the `E113` nesting diagnostic at most once per parse.
+    depth_error_emitted: bool,
 }
+
+/// Maximum nesting depth for expressions, types, and blocks combined. Chosen to
+/// trip well before the stack overflows (parser frames are large, ~30 KB, so
+/// the real overflow is only a few hundred deep) while staying far above
+/// anything hand-written code reaches. Hitting it yields `E113`, not a crash.
+const MAX_PARSE_DEPTH: u32 = 128;
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str, file: FileId, diags: &'a mut DiagnosticBag) -> Self {
@@ -30,7 +43,33 @@ impl<'a> Parser<'a> {
             diags,
             file,
             trailing_expr: None,
+            depth: 0,
+            depth_error_emitted: false,
         }
+    }
+
+    /// Run `f` one recursion level deeper, bounding total nesting. When the
+    /// limit is exceeded it emits `E113` once and returns `None` instead of
+    /// recursing further, so pathological input fails loudly with a diagnostic
+    /// rather than overflowing the stack. The depth is decremented on every
+    /// path, so sibling constructs are unaffected.
+    fn guarded<T>(&mut self, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            if !self.depth_error_emitted {
+                self.depth_error_emitted = true;
+                self.diags.error(
+                    "nesting too deep (expression, type, or block)",
+                    "E113",
+                    self.peek_span(),
+                );
+            }
+            self.depth -= 1;
+            return None;
+        }
+        let r = f(self);
+        self.depth -= 1;
+        r
     }
 
     pub fn parse_program(&mut self) -> Program {
@@ -721,6 +760,10 @@ impl<'a> Parser<'a> {
     // --- types ---
 
     fn parse_type_expr(&mut self) -> Option<TypeExpr> {
+        self.guarded(Self::parse_type_expr_inner)
+    }
+
+    fn parse_type_expr_inner(&mut self) -> Option<TypeExpr> {
         match self.peek_kind() {
             TokenKind::Star => {
                 self.advance();
@@ -806,6 +849,10 @@ impl<'a> Parser<'a> {
     // --- blocks and statements ---
 
     fn parse_block(&mut self) -> Option<Block> {
+        self.guarded(Self::parse_block_inner)
+    }
+
+    fn parse_block_inner(&mut self) -> Option<Block> {
         let start = self.peek_span();
         self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
 
@@ -1125,6 +1172,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_prec(&mut self, min_prec: u8, allow_struct: bool) -> Option<Expr> {
+        self.guarded(|p| p.parse_expr_prec_inner(min_prec, allow_struct))
+    }
+
+    fn parse_expr_prec_inner(&mut self, min_prec: u8, allow_struct: bool) -> Option<Expr> {
         let mut left = self.parse_prefix(allow_struct)?;
 
         // Merged binary + postfix loop: after extending left via a postfix
