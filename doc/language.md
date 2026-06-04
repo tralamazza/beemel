@@ -727,7 +727,12 @@ if_expr       = "if" expr block "else" (block_expr | if_expr)
 
 var_decl      = ("var" | "val") ident [":" type] "=" expr ";"
 
-assign        = lvalue "=" expr ";"
+assign        = lvalue ("=" | compound_op) expr ";"
+compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
+              | "&=" | "|=" | "^=" | "<<=" | ">>="
+              ;; `a OP= b` desugars to `a = a OP b`. The target is evaluated
+              ;; twice, so avoid side-effecting subexpressions in it (e.g. a
+              ;; call in an index). There is no `&&=` / `||=`.
 
 lvalue        = ident | lvalue "." ident | lvalue "[" expr "]"
               | "*" expr               (* deref write target *)

@@ -958,6 +958,16 @@ impl<'a> Parser<'a> {
                     self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
                     let target = expr_to_lvalue(expr)?;
                     Some(Stmt::Assign(AssignStmt { target, value }))
+                } else if let Some(op) = compound_assign_op(self.peek_kind()) {
+                    // Compound assignment: `a OP= b` desugars to `a = a OP b`.
+                    // The target expression is evaluated twice, so avoid
+                    // side-effecting subexpressions (e.g. a call in an index).
+                    self.advance();
+                    let rhs = self.parse_expr()?;
+                    self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                    let target = expr_to_lvalue(expr.clone())?;
+                    let value = Expr::Binary(Box::new(expr), op, Box::new(rhs));
+                    Some(Stmt::Assign(AssignStmt { target, value }))
                 } else if self.check(&TokenKind::RBrace) {
                     // Trailing expression -- no semicolon before `}`
                     self.trailing_expr = Some(expr);
@@ -1580,6 +1590,24 @@ impl<'a> Parser<'a> {
             None
         }
     }
+}
+
+/// Map a compound-assignment token (`+=`, `<<=`, ...) to the binary operator it
+/// desugars to. Returns `None` for any other token.
+fn compound_assign_op(kind: &TokenKind) -> Option<BinaryOp> {
+    Some(match kind {
+        TokenKind::PlusEq => BinaryOp::Add,
+        TokenKind::MinusEq => BinaryOp::Sub,
+        TokenKind::StarEq => BinaryOp::Mul,
+        TokenKind::SlashEq => BinaryOp::Div,
+        TokenKind::PercentEq => BinaryOp::Mod,
+        TokenKind::AmpEq => BinaryOp::BitAnd,
+        TokenKind::PipeEq => BinaryOp::BitOr,
+        TokenKind::CaretEq => BinaryOp::BitXor,
+        TokenKind::ShlEq => BinaryOp::Shl,
+        TokenKind::ShrEq => BinaryOp::Shr,
+        _ => return None,
+    })
 }
 
 fn expr_to_lvalue(expr: Expr) -> Option<LValue> {

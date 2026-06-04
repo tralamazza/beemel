@@ -285,6 +285,10 @@ assert_exec!(exec_ring_npot_wrap, "ring_npot_wrap.bml");
 // lowering passes regardless of the stride constant, so this pins the value.
 assert_exec!(exec_view_strided, "view_strided.bml");
 
+// Compound assignment (`+=` ... `>>=`) desugars to `a = a OP b` and works across
+// locals, array elements, struct fields, pointer derefs, and peripheral fields.
+assert_exec!(exec_compound_assign, "compound_assign.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 

@@ -1,0 +1,62 @@
+// Compound assignment (`+=`, `-=`, ..., `<<=`, `>>=`) desugars to `a = a OP b`
+// and works across every lvalue kind: locals, array elements, struct fields,
+// pointer derefs, and peripheral register fields (read-modify-write). The fake
+// peripheral is mapped over plain RAM (as in register_rmw.bml) so reads return
+// what was written.
+import harness.semihost;
+
+struct Acc {
+    lo: u32,
+    hi: u32,
+}
+
+peripheral CAP at 0x20001000 {
+    reg CR offset 0x00 {
+        field LOW: u32 bit[0..3]
+        field HIGH: u32 bit[4..7]
+    }
+}
+
+fn main() @context(thread) {
+    // local, every operator
+    var x: u32 = 100;
+    x += 5; // 105
+    x -= 3; // 102
+    x *= 2; // 204
+    x /= 4; // 51
+    x %= 10; // 1
+    x |= 0xF0; // 0xF1
+    x &= 0x3F; // 0x31
+    x ^= 0x11; // 0x20
+    x <<= 4; // 0x200
+    x >>= 1; // 0x100
+    expect_u32(x, 0x100);
+
+    // array element
+    var a: [u32; 3] = [10u32, 20u32, 30u32];
+    a[1] += 5;
+    a[1] *= 2;
+    expect_u32(a[1], 50);
+
+    // struct field
+    var acc: Acc = Acc { lo: 1, hi: 2 };
+    acc.lo += 9; // 10
+    acc.hi <<= 3; // 16
+    expect_u32(acc.lo, 10);
+    expect_u32(acc.hi, 16);
+
+    // pointer deref
+    var p: *mut u32 = &mut a[0];
+    *p += 100; // a[0] = 110
+    expect_u32(a[0], 110);
+
+    // peripheral register field (read-modify-write through the field)
+    CAP.CR = 0;
+    CAP.CR.LOW = 1;
+    CAP.CR.LOW += 2; // 3
+    CAP.CR.HIGH |= 0x5; // 5
+    expect_u32(CAP.CR.LOW, 3);
+    expect_u32(CAP.CR.HIGH, 5);
+
+    done();
+}

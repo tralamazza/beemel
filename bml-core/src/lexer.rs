@@ -106,6 +106,20 @@ pub enum TokenKind {
     Shl,
     Shr,
 
+    // Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`,
+    // `<<=`, `>>=`. Distinct tokens so the expression parser does not consume
+    // the operator; the statement parser desugars `a OP= b` to `a = a OP b`.
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    ShlEq,
+    ShrEq,
+
     Eof,
 }
 
@@ -462,28 +476,51 @@ impl<'a> Lexer<'a> {
                 }
                 '+' => {
                     self.advance();
-                    TokenKind::Plus
+                    if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::PlusEq
+                    } else {
+                        TokenKind::Plus
+                    }
                 }
                 '-' => {
                     self.advance();
                     if self.current() == Some('>') {
                         self.advance();
                         TokenKind::Arrow
+                    } else if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::MinusEq
                     } else {
                         TokenKind::Minus
                     }
                 }
                 '*' => {
                     self.advance();
-                    TokenKind::Star
+                    if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::StarEq
+                    } else {
+                        TokenKind::Star
+                    }
                 }
                 '/' => {
                     self.advance();
-                    TokenKind::Slash
+                    if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::SlashEq
+                    } else {
+                        TokenKind::Slash
+                    }
                 }
                 '%' => {
                     self.advance();
-                    TokenKind::Percent
+                    if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::PercentEq
+                    } else {
+                        TokenKind::Percent
+                    }
                 }
                 '~' => {
                     self.advance();
@@ -518,7 +555,12 @@ impl<'a> Lexer<'a> {
                         TokenKind::LtEq
                     } else if self.current() == Some('<') {
                         self.advance();
-                        TokenKind::Shl
+                        if self.current() == Some('=') {
+                            self.advance();
+                            TokenKind::ShlEq
+                        } else {
+                            TokenKind::Shl
+                        }
                     } else {
                         TokenKind::Lt
                     }
@@ -530,7 +572,12 @@ impl<'a> Lexer<'a> {
                         TokenKind::GtEq
                     } else if self.current() == Some('>') {
                         self.advance();
-                        TokenKind::Shr
+                        if self.current() == Some('=') {
+                            self.advance();
+                            TokenKind::ShrEq
+                        } else {
+                            TokenKind::Shr
+                        }
                     } else {
                         TokenKind::Gt
                     }
@@ -540,6 +587,9 @@ impl<'a> Lexer<'a> {
                     if self.current() == Some('&') {
                         self.advance();
                         TokenKind::And
+                    } else if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::AmpEq
                     } else {
                         TokenKind::Amp
                     }
@@ -549,13 +599,21 @@ impl<'a> Lexer<'a> {
                     if self.current() == Some('|') {
                         self.advance();
                         TokenKind::Or
+                    } else if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::PipeEq
                     } else {
                         TokenKind::Pipe
                     }
                 }
                 '^' => {
                     self.advance();
-                    TokenKind::Caret
+                    if self.current() == Some('=') {
+                        self.advance();
+                        TokenKind::CaretEq
+                    } else {
+                        TokenKind::Caret
+                    }
                 }
                 '"' => self.read_string(),
                 '0'..='9' => self.read_number(),
