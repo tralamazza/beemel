@@ -1326,7 +1326,15 @@ impl IrEmitter {
         match expr {
             Expr::IntLiteral(n, suffix, _span) => {
                 let reg = self.new_reg();
-                let width = int_bit_width_from_suffix(*suffix);
+                // An unsuffixed literal defaults to 32-bit, but a value that does
+                // not fit in 32 bits would be truncated by `add i32 0, N` before
+                // any widening. Such a literal is only accepted by the checker in
+                // a 64-bit context, so materialize it at 64 bits. Keep `expr_type`
+                // below in sync.
+                let width = match suffix {
+                    crate::ast::IntSuffix::None if *n > u64::from(u32::MAX) => 64,
+                    _ => int_bit_width_from_suffix(*suffix),
+                };
                 let val = match suffix {
                     crate::ast::IntSuffix::U8 | crate::ast::IntSuffix::I8 => *n & 0xFF,
                     crate::ast::IntSuffix::U16 | crate::ast::IntSuffix::I16 => *n & 0xFFFF,
@@ -3568,7 +3576,7 @@ impl IrEmitter {
 
     fn expr_type(&self, expr: &Expr, symbols: &SymbolTable) -> Type {
         match expr {
-            Expr::IntLiteral(_, suffix, _) => match suffix {
+            Expr::IntLiteral(n, suffix, _) => match suffix {
                 crate::ast::IntSuffix::I8 => Type::I8,
                 crate::ast::IntSuffix::I16 => Type::I16,
                 crate::ast::IntSuffix::I32 => Type::I32,
@@ -3577,6 +3585,9 @@ impl IrEmitter {
                 crate::ast::IntSuffix::U16 => Type::U16,
                 crate::ast::IntSuffix::U32 => Type::U32,
                 crate::ast::IntSuffix::U64 => Type::U64,
+                // Matches the emit width above: a >32-bit unsuffixed literal is
+                // 64-bit (it only type-checks in a 64-bit context).
+                crate::ast::IntSuffix::None if *n > u64::from(u32::MAX) => Type::U64,
                 crate::ast::IntSuffix::None => Type::U32,
             },
             Expr::FloatLiteral(_, suffix, _) => match suffix {

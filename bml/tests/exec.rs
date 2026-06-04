@@ -298,15 +298,10 @@ assert_exec!(exec_const_eval, "const_eval.bml");
 // ─── unsuffixed literals adopt the narrow context type (language.md §1) ───────
 assert_exec!(exec_narrow_literals, "narrow_literals.bml");
 
-// Found by the all-widths property test: the context type narrows literals for
-// small types but is not propagated to *widen* the constant's evaluation, so an
-// unsuffixed literal above 2^32-1 in a u64 context is evaluated at i32 width and
-// truncated. Pinned until the literal-width inference is fixed.
-known_bug!(
-    exec_lit_u64_unsuffixed,
-    "lit_u64_unsuffixed.bml",
-    "unsuffixed >32-bit literal in a 64-bit context is truncated to i32 width"
-);
+// Regression (found by the all-widths property test, fixed): an unsuffixed
+// literal above 2^32-1 in a 64-bit context used to be materialized at i32 width
+// and truncated. The literal is now emitted at 64 bits in a 64-bit context.
+assert_exec!(exec_lit_u64_unsuffixed, "lit_u64_unsuffixed.bml");
 
 // ─── operator / signedness matrix (language.md §1) ───────────────────────────
 assert_exec!(exec_div_mod_ops, "div_mod_ops.bml");
