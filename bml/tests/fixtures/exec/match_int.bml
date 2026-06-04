@@ -15,6 +15,16 @@ fn classify(n: u32) -> u32 {
     return 0;
 }
 
+// `match` is a first-class expression: it can be returned directly.
+fn pick(n: u32) -> u32 {
+    return match n {
+        0 { 10u32 }
+        1 | 2 { 20u32 }
+        5..9 { 30u32 }
+        _ { 99u32 }
+    };
+}
+
 // Expression form on a narrow type (u8).
 fn bucket(n: u8) -> u32 {
     var r: u32 = match n {
@@ -42,6 +52,11 @@ fn main() @context(thread) {
     expect_u32(classify(15), 300);
     expect_u32(classify(20), 300); // inclusive upper bound
     expect_u32(classify(21), 999);
+
+    expect_u32(pick(0), 10);
+    expect_u32(pick(2), 20);
+    expect_u32(pick(7), 30);
+    expect_u32(pick(100), 99);
 
     expect_u32(bucket(1u8), 200);
     expect_u32(bucket(10u8), 300);
