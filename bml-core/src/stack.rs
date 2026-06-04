@@ -416,6 +416,18 @@ fn stmt_contribution(
             }
         }
 
+        Stmt::CompoundAssign(ca) => {
+            let val_contrib = expr_contribution(&ca.value, symbols, defined_fns);
+            let target_contrib = lvalue_contribution(&ca.target, symbols, defined_fns);
+            let mut callees = val_contrib.callees;
+            callees.extend(target_contrib.callees);
+            Contribution {
+                frame: val_contrib.frame + target_contrib.frame,
+                callees,
+                has_indirect: val_contrib.has_indirect || target_contrib.has_indirect,
+            }
+        }
+
         Stmt::Expr(expr) => expr_contribution(expr, symbols, defined_fns),
 
         Stmt::Block(block) => block_contribution(block, symbols, defined_fns),

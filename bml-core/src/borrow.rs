@@ -60,6 +60,11 @@ fn check_stmt(
             check_expr(&assign.value, current_fn, current_ctx, symbols, diags);
         }
 
+        Stmt::CompoundAssign(ca) => {
+            check_lvalue(&ca.target, current_fn, current_ctx, symbols, diags);
+            check_expr(&ca.value, current_fn, current_ctx, symbols, diags);
+        }
+
         Stmt::Expr(expr) => {
             check_expr(expr, current_fn, current_ctx, symbols, diags);
         }

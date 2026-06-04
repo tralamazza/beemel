@@ -1344,6 +1344,7 @@ fn stmt_start(stmt: &ast::Stmt) -> usize {
     match stmt {
         ast::Stmt::VarDecl(v) => v.name.1.start,
         ast::Stmt::Assign(a) => lvalue_start(&a.target),
+        ast::Stmt::CompoundAssign(a) => lvalue_start(&a.target),
         ast::Stmt::Expr(e) => e.span().start,
         ast::Stmt::If(i) => i.cond.span().start,
         ast::Stmt::Loop(l) => l.body.span.start,

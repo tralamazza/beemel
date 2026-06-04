@@ -171,6 +171,7 @@ fn fold_stmt(stmt: &mut Stmt, consts: &HashMap<String, i128>) {
             fold_expr(&mut vd.init, consts);
         }
         Stmt::Assign(a) => fold_expr(&mut a.value, consts),
+        Stmt::CompoundAssign(a) => fold_expr(&mut a.value, consts),
         Stmt::Expr(e) => fold_expr(e, consts),
         Stmt::If(s) => {
             fold_expr(&mut s.cond, consts);

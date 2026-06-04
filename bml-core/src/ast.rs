@@ -81,6 +81,7 @@ impl Block {
 pub enum Stmt {
     VarDecl(VarDecl),
     Assign(AssignStmt),
+    CompoundAssign(CompoundAssignStmt),
     Expr(Expr),
     If(IfStmt),
     Loop(LoopStmt),
@@ -126,6 +127,17 @@ pub struct AssignStmt {
     pub value: Expr,
 }
 
+/// `target OP= value` (e.g. `x += 1`). Lowered as a single-evaluation
+/// read-modify-write so a peripheral-field target is read once (volatile) and a
+/// side-effecting index/deref in `target` is evaluated once.
+#[derive(Debug, Clone)]
+pub struct CompoundAssignStmt {
+    pub target: LValue,
+    pub op: BinaryOp,
+    pub value: Expr,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub enum LValue {
     Name(Ident),
@@ -142,6 +154,20 @@ impl LValue {
             LValue::Field(base, (_, s)) => base.span().merge(*s),
             LValue::Index(base, index) => base.span().merge(index.span()),
             LValue::Deref(inner) => inner.span(),
+        }
+    }
+
+    /// Reconstruct the read expression for this place (the inverse of
+    /// `expr_to_lvalue`). Used to type-check and lower compound assignment.
+    #[must_use]
+    pub fn to_expr(&self) -> Expr {
+        match self {
+            LValue::Name(id) => Expr::Ident(id.clone()),
+            LValue::Field(base, field) => {
+                Expr::FieldAccess(Box::new(base.to_expr()), field.clone())
+            }
+            LValue::Index(base, index) => Expr::Index(Box::new(base.to_expr()), index.clone()),
+            LValue::Deref(inner) => Expr::Unary(UnaryOp::Deref, inner.clone()),
         }
     }
 }

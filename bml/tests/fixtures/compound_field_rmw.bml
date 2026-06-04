@@ -1,0 +1,8 @@
+// Compound assignment on a peripheral field must read the register only ONCE
+// (volatile), so it is safe on read-sensitive registers. Single-evaluation RMW.
+peripheral P at 0x40000000 {
+    reg CR offset 0x00 { field F: u32 bit[0..3] }
+}
+fn bump() @context(thread) {
+    P.CR.F += 1;
+}

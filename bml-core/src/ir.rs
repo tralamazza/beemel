@@ -84,6 +84,9 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
     match stmt {
         ast::Stmt::VarDecl(decl) => expr_has_calls(&decl.init),
         ast::Stmt::Assign(assign) => expr_has_calls(&assign.value),
+        ast::Stmt::CompoundAssign(ca) => {
+            expr_has_calls(&ca.value) || expr_has_calls(&ca.target.to_expr())
+        }
         ast::Stmt::Expr(expr) => expr_has_calls(expr),
         ast::Stmt::Return(ret) => ret.value.as_ref().is_some_and(expr_has_calls),
         ast::Stmt::Block(block) => block_has_calls(block),
@@ -463,6 +466,9 @@ impl IrEmitter {
             }
             Stmt::Assign(assign) => {
                 self.collect_and_emit_allocas_expr(&assign.value, symbols);
+            }
+            Stmt::CompoundAssign(ca) => {
+                self.collect_and_emit_allocas_expr(&ca.value, symbols);
             }
             Stmt::Expr(expr) => {
                 self.collect_and_emit_allocas_expr(expr, symbols);
@@ -939,6 +945,11 @@ impl IrEmitter {
                     dbg_span,
                 );
                 (Some(target), false)
+            }
+
+            Stmt::CompoundAssign(ca) => {
+                self.emit_compound_assign(ca, symbols, fn_name);
+                (None, false)
             }
 
             Stmt::Expr(expr) => (Some(self.emit_expr(expr, symbols, fn_name)), false),
@@ -2613,6 +2624,96 @@ impl IrEmitter {
                 reg
             }
         }
+    }
+
+    /// Lower `target OP= value` as a single-evaluation read-modify-write.
+    ///
+    /// A peripheral-field target reads its register **once** (volatile),
+    /// modifies the field, and writes once -- avoiding the second volatile read
+    /// the `target = target OP value` desugar would do (which matters for
+    /// read-sensitive registers). Every other target falls back to that desugar:
+    /// for non-volatile memory places LLVM's GVN folds the duplicated address,
+    /// so the only residual cost is a side-effecting index being evaluated twice.
+    fn emit_compound_assign(
+        &mut self,
+        ca: &ast::CompoundAssignStmt,
+        symbols: &SymbolTable,
+        fn_name: &str,
+    ) {
+        // Peripheral field: P.REG.FIELD OP= value
+        if let ast::LValue::Field(base, field) = &ca.target
+            && let ast::LValue::Field(inner, reg_name) = base.as_ref()
+            && let ast::LValue::Name((periph_name, _)) = inner.as_ref()
+            && let Some(p) = symbols.peripherals.get(periph_name)
+            && let Some(reg) = p.regs.get(&reg_name.0)
+            && let Some(field_def) = reg.fields.get(&field.0)
+        {
+            let addr = p.base_addr + reg.offset;
+            let (mask, shift) = crate::arch::arm::bit_mask_shift(&field_def.bit_spec);
+            let inv_mask = !mask;
+            let field_ty = field_def.ty.clone();
+            let ptr_ty = self.ptr_type().to_string();
+
+            // One volatile read of the whole register.
+            let old = self.new_reg();
+            self.line(&format!(
+                "{old} = load volatile i32, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+            // Current field value: (old & mask) >> shift.
+            let masked_old = self.new_reg();
+            self.line(&format!("{masked_old} = and i32 {old}, {mask}"));
+            let field_old = self.new_reg();
+            if shift > 0 {
+                self.line(&format!("{field_old} = lshr i32 {masked_old}, {shift}"));
+            } else {
+                self.line(&format!("{field_old} = add i32 {masked_old}, 0"));
+            }
+
+            // Apply the operator (fields are unsigned).
+            let rhs_ty = self.expr_type(&ca.value, symbols);
+            let rhs_reg = self.emit_expr(&ca.value, symbols, fn_name);
+            let rhs_i32 = self.widen_to_i32(&rhs_reg, &rhs_ty, &field_ty);
+            let new_field = self.new_reg();
+            self.line(&format!(
+                "{new_field} = {} i32 {field_old}, {rhs_i32}",
+                compound_unsigned_opcode(ca.op)
+            ));
+
+            // Insert the new field into the loaded register and write once.
+            let cleared = self.new_reg();
+            self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
+            let shifted = self.new_reg();
+            if shift > 0 {
+                self.line(&format!("{shifted} = shl i32 {new_field}, {shift}"));
+            } else {
+                self.line(&format!("{shifted} = add i32 {new_field}, 0"));
+            }
+            let masked_new = self.new_reg();
+            self.line(&format!("{masked_new} = and i32 {shifted}, {mask}"));
+            let result = self.new_reg();
+            self.line(&format!("{result} = or i32 {cleared}, {masked_new}"));
+            self.line(&format!(
+                "store volatile i32 {result}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+            return;
+        }
+
+        // General case: behaves exactly like `target = target OP value`.
+        let value_expr = Expr::Binary(
+            Box::new(ca.target.to_expr()),
+            ca.op,
+            Box::new(ca.value.clone()),
+        );
+        let val_reg = self.emit_expr(&value_expr, symbols, fn_name);
+        let val_ty = self.expr_type(&value_expr, symbols);
+        self.emit_store_target(
+            &ca.target,
+            symbols,
+            fn_name,
+            &val_reg,
+            &val_ty,
+            ca.target.span(),
+        );
     }
 
     /// Lower an `asm` block with explicit GCC/LLVM-style operands:
@@ -4376,6 +4477,26 @@ fn f32_to_f16_bits(value: f32) -> u16 {
         }
     }
     sign | (e16 << 10) | h as u16
+}
+
+/// LLVM opcode for a compound-assignment operator on an unsigned field value
+/// (peripheral fields are unsigned). Comparisons/logical ops cannot appear in a
+/// compound assignment, so they map to a harmless default.
+fn compound_unsigned_opcode(op: crate::ast::BinaryOp) -> &'static str {
+    use crate::ast::BinaryOp;
+    match op {
+        BinaryOp::Add => "add",
+        BinaryOp::Sub => "sub",
+        BinaryOp::Mul => "mul",
+        BinaryOp::Div => "udiv",
+        BinaryOp::Mod => "urem",
+        BinaryOp::BitAnd => "and",
+        BinaryOp::BitOr => "or",
+        BinaryOp::BitXor => "xor",
+        BinaryOp::Shl => "shl",
+        BinaryOp::Shr => "lshr",
+        _ => "add",
+    }
 }
 
 fn int_bit_width_from_suffix(suffix: crate::ast::IntSuffix) -> u32 {

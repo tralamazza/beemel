@@ -1139,6 +1139,24 @@ fn test_bitband_field_read() {
     snapshot_fn("bitband_field_read_main", "bitband_field_read.bml", "@main");
 }
 
+// Compound assignment on a peripheral field is a single-evaluation RMW: the
+// register is read exactly once (volatile), so it is safe on read-sensitive
+// registers. A naive `field = field OP x` desugar would read it twice.
+#[test]
+fn test_compound_field_rmw_single_read() {
+    let body = extract_fn_body(&bml_ir("compound_field_rmw.bml"), "@bump");
+    let vol_loads = body.matches("load volatile").count();
+    let vol_stores = body.matches("store volatile").count();
+    assert_eq!(
+        vol_loads, 1,
+        "expected exactly one volatile load (single-eval RMW), got {vol_loads}:\n{body}"
+    );
+    assert_eq!(
+        vol_stores, 1,
+        "expected one volatile store, got {vol_stores}"
+    );
+}
+
 // Multi-bit field (MODER0, bit[0..1]) uses volatile RMW; single-bit fields
 // (ODR0/ODR3) use bit-band alias stores.
 #[test]

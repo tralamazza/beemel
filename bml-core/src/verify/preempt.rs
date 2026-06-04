@@ -109,6 +109,13 @@ fn collect_written_statics(
                     out.insert(name.clone());
                 }
             }
+            Stmt::CompoundAssign(ca) => {
+                if let ast::LValue::Name((name, _)) = &ca.target
+                    && shared_statics.contains(name)
+                {
+                    out.insert(name.clone());
+                }
+            }
             Stmt::Expr(expr) => collect_expr_writes(expr, shared_statics, out),
             Stmt::If(if_stmt) => {
                 collect_written_statics(&if_stmt.then_block, shared_statics, out);

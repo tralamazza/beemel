@@ -735,9 +735,12 @@ var_decl      = ("var" | "val") ident [":" type] "=" expr ";"
 assign        = lvalue ("=" | compound_op) expr ";"
 compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
               | "&=" | "|=" | "^=" | "<<=" | ">>="
-              ;; `a OP= b` desugars to `a = a OP b`. The target is evaluated
-              ;; twice, so avoid side-effecting subexpressions in it (e.g. a
-              ;; call in an index). There is no `&&=` / `||=`.
+              ;; `a OP= b` is a read-modify-write of `a`. A peripheral-field
+              ;; target is read exactly once (volatile), so it is safe on
+              ;; read-sensitive registers. For other places LLVM folds the
+              ;; duplicated address, but a *side-effecting* subexpression in the
+              ;; target (e.g. a call in an index) is still evaluated twice.
+              ;; There is no `&&=` / `||=`.
 
 lvalue        = ident | lvalue "." ident | lvalue "[" expr "]"
               | "*" expr               (* deref write target *)

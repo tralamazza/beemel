@@ -362,6 +362,41 @@ fn check_block(
                 last_type = Some(target_ty);
             }
 
+            Stmt::CompoundAssign(ca) => {
+                // Type-check as `target = target OP value`: the synthesized
+                // binary surfaces operator-type errors (E310/E317) and its
+                // result type must be assignable to the target. The target is
+                // also checked as an assignable place.
+                let value_expr = Expr::Binary(
+                    Box::new(ca.target.to_expr()),
+                    ca.op,
+                    Box::new(ca.value.clone()),
+                );
+                let val_ty = check_expr(&value_expr, symbols, scope, fn_name, expected_ret, diags);
+                let target_ty = check_lvalue(
+                    &ca.target,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                    true,
+                );
+                if !types::types_compatible(&target_ty, &val_ty)
+                    && !unsuffixed_literal_fits(&value_expr, &target_ty)
+                {
+                    diags.error(
+                        format!(
+                            "type mismatch in compound assignment: `{target_ty:?}` and `{val_ty:?}`"
+                        ),
+                        "E301",
+                        ca.span,
+                    );
+                }
+                mark_assigned(&ca.target, scope, val_ty, diags);
+                last_type = Some(target_ty);
+            }
+
             Stmt::Expr(expr) => {
                 last_type = Some(check_expr(
                     expr,
@@ -741,6 +776,7 @@ fn stmt_definitely_returns(stmt: &Stmt) -> bool {
         }
         Stmt::VarDecl(_)
         | Stmt::Assign(_)
+        | Stmt::CompoundAssign(_)
         | Stmt::Expr(_)
         | Stmt::While(_)
         | Stmt::For(_)
@@ -771,6 +807,7 @@ fn stmt_may_break(stmt: &Stmt) -> bool {
         Stmt::Loop(_) | Stmt::While(_) | Stmt::For(_) => false,
         Stmt::VarDecl(_)
         | Stmt::Assign(_)
+        | Stmt::CompoundAssign(_)
         | Stmt::Expr(_)
         | Stmt::Return(_)
         | Stmt::Continue(_)

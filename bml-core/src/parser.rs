@@ -1003,15 +1003,19 @@ impl<'a> Parser<'a> {
                     let target = expr_to_lvalue(expr)?;
                     Some(Stmt::Assign(AssignStmt { target, value }))
                 } else if let Some(op) = compound_assign_op(self.peek_kind()) {
-                    // Compound assignment: `a OP= b` desugars to `a = a OP b`.
-                    // The target expression is evaluated twice, so avoid
-                    // side-effecting subexpressions (e.g. a call in an index).
+                    // Compound assignment `a OP= b`: kept as its own node so the
+                    // IR can lower it as a single-evaluation read-modify-write.
+                    let span = expr.span();
                     self.advance();
-                    let rhs = self.parse_expr()?;
+                    let value = self.parse_expr()?;
                     self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
-                    let target = expr_to_lvalue(expr.clone())?;
-                    let value = Expr::Binary(Box::new(expr), op, Box::new(rhs));
-                    Some(Stmt::Assign(AssignStmt { target, value }))
+                    let target = expr_to_lvalue(expr)?;
+                    Some(Stmt::CompoundAssign(CompoundAssignStmt {
+                        target,
+                        op,
+                        value,
+                        span,
+                    }))
                 } else if self.check(&TokenKind::RBrace) {
                     // Trailing expression -- no semicolon before `}`
                     self.trailing_expr = Some(expr);
