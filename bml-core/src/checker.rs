@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{self, Expr, Item, LValue, Program, Stmt};
+use crate::consteval::{self, ConstVal};
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::types::{self, Type};
@@ -175,145 +176,57 @@ fn check_global_initializers(program: &Program, symbols: &SymbolTable, diags: &m
     }
 }
 
-/// A compile-time constant value.
-#[derive(Clone, Copy)]
-enum ConstVal {
-    Int(i128),
-    Bool(bool),
+/// Constant-evaluation environment for module-level checks: values come from the
+/// [`collect_const_values`] fixpoint, names and types from the symbol table. See
+/// [`crate::consteval`] for the shared evaluator.
+struct CheckEnv<'a> {
+    symbols: &'a SymbolTable,
+    vals: &'a HashMap<String, ConstVal>,
 }
 
-/// Evaluate a const expression. Returns `None` for anything not compile-time
-/// constant. All arithmetic is checked so an overflowing user expression yields
-/// `None` rather than panicking the compiler.
-fn const_eval(
-    expr: &Expr,
-    symbols: &SymbolTable,
-    vals: &HashMap<String, i128>,
-) -> Option<ConstVal> {
-    use crate::ast::{BinaryOp as B, UnaryOp as U};
-    Some(match expr {
-        Expr::IntLiteral(n, _, _) => ConstVal::Int(i128::from(*n)),
-        Expr::BoolLiteral(b, _) => ConstVal::Bool(*b),
-        Expr::Group(inner) | Expr::Cast(inner, _) => const_eval(inner, symbols, vals)?,
-        Expr::Ident((name, _)) => ConstVal::Int(*vals.get(name)?),
-        Expr::Call(callee, args) if is_len_call(callee) && args.len() == 1 => {
-            ConstVal::Int(const_len_expr(&args[0], symbols, vals)?)
-        }
-        Expr::SizeOf(ty_expr, _) => {
-            let ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
-            if matches!(ty, Type::Unresolved(_)) {
-                return None;
-            }
-            ConstVal::Int(i128::from(types::element_size(&ty)))
-        }
-        Expr::Unary(U::Neg, inner) => match const_eval(inner, symbols, vals)? {
-            ConstVal::Int(v) => ConstVal::Int(v.checked_neg()?),
-            ConstVal::Bool(_) => return None,
-        },
-        Expr::Unary(U::BitNot, inner) => match const_eval(inner, symbols, vals)? {
-            ConstVal::Int(v) => ConstVal::Int(!v),
-            ConstVal::Bool(_) => return None,
-        },
-        Expr::Unary(U::Not, inner) => match const_eval(inner, symbols, vals)? {
-            ConstVal::Bool(b) => ConstVal::Bool(!b),
-            ConstVal::Int(_) => return None,
-        },
-        Expr::Binary(lhs, op, rhs) => {
-            let lv = const_eval(lhs, symbols, vals)?;
-            let rv = const_eval(rhs, symbols, vals)?;
-            match (lv, rv) {
-                (ConstVal::Int(x), ConstVal::Int(y)) => match op {
-                    B::Add => ConstVal::Int(x.checked_add(y)?),
-                    B::Sub => ConstVal::Int(x.checked_sub(y)?),
-                    B::Mul => ConstVal::Int(x.checked_mul(y)?),
-                    B::Div => ConstVal::Int(x.checked_div(y)?),
-                    B::Mod => ConstVal::Int(x.checked_rem(y)?),
-                    B::BitAnd => ConstVal::Int(x & y),
-                    B::BitOr => ConstVal::Int(x | y),
-                    B::BitXor => ConstVal::Int(x ^ y),
-                    B::Shl => ConstVal::Int(u32::try_from(y).ok().and_then(|s| x.checked_shl(s))?),
-                    B::Shr => ConstVal::Int(u32::try_from(y).ok().and_then(|s| x.checked_shr(s))?),
-                    B::Eq => ConstVal::Bool(x == y),
-                    B::NotEq => ConstVal::Bool(x != y),
-                    B::Lt => ConstVal::Bool(x < y),
-                    B::Gt => ConstVal::Bool(x > y),
-                    B::LtEq => ConstVal::Bool(x <= y),
-                    B::GtEq => ConstVal::Bool(x >= y),
-                    _ => return None,
-                },
-                (ConstVal::Bool(x), ConstVal::Bool(y)) => match op {
-                    B::And => ConstVal::Bool(x && y),
-                    B::Or => ConstVal::Bool(x || y),
-                    B::Eq => ConstVal::Bool(x == y),
-                    B::NotEq => ConstVal::Bool(x != y),
-                    _ => return None,
-                },
-                _ => return None,
-            }
-        }
-        _ => return None,
-    })
-}
-
-fn is_len_call(expr: &Expr) -> bool {
-    matches!(expr, Expr::Ident((name, _)) if name == "len")
-}
-
-fn const_len_expr(
-    expr: &Expr,
-    symbols: &SymbolTable,
-    vals: &HashMap<String, i128>,
-) -> Option<i128> {
-    match expr {
-        Expr::Ident((name, _)) => symbols
-            .consts
-            .get(name)
-            .map(|sym| &sym.ty)
-            .or_else(|| symbols.statics.get(name).map(|sym| sym.ty.inner()))
-            .and_then(|ty| match ty.inner() {
-                Type::Array(_, n) => Some(*n as i128),
-                _ => None,
-            }),
-        Expr::ViewNew { base, stride, .. } => {
-            let n = match global_expr_type(base, symbols)?.inner() {
-                Type::Array(_, n) => *n as i128,
-                _ => return None,
-            };
-            if let Some(stride) = stride {
-                let ConstVal::Int(k) = const_eval(stride, symbols, vals)? else {
-                    return None;
-                };
-                if k <= 0 {
-                    return None;
-                }
-                Some(n / k)
-            } else {
-                Some(n)
-            }
-        }
-        Expr::BitNew { base, .. } => match global_expr_type(base, symbols)?.inner() {
-            Type::Array(_, n) => Some((*n as i128) * 8),
+impl consteval::Env for CheckEnv<'_> {
+    fn const_int(&self, name: &str) -> Option<i128> {
+        match self.vals.get(name) {
+            Some(ConstVal::Int(v)) => Some(*v),
             _ => None,
-        },
-        _ => None,
+        }
+    }
+    fn const_bool(&self, name: &str) -> Option<bool> {
+        match self.vals.get(name) {
+            Some(ConstVal::Bool(b)) => Some(*b),
+            _ => None,
+        }
+    }
+    fn array_len(&self, name: &str) -> Option<i128> {
+        global_array_len(self.symbols, name)
+    }
+    fn sizeof(&self, ty: &ast::TypeExpr) -> Option<i128> {
+        let t = types::resolve_type_expr(ty, &self.symbols.structs, &self.symbols.enums);
+        if matches!(t, Type::Unresolved(_)) {
+            return None;
+        }
+        Some(i128::from(types::element_size(&t)))
     }
 }
 
-fn global_expr_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a Type> {
-    match expr {
-        Expr::Ident((name, _)) => symbols
-            .consts
-            .get(name)
-            .map(|sym| &sym.ty)
-            .or_else(|| symbols.statics.get(name).map(|sym| &sym.ty)),
-        _ => None,
-    }
+/// Element count of a named array `const`/`static`, or `None` if it is not a
+/// (visible) array. `.inner()` sees through a storage wrapper.
+fn global_array_len(symbols: &SymbolTable, name: &str) -> Option<i128> {
+    symbols
+        .consts
+        .get(name)
+        .map(|s| &s.ty)
+        .or_else(|| symbols.statics.get(name).map(|s| &s.ty))
+        .and_then(|ty| match ty.inner() {
+            Type::Array(_, n) => Some(*n as i128),
+            _ => None,
+        })
 }
 
 fn const_init_is_compile_time(
     expr: &Expr,
     symbols: &SymbolTable,
-    vals: &HashMap<String, i128>,
+    vals: &HashMap<String, ConstVal>,
 ) -> bool {
     match expr {
         Expr::ArrayInit(elems, _) => elems
@@ -327,7 +240,7 @@ fn const_init_is_compile_time(
         // integer path below only tracks ints, so this also covers float/
         // aggregate const references). Type compatibility is checked separately.
         Expr::Ident((name, _)) if symbols.consts.contains_key(name) => true,
-        _ => const_eval(expr, symbols, vals).is_some(),
+        _ => consteval::eval(expr, &CheckEnv { symbols, vals }).is_some(),
     }
 }
 
@@ -372,16 +285,22 @@ fn check_len_builtin(
     }
 }
 
-/// Compile-time values of all `const` items, resolved to a fixpoint so a
-/// `const` defined in terms of another resolves regardless of order.
-fn collect_const_values(program: &Program, symbols: &SymbolTable) -> HashMap<String, i128> {
-    let mut vals: HashMap<String, i128> = HashMap::new();
+/// Compile-time values of all `const` items (integer and boolean), resolved to a
+/// fixpoint so a `const` defined in terms of another resolves regardless of order.
+fn collect_const_values(program: &Program, symbols: &SymbolTable) -> HashMap<String, ConstVal> {
+    let mut vals: HashMap<String, ConstVal> = HashMap::new();
     loop {
         let mut changed = false;
         for item in &program.items {
             if let ast::Item::ConstDef(c) = item
                 && !vals.contains_key(&c.name.0)
-                && let Some(ConstVal::Int(v)) = const_eval(&c.value, symbols, &vals)
+                && let Some(v) = consteval::eval(
+                    &c.value,
+                    &CheckEnv {
+                        symbols,
+                        vals: &vals,
+                    },
+                )
             {
                 vals.insert(c.name.0.clone(), v);
                 changed = true;
@@ -406,7 +325,13 @@ fn check_comptime_asserts(program: &Program, symbols: &SymbolTable, diags: &mut 
     let vals = collect_const_values(program, symbols);
     for item in &program.items {
         if let ast::Item::ComptimeAssert(ca) = item {
-            match const_eval(&ca.cond, symbols, &vals) {
+            match consteval::eval(
+                &ca.cond,
+                &CheckEnv {
+                    symbols,
+                    vals: &vals,
+                },
+            ) {
                 Some(ConstVal::Bool(true)) => {}
                 Some(ConstVal::Bool(false)) => {
                     diags.error(
@@ -1431,7 +1356,7 @@ fn check_expr(
         }
 
         Expr::Call(func_expr, args) => {
-            if is_len_call(func_expr) {
+            if consteval::is_len_call(func_expr) {
                 return check_len_builtin(args, symbols, scope, fn_name, expected_ret, diags);
             }
 
@@ -1680,8 +1605,19 @@ fn check_expr(
             Type::Array(Box::new(elem_ty), elems.len())
         }
         Expr::Cast(inner, ty_expr) => {
-            check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
+            let source_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
             let target_ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
+            // A cast to `b1` has no valid lowering for a non-`b1` source: there is
+            // no correct one-bit width conversion. Const eval would silently yield
+            // 0 and codegen emits an invalid `bitcast ... to i1`, so reject it and
+            // point the user at an explicit comparison.
+            if matches!(target_ty, Type::B1) && !matches!(source_ty.inner(), Type::B1) {
+                diags.error(
+                    format!("cannot cast `{source_ty:?}` to `b1`; compare instead (e.g. `x != 0`)"),
+                    "E346",
+                    ty_expr.span(),
+                );
+            }
             // Warn on literal narrowing
             if let Expr::IntLiteral(n, _, _) = inner.as_ref() {
                 let (min, max) = int_range(&target_ty);

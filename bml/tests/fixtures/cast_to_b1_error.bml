@@ -1,0 +1,8 @@
+// A cast to `b1` from a non-`b1` source has no valid lowering (the const path
+// silently yielded `i1 0`, the runtime path emitted an invalid `bitcast to i1`).
+const ONE: b1 = 1 as b1;
+
+fn main() @context(thread) {
+    var n: u32 = 2;
+    var b: b1 = n as b1;
+}

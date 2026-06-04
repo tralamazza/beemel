@@ -4,6 +4,7 @@ pub mod arch;
 pub mod ast;
 pub mod borrow;
 pub mod checker;
+pub mod consteval;
 pub mod constfold;
 pub mod context;
 pub mod errors;

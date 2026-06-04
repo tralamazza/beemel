@@ -355,6 +355,7 @@ fn exec_float_ops() {
 assert_exec!(exec_const_array_len, "const_array_len.bml");
 assert_exec!(exec_const_aggregate_len, "const_aggregate_len.bml");
 assert_exec!(exec_const_ref_init, "const_ref_init.bml");
+assert_exec!(exec_const_cast_bool, "const_cast_bool.bml");
 
 // ─── array values: init / index read / index write / var index (language.md §6)
 assert_exec!(exec_arrays, "arrays.bml");

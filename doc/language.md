@@ -1041,6 +1041,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E343  | `comptime_assert` condition is not a compile-time-constant `b1` expression |
 | E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
 | E345  | `len` is a reserved builtin and cannot be defined as a function |
+| E346  | Cast to `b1` requires a `b1` source; compare instead (e.g. `x != 0`) |
 
 Verification (`bml verify`) findings use V-series codes (V100–V999). They are
 listed separately in [verification-codes.md](./verification-codes.md).

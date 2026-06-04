@@ -1,0 +1,32 @@
+import harness.semihost;
+
+// Runtime coverage for const evaluation fixes:
+//   - `300 as u8` must reach the program as 44 (truncated), not 300.
+//   - `300 as b8` truncates the same way, at const time and at run time (the
+//     runtime cast used to emit an invalid `bitcast i32 to i8`).
+//   - a bool const aliased by name must keep its value (the old bug emitted 0,
+//     so the `if ALIAS` branch would not be taken).
+const X: u8 = 300 as u8;
+const C8: b8 = 300 as b8;
+const OK: b1 = true;
+const ALIAS: b1 = OK;
+
+comptime_assert(ALIAS);
+
+fn main() @context(thread) {
+    expect_u32(X as u32, 44);
+    expect_u32(C8 as u32, 44);
+
+    // Runtime int -> b8 (formerly an invalid `bitcast i32 to i8`).
+    var n: u32 = 300;
+    var b: b8 = n as b8;
+    expect_u32(b as u32, 44);
+
+    var r: u32 = 0;
+    if ALIAS {
+        r = 7;
+    }
+    expect_u32(r, 7);
+
+    done();
+}

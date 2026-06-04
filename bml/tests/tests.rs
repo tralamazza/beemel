@@ -245,6 +245,7 @@ assert_pass!(test_for_loop, "for_loop.bml");
 assert_pass!(test_const_aggregate_len, "const_aggregate_len.bml");
 assert_error!(test_len_bad_arg, "len_bad_arg_error.bml", "E326");
 assert_error!(test_len_redefine, "len_redefine_error.bml", "E345");
+assert_error!(test_cast_to_b1, "cast_to_b1_error.bml", "E346");
 assert_error!(
     test_const_nonconst_init,
     "const_nonconst_init_error.bml",
@@ -261,6 +262,25 @@ fn test_const_ref_init_inlined() {
     for pattern in [
         "@FROM_CONST = global [4 x i32] [i32 11, i32 22, i32 33, i32 44]",
         "@PI_ALIAS = constant float 0x400C000000000000",
+    ] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
+
+// Const eval respects cast truncation (`300 as u8` -> 44) and resolves bool
+// const aliases (`ALIAS` keeps `OK`'s value, not a silent 0). Compiling at all
+// also proves `comptime_assert` accepts a boolean `const`. One compile (the
+// fixture's `.ll` is written next to it, so parallel `bml_ir` tests would race).
+#[test]
+fn test_const_cast_and_bool() {
+    let ir = bml_ir("const_cast_bool.bml");
+    for pattern in [
+        "@X = constant i8 44",
+        "@Y8 = constant i8 44",
+        "@ALIAS = constant i1 1",
     ] {
         assert!(
             ir.contains(pattern),

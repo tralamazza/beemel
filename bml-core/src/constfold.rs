@@ -13,7 +13,8 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinaryOp, Block, Expr, IntSuffix, Item, Program, Stmt, TypeExpr, UnaryOp};
+use crate::ast::{Block, Expr, IntSuffix, Item, Program, Stmt, TypeExpr};
+use crate::consteval::{self, Env};
 
 /// Rewrite const-valued array lengths in `program` into integer literals.
 pub fn fold_array_lengths(program: &mut Program) {
@@ -81,66 +82,33 @@ fn type_array_len(
     }
 }
 
-/// Try to evaluate `expr` as a constant integer using already-known consts.
+/// Resolves names from the pre-resolution const/array-length maps. Types are not
+/// resolved at this stage, so `sizeof` is left unevaluated.
+struct FoldEnv<'a> {
+    consts: &'a HashMap<String, i128>,
+    array_lens: &'a HashMap<String, usize>,
+}
+
+impl Env for FoldEnv<'_> {
+    fn const_int(&self, name: &str) -> Option<i128> {
+        self.consts.get(name).copied()
+    }
+    fn array_len(&self, name: &str) -> Option<i128> {
+        self.array_lens.get(name).map(|n| *n as i128)
+    }
+    fn sizeof(&self, _ty: &TypeExpr) -> Option<i128> {
+        None
+    }
+}
+
+/// Try to evaluate `expr` as a constant integer using already-known consts and
+/// array lengths. See [`crate::consteval`] for the shared evaluator.
 fn fold_const_int(
     expr: &Expr,
     consts: &HashMap<String, i128>,
     array_lens: &HashMap<String, usize>,
 ) -> Option<i128> {
-    match expr {
-        Expr::IntLiteral(n, _, _) => Some(i128::from(*n)),
-        Expr::Ident((name, _)) => consts.get(name).copied(),
-        Expr::Group(inner) => fold_const_int(inner, consts, array_lens),
-        Expr::Unary(UnaryOp::Neg, inner) => fold_const_int(inner, consts, array_lens).map(|v| -v),
-        Expr::Call(callee, args)
-            if matches!(callee.as_ref(), Expr::Ident((name, _)) if name == "len")
-                && args.len() == 1 =>
-        {
-            fold_len(&args[0], consts, array_lens)
-        }
-        Expr::Binary(lhs, op, rhs) => {
-            let a = fold_const_int(lhs, consts, array_lens)?;
-            let b = fold_const_int(rhs, consts, array_lens)?;
-            Some(match op {
-                BinaryOp::Add => a + b,
-                BinaryOp::Sub => a - b,
-                BinaryOp::Mul => a * b,
-                BinaryOp::Div if b != 0 => a / b,
-                BinaryOp::Mod if b != 0 => a % b,
-                BinaryOp::BitAnd => a & b,
-                BinaryOp::BitOr => a | b,
-                BinaryOp::BitXor => a ^ b,
-                BinaryOp::Shl => a << b,
-                BinaryOp::Shr => a >> b,
-                _ => return None,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn fold_len(
-    expr: &Expr,
-    consts: &HashMap<String, i128>,
-    array_lens: &HashMap<String, usize>,
-) -> Option<i128> {
-    match expr {
-        Expr::Ident((name, _)) => array_lens.get(name).map(|n| *n as i128),
-        Expr::ViewNew { base, stride, .. } => {
-            let n = fold_len(base, consts, array_lens)?;
-            if let Some(stride) = stride {
-                let k = fold_const_int(stride, consts, array_lens)?;
-                if k <= 0 {
-                    return None;
-                }
-                Some(n / k)
-            } else {
-                Some(n)
-            }
-        }
-        Expr::BitNew { base, .. } => Some(fold_len(base, consts, array_lens)? * 8),
-        _ => None,
-    }
+    consteval::eval_int(expr, &FoldEnv { consts, array_lens })
 }
 
 fn fold_type(

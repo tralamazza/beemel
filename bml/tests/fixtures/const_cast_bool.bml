@@ -1,0 +1,21 @@
+// Regression coverage for const evaluation:
+//   - `300 as u8` truncates to 44 (cast target respected), not 300.
+//   - a bool const aliased by name keeps its value (not silently 0).
+//   - `comptime_assert` accepts a boolean `const` (this file compiling proves it).
+
+const X: u8 = 300 as u8;
+const Y8: b8 = 300 as b8;
+const N: u32 = 4;
+
+const OK: b1 = true;
+const ALIAS: b1 = OK;
+const BIG_ENOUGH: b1 = N > 2;
+
+comptime_assert(OK);
+comptime_assert(ALIAS);
+comptime_assert(BIG_ENOUGH);
+
+fn main() @context(thread) {
+    var x: u8 = X;
+    var a: b1 = ALIAS;
+}
