@@ -9,7 +9,8 @@
 # If [name] is omitted, defaults to "blinky".
 # Examples: ./flash.sh scroll, ./flash.sh scroll --debug
 #
-# Requires: cargo, ld.lld, openocd, CMSIS-DAP adapter (built-in on micro:bit)
+# Requires: cargo, ld.lld or arm-none-eabi-ld, openocd,
+# CMSIS-DAP adapter (built-in on micro:bit)
 
 set -e
 
@@ -48,7 +49,15 @@ cargo run --manifest-path "$DIR/../../Cargo.toml" --release --bin bml -- \
     $BUILD_FLAGS "$DIR/$NAME.bml"
 
 # Link
-ld.lld -T "$BASE.ld" "$BASE.o" -o "$BASE.elf"
+if command -v ld.lld >/dev/null 2>&1; then
+    LINKER=ld.lld
+elif command -v arm-none-eabi-ld >/dev/null 2>&1; then
+    LINKER=arm-none-eabi-ld
+else
+    echo "missing linker: install ld.lld or arm-none-eabi-ld" >&2
+    exit 1
+fi
+"$LINKER" -T "$BASE.ld" "$BASE.o" -o "$BASE.elf"
 
 # Flash via OpenOCD (CMSIS-DAP)
 openocd -f interface/cmsis-dap.cfg -f target/nrf51.cfg \
