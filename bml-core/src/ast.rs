@@ -201,6 +201,15 @@ pub struct AssertStmt {
 #[derive(Debug, Clone)]
 pub struct AsmStmt {
     pub asm_text: String,
+    /// Output operands: `(constraint, target)`, where the constraint starts with
+    /// `=` (e.g. `"=r"`) and the target is an lvalue the result is stored into.
+    /// In the template, operands are referenced as `$0`, `$1`, ... (outputs
+    /// first, then inputs), per LLVM inline-asm numbering.
+    pub outputs: Vec<(String, Expr)>,
+    /// Input operands: `(constraint, value)` (e.g. `"r"`).
+    pub inputs: Vec<(String, Expr)>,
+    /// Clobbers, e.g. `"memory"`, `"cc"`, `"r0"` (lowered to `~{...}`).
+    pub clobbers: Vec<String>,
     pub span: Span,
 }
 

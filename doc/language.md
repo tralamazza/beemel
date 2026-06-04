@@ -754,7 +754,15 @@ break_stmt    = "break" ";"
 
 continue_stmt = "continue" ";"
 
-asm_stmt      = "asm" "{" "body" "}"
+asm_stmt      = "asm" "{" raw_body "}"
+                [ ":" asm_operands [ ":" asm_operands [ ":" asm_clobbers ] ] ] ";"
+asm_operands  = [ asm_operand { "," asm_operand } ]
+asm_operand   = string "(" expr ")"      (* constraint + value/place *)
+asm_clobbers  = [ string { "," string } ]
+              ;; sections are positional: outputs, then inputs, then clobbers.
+              ;; The body is raw text; operands are referenced as $0, $1, ...
+              ;; (outputs first, then inputs), per LLVM. With no `:` sections the
+              ;; body runs as-is (and the enclosing fn's params occupy r0-r3).
 
 for_stmt      = "for" ident ":" type "in" expr ("upto" | "downto") expr ["step" expr] block
 
@@ -857,6 +865,36 @@ Both are intended for `bml verify`, but `bml build` treats them differently:
   is false. In `bml build` this is undefined behavior if the condition can be
   false at runtime, and the optimizer may rely on it. Only place `assume` on
   facts that are genuinely guaranteed by the surrounding code.
+
+### Inline assembly
+
+`asm { ... }` emits a raw assembly block. The body between the braces is passed
+through verbatim. With no operand sections it runs as-is, and the enclosing
+function's parameters occupy `r0`-`r3` (the legacy convention used by tiny
+trampolines); prefer explicit operands for anything else.
+
+GCC/LLVM-style operands hang off the block, separated by `:` in the fixed order
+outputs, inputs, clobbers (any section may be empty). In the body, operands are
+referenced as `$0`, `$1`, ... numbered outputs-first then inputs.
+
+```bml
+// output only: read a special register into a local
+var pri: u32 = 0;
+asm { mrs $0, PRIMASK } : "=r"(pri);
+
+// one input, one output: b = c + 1
+asm { adds $0, $1, #1 } : "=r"(b) : "r"(c);
+
+// two outputs (returned as a pair), then a barrier with a memory clobber
+asm { movs $0, #7
+      movs $1, #9 } : "=r"(x), "=r"(y);
+asm { dmb } : : : "memory";
+```
+
+An output's constraint must start with `=` (e.g. `"=r"`) and its operand must be
+an assignable place (otherwise `E314`); inputs and outputs are type-checked, so
+an undefined name is `E305`. Clobbers are written bare (`"memory"`, `"cc"`,
+`"r0"`) and lowered to LLVM `~{...}`.
 
 ### Literals
 

@@ -949,6 +949,15 @@ impl IrEmitter {
                     .replace('\\', "\\\\")
                     .replace('"', "\\22")
                     .replace('\n', "\\0A");
+                // Explicit operands take the structured path; otherwise keep the
+                // legacy implicit behavior (bind the function's params to r0-r3).
+                if !asm_stmt.outputs.is_empty()
+                    || !asm_stmt.inputs.is_empty()
+                    || !asm_stmt.clobbers.is_empty()
+                {
+                    self.emit_asm_operands(asm_stmt, &escaped, symbols, fn_name);
+                    return (None, false);
+                }
                 if self.current_fn_params.is_empty() {
                     self.line(&format!(
                         "call void asm sideeffect \"{escaped}\", \"~{{memory}}\"()"
@@ -2602,6 +2611,99 @@ impl IrEmitter {
                 let reg = self.new_reg();
                 self.line(&format!("{reg} = add i32 0, 0  ; enum: {name}@{vname}"));
                 reg
+            }
+        }
+    }
+
+    /// Lower an `asm` block with explicit GCC/LLVM-style operands:
+    /// `asm { "...$0..." } : outputs : inputs : clobbers`. Outputs are returned
+    /// by the asm call (a single value, or a struct for 2+) and stored into
+    /// their lvalues; inputs are passed as call arguments.
+    fn emit_asm_operands(
+        &mut self,
+        asm: &ast::AsmStmt,
+        escaped: &str,
+        symbols: &SymbolTable,
+        fn_name: &str,
+    ) {
+        // Inputs: evaluate each to an SSA value (owned, so no borrow is held
+        // across the later emits).
+        let inputs: Vec<(String, String, String)> = asm
+            .inputs
+            .iter()
+            .map(|(constraint, expr)| {
+                let reg = self.emit_expr(expr, symbols, fn_name);
+                let llvm = llvm_type(&self.expr_type(expr, symbols));
+                (llvm, reg, constraint.clone())
+            })
+            .collect();
+
+        // Output types, in declaration order.
+        let out_tys: Vec<(String, Type)> = asm
+            .outputs
+            .iter()
+            .map(|(_, expr)| {
+                let ty = self.expr_type(expr, symbols);
+                (llvm_type(&ty), ty)
+            })
+            .collect();
+
+        // Constraint string: outputs, then inputs, then clobbers.
+        let mut cons: Vec<String> = Vec::new();
+        for (c, _) in &asm.outputs {
+            cons.push(c.clone());
+        }
+        for (_, _, c) in &inputs {
+            cons.push(c.clone());
+        }
+        for cl in &asm.clobbers {
+            cons.push(format!("~{{{cl}}}"));
+        }
+        let cons_str = cons.join(",");
+        let args_str = inputs
+            .iter()
+            .map(|(llvm, reg, _)| format!("{llvm} {reg}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        match out_tys.len() {
+            0 => {
+                self.line(&format!(
+                    "call void asm sideeffect \"{escaped}\", \"{cons_str}\"({args_str})"
+                ));
+            }
+            1 => {
+                let (llvm, ty) = &out_tys[0];
+                let ret = self.new_reg();
+                self.line(&format!(
+                    "{ret} = call {llvm} asm sideeffect \"{escaped}\", \"{cons_str}\"({args_str})"
+                ));
+                let target = &asm.outputs[0].1;
+                if let Some(lv) = crate::parser::expr_to_lvalue(target.clone()) {
+                    self.emit_store_target(&lv, symbols, fn_name, &ret, ty, target.span());
+                }
+            }
+            _ => {
+                let struct_ty = format!(
+                    "{{ {} }}",
+                    out_tys
+                        .iter()
+                        .map(|(l, _)| l.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let ret = self.new_reg();
+                self.line(&format!(
+                    "{ret} = call {struct_ty} asm sideeffect \"{escaped}\", \"{cons_str}\"({args_str})"
+                ));
+                for (i, (_, ty)) in out_tys.iter().enumerate() {
+                    let ev = self.new_reg();
+                    self.line(&format!("{ev} = extractvalue {struct_ty} {ret}, {i}"));
+                    let target = &asm.outputs[i].1;
+                    if let Some(lv) = crate::parser::expr_to_lvalue(target.clone()) {
+                        self.emit_store_target(&lv, symbols, fn_name, &ev, ty, target.span());
+                    }
+                }
             }
         }
     }

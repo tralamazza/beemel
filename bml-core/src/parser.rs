@@ -916,12 +916,30 @@ impl<'a> Parser<'a> {
             TokenKind::Match => self.parse_match_stmt().map(Stmt::Match),
             TokenKind::AsmBody(text) => {
                 let span = self.peek_span();
-                let stmt = Stmt::Asm(AsmStmt {
-                    asm_text: text.clone(),
-                    span,
-                });
+                let asm_text = text.clone();
                 self.advance();
-                Some(stmt)
+                // Optional GCC-style operand sections: `: outputs : inputs : clobbers`.
+                // Each section is positional and may be empty.
+                let mut outputs = Vec::new();
+                let mut inputs = Vec::new();
+                let mut clobbers = Vec::new();
+                if self.eat(&TokenKind::Colon) {
+                    outputs = self.parse_asm_operands()?;
+                    if self.eat(&TokenKind::Colon) {
+                        inputs = self.parse_asm_operands()?;
+                        if self.eat(&TokenKind::Colon) {
+                            clobbers = self.parse_asm_clobbers()?;
+                        }
+                    }
+                }
+                self.eat(&TokenKind::Semicolon);
+                Some(Stmt::Asm(AsmStmt {
+                    asm_text,
+                    outputs,
+                    inputs,
+                    clobbers,
+                    span,
+                }))
             }
             TokenKind::Const => {
                 self.diags.error(
@@ -1618,6 +1636,60 @@ impl<'a> Parser<'a> {
     }
 }
 
+impl Parser<'_> {
+    /// Parse a (possibly empty) comma-separated list of asm operands, each
+    /// `"<constraint>" "(" expr ")"`. Used for the output and input sections.
+    fn parse_asm_operands(&mut self) -> Option<Vec<(String, Expr)>> {
+        let mut ops = Vec::new();
+        // Empty section: next token is `:` (another section) or end of statement.
+        if matches!(
+            self.peek_kind(),
+            TokenKind::Colon | TokenKind::Semicolon | TokenKind::RBrace
+        ) {
+            return Some(ops);
+        }
+        loop {
+            let constraint = self.parse_asm_constraint_string()?;
+            self.expect(&TokenKind::LParen, "expected `(` after asm constraint")
+                .ok()?;
+            let expr = self.parse_expr()?;
+            self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+            ops.push((constraint, expr));
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        Some(ops)
+    }
+
+    /// Parse a (possibly empty) comma-separated list of clobber strings.
+    fn parse_asm_clobbers(&mut self) -> Option<Vec<String>> {
+        let mut clobbers = Vec::new();
+        if matches!(self.peek_kind(), TokenKind::Semicolon | TokenKind::RBrace) {
+            return Some(clobbers);
+        }
+        loop {
+            clobbers.push(self.parse_asm_constraint_string()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        Some(clobbers)
+    }
+
+    fn parse_asm_constraint_string(&mut self) -> Option<String> {
+        if let TokenKind::StringLiteral(s) = self.peek_kind() {
+            let v = s.clone();
+            self.advance();
+            Some(v)
+        } else {
+            self.diags
+                .error("expected a string constraint", "E100", self.peek_span());
+            None
+        }
+    }
+}
+
 /// Map a compound-assignment token (`+=`, `<<=`, ...) to the binary operator it
 /// desugars to. Returns `None` for any other token.
 fn compound_assign_op(kind: &TokenKind) -> Option<BinaryOp> {
@@ -1636,7 +1708,7 @@ fn compound_assign_op(kind: &TokenKind) -> Option<BinaryOp> {
     })
 }
 
-fn expr_to_lvalue(expr: Expr) -> Option<LValue> {
+pub(crate) fn expr_to_lvalue(expr: Expr) -> Option<LValue> {
     match expr {
         Expr::Ident((name, span)) => Some(LValue::Name((name, span))),
         Expr::FieldAccess(base, field) => {

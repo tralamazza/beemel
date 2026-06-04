@@ -573,7 +573,36 @@ fn check_block(
                 last_type = None;
             }
 
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) => {}
+
+            Stmt::Asm(asm_stmt) => {
+                // Resolve and type-check operand expressions so undefined names
+                // and type errors surface before IR. Output targets must be
+                // assignable places and their constraint must start with `=`.
+                for (constraint, target) in &asm_stmt.outputs {
+                    check_expr(target, symbols, scope, fn_name, expected_ret, diags);
+                    if crate::parser::expr_to_lvalue(target.clone()).is_none() {
+                        diags.error(
+                            "asm output operand must be an assignable place",
+                            "E314",
+                            target.span(),
+                        );
+                    }
+                    if !constraint.starts_with('=') {
+                        diags.error(
+                            format!(
+                                "asm output constraint must start with `=`, got `{constraint}`"
+                            ),
+                            "E108",
+                            asm_stmt.span,
+                        );
+                    }
+                }
+                for (_constraint, value) in &asm_stmt.inputs {
+                    check_expr(value, symbols, scope, fn_name, expected_ret, diags);
+                }
+                last_type = None;
+            }
 
             Stmt::Match(match_stmt) => {
                 let scrutinee_ty = check_expr(

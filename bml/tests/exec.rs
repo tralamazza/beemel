@@ -289,6 +289,9 @@ assert_exec!(exec_view_strided, "view_strided.bml");
 // locals, array elements, struct fields, pointer derefs, and peripheral fields.
 assert_exec!(exec_compound_assign, "compound_assign.bml");
 
+// Inline asm with operands (outputs/inputs/clobbers, single + struct-return).
+assert_exec!(exec_asm_operands, "asm_operands.bml");
+
 // ─── control flow & expressions (language.md §11) ────────────────────────────
 assert_exec!(exec_control_flow, "control_flow.bml");
 
