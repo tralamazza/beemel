@@ -701,6 +701,240 @@ mod property {
     }
 }
 
+// ─── float value-differential ────────────────────────────────────────────────
+//
+// The integer property test value-checks arithmetic; floats only had
+// build-validity (does it compile) and a few hand-written values. This generates
+// random f32/f64 expressions, evaluates each with a Rust oracle at the matching
+// precision, then on-device reinterprets the result's *bits* (via `(&v) as *u32`
+// / `*u64`, since bml's `f as u32` is a numeric convert, not a bit cast) and
+// compares them to `to_bits()`. Comparing bits, not values, makes the check
+// exact and sidesteps re-parsing a computed float literal.
+//
+// `+ - * /` are IEEE-754 correctly-rounded on both sides (Rust and libgcc
+// soft-float), so finite results are bit-identical. Non-finite oracle results
+// (inf/NaN, whose bit patterns can differ) are rejected by resampling, and
+// divisors are nonzero literals, so no division-by-zero.
+#[allow(
+    clippy::cast_lossless,
+    clippy::many_single_char_names,
+    clippy::doc_markdown,
+    clippy::format_push_string
+)]
+mod property_float {
+    use super::{OPT_LEVELS, Rng, bml_run, libgcc_path, tools_available, write_generated};
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ty {
+        F32,
+        F64,
+    }
+
+    #[derive(Clone, Copy)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+        Div,
+    }
+
+    /// A literal is an index into `POOL` plus a sign. The pool holds values that
+    /// are exactly representable in both f32 and f64 (so the rendered decimal
+    /// parses to the identical value on device and in the oracle); the paired
+    /// string is the exact bml spelling.
+    enum Expr {
+        Lit { idx: usize, neg: bool },
+        Bin(Box<Expr>, Op, Box<Expr>),
+    }
+
+    const POOL: &[(&str, f64)] = &[
+        ("0.0", 0.0),
+        ("0.125", 0.125),
+        ("0.25", 0.25),
+        ("0.5", 0.5),
+        ("1.0", 1.0),
+        ("2.5", 2.5),
+        ("3.25", 3.25),
+        ("4.0", 4.0),
+        ("7.75", 7.75),
+        ("8.0", 8.0),
+        ("10.0", 10.0),
+        ("100.0", 100.0),
+    ];
+
+    fn lit_val(idx: usize, neg: bool) -> f64 {
+        if neg { -POOL[idx].1 } else { POOL[idx].1 }
+    }
+
+    fn gen_lit(rng: &mut Rng) -> Expr {
+        Expr::Lit {
+            idx: rng.below(POOL.len() as u64) as usize,
+            neg: rng.below(2) == 1,
+        }
+    }
+
+    /// A nonzero literal divisor (index 0 is `0.0`), so no division by zero.
+    fn gen_divisor(rng: &mut Rng) -> Expr {
+        Expr::Lit {
+            idx: 1 + rng.below(POOL.len() as u64 - 1) as usize,
+            neg: rng.below(2) == 1,
+        }
+    }
+
+    fn gen_expr(rng: &mut Rng, depth: u32) -> Expr {
+        if depth == 0 || rng.below(100) < 35 {
+            return gen_lit(rng);
+        }
+        let op = [Op::Add, Op::Sub, Op::Mul, Op::Div][rng.below(4) as usize];
+        let l = gen_expr(rng, depth - 1);
+        let r = match op {
+            Op::Div => gen_divisor(rng),
+            _ => gen_expr(rng, depth - 1),
+        };
+        Expr::Bin(Box::new(l), op, Box::new(r))
+    }
+
+    fn eval_f32(e: &Expr) -> f32 {
+        match e {
+            Expr::Lit { idx, neg } => lit_val(*idx, *neg) as f32,
+            Expr::Bin(l, op, r) => {
+                let (a, b) = (eval_f32(l), eval_f32(r));
+                match op {
+                    Op::Add => a + b,
+                    Op::Sub => a - b,
+                    Op::Mul => a * b,
+                    Op::Div => a / b,
+                }
+            }
+        }
+    }
+
+    fn eval_f64(e: &Expr) -> f64 {
+        match e {
+            Expr::Lit { idx, neg } => lit_val(*idx, *neg),
+            Expr::Bin(l, op, r) => {
+                let (a, b) = (eval_f64(l), eval_f64(r));
+                match op {
+                    Op::Add => a + b,
+                    Op::Sub => a - b,
+                    Op::Mul => a * b,
+                    Op::Div => a / b,
+                }
+            }
+        }
+    }
+
+    fn op_str(op: Op) -> &'static str {
+        match op {
+            Op::Add => "+",
+            Op::Sub => "-",
+            Op::Mul => "*",
+            Op::Div => "/",
+        }
+    }
+
+    fn render(e: &Expr, t: Ty) -> String {
+        let suf = if t == Ty::F32 { "f" } else { "d" };
+        match e {
+            Expr::Lit { idx, neg } => {
+                let s = POOL[*idx].0;
+                if *neg {
+                    format!("(-{s}{suf})")
+                } else {
+                    format!("{s}{suf}")
+                }
+            }
+            Expr::Bin(l, op, r) => {
+                format!("({} {} {})", render(l, t), op_str(*op), render(r, t))
+            }
+        }
+    }
+
+    #[test]
+    fn exec_property_float() {
+        // Soft-float `__aeabi_*` calls live in libgcc (cortex-m3 has no FPU).
+        if !tools_available() || libgcc_path().is_none() {
+            eprintln!(
+                "skipping float property test: needs qemu, arm-none-eabi-ld, and \
+                 arm-none-eabi-gcc (libgcc, for soft-float)"
+            );
+            return;
+        }
+        let seed = std::env::var("BML_PROP_SEED")
+            .ok()
+            .and_then(|s| match s.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => s.parse().ok(),
+            })
+            .unwrap_or(0x0F10_A732_1234_5678u64);
+        let mut rng = Rng(seed);
+
+        let mut body = String::new();
+        let mut k = 0u32;
+        for _ in 0..60 {
+            for t in [Ty::F32, Ty::F64] {
+                // Resample until the oracle result is finite: inf/NaN bit
+                // patterns can legitimately differ across implementations.
+                let (src, bits, is32) = loop {
+                    let e = gen_expr(&mut rng, 4);
+                    let src = render(&e, t);
+                    match t {
+                        Ty::F32 => {
+                            let v = eval_f32(&e);
+                            if v.is_finite() {
+                                break (src, u64::from(v.to_bits()), true);
+                            }
+                        }
+                        Ty::F64 => {
+                            let v = eval_f64(&e);
+                            if v.is_finite() {
+                                break (src, v.to_bits(), false);
+                            }
+                        }
+                    }
+                };
+                // Bind the result, reinterpret its address as int, compare bits.
+                if is32 {
+                    body.push_str(&format!("    var vf{k}: f32 = {src};\n"));
+                    body.push_str(&format!("    var pf{k}: *u32 = (&vf{k}) as *u32;\n"));
+                    body.push_str(&format!("    expect_u32(*pf{k}, {bits});\n"));
+                } else {
+                    body.push_str(&format!("    var vf{k}: f64 = {src};\n"));
+                    body.push_str(&format!("    var pf{k}: *u64 = (&vf{k}) as *u64;\n"));
+                    body.push_str(&format!("    expect_u64(*pf{k}, {bits}u64);\n"));
+                }
+                k += 1;
+            }
+        }
+        let program = format!(
+            "// GENERATED by exec_property_float (seed {seed:#018x}). Do not edit.\n\
+         import harness.semihost;\n\
+         fn main() @context(thread) {{\n{body}    done();\n}}\n"
+        );
+
+        let name = "_generated_float.bml";
+        let path = write_generated(name, &program);
+        let mut failures = Vec::new();
+        for opt in OPT_LEVELS {
+            let out = bml_run(name, opt);
+            if !out.contains("OK") || out.contains("FAIL") {
+                failures.push(format!(
+                    "-O{opt}: {} OK / {} FAIL",
+                    out.matches("OK").count(),
+                    out.matches("FAIL").count()
+                ));
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            failures.is_empty(),
+            "float property test failed (seed {seed:#018x}): {}\n--- generated source ---\n{program}",
+            failures.join("; ")
+        );
+    }
+}
+
 // ─── Tier-2 build-validity fuzzer ─────────────────────────────────────────────
 //
 // Generate random *well-typed* scalar expressions across every scalar type
