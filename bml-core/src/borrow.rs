@@ -359,7 +359,7 @@ fn check_static_access(
             StorageAnnotation::Dma | StorageAnnotation::External => {
                 // No context restrictions for DMA/external
             }
-            StorageAnnotation::Section(_) => {}
+            StorageAnnotation::Section(_) | StorageAnnotation::Align(_) => {}
         }
     }
 }

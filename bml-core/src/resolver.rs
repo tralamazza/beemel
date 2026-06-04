@@ -632,8 +632,8 @@ fn wrap_with_storage(
             StorageAnnotation::External => {
                 ty = Type::External(Box::new(ty));
             }
-            StorageAnnotation::Section(_) => {
-                // Section doesn't change the type, only placement
+            StorageAnnotation::Section(_) | StorageAnnotation::Align(_) => {
+                // Section/align don't change the type, only placement/layout
             }
         }
     }

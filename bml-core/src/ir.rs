@@ -275,8 +275,17 @@ impl IrEmitter {
                             }
                         })
                         .unwrap_or_default();
+                    // `@align(N)` overrides the default 4-byte alignment.
+                    let align = s
+                        .storage
+                        .iter()
+                        .find_map(|a| match a {
+                            ast::StorageAnnotation::Align(n) => Some(*n),
+                            _ => None,
+                        })
+                        .unwrap_or(4);
                     self.line(&format!(
-                        "@{} = global {} {}{section_attr}, align 4",
+                        "@{} = global {} {}{section_attr}, align {align}",
                         s.name.0, llvm_ty, init_val
                     ));
                 }

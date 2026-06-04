@@ -508,9 +508,25 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::RParen, "expected `)`").ok()?;
                 Some(StorageAnnotation::Section(name))
             }
+            TokenKind::Align => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(`").ok()?;
+                let n = self.parse_int_literal()?;
+                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+                if n == 0 || (n & (n - 1)) != 0 {
+                    self.diags.error(
+                        format!("@align value must be a power of two, got {n}"),
+                        "E104",
+                        span,
+                    );
+                    return None;
+                }
+                Some(StorageAnnotation::Align(n as u32))
+            }
             _ => {
                 self.diags.error(
-                    "expected `exclusive`, `shared`, `dma`, `external`, or `section`",
+                    "expected `exclusive`, `shared`, `dma`, `external`, `section`, or `align`",
                     "E104",
                     self.peek_span(),
                 );

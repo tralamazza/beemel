@@ -296,6 +296,10 @@ assert_exec!(exec_control_flow, "control_flow.bml");
 // latter): checks that `break` exits and `continue` skips the iteration body.
 assert_exec!(exec_loop_break_continue, "loop_break_continue.bml");
 
+// `@align(N)` over-aligns a static; the linker script must honor it so the
+// runtime address is actually aligned (DMA buffers etc.).
+assert_exec!(exec_align_static, "align_static.bml");
+
 // ─── const evaluation (language.md §1) ───────────────────────────────────────
 assert_exec!(exec_const_eval, "const_eval.bml");
 

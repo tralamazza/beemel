@@ -533,6 +533,8 @@ pub enum StorageAnnotation {
     Dma,
     External,
     Section(String),
+    /// `@align(N)` -- minimum byte alignment of the static (a power of two).
+    Align(u32),
 }
 
 #[derive(Debug, Clone)]

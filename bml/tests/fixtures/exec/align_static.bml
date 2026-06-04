@@ -1,0 +1,21 @@
+// `@align(N)` sets a static's minimum byte alignment (N a power of two). Used
+// for DMA buffers and anything hardware touches with an alignment requirement.
+// The auto-generated linker script must honor the over-alignment, so this
+// checks the runtime address is actually aligned.
+import harness.semihost;
+
+static a16: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
+static a64: [u8; 8] @align(64) = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+static a256: [u32; 2] @align(256) = [0u32, 0u32];
+
+fn main() @context(thread) {
+    expect_u32((&a16[0]) as u32 % 16, 0);
+    expect_u32((&a64[0]) as u32 % 64, 0);
+    expect_u32((&a256[0]) as u32 % 256, 0);
+
+    // Alignment does not disturb the value: the buffer is still usable.
+    a16[2] = 0xABCD;
+    expect_u32(a16[2], 0xABCD);
+
+    done();
+}

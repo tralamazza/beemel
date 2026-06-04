@@ -130,6 +130,7 @@ USART1 = 37
 | `@shared(ceiling=N)` | Statics | Auto critical section via `cpsid i` / `cpsie i` |
 | `@dma` | Statics | DMA-accessible RAM |
 | `@external` | Statics | External/C-accessible RAM |
+| `@align(N)` | Statics | Minimum byte alignment `N` (a power of two); over-aligns the static (e.g. DMA buffers) |
 
 Annotations may be combined in any order. For example:
 ```bml
@@ -688,6 +689,7 @@ access        = "readonly" | "writeonly"
 storage_annotation = "exclusive" "(" ident ")"
               | "shared" "(" "ceiling" "=" int ")"
               | "dma" | "external" | "section" "(" string ")"
+              | "align" "(" int ")"          (* power of two; over-aligns the static *)
 
 import_stmt   = "import" ident ["{" ident {"," ident} "}"] ["as" ident] ";"
 
