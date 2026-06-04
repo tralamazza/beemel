@@ -906,13 +906,13 @@ from context and is compatible with any `*T` or `*mut T`.
 | E332  | `view`/`ring`/`bits` length, capacity, head, or bit-offset must be an integer |
 | E333  | `view`/`ring`/`bits` constructor base has the wrong type (not the expected pointer / array / byte type) |
 | E334  | Cannot write through a readonly view (`view`/`ring`/`bits`); only reads are allowed |
-| E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E400  | (removed -- use-after-move is reported as E304; the borrow pass tracks no moves) |
 | E401  | `@exclusive` access from wrong function |
 | E402  | `@shared` ceiling violation |
 | E403  | Context-incompatible function call (ISR→thread or thread→ISR) |
 | E404  | Access to thread-only static from ISR |
 | E405  | Cannot build a view over `@shared` memory (view access bypasses the ceiling critical-section) |
+| E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |
 | E501  | Module not found |
 | E503  | Item is not exported from module (private access) |

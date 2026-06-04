@@ -183,6 +183,13 @@ bml verify --domain apron-octagon program.bml
 # Custom check subset
 bml verify --checks boa,dbz,nullity program.bml
 
+# Machine-readable output (default: text)
+bml verify --format json program.bml
+
+# Control the exit code: fail only on warnings or worse (default: error).
+# Levels: error, warning, info, never
+bml verify --fail-on warning program.bml
+
 # With explicit IKOS binary path (or set BML_IKOS_BIN env var)
 bml verify --ikos-bin /opt/ikos/bin/ikos-analyzer program.bml
 

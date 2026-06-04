@@ -140,11 +140,15 @@ alloca temp, GEP+store each field, load whole struct. For field reads:
 - E001–E099: lexical errors
 - E100–E199: parser errors
 - E200–E299: resolver errors
-- E300–E399: type checker errors (E300–E315 validation, E304/E305 move/undefined, E318–E321 struct errors, E322–E323 peripheral/enum errors, E324–E328 match/if/block expression errors, E408 fn pointer context restriction)
-- E400–E499: borrow enforcer errors
+- E300–E399: type checker errors (type mismatches, move/undefined, structs,
+  enums, peripherals, match/if/block expressions, views, `assume`/`assert`)
+- E400–E499: borrow enforcer errors (storage-class and call-context rules;
+  E408 fn-pointer context restriction)
 - E500–E599: module / import errors
 - E600+: codegen errors
-- W200+: warnings (W301 integer truncation)
+- W200+: warnings (W301 integer truncation, W600 recursive call chain)
+
+  The canonical list is the table in `doc/language.md` §12; keep it in sync.
 
 ### 2. Emit in the appropriate pass
 
@@ -208,10 +212,12 @@ To add a behavior: write a fixture in `tests/fixtures/exec/` that imports the
 harness, exercises the construct, calls `expect_*` against the spec value, then
 `done()`, and register it in `tests/exec.rs` with `assert_exec!`.
 
-Known compiler bugs surfaced by this layer are pinned as `#[ignore]`d
-`known_bug!` tests (minimal `*_known_bug.bml` fixtures). They stay ignored so the
-suite is green; run `cargo test --test exec -- --ignored` to confirm they still
-reproduce, and delete the `#[ignore]` once fixed.
+Known compiler bugs surfaced by this layer can be pinned with the `known_bug!`
+macro: a fixture that exercises documented behavior the compiler currently
+miscompiles, registered `#[ignore]`d so the suite stays green. Run
+`cargo test --test exec -- --ignored` to confirm one still reproduces. Once
+fixed, promote it to a regular `assert_exec!` so it guards the fix as a
+regression test.
 
 ## Generative tests
 
