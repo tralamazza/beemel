@@ -256,15 +256,32 @@ impl IrEmitter {
     // ─── globals ─────────────────────────────────────────────────────
 
     fn emit_global_declarations(&mut self, program: &Program, symbols: &SymbolTable) {
+        // Resolve every `const`'s integer value once; the fixpoint scans all
+        // items, so recomputing it per declaration would be quadratic.
+        let consts = const_int_values(&program.items, symbols);
+        // Map each `const` to its resolved type and initializer so an
+        // initializer that names another `const` (e.g. `static s = LUT;` or
+        // `const Y: f32 = X;`) can be inlined to that const's value.
+        let const_defs: HashMap<String, (Type, &Expr)> = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ast::Item::ConstDef(c) => {
+                    let ty =
+                        crate::types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
+                    Some((c.name.0.clone(), (ty, &c.value)))
+                }
+                _ => None,
+            })
+            .collect();
         for item in &program.items {
             match item {
                 ast::Item::StaticDef(s) => {
                     let resolved_ty =
                         crate::types::resolve_type_expr(&s.ty, &symbols.structs, &symbols.enums);
                     let llvm_ty = llvm_type(&resolved_ty);
-                    let consts = const_int_values(&program.items, symbols);
                     let init_val = if let Some(init) = &s.init {
-                        const_init(&resolved_ty, init, symbols, &consts)
+                        const_init(&resolved_ty, init, symbols, &consts, &const_defs)
                     } else {
                         "zeroinitializer".to_string()
                     };
@@ -297,8 +314,7 @@ impl IrEmitter {
                     let resolved_ty =
                         crate::types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
                     let llvm_ty = llvm_type(&resolved_ty);
-                    let consts = const_int_values(&program.items, symbols);
-                    let val = const_init(&resolved_ty, &c.value, symbols, &consts);
+                    let val = const_init(&resolved_ty, &c.value, symbols, &consts, &const_defs);
                     self.line(&format!(
                         "@{} = constant {} {}, align 4",
                         c.name.0, llvm_ty, val
@@ -4577,20 +4593,22 @@ fn fn_ret_llvm_type(fn_def: &ast::FnDef, symbols: &SymbolTable) -> String {
 /// aggregate statics (arrays): `expr_const_val` only knows scalars, so an array
 /// initializer like `[1, 2, 3, 4]` would otherwise collapse to `0`. The element
 /// type is taken from `ty` (so unsuffixed literals get the right width), and
-/// `.inner()` sees through a storage wrapper. Falls back to the scalar path for
-/// non-aggregate types.
+/// `.inner()` sees through a storage wrapper. An aggregate initializer that just
+/// names another `const` (e.g. `static s = LUT;`) is inlined to that const's
+/// value via `const_defs`. Falls back to the scalar path for non-aggregate types.
 fn const_init(
     ty: &Type,
     expr: &Expr,
     symbols: &SymbolTable,
     consts: &HashMap<String, i128>,
+    const_defs: &HashMap<String, (Type, &Expr)>,
 ) -> String {
     match (ty.inner(), expr) {
         (Type::Array(elem, _), Expr::ArrayInit(elems, _)) => {
             let ell = llvm_type(elem);
             let parts: Vec<String> = elems
                 .iter()
-                .map(|e| format!("{ell} {}", const_init(elem, e, symbols, consts)))
+                .map(|e| format!("{ell} {}", const_init(elem, e, symbols, consts, const_defs)))
                 .collect();
             format!("[{}]", parts.join(", "))
         }
@@ -4602,14 +4620,23 @@ fn const_init(
                         .iter()
                         .find(|(field_name, _)| field_name.0 == *name)
                         .map_or("zeroinitializer".to_string(), |(_, value)| {
-                            const_init(field_ty, value, symbols, consts)
+                            const_init(field_ty, value, symbols, consts, const_defs)
                         });
                     format!("{} {value}", llvm_type(field_ty))
                 })
                 .collect();
             format!("{{ {} }}", parts.join(", "))
         }
-        _ => expr_const_val(ty.inner(), expr, symbols, consts),
+        // An aggregate `const`/`static` initialized by naming another `const`:
+        // inline that const's initializer. Emitting a bare scalar here would
+        // produce invalid IR (`[N x T] 0`), so fall back to a valid zero.
+        (Type::Array(..) | Type::Struct(..), Expr::Ident((name, _))) => {
+            const_defs.get(name).map_or_else(
+                || "zeroinitializer".to_string(),
+                |(ref_ty, ref_expr)| const_init(ref_ty, ref_expr, symbols, consts, const_defs),
+            )
+        }
+        _ => expr_const_val(ty.inner(), expr, symbols, consts, const_defs),
     }
 }
 
@@ -4618,6 +4645,7 @@ fn expr_const_val(
     expr: &Expr,
     symbols: &SymbolTable,
     consts: &HashMap<String, i128>,
+    const_defs: &HashMap<String, (Type, &Expr)>,
 ) -> String {
     match expr {
         Expr::IntLiteral(n, _, _) => format!("{n}"),
@@ -4645,6 +4673,13 @@ fn expr_const_val(
             const_int_expr(expr, symbols, consts).map_or_else(|| "0".to_string(), |v| v.to_string())
         }
         Expr::FloatLiteral(f, suffix, _) => float_to_llvm(*f, *suffix),
+        // A float `const` initialized by naming another float `const`: inline it.
+        Expr::Ident((name, _)) if matches!(ty, Type::F16 | Type::F32 | Type::F64) => {
+            const_defs.get(name).map_or_else(
+                || "0.0".to_string(),
+                |(ref_ty, ref_expr)| expr_const_val(ref_ty, ref_expr, symbols, consts, const_defs),
+            )
+        }
         Expr::BoolLiteral(b, _) => {
             if *b {
                 "1".into()
@@ -4665,6 +4700,9 @@ fn expr_const_val(
                 .map_or_else(|| "0".to_string(), |v| u32::from(v).to_string())
         }
         Expr::NullLiteral(_) => "zeroinitializer".into(),
+        // Aggregate types must never collapse to a bare `0` (invalid IR); emit a
+        // valid zero. Scalars keep the `0` fallback.
+        _ if matches!(ty, Type::Array(..) | Type::Struct(..)) => "zeroinitializer".into(),
         _ => "0".into(),
     }
 }

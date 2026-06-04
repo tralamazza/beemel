@@ -1,0 +1,5 @@
+fn len(x: u32) -> u32 {
+    return x;
+}
+
+fn main() @context(thread) { }

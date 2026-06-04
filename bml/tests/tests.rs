@@ -244,11 +244,30 @@ assert_pass!(test_floats, "floats.bml");
 assert_pass!(test_for_loop, "for_loop.bml");
 assert_pass!(test_const_aggregate_len, "const_aggregate_len.bml");
 assert_error!(test_len_bad_arg, "len_bad_arg_error.bml", "E326");
+assert_error!(test_len_redefine, "len_redefine_error.bml", "E345");
 assert_error!(
     test_const_nonconst_init,
     "const_nonconst_init_error.bml",
     "E343"
 );
+// An initializer that names another `const` is inlined to that const's value:
+// a static aggregate must not collapse to an invalid `[4 x i32] 0`, and a float
+// const must inherit the referenced const's bits (3.5 here). Both checks share
+// one compile (each fixture's `.ll` is written next to it, so two parallel
+// `bml_ir` tests on the same fixture would race on that file).
+#[test]
+fn test_const_ref_init_inlined() {
+    let ir = bml_ir("const_ref_init.bml");
+    for pattern in [
+        "@FROM_CONST = global [4 x i32] [i32 11, i32 22, i32 33, i32 44]",
+        "@PI_ALIAS = constant float 0x400C000000000000",
+    ] {
+        assert!(
+            ir.contains(pattern),
+            "expected IR to contain `{pattern}`\n--- IR ---\n{ir}\n-----------"
+        );
+    }
+}
 
 // Readonly linear views
 assert_pass!(test_view_read, "view_read.bml");

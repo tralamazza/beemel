@@ -72,6 +72,14 @@ const LUT: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
 const COLUMNS: u32 = len(LUT);
 ```
 
+A `const` or `static` initializer may also name another `const`, including
+aggregate and float consts; it is inlined to that const's value:
+
+```bml
+static ACTIVE: [u32; 4] = LUT; // copy of LUT's value into a mutable global
+const COLS_ALIAS: u32 = COLUMNS;
+```
+
 ## 2. Memory model
 
 Four distinct address spaces, each with different compiler semantics:
@@ -1032,6 +1040,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E342  | `comptime_assert` condition is false |
 | E343  | `comptime_assert` condition is not a compile-time-constant `b1` expression |
 | E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
+| E345  | `len` is a reserved builtin and cannot be defined as a function |
 
 Verification (`bml verify`) findings use V-series codes (V100–V999). They are
 listed separately in [verification-codes.md](./verification-codes.md).

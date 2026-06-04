@@ -100,6 +100,22 @@ impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
         check_global_initializers(program, symbols, diags);
         for item in &program.items {
+            // `len` is intercepted as a builtin before function resolution, so a
+            // user function of that name would be silently unreachable. Reject it.
+            let fn_name = match item {
+                ast::Item::FnDef(f) => Some(&f.name),
+                ast::Item::ExternFnDef(f) => Some(&f.name),
+                _ => None,
+            };
+            if let Some(name) = fn_name
+                && name.0 == "len"
+            {
+                diags.error(
+                    "`len` is a reserved builtin and cannot be defined as a function",
+                    "E345",
+                    name.1,
+                );
+            }
             if let ast::Item::FnDef(fn_def) = item {
                 check_fn(fn_def, symbols, diags);
             }
@@ -307,6 +323,10 @@ fn const_init_is_compile_time(
             .iter()
             .all(|(_, value)| const_init_is_compile_time(value, symbols, vals)),
         Expr::FloatLiteral(..) | Expr::NullLiteral(_) => true,
+        // Naming another `const` is compile-time regardless of its type (the
+        // integer path below only tracks ints, so this also covers float/
+        // aggregate const references). Type compatibility is checked separately.
+        Expr::Ident((name, _)) if symbols.consts.contains_key(name) => true,
         _ => const_eval(expr, symbols, vals).is_some(),
     }
 }
@@ -326,7 +346,7 @@ fn check_len_builtin(
             Expr::span,
         );
         diags.error(
-            format!("function `len` expects 1 arguments, got {}", args.len()),
+            format!("function `len` expects 1 argument, got {}", args.len()),
             "E307",
             span,
         );
