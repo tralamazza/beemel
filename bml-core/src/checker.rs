@@ -648,21 +648,7 @@ fn check_block(
                     expected_ret,
                     diags,
                 );
-                let (enum_name, variants) = if let Type::Enum(name, _, variants) = &scrutinee_ty {
-                    (name.clone(), variants.clone())
-                } else {
-                    diags.error(
-                        "match scrutinee must be an enum type",
-                        "E324",
-                        match_stmt.scrutinee.span(),
-                    );
-                    last_type = None;
-                    continue;
-                };
-
-                let mut covered: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-                let mut has_wildcard = false;
+                check_match_coverage(&scrutinee_ty, &match_stmt.arms, match_stmt.span, diags);
 
                 // Each arm runs from the same pre-match move-state; the
                 // post-match state is the union of all arm exits (a local moved
@@ -670,32 +656,6 @@ fn check_block(
                 let before = scope.snapshot();
                 let mut merged: Option<Vec<HashMap<String, VarInfo>>> = None;
                 for arm in &match_stmt.arms {
-                    for pat in &arm.patterns {
-                        match pat {
-                            ast::MatchPattern::Variant((_e_name, _), (v_name, v_span)) => {
-                                if !variants.iter().any(|(n, _)| n == v_name) {
-                                    diags.error(
-                                        format!("no variant `{v_name}` in enum `{enum_name}`"),
-                                        "E322",
-                                        *v_span,
-                                    );
-                                }
-                                if !covered.insert(v_name.clone()) {
-                                    diags.error(
-                                        format!("duplicate variant `{v_name}` in match"),
-                                        "E319",
-                                        *v_span,
-                                    );
-                                }
-                            }
-                            ast::MatchPattern::Wildcard(span) => {
-                                if has_wildcard {
-                                    diags.error("duplicate wildcard arm", "E319", *span);
-                                }
-                                has_wildcard = true;
-                            }
-                        }
-                    }
                     scope.restore(before.clone());
                     check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
                     let after = scope.snapshot();
@@ -709,22 +669,6 @@ fn check_block(
                 }
                 if let Some(merged) = merged {
                     scope.restore(merged);
-                }
-
-                if !has_wildcard && covered.len() < variants.len() {
-                    let missing: Vec<&str> = variants
-                        .iter()
-                        .filter(|(n, _)| !covered.contains(n))
-                        .map(|(n, _)| n.as_str())
-                        .collect();
-                    diags.error(
-                        format!(
-                            "non-exhaustive match: missing variants {}",
-                            missing.join(", ")
-                        ),
-                        "E325",
-                        match_stmt.span,
-                    );
                 }
                 last_type = None;
             }
@@ -749,6 +693,97 @@ fn check_block(
 
     scope.pop();
     last_type
+}
+
+/// Validate a match's patterns against its scrutinee type and check
+/// exhaustiveness. Shared by the statement and expression forms. The scrutinee
+/// must be an enum (variant patterns) or an integer (int/range patterns); an
+/// integer match must include a `_` arm since the value space can't be
+/// enumerated.
+fn check_match_coverage(
+    scrutinee_ty: &Type,
+    arms: &[ast::MatchArm],
+    match_span: crate::source::Span,
+    diags: &mut DiagnosticBag,
+) {
+    let enum_info = if let Type::Enum(name, _, variants) = scrutinee_ty {
+        Some((name.clone(), variants.clone()))
+    } else {
+        None
+    };
+    let is_int = types::is_int(scrutinee_ty);
+    if enum_info.is_none() && !is_int {
+        diags.error(
+            "match scrutinee must be an enum or integer type",
+            "E324",
+            match_span,
+        );
+        return;
+    }
+
+    let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut has_wildcard = false;
+    for arm in arms {
+        for pat in &arm.patterns {
+            match pat {
+                ast::MatchPattern::Variant((_, _), (v_name, v_span)) => {
+                    if let Some((ename, variants)) = &enum_info {
+                        if !variants.iter().any(|(n, _)| n == v_name) {
+                            diags.error(
+                                format!("no variant `{v_name}` in enum `{ename}`"),
+                                "E322",
+                                *v_span,
+                            );
+                        }
+                        if !covered.insert(v_name.clone()) {
+                            diags.error(
+                                format!("duplicate variant `{v_name}` in match"),
+                                "E319",
+                                *v_span,
+                            );
+                        }
+                    } else {
+                        diags.error("enum-variant pattern in an integer match", "E324", *v_span);
+                    }
+                }
+                ast::MatchPattern::Int(_, span) | ast::MatchPattern::Range(_, _, span) => {
+                    if enum_info.is_some() {
+                        diags.error("integer pattern in an enum match", "E324", *span);
+                    }
+                }
+                ast::MatchPattern::Wildcard(span) => {
+                    if has_wildcard {
+                        diags.error("duplicate wildcard arm", "E319", *span);
+                    }
+                    has_wildcard = true;
+                }
+            }
+        }
+    }
+
+    if let Some((_, variants)) = &enum_info {
+        if !has_wildcard && covered.len() < variants.len() {
+            let missing: Vec<&str> = variants
+                .iter()
+                .filter(|(n, _)| !covered.contains(n))
+                .map(|(n, _)| n.as_str())
+                .collect();
+            diags.error(
+                format!(
+                    "non-exhaustive match: missing variants {}",
+                    missing.join(", ")
+                ),
+                "E325",
+                match_span,
+            );
+        }
+    } else if !has_wildcard {
+        diags.error(
+            "non-exhaustive match: an integer match must have a `_` arm",
+            "E325",
+            match_span,
+        );
+    }
 }
 
 fn block_definitely_returns(block: &ast::Block) -> bool {
@@ -1672,51 +1707,14 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
-            let (enum_name, variants) = if let Type::Enum(name, _, variants) = &scrutinee_ty {
-                (name.clone(), variants.clone())
-            } else {
-                let guard = diags.error(
-                    "match scrutinee must be an enum type",
-                    "E324",
-                    match_expr.scrutinee.span(),
-                );
-                return Type::Error(guard);
-            };
+            check_match_coverage(&scrutinee_ty, &match_expr.arms, match_expr.span, diags);
 
-            let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut has_wildcard = false;
             let mut arm_type: Option<Type> = None;
 
             // Union the move-state across all arms (see the statement-form match).
             let before = scope.snapshot();
             let mut merged: Option<Vec<HashMap<String, VarInfo>>> = None;
             for arm in &match_expr.arms {
-                for pat in &arm.patterns {
-                    match pat {
-                        ast::MatchPattern::Variant((_e_name, _), (v_name, v_span)) => {
-                            if !variants.iter().any(|(n, _)| n == v_name) {
-                                diags.error(
-                                    format!("no variant `{v_name}` in enum `{enum_name}`"),
-                                    "E322",
-                                    *v_span,
-                                );
-                            }
-                            if !covered.insert(v_name.clone()) {
-                                diags.error(
-                                    format!("duplicate variant `{v_name}` in match"),
-                                    "E319",
-                                    *v_span,
-                                );
-                            }
-                        }
-                        ast::MatchPattern::Wildcard(span) => {
-                            if has_wildcard {
-                                diags.error("duplicate wildcard arm", "E319", *span);
-                            }
-                            has_wildcard = true;
-                        }
-                    }
-                }
                 scope.restore(before.clone());
                 let arm_result =
                     check_block(&arm.body, symbols, scope, fn_name, expected_ret, diags);
@@ -1770,22 +1768,6 @@ fn check_expr(
             }
             if let Some(merged) = merged {
                 scope.restore(merged);
-            }
-
-            if !has_wildcard && covered.len() < variants.len() {
-                let missing: Vec<&str> = variants
-                    .iter()
-                    .filter(|(n, _)| !covered.contains(n))
-                    .map(|(n, _)| n.as_str())
-                    .collect();
-                diags.error(
-                    format!(
-                        "non-exhaustive match: missing variants {}",
-                        missing.join(", ")
-                    ),
-                    "E325",
-                    match_expr.span,
-                );
             }
 
             // Fallback only if no arm provided a type (caused by earlier

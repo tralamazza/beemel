@@ -779,6 +779,19 @@ impl IrEmitter {
         let end_lbl = self.new_label("match_end");
 
         let scrutinee_ty = self.expr_type(scrutinee, symbols);
+
+        // Integer scrutinee: an ordered if-chain (handles ranges and overlaps,
+        // first match wins). Enum scrutinee: an LLVM `switch` below.
+        if crate::types::is_int(&scrutinee_ty) {
+            return Some(self.emit_match_int_chain(
+                &scrutinee_reg,
+                &scrutinee_ty,
+                arms,
+                end_lbl,
+                is_expr,
+            ));
+        }
+
         let Type::Enum(_, inner_ty, variants) = scrutinee_ty else {
             self.line(&format!("br label %{end_lbl}"));
             self.line("");
@@ -841,6 +854,122 @@ impl IrEmitter {
             ll_ty,
             arm_labels,
             default_lbl,
+        })
+    }
+
+    /// Dispatch an integer match as an ordered if-chain: each arm's patterns are
+    /// OR'd into a condition; the first arm whose condition holds is taken. A
+    /// `_` arm is the unconditional catch-all (and stops the chain).
+    fn emit_match_int_chain(
+        &mut self,
+        scrutinee_reg: &str,
+        scrutinee_ty: &Type,
+        arms: &[ast::MatchArm],
+        end_lbl: String,
+        is_expr: bool,
+    ) -> MatchDispatch {
+        let ll_ty = llvm_type(scrutinee_ty);
+        let signed = matches!(scrutinee_ty, Type::I8 | Type::I16 | Type::I32 | Type::I64);
+
+        let arm_labels: Vec<String> = (0..arms.len())
+            .map(|_| self.new_label("match_arm"))
+            .collect();
+        let wildcard_idx = arms.iter().position(|a| {
+            a.patterns
+                .iter()
+                .any(|p| matches!(p, ast::MatchPattern::Wildcard(_)))
+        });
+        let default_lbl = match wildcard_idx {
+            Some(idx) => arm_labels[idx].clone(),
+            None if is_expr => self.new_label("match_default"),
+            None => end_lbl.clone(),
+        };
+
+        for (i, arm) in arms.iter().enumerate() {
+            if arm
+                .patterns
+                .iter()
+                .any(|p| matches!(p, ast::MatchPattern::Wildcard(_)))
+            {
+                // Catch-all: jump unconditionally; any later arms are dead.
+                self.line(&format!("br label %{}", arm_labels[i]));
+                self.line("");
+                return MatchDispatch {
+                    end_lbl,
+                    ll_ty,
+                    arm_labels,
+                    default_lbl,
+                };
+            }
+            let cond = self.emit_match_arm_cond(scrutinee_reg, &ll_ty, signed, &arm.patterns);
+            let next_lbl = self.new_label("match_next");
+            self.line(&format!(
+                "br i1 {cond}, label %{}, label %{next_lbl}",
+                arm_labels[i]
+            ));
+            self.line("");
+            self.indent -= 1;
+            self.line(&format!("{next_lbl}:"));
+            self.indent += 1;
+        }
+        // No `_` arm matched anything: fall through.
+        self.line(&format!("br label %{default_lbl}"));
+        self.line("");
+        MatchDispatch {
+            end_lbl,
+            ll_ty,
+            arm_labels,
+            default_lbl,
+        }
+    }
+
+    /// Build an `i1` register that is true when the scrutinee matches any of an
+    /// arm's integer / range patterns.
+    fn emit_match_arm_cond(
+        &mut self,
+        scrutinee_reg: &str,
+        ll_ty: &str,
+        signed: bool,
+        patterns: &[ast::MatchPattern],
+    ) -> String {
+        let mut acc: Option<String> = None;
+        for pat in patterns {
+            let cond = match pat {
+                ast::MatchPattern::Int(v, _) => {
+                    let r = self.new_reg();
+                    self.line(&format!("{r} = icmp eq {ll_ty} {scrutinee_reg}, {v}"));
+                    r
+                }
+                ast::MatchPattern::Range(lo, hi, _) => {
+                    let (ge, le) = if signed {
+                        ("sge", "sle")
+                    } else {
+                        ("uge", "ule")
+                    };
+                    let a = self.new_reg();
+                    self.line(&format!("{a} = icmp {ge} {ll_ty} {scrutinee_reg}, {lo}"));
+                    let b = self.new_reg();
+                    self.line(&format!("{b} = icmp {le} {ll_ty} {scrutinee_reg}, {hi}"));
+                    let r = self.new_reg();
+                    self.line(&format!("{r} = and i1 {a}, {b}"));
+                    r
+                }
+                // Non-wildcard arm: variant/wildcard don't occur here.
+                _ => continue,
+            };
+            acc = Some(match acc {
+                None => cond,
+                Some(prev) => {
+                    let r = self.new_reg();
+                    self.line(&format!("{r} = or i1 {prev}, {cond}"));
+                    r
+                }
+            });
+        }
+        acc.unwrap_or_else(|| {
+            let r = self.new_reg();
+            self.line(&format!("{r} = add i1 0, 0"));
+            r
         })
     }
 
@@ -2501,9 +2630,9 @@ impl IrEmitter {
             Expr::Match(match_expr) => {
                 let Some(MatchDispatch {
                     end_lbl,
-                    ll_ty,
                     arm_labels,
                     default_lbl,
+                    ..
                 }) = self.emit_match_dispatch(
                     &match_expr.scrutinee,
                     &match_expr.arms,
@@ -2516,6 +2645,10 @@ impl IrEmitter {
                     self.line(&format!("{reg} = add i32 0, 0  ; match fallback"));
                     return reg;
                 };
+                // The phi is over the arm *result* type (the match's value type),
+                // not the scrutinee type -- those differ when, e.g., a `u8` is
+                // matched into `u32` arms.
+                let ll_ty = llvm_type(&self.expr_type(expr, symbols));
 
                 let has_wildcard = match_expr.arms.iter().any(|arm| {
                     arm.patterns

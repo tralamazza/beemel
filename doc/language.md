@@ -714,7 +714,14 @@ match_stmt    = "match" expr "{"
                 { match_arm }
                 "}"
 match_arm     = match_pattern {"|" match_pattern} block
-match_pattern = ident "@" ident | "_"
+match_pattern = ident "@" ident         (* enum variant *)
+              | int                     (* integer scrutinee: a single value *)
+              | int ".." int            (* inclusive integer range lo..hi *)
+              | "_"
+              ;; A match scrutinee is an enum (variant patterns, exhaustive over
+              ;; the variants or `_`) or an integer (int/range patterns; must
+              ;; include `_`). Arms are tried top-to-bottom; the first match
+              ;; wins. Ranges are inclusive on both ends.
 
 match_expr    = "match" expr "{"
                  { match_arm_expr }

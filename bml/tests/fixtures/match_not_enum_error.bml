@@ -1,5 +1,6 @@
+// A match scrutinee must be an enum or an integer; a float is neither (E324).
 fn main() @context(thread) {
-    var x: u32 = 0;
+    var x: f32 = 1.0f;
     match x {
         _ {
             var y = 0;

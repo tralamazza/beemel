@@ -645,7 +645,12 @@ pub struct IfExpr {
 
 #[derive(Debug, Clone)]
 pub enum MatchPattern {
+    /// `Enum@Variant` (enum scrutinee).
     Variant(Ident, Ident),
+    /// A single integer value (integer scrutinee), e.g. `5` or `-1`.
+    Int(i128, Span),
+    /// An inclusive integer range `lo..hi` (integer scrutinee).
+    Range(i128, i128, Span),
     Wildcard(Span),
 }
 
@@ -654,7 +659,9 @@ impl MatchPattern {
     pub fn span(&self) -> Span {
         match self {
             MatchPattern::Variant((_, s), (_, _)) => *s,
-            MatchPattern::Wildcard(s) => *s,
+            MatchPattern::Int(_, s) | MatchPattern::Range(_, _, s) | MatchPattern::Wildcard(s) => {
+                *s
+            }
         }
     }
 }

@@ -1,0 +1,8 @@
+// An integer match must have a `_` arm (the value space can't be enumerated).
+fn main() @context(thread) {
+    var n: u32 = 1;
+    match n {
+        0 { }
+        1 { }
+    }
+}

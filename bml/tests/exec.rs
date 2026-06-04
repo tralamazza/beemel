@@ -297,6 +297,7 @@ assert_exec!(exec_compound_assign_widths, "compound_assign_widths.bml");
 assert_exec!(exec_asm_operands, "asm_operands.bml");
 
 // ─── control flow & expressions (language.md §11) ────────────────────────────
+assert_exec!(exec_match_int, "match_int.bml");
 assert_exec!(exec_control_flow, "control_flow.bml");
 
 // `loop` is a distinct lowering branch from `while` (control_flow covers the

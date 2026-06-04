@@ -1,0 +1,55 @@
+// Integer match: single values, multi-pattern arms (`|`), inclusive ranges
+// (`lo..hi`), and the required `_` catch-all. Arms are tried in order. Covers
+// the statement form, the value-producing expression form, a narrow type, and
+// a signed scrutinee.
+import harness.semihost;
+
+// Statement form (arms terminate via return).
+fn classify(n: u32) -> u32 {
+    match n {
+        0 { return 100; }
+        1 | 2 | 3 { return 200; }
+        10..20 { return 300; }
+        _ { return 999; }
+    }
+    return 0;
+}
+
+// Expression form on a narrow type (u8).
+fn bucket(n: u8) -> u32 {
+    var r: u32 = match n {
+        0 { 100u32 }
+        1 | 2 { 200u32 }
+        10..20 { 300u32 }
+        _ { 999u32 }
+    };
+    return r;
+}
+
+// Signed scrutinee with a negative inclusive range.
+fn sign(n: i32) -> u32 {
+    var r: u32 = match n {
+        -5..-1 { 1u32 }
+        0 { 2u32 }
+        _ { 3u32 }
+    };
+    return r;
+}
+
+fn main() @context(thread) {
+    expect_u32(classify(0), 100);
+    expect_u32(classify(3), 200);
+    expect_u32(classify(15), 300);
+    expect_u32(classify(20), 300); // inclusive upper bound
+    expect_u32(classify(21), 999);
+
+    expect_u32(bucket(1u8), 200);
+    expect_u32(bucket(10u8), 300);
+    expect_u32(bucket(200u8), 999);
+
+    expect_u32(sign(-3i32), 1);
+    expect_u32(sign(0i32), 2);
+    expect_u32(sign(7i32), 3);
+
+    done();
+}

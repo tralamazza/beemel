@@ -974,6 +974,14 @@ assert_error!(
     "asm_output_nonplace_error.bml",
     "E314"
 );
+// Integer match: must have a `_` arm (E325); enum-variant pattern is rejected
+// on an integer scrutinee (E324).
+assert_error!(
+    test_match_int_no_wildcard,
+    "match_int_no_wildcard_error.bml",
+    "E325"
+);
+assert_error!(test_match_int_kind, "match_int_kind_error.bml", "E324");
 
 // ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
 assert_error!(

@@ -1133,6 +1133,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_match_pattern(&mut self) -> Option<MatchPattern> {
+        // Integer or inclusive-range pattern: `N`, `-N`, or `lo..hi`.
+        if matches!(
+            self.peek_kind(),
+            TokenKind::IntLiteral(..) | TokenKind::Minus
+        ) {
+            let span = self.peek_span();
+            let lo = self.parse_pattern_int()?;
+            if self.eat(&TokenKind::DotDot) {
+                let hi = self.parse_pattern_int()?;
+                return Some(MatchPattern::Range(lo, hi, span));
+            }
+            return Some(MatchPattern::Int(lo, span));
+        }
         let ident = self.parse_ident()?;
         if ident.0 == "_" && !self.check(&TokenKind::AtSign) {
             return Some(MatchPattern::Wildcard(ident.1));
@@ -1145,6 +1158,24 @@ impl<'a> Parser<'a> {
         self.advance(); // @
         let variant = self.parse_ident()?;
         Some(MatchPattern::Variant(ident, variant))
+    }
+
+    /// Parse an integer pattern value: an optional `-` then an int literal.
+    /// The suffix (if any) is ignored; the value is held as `i128`.
+    fn parse_pattern_int(&mut self) -> Option<i128> {
+        let neg = self.eat(&TokenKind::Minus);
+        if let TokenKind::IntLiteral(n, _) = self.peek_kind() {
+            let v = i128::from(*n);
+            self.advance();
+            Some(if neg { -v } else { v })
+        } else {
+            self.diags.error(
+                "expected an integer in match pattern",
+                "E107",
+                self.peek_span(),
+            );
+            None
+        }
     }
 
     fn parse_while_stmt(&mut self) -> Option<WhileStmt> {

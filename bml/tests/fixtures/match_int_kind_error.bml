@@ -1,0 +1,8 @@
+// An enum-variant pattern in an integer match is rejected (E324).
+fn main() @context(thread) {
+    var n: u32 = 1;
+    match n {
+        Status@A { }
+        _ { }
+    }
+}
