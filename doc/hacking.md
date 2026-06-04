@@ -185,10 +185,10 @@ program behaves correctly, not merely that the compiler lowered it a certain way
 
 How it works:
 
-- `tests/fixtures/exec/harness/semihost.bml` exports `expect_u32` / `expect_b1`
-  (print `OK` / `FAIL` via semihosting `SYS_WRITE0`) and `done()` (terminate via
-  `SYS_EXIT`). Fixtures `import harness.semihost;` -- imports flatten into one
-  object, so there is nothing extra to link.
+- `tests/fixtures/exec/harness/semihost.bml` exports `expect_u32` / `expect_u64`
+  / `expect_b1` (print `OK` / `FAIL` via semihosting `SYS_WRITE0`) and `done()`
+  (terminate via `SYS_EXIT`). Fixtures `import harness.semihost;` -- imports
+  flatten into one object, so there is nothing extra to link.
 - `tests/exec.rs` runs `bml build --save-temps --target exec/qemu.target`,
   links the object with `arm-none-eabi-ld` using the generated linker script, and
   runs `qemu-system-arm -M stm32vldiscovery -semihosting`. QEMU sends semihosting
@@ -213,13 +213,38 @@ Known compiler bugs surfaced by this layer are pinned as `#[ignore]`d
 suite is green; run `cargo test --test exec -- --ignored` to confirm they still
 reproduce, and delete the `#[ignore]` once fixed.
 
-`exec_property_arith` is a differential test: it generates random integer
-expressions, evaluates each with a Rust oracle that mirrors bml's semantics
-(two's-complement wrapping; signed vs unsigned div/rem/shr), and checks the
-compiled program agrees at `-O0` and `-O2`. The seed is fixed for
-reproducibility; rerun a specific case with `BML_PROP_SEED=<n> cargo test
---test exec exec_property_arith` (decimal or `0x...`). On failure it prints the
-seed and the full generated source.
+## Generative tests
+
+Several tests generate random programs rather than hand-writing fixtures. All
+use a fixed seed for reproducibility (override with the env var noted); on
+failure each prints the seed and the offending input.
+
+- `exec_property_arith` (in `tests/exec.rs`) is a *value-differential* test over
+  **every integer width** (`u8`..`u64`, `i8`..`i64`): it generates random
+  expressions, evaluates each with a Rust oracle that mirrors bml's semantics
+  (two's-complement wrapping; signed vs unsigned div/rem/shr; width-correct
+  sign/zero-extension), and checks the compiled program agrees at `-O0` and
+  `-O2`. `expect_u32` checks <=32-bit results; `expect_u64` checks 64-bit.
+  Override the seed with `BML_PROP_SEED=<n>` (decimal or `0x...`). Needs libgcc
+  (32-bit div and 64-bit mul/div lower to `__aeabi_*`).
+- `exec_property_float` is the same idea for `f32`/`f64`: `+ - * /` are
+  IEEE-754 correctly-rounded on both Rust and libgcc soft-float, so the device
+  result is compared bit-for-bit against `to_bits()`. bml's `f as u32` is a
+  numeric convert, so the fixture reads the result's bits via a pointer cast
+  (`(&v) as *u32` / `*u64`). Non-finite oracle results are resampled away.
+- `build_validity_scalars` is a *build*-validity fuzzer: it generates well-typed
+  scalar expressions across every scalar type (plus `as` casts), and the oracle
+  is the toolchain itself -- a well-typed program that fails to build or link
+  means we emitted IR the backend rejects. No execution oracle (it checks the IR
+  is valid, not that values are right). This is how the bool-cast and
+  int<->float-cast bugs were found.
+- `frontend_never_panics` (in `bml-core/tests/fuzz_frontend.rs`) is the
+  front-end no-panic fuzzer: it drives lexer -> parser -> resolver -> checker ->
+  borrow in-process over mutated fixtures and a token-stream generator, asserting
+  the front end never panics, hangs, or overflows the stack on any input. Pure
+  stable Rust, runs in plain `cargo test` (no QEMU). Tune with `BML_FUZZ_SEED` /
+  `BML_FUZZ_ITERS`. Depends on the parser's recursion-depth guard (`E113`); a
+  stack overflow is not catchable, so that guard is what keeps it safe.
 
 ## IR snapshot tests
 
