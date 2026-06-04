@@ -242,6 +242,13 @@ macro_rules! assert_ir_not_contains {
 assert_pass!(test_uart, "uart.bml");
 assert_pass!(test_floats, "floats.bml");
 assert_pass!(test_for_loop, "for_loop.bml");
+assert_pass!(test_const_aggregate_len, "const_aggregate_len.bml");
+assert_error!(test_len_bad_arg, "len_bad_arg_error.bml", "E326");
+assert_error!(
+    test_const_nonconst_init,
+    "const_nonconst_init_error.bml",
+    "E343"
+);
 
 // Readonly linear views
 assert_pass!(test_view_read, "view_read.bml");

@@ -1,0 +1,3 @@
+fn main() @context(thread) {
+    var n: u32 = len(5u32);
+}

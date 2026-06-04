@@ -98,12 +98,64 @@ impl ScopeStack {
 
 impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+        check_global_initializers(program, symbols, diags);
         for item in &program.items {
             if let ast::Item::FnDef(fn_def) = item {
                 check_fn(fn_def, symbols, diags);
             }
         }
         check_comptime_asserts(program, symbols, diags);
+    }
+}
+
+fn check_global_initializers(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    let consts = collect_const_values(program, symbols);
+    for item in &program.items {
+        match item {
+            ast::Item::StaticDef(s) => {
+                if let Some(init) = &s.init {
+                    let expected =
+                        types::resolve_type_expr(&s.ty, &symbols.structs, &symbols.enums);
+                    let mut scope = ScopeStack::new();
+                    let actual = check_expr(init, symbols, &mut scope, "<global>", None, diags);
+                    if !types::types_compatible(&expected, &actual)
+                        && !unsuffixed_literal_fits(init, &expected)
+                    {
+                        diags.error(
+                            format!(
+                                "type mismatch: declared `{expected:?}` but initialized with `{actual:?}`"
+                            ),
+                            "E300",
+                            s.name.1,
+                        );
+                    }
+                }
+            }
+            ast::Item::ConstDef(c) => {
+                let expected = types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
+                let mut scope = ScopeStack::new();
+                let actual = check_expr(&c.value, symbols, &mut scope, "<global>", None, diags);
+                if !types::types_compatible(&expected, &actual)
+                    && !unsuffixed_literal_fits(&c.value, &expected)
+                {
+                    diags.error(
+                        format!(
+                            "type mismatch: declared `{expected:?}` but initialized with `{actual:?}`"
+                        ),
+                        "E300",
+                        c.name.1,
+                    );
+                }
+                if !const_init_is_compile_time(&c.value, symbols, &consts) {
+                    diags.error(
+                        "const initializer must be a compile-time constant expression",
+                        "E343",
+                        c.name.1,
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -128,6 +180,9 @@ fn const_eval(
         Expr::BoolLiteral(b, _) => ConstVal::Bool(*b),
         Expr::Group(inner) | Expr::Cast(inner, _) => const_eval(inner, symbols, vals)?,
         Expr::Ident((name, _)) => ConstVal::Int(*vals.get(name)?),
+        Expr::Call(callee, args) if is_len_call(callee) && args.len() == 1 => {
+            ConstVal::Int(const_len_expr(&args[0], symbols, vals)?)
+        }
         Expr::SizeOf(ty_expr, _) => {
             let ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
             if matches!(ty, Type::Unresolved(_)) {
@@ -182,6 +237,119 @@ fn const_eval(
         }
         _ => return None,
     })
+}
+
+fn is_len_call(expr: &Expr) -> bool {
+    matches!(expr, Expr::Ident((name, _)) if name == "len")
+}
+
+fn const_len_expr(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    vals: &HashMap<String, i128>,
+) -> Option<i128> {
+    match expr {
+        Expr::Ident((name, _)) => symbols
+            .consts
+            .get(name)
+            .map(|sym| &sym.ty)
+            .or_else(|| symbols.statics.get(name).map(|sym| sym.ty.inner()))
+            .and_then(|ty| match ty.inner() {
+                Type::Array(_, n) => Some(*n as i128),
+                _ => None,
+            }),
+        Expr::ViewNew { base, stride, .. } => {
+            let n = match global_expr_type(base, symbols)?.inner() {
+                Type::Array(_, n) => *n as i128,
+                _ => return None,
+            };
+            if let Some(stride) = stride {
+                let ConstVal::Int(k) = const_eval(stride, symbols, vals)? else {
+                    return None;
+                };
+                if k <= 0 {
+                    return None;
+                }
+                Some(n / k)
+            } else {
+                Some(n)
+            }
+        }
+        Expr::BitNew { base, .. } => match global_expr_type(base, symbols)?.inner() {
+            Type::Array(_, n) => Some((*n as i128) * 8),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn global_expr_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a Type> {
+    match expr {
+        Expr::Ident((name, _)) => symbols
+            .consts
+            .get(name)
+            .map(|sym| &sym.ty)
+            .or_else(|| symbols.statics.get(name).map(|sym| &sym.ty)),
+        _ => None,
+    }
+}
+
+fn const_init_is_compile_time(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    vals: &HashMap<String, i128>,
+) -> bool {
+    match expr {
+        Expr::ArrayInit(elems, _) => elems
+            .iter()
+            .all(|elem| const_init_is_compile_time(elem, symbols, vals)),
+        Expr::StructInit { fields, .. } => fields
+            .iter()
+            .all(|(_, value)| const_init_is_compile_time(value, symbols, vals)),
+        Expr::FloatLiteral(..) | Expr::NullLiteral(_) => true,
+        _ => const_eval(expr, symbols, vals).is_some(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_len_builtin(
+    args: &[Expr],
+    symbols: &SymbolTable,
+    scope: &mut ScopeStack,
+    fn_name: &str,
+    expected_ret: Option<&Type>,
+    diags: &mut DiagnosticBag,
+) -> Type {
+    if args.len() != 1 {
+        let span = args.first().map_or(
+            crate::source::Span::empty(crate::source::FileId::new(), 0),
+            Expr::span,
+        );
+        diags.error(
+            format!("function `len` expects 1 arguments, got {}", args.len()),
+            "E307",
+            span,
+        );
+        return Type::U32;
+    }
+
+    let arg = &args[0];
+    let ty = read_place_type(arg, symbols, scope, fn_name, expected_ret, diags);
+    match ty.inner() {
+        Type::Array(..)
+        | Type::LinearView(..)
+        | Type::StridedView(..)
+        | Type::RingView(..)
+        | Type::BitView(_) => Type::U32,
+        other => {
+            diags.error(
+                format!("len(...) expects an array or view, got `{other}`"),
+                "E326",
+                arg.span(),
+            );
+            Type::U32
+        }
+    }
 }
 
 /// Compile-time values of all `const` items, resolved to a fixpoint so a
@@ -1243,6 +1411,10 @@ fn check_expr(
         }
 
         Expr::Call(func_expr, args) => {
+            if is_len_call(func_expr) {
+                return check_len_builtin(args, symbols, scope, fn_name, expected_ret, diags);
+            }
+
             if let Expr::Ident((name, span)) = func_expr.as_ref()
                 && let Some(fn_sym) = symbols.functions.get(name)
             {

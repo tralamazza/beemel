@@ -64,6 +64,13 @@ requires an explicit `as` cast.
 `var`/`val` may only appear inside function bodies.
 `const`/`static`/`peripheral` may only appear at module level.
 All `static` declarations must be explicitly initialized (to zero or a value).
+`const` declarations may hold scalar or aggregate compile-time initializers,
+including arrays and structs:
+
+```bml
+const LUT: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
+const COLUMNS: u32 = len(LUT);
+```
 
 ## 2. Memory model
 
@@ -222,6 +229,26 @@ var d: u32 = sizeof(*u32);  // 4 (pointer size on ARM Cortex-M)
 `sizeof` is a compile-time constant expression. It evaluates to the
 byte count returned by `element_size()` -- packed layout for structs,
 natural sizes for primitives and pointers.
+
+### len builtin
+
+`len(x)` returns the logical length of an array or memory view as `u32`:
+
+```bml
+const LUT: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
+const N: u32 = len(LUT);       // 4, compile-time constant
+
+fn main() @context(thread) {
+    val v: view u32 = view(LUT);
+    var n: u32 = len(v);       // extracts the view descriptor length
+}
+```
+
+Supported operands are arrays, `view`, strided `view`, `ring`, and `bits`.
+For arrays the result is compile-time when the array is a `const`/`static` item,
+so it can be used in other `const` expressions and array lengths. For views the
+result is the descriptor's logical length: field `len` for linear/strided views,
+ring length for `ring`, and bit count for `bits`.
 
 ### Dereferencing
 

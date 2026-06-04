@@ -1,0 +1,13 @@
+const FB: [u32; 6] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32];
+const FB_LEN: u32 = len(FB);
+
+fn main() @context(thread) {
+    var local: [u32; FB_LEN] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    val v: view u32 = view(FB);
+    val s: view u32 stride 2 = view(FB, stride 2);
+    val r: ring u32 = ring(FB, 1u32, len(FB));
+    var bytes: [u8; 2] = [0u8, 0u8];
+    val b: bits = bits(bytes);
+
+    local[0u32] = FB[0u32] + len(v) + len(s) + len(r) + len(b);
+}

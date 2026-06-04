@@ -262,8 +262,9 @@ impl IrEmitter {
                     let resolved_ty =
                         crate::types::resolve_type_expr(&s.ty, &symbols.structs, &symbols.enums);
                     let llvm_ty = llvm_type(&resolved_ty);
+                    let consts = const_int_values(&program.items, symbols);
                     let init_val = if let Some(init) = &s.init {
-                        const_init(&resolved_ty, init)
+                        const_init(&resolved_ty, init, symbols, &consts)
                     } else {
                         "zeroinitializer".to_string()
                     };
@@ -293,12 +294,11 @@ impl IrEmitter {
                     ));
                 }
                 ast::Item::ConstDef(c) => {
-                    let llvm_ty = llvm_type(&crate::types::resolve_type_expr(
-                        &c.ty,
-                        &symbols.structs,
-                        &symbols.enums,
-                    ));
-                    let val = expr_const_val(&c.value);
+                    let resolved_ty =
+                        crate::types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
+                    let llvm_ty = llvm_type(&resolved_ty);
+                    let consts = const_int_values(&program.items, symbols);
+                    let val = const_init(&resolved_ty, &c.value, symbols, &consts);
                     self.line(&format!(
                         "@{} = constant {} {}, align 4",
                         c.name.0, llvm_ty, val
@@ -1854,6 +1854,10 @@ impl IrEmitter {
                 reg
             }
 
+            Expr::Call(func_expr, args) if is_len_call(func_expr) => {
+                self.emit_len_builtin(args, symbols, fn_name, expr.span())
+            }
+
             Expr::Call(func_expr, args) => {
                 let call_span = func_expr.span();
                 let dbg_sfx = self.dbg_loc(call_span);
@@ -2759,6 +2763,60 @@ impl IrEmitter {
         }
     }
 
+    fn emit_len_builtin(
+        &mut self,
+        args: &[Expr],
+        symbols: &SymbolTable,
+        fn_name: &str,
+        span: Span,
+    ) -> String {
+        let Some(arg) = args.first() else {
+            let reg = self.new_reg();
+            self.line(&format!("{reg} = add i32 0, 0"));
+            return reg;
+        };
+        if args.len() != 1 {
+            let reg = self.new_reg();
+            self.line(&format!("{reg} = add i32 0, 0"));
+            return reg;
+        }
+
+        let arg_ty = self.expr_type(arg, symbols);
+        match arg_ty.inner() {
+            Type::Array(_, n) => {
+                let reg = self.new_reg();
+                self.line(&format!("{reg} = add i32 0, {n}"));
+                reg
+            }
+            Type::LinearView(..) | Type::StridedView(..) => {
+                let agg = self.emit_expr(arg, symbols, fn_name);
+                let reg = self.new_reg();
+                self.line(&format!("{reg} = extractvalue {{ ptr, i32 }} {agg}, 1"));
+                reg
+            }
+            Type::RingView(..) => {
+                let agg = self.emit_expr(arg, symbols, fn_name);
+                let ty = llvm_type(arg_ty.inner());
+                let reg = self.new_reg();
+                self.line(&format!("{reg} = extractvalue {ty} {agg}, 3"));
+                reg
+            }
+            Type::BitView(_) => {
+                let agg = self.emit_expr(arg, symbols, fn_name);
+                let ty = llvm_type(arg_ty.inner());
+                let reg = self.new_reg();
+                self.line(&format!("{reg} = extractvalue {ty} {agg}, 2"));
+                reg
+            }
+            _ => {
+                let dbg = self.dbg_loc(span);
+                let reg = self.new_reg();
+                self.line(&format!("{reg} = add i32 0, 0{dbg} ; invalid len fallback"));
+                reg
+            }
+        }
+    }
+
     /// Lower `target OP= value` as a single-evaluation read-modify-write.
     ///
     /// A peripheral-field target reads its register **once** (volatile),
@@ -2957,6 +3015,9 @@ impl IrEmitter {
                     return info.alloca;
                 }
                 if symbols.statics.contains_key(name) {
+                    return format!("@{name}");
+                }
+                if symbols.consts.contains_key(name) {
                     return format!("@{name}");
                 }
                 if let Some(p) = symbols.peripherals.get(name) {
@@ -3955,6 +4016,9 @@ impl IrEmitter {
                 if let Some(sym) = symbols.statics.get(name) {
                     return sym.ty.inner().clone();
                 }
+                if let Some(sym) = symbols.consts.get(name) {
+                    return sym.ty.clone();
+                }
                 if let Some(symbol) = self.alias_fn_symbols.get(name)
                     && let Some(fn_sym) = symbols.functions.get(symbol)
                 {
@@ -3967,7 +4031,7 @@ impl IrEmitter {
                     let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
                     return Type::Fn(params, Box::new(ret));
                 }
-                Type::U32 // default for locals and consts
+                Type::U32 // default for unresolved locals
             }
             Expr::Binary(left, op, right) => {
                 use crate::ast::BinaryOp;
@@ -4149,6 +4213,7 @@ impl IrEmitter {
                     self.expr_type(&if_expr.else_branch, symbols)
                 }
             }
+            Expr::Call(func_expr, _) if is_len_call(func_expr) => Type::U32,
             Expr::Call(func_expr, _) => {
                 if let Expr::Ident((name, _)) = func_expr.as_ref()
                     && let Some(fn_sym) = symbols.functions.get(name)
@@ -4514,23 +4579,71 @@ fn fn_ret_llvm_type(fn_def: &ast::FnDef, symbols: &SymbolTable) -> String {
 /// type is taken from `ty` (so unsuffixed literals get the right width), and
 /// `.inner()` sees through a storage wrapper. Falls back to the scalar path for
 /// non-aggregate types.
-fn const_init(ty: &Type, expr: &Expr) -> String {
+fn const_init(
+    ty: &Type,
+    expr: &Expr,
+    symbols: &SymbolTable,
+    consts: &HashMap<String, i128>,
+) -> String {
     match (ty.inner(), expr) {
         (Type::Array(elem, _), Expr::ArrayInit(elems, _)) => {
             let ell = llvm_type(elem);
             let parts: Vec<String> = elems
                 .iter()
-                .map(|e| format!("{ell} {}", const_init(elem, e)))
+                .map(|e| format!("{ell} {}", const_init(elem, e, symbols, consts)))
                 .collect();
             format!("[{}]", parts.join(", "))
         }
-        _ => expr_const_val(expr),
+        (Type::Struct(_, fields), Expr::StructInit { fields: init, .. }) => {
+            let parts: Vec<String> = fields
+                .iter()
+                .map(|(name, field_ty)| {
+                    let value = init
+                        .iter()
+                        .find(|(field_name, _)| field_name.0 == *name)
+                        .map_or("zeroinitializer".to_string(), |(_, value)| {
+                            const_init(field_ty, value, symbols, consts)
+                        });
+                    format!("{} {value}", llvm_type(field_ty))
+                })
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+        _ => expr_const_val(ty.inner(), expr, symbols, consts),
     }
 }
 
-fn expr_const_val(expr: &Expr) -> String {
+fn expr_const_val(
+    ty: &Type,
+    expr: &Expr,
+    symbols: &SymbolTable,
+    consts: &HashMap<String, i128>,
+) -> String {
     match expr {
         Expr::IntLiteral(n, _, _) => format!("{n}"),
+        Expr::Unary(..)
+        | Expr::Binary(..)
+        | Expr::Group(_)
+        | Expr::Cast(_, _)
+        | Expr::Ident(_)
+        | Expr::SizeOf(_, _)
+        | Expr::Call(_, _)
+            if matches!(
+                ty,
+                Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::I64
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::B8
+                    | Type::Enum(..)
+            ) =>
+        {
+            const_int_expr(expr, symbols, consts).map_or_else(|| "0".to_string(), |v| v.to_string())
+        }
         Expr::FloatLiteral(f, suffix, _) => float_to_llvm(*f, *suffix),
         Expr::BoolLiteral(b, _) => {
             if *b {
@@ -4539,8 +4652,190 @@ fn expr_const_val(expr: &Expr) -> String {
                 "0".into()
             }
         }
+        Expr::Unary(..)
+        | Expr::Binary(..)
+        | Expr::Group(_)
+        | Expr::Cast(_, _)
+        | Expr::Ident(_)
+        | Expr::SizeOf(_, _)
+        | Expr::Call(_, _)
+            if matches!(ty, Type::B1) =>
+        {
+            const_bool_expr(expr, symbols, consts)
+                .map_or_else(|| "0".to_string(), |v| u32::from(v).to_string())
+        }
         Expr::NullLiteral(_) => "zeroinitializer".into(),
         _ => "0".into(),
+    }
+}
+
+fn is_len_call(expr: &Expr) -> bool {
+    matches!(expr, Expr::Ident((name, _)) if name == "len")
+}
+
+fn const_int_values(items: &[ast::Item], symbols: &SymbolTable) -> HashMap<String, i128> {
+    let mut vals = HashMap::new();
+    loop {
+        let mut changed = false;
+        for item in items {
+            if let ast::Item::ConstDef(c) = item
+                && !vals.contains_key(&c.name.0)
+                && let Some(v) = const_int_expr(&c.value, symbols, &vals)
+            {
+                vals.insert(c.name.0.clone(), v);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    vals
+}
+
+fn const_len_expr(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    consts: &HashMap<String, i128>,
+) -> Option<i128> {
+    match expr {
+        Expr::Ident((name, _)) => symbols
+            .consts
+            .get(name)
+            .map(|sym| &sym.ty)
+            .or_else(|| symbols.statics.get(name).map(|sym| sym.ty.inner()))
+            .and_then(type_len_const)
+            .map(|n| n as i128),
+        Expr::ViewNew { base, stride, .. } => {
+            let Type::Array(_, n) = expr_static_type(base, symbols)?.inner() else {
+                return None;
+            };
+            if let Some(stride) = stride {
+                let k = const_int_expr(stride, symbols, consts)?;
+                if k <= 0 {
+                    return None;
+                }
+                Some((*n as i128) / k)
+            } else {
+                Some(*n as i128)
+            }
+        }
+        Expr::BitNew { base, .. } => {
+            let Type::Array(_, n) = expr_static_type(base, symbols)?.inner() else {
+                return None;
+            };
+            Some((*n as i128) * 8)
+        }
+        _ => None,
+    }
+}
+
+fn type_len_const(ty: &Type) -> Option<usize> {
+    match ty.inner() {
+        Type::Array(_, n) => Some(*n),
+        _ => None,
+    }
+}
+
+fn expr_static_type<'a>(expr: &Expr, symbols: &'a SymbolTable) -> Option<&'a Type> {
+    match expr {
+        Expr::Ident((name, _)) => symbols
+            .consts
+            .get(name)
+            .map(|sym| &sym.ty)
+            .or_else(|| symbols.statics.get(name).map(|sym| &sym.ty)),
+        _ => None,
+    }
+}
+
+fn const_int_expr(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    consts: &HashMap<String, i128>,
+) -> Option<i128> {
+    use crate::ast::{BinaryOp as B, UnaryOp as U};
+
+    match expr {
+        Expr::IntLiteral(n, _, _) => Some(i128::from(*n)),
+        Expr::Ident((name, _)) => consts.get(name).copied(),
+        Expr::Group(inner) | Expr::Cast(inner, _) => const_int_expr(inner, symbols, consts),
+        Expr::SizeOf(ty_expr, _) => {
+            let ty = crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
+            Some(i128::from(crate::types::element_size(&ty)))
+        }
+        Expr::Call(callee, args) if is_len_call(callee) && args.len() == 1 => {
+            const_len_expr(&args[0], symbols, consts)
+        }
+        Expr::Unary(U::Neg, inner) => const_int_expr(inner, symbols, consts)?.checked_neg(),
+        Expr::Unary(U::BitNot, inner) => Some(!const_int_expr(inner, symbols, consts)?),
+        Expr::Binary(lhs, op, rhs) => {
+            let l = const_int_expr(lhs, symbols, consts)?;
+            let r = const_int_expr(rhs, symbols, consts)?;
+            Some(match op {
+                B::Add => l.checked_add(r)?,
+                B::Sub => l.checked_sub(r)?,
+                B::Mul => l.checked_mul(r)?,
+                B::Div => l.checked_div(r)?,
+                B::Mod => l.checked_rem(r)?,
+                B::BitAnd => l & r,
+                B::BitOr => l | r,
+                B::BitXor => l ^ r,
+                B::Shl => l.checked_shl(u32::try_from(r).ok()?)?,
+                B::Shr => l.checked_shr(u32::try_from(r).ok()?)?,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn const_bool_expr(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    consts: &HashMap<String, i128>,
+) -> Option<bool> {
+    use crate::ast::{BinaryOp as B, UnaryOp as U};
+
+    match expr {
+        Expr::BoolLiteral(b, _) => Some(*b),
+        Expr::Group(inner) | Expr::Cast(inner, _) => const_bool_expr(inner, symbols, consts),
+        Expr::Unary(U::Not, inner) => Some(!const_bool_expr(inner, symbols, consts)?),
+        Expr::Binary(lhs, B::And, rhs) => {
+            Some(const_bool_expr(lhs, symbols, consts)? && const_bool_expr(rhs, symbols, consts)?)
+        }
+        Expr::Binary(lhs, B::Or, rhs) => {
+            Some(const_bool_expr(lhs, symbols, consts)? || const_bool_expr(rhs, symbols, consts)?)
+        }
+        Expr::Binary(lhs, B::Eq, rhs) => {
+            if let (Some(l), Some(r)) = (
+                const_int_expr(lhs, symbols, consts),
+                const_int_expr(rhs, symbols, consts),
+            ) {
+                return Some(l == r);
+            }
+            Some(const_bool_expr(lhs, symbols, consts)? == const_bool_expr(rhs, symbols, consts)?)
+        }
+        Expr::Binary(lhs, B::NotEq, rhs) => {
+            if let (Some(l), Some(r)) = (
+                const_int_expr(lhs, symbols, consts),
+                const_int_expr(rhs, symbols, consts),
+            ) {
+                return Some(l != r);
+            }
+            Some(const_bool_expr(lhs, symbols, consts)? != const_bool_expr(rhs, symbols, consts)?)
+        }
+        Expr::Binary(lhs, op @ (B::Lt | B::Gt | B::LtEq | B::GtEq), rhs) => {
+            let l = const_int_expr(lhs, symbols, consts)?;
+            let r = const_int_expr(rhs, symbols, consts)?;
+            Some(match op {
+                B::Lt => l < r,
+                B::Gt => l > r,
+                B::LtEq => l <= r,
+                B::GtEq => l >= r,
+                _ => unreachable!(),
+            })
+        }
+        _ => None,
     }
 }
 

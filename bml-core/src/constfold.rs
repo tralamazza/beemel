@@ -18,8 +18,9 @@ use crate::ast::{BinaryOp, Block, Expr, IntSuffix, Item, Program, Stmt, TypeExpr
 /// Rewrite const-valued array lengths in `program` into integer literals.
 pub fn fold_array_lengths(program: &mut Program) {
     let consts = const_int_values(&program.items);
+    let array_lens = array_len_values(&program.items, &consts);
     for item in &mut program.items {
-        fold_item(item, &consts);
+        fold_item(item, &consts, &array_lens);
     }
 }
 
@@ -29,10 +30,11 @@ fn const_int_values(items: &[Item]) -> HashMap<String, i128> {
     let mut map = HashMap::new();
     loop {
         let mut changed = false;
+        let array_lens = array_len_values(items, &map);
         for item in items {
             if let Item::ConstDef(c) = item
                 && !map.contains_key(&c.name.0)
-                && let Some(v) = fold_const_int(&c.value, &map)
+                && let Some(v) = fold_const_int(&c.value, &map, &array_lens)
             {
                 map.insert(c.name.0.clone(), v);
                 changed = true;
@@ -45,16 +47,60 @@ fn const_int_values(items: &[Item]) -> HashMap<String, i128> {
     map
 }
 
+fn array_len_values(items: &[Item], consts: &HashMap<String, i128>) -> HashMap<String, usize> {
+    let mut map = HashMap::new();
+    for item in items {
+        match item {
+            Item::ConstDef(c) => {
+                if let Some(n) = type_array_len(&c.ty, consts, &map) {
+                    map.insert(c.name.0.clone(), n);
+                }
+            }
+            Item::StaticDef(s) => {
+                if let Some(n) = type_array_len(&s.ty, consts, &map) {
+                    map.insert(s.name.0.clone(), n);
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+fn type_array_len(
+    ty: &TypeExpr,
+    consts: &HashMap<String, i128>,
+    array_lens: &HashMap<String, usize>,
+) -> Option<usize> {
+    match ty {
+        TypeExpr::Array(_, size) => {
+            let n = fold_const_int(size, consts, array_lens)?;
+            usize::try_from(n).ok()
+        }
+        _ => None,
+    }
+}
+
 /// Try to evaluate `expr` as a constant integer using already-known consts.
-fn fold_const_int(expr: &Expr, consts: &HashMap<String, i128>) -> Option<i128> {
+fn fold_const_int(
+    expr: &Expr,
+    consts: &HashMap<String, i128>,
+    array_lens: &HashMap<String, usize>,
+) -> Option<i128> {
     match expr {
         Expr::IntLiteral(n, _, _) => Some(i128::from(*n)),
         Expr::Ident((name, _)) => consts.get(name).copied(),
-        Expr::Group(inner) => fold_const_int(inner, consts),
-        Expr::Unary(UnaryOp::Neg, inner) => fold_const_int(inner, consts).map(|v| -v),
+        Expr::Group(inner) => fold_const_int(inner, consts, array_lens),
+        Expr::Unary(UnaryOp::Neg, inner) => fold_const_int(inner, consts, array_lens).map(|v| -v),
+        Expr::Call(callee, args)
+            if matches!(callee.as_ref(), Expr::Ident((name, _)) if name == "len")
+                && args.len() == 1 =>
+        {
+            fold_len(&args[0], consts, array_lens)
+        }
         Expr::Binary(lhs, op, rhs) => {
-            let a = fold_const_int(lhs, consts)?;
-            let b = fold_const_int(rhs, consts)?;
+            let a = fold_const_int(lhs, consts, array_lens)?;
+            let b = fold_const_int(rhs, consts, array_lens)?;
             Some(match op {
                 BinaryOp::Add => a + b,
                 BinaryOp::Sub => a - b,
@@ -73,12 +119,40 @@ fn fold_const_int(expr: &Expr, consts: &HashMap<String, i128>) -> Option<i128> {
     }
 }
 
-fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
+fn fold_len(
+    expr: &Expr,
+    consts: &HashMap<String, i128>,
+    array_lens: &HashMap<String, usize>,
+) -> Option<i128> {
+    match expr {
+        Expr::Ident((name, _)) => array_lens.get(name).map(|n| *n as i128),
+        Expr::ViewNew { base, stride, .. } => {
+            let n = fold_len(base, consts, array_lens)?;
+            if let Some(stride) = stride {
+                let k = fold_const_int(stride, consts, array_lens)?;
+                if k <= 0 {
+                    return None;
+                }
+                Some(n / k)
+            } else {
+                Some(n)
+            }
+        }
+        Expr::BitNew { base, .. } => Some(fold_len(base, consts, array_lens)? * 8),
+        _ => None,
+    }
+}
+
+fn fold_type(
+    ty: &mut TypeExpr,
+    consts: &HashMap<String, i128>,
+    array_lens: &HashMap<String, usize>,
+) {
     match ty {
         TypeExpr::Array(inner, size) => {
-            fold_type(inner, consts);
+            fold_type(inner, consts, array_lens);
             if !matches!(size.as_ref(), Expr::IntLiteral(..))
-                && let Some(v) = fold_const_int(size, consts)
+                && let Some(v) = fold_const_int(size, consts, array_lens)
                 && let Ok(n) = u64::try_from(v)
             {
                 let span = size.span();
@@ -89,14 +163,14 @@ fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
         | TypeExpr::ConstPtr(inner)
         | TypeExpr::View(inner, _)
         | TypeExpr::Ring(inner, _) => {
-            fold_type(inner, consts);
+            fold_type(inner, consts, array_lens);
         }
         TypeExpr::StridedView(inner, _, stride) => {
-            fold_type(inner, consts);
+            fold_type(inner, consts, array_lens);
             // Fold a const stride (`view T stride N`) down to a literal, the
             // same way array sizes are folded above.
             if !matches!(stride.as_ref(), Expr::IntLiteral(..))
-                && let Some(v) = fold_const_int(stride, consts)
+                && let Some(v) = fold_const_int(stride, consts, array_lens)
                 && let Ok(n) = u64::try_from(v)
             {
                 let span = stride.span();
@@ -105,167 +179,171 @@ fn fold_type(ty: &mut TypeExpr, consts: &HashMap<String, i128>) {
         }
         TypeExpr::Fn(params, ret) => {
             for p in params.iter_mut() {
-                fold_type(p, consts);
+                fold_type(p, consts, array_lens);
             }
             if let Some(r) = ret {
-                fold_type(r, consts);
+                fold_type(r, consts, array_lens);
             }
         }
         TypeExpr::Named(_) | TypeExpr::Void(_) | TypeExpr::Bits(_) => {}
     }
 }
 
-fn fold_item(item: &mut Item, consts: &HashMap<String, i128>) {
+fn fold_item(item: &mut Item, consts: &HashMap<String, i128>, array_lens: &HashMap<String, usize>) {
     match item {
         Item::FnDef(f) => {
             for p in &mut f.params {
-                fold_type(&mut p.ty, consts);
+                fold_type(&mut p.ty, consts, array_lens);
             }
             if let Some(r) = &mut f.ret {
-                fold_type(r, consts);
+                fold_type(r, consts, array_lens);
             }
-            fold_block(&mut f.body, consts);
+            fold_block(&mut f.body, consts, array_lens);
         }
         Item::ExternFnDef(f) => {
             for p in &mut f.params {
-                fold_type(&mut p.ty, consts);
+                fold_type(&mut p.ty, consts, array_lens);
             }
             if let Some(r) = &mut f.ret {
-                fold_type(r, consts);
+                fold_type(r, consts, array_lens);
             }
         }
         Item::StaticDef(s) => {
-            fold_type(&mut s.ty, consts);
+            fold_type(&mut s.ty, consts, array_lens);
             if let Some(init) = &mut s.init {
-                fold_expr(init, consts);
+                fold_expr(init, consts, array_lens);
             }
         }
         Item::ConstDef(c) => {
-            fold_type(&mut c.ty, consts);
-            fold_expr(&mut c.value, consts);
+            fold_type(&mut c.ty, consts, array_lens);
+            fold_expr(&mut c.value, consts, array_lens);
         }
         Item::StructDef(s) => {
             for field in &mut s.fields {
-                fold_type(&mut field.ty, consts);
+                fold_type(&mut field.ty, consts, array_lens);
             }
         }
         _ => {}
     }
 }
 
-fn fold_block(block: &mut Block, consts: &HashMap<String, i128>) {
+fn fold_block(
+    block: &mut Block,
+    consts: &HashMap<String, i128>,
+    array_lens: &HashMap<String, usize>,
+) {
     for stmt in &mut block.stmts {
-        fold_stmt(stmt, consts);
+        fold_stmt(stmt, consts, array_lens);
     }
     if let Some(trailing) = &mut block.trailing {
-        fold_expr(trailing, consts);
+        fold_expr(trailing, consts, array_lens);
     }
 }
 
-fn fold_stmt(stmt: &mut Stmt, consts: &HashMap<String, i128>) {
+fn fold_stmt(stmt: &mut Stmt, consts: &HashMap<String, i128>, array_lens: &HashMap<String, usize>) {
     match stmt {
         Stmt::VarDecl(vd) => {
             if let Some(ty) = &mut vd.ty_ann {
-                fold_type(ty, consts);
+                fold_type(ty, consts, array_lens);
             }
-            fold_expr(&mut vd.init, consts);
+            fold_expr(&mut vd.init, consts, array_lens);
         }
-        Stmt::Assign(a) => fold_expr(&mut a.value, consts),
-        Stmt::CompoundAssign(a) => fold_expr(&mut a.value, consts),
-        Stmt::Expr(e) => fold_expr(e, consts),
+        Stmt::Assign(a) => fold_expr(&mut a.value, consts, array_lens),
+        Stmt::CompoundAssign(a) => fold_expr(&mut a.value, consts, array_lens),
+        Stmt::Expr(e) => fold_expr(e, consts, array_lens),
         Stmt::If(s) => {
-            fold_expr(&mut s.cond, consts);
-            fold_block(&mut s.then_block, consts);
+            fold_expr(&mut s.cond, consts, array_lens);
+            fold_block(&mut s.then_block, consts, array_lens);
             if let Some(alt) = &mut s.else_branch {
-                fold_stmt(alt, consts);
+                fold_stmt(alt, consts, array_lens);
             }
         }
-        Stmt::Loop(s) => fold_block(&mut s.body, consts),
+        Stmt::Loop(s) => fold_block(&mut s.body, consts, array_lens),
         Stmt::While(s) => {
-            fold_expr(&mut s.cond, consts);
-            fold_block(&mut s.body, consts);
+            fold_expr(&mut s.cond, consts, array_lens);
+            fold_block(&mut s.body, consts, array_lens);
         }
         Stmt::For(s) => {
-            fold_type(&mut s.ty, consts);
-            fold_expr(&mut s.start, consts);
-            fold_expr(&mut s.end, consts);
+            fold_type(&mut s.ty, consts, array_lens);
+            fold_expr(&mut s.start, consts, array_lens);
+            fold_expr(&mut s.end, consts, array_lens);
             if let Some(step) = &mut s.step {
-                fold_expr(step, consts);
+                fold_expr(step, consts, array_lens);
             }
-            fold_block(&mut s.body, consts);
+            fold_block(&mut s.body, consts, array_lens);
         }
         Stmt::Return(r) => {
             if let Some(v) = &mut r.value {
-                fold_expr(v, consts);
+                fold_expr(v, consts, array_lens);
             }
         }
-        Stmt::Block(b) => fold_block(b, consts),
+        Stmt::Block(b) => fold_block(b, consts, array_lens),
         Stmt::Match(m) => {
-            fold_expr(&mut m.scrutinee, consts);
+            fold_expr(&mut m.scrutinee, consts, array_lens);
             for arm in &mut m.arms {
-                fold_block(&mut arm.body, consts);
+                fold_block(&mut arm.body, consts, array_lens);
             }
         }
-        Stmt::Assume(a) => fold_expr(&mut a.cond, consts),
-        Stmt::Assert(a) => fold_expr(&mut a.cond, consts),
+        Stmt::Assume(a) => fold_expr(&mut a.cond, consts, array_lens),
+        Stmt::Assert(a) => fold_expr(&mut a.cond, consts, array_lens),
         Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
     }
 }
 
-fn fold_expr(expr: &mut Expr, consts: &HashMap<String, i128>) {
+fn fold_expr(expr: &mut Expr, consts: &HashMap<String, i128>, array_lens: &HashMap<String, usize>) {
     match expr {
         Expr::Cast(inner, ty) => {
-            fold_expr(inner, consts);
-            fold_type(ty, consts);
+            fold_expr(inner, consts, array_lens);
+            fold_type(ty, consts, array_lens);
         }
-        Expr::SizeOf(ty, _) => fold_type(ty, consts),
+        Expr::SizeOf(ty, _) => fold_type(ty, consts, array_lens),
         Expr::Unary(_, inner) | Expr::Group(inner) | Expr::FieldAccess(inner, _) => {
-            fold_expr(inner, consts);
+            fold_expr(inner, consts, array_lens);
         }
         Expr::Binary(l, _, r) | Expr::Index(l, r) => {
-            fold_expr(l, consts);
-            fold_expr(r, consts);
+            fold_expr(l, consts, array_lens);
+            fold_expr(r, consts, array_lens);
         }
         Expr::Call(callee, args) => {
-            fold_expr(callee, consts);
+            fold_expr(callee, consts, array_lens);
             for a in args {
-                fold_expr(a, consts);
+                fold_expr(a, consts, array_lens);
             }
         }
         Expr::ArrayInit(elems, _) => {
             for e in elems {
-                fold_expr(e, consts);
+                fold_expr(e, consts, array_lens);
             }
         }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
-                fold_expr(e, consts);
+                fold_expr(e, consts, array_lens);
             }
         }
-        Expr::Block(b) => fold_block(&mut b.block, consts),
+        Expr::Block(b) => fold_block(&mut b.block, consts, array_lens),
         Expr::If(i) => {
-            fold_expr(&mut i.cond, consts);
-            fold_block(&mut i.then_block, consts);
-            fold_expr(&mut i.else_branch, consts);
+            fold_expr(&mut i.cond, consts, array_lens);
+            fold_block(&mut i.then_block, consts, array_lens);
+            fold_expr(&mut i.else_branch, consts, array_lens);
         }
         Expr::Match(m) => {
-            fold_expr(&mut m.scrutinee, consts);
+            fold_expr(&mut m.scrutinee, consts, array_lens);
             for arm in &mut m.arms {
-                fold_block(&mut arm.body, consts);
+                fold_block(&mut arm.body, consts, array_lens);
             }
         }
         Expr::ViewNew {
             base, len, stride, ..
         } => {
-            fold_expr(base, consts);
+            fold_expr(base, consts, array_lens);
             if let Some(len) = len {
-                fold_expr(len, consts);
+                fold_expr(len, consts, array_lens);
             }
             // Fold a const stride (`view(arr, stride N)`) to a literal so the
             // checker and IR can read `K` directly.
             if let Some(stride) = stride
                 && !matches!(stride.as_ref(), Expr::IntLiteral(..))
-                && let Some(v) = fold_const_int(stride, consts)
+                && let Some(v) = fold_const_int(stride, consts, array_lens)
                 && let Ok(n) = u64::try_from(v)
             {
                 let span = stride.span();

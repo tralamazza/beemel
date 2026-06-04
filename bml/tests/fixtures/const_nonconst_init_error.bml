@@ -1,0 +1,7 @@
+fn id(x: u32) -> u32 {
+    return x;
+}
+
+const BAD: u32 = id(1u32);
+
+fn main() @context(thread) { }
