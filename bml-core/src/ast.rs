@@ -20,6 +20,15 @@ pub enum Item {
     Export(ExportStmt),
     StructDef(StructDef),
     EnumDef(EnumDef),
+    /// `comptime_assert(cond);` -- a compile-time assertion on a const
+    /// condition (e.g. `sizeof(GPIO) == 0x28`). Produces no runtime code.
+    ComptimeAssert(ComptimeAssert),
+}
+
+#[derive(Debug, Clone)]
+pub struct ComptimeAssert {
+    pub cond: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

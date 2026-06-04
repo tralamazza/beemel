@@ -940,6 +940,20 @@ assert_error!(
     "E113"
 );
 
+// comptime_assert: a const-true condition compiles; false is E342; a
+// non-compile-time-constant condition is E343.
+assert_pass!(test_comptime_assert_pass, "comptime_assert_pass.bml");
+assert_error!(
+    test_comptime_assert_false,
+    "comptime_assert_false_error.bml",
+    "E342"
+);
+assert_error!(
+    test_comptime_assert_nonconst,
+    "comptime_assert_nonconst_error.bml",
+    "E343"
+);
+
 // ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
 assert_error!(
     test_assign_type_mismatch,

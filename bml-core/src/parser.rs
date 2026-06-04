@@ -183,6 +183,16 @@ impl<'a> Parser<'a> {
             TokenKind::Export => self.parse_export().map(Item::Export),
             TokenKind::Struct => self.parse_struct_def().map(Item::StructDef),
             TokenKind::Enum => self.parse_enum_def().map(Item::EnumDef),
+            TokenKind::ComptimeAssert => {
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `comptime_assert`")
+                    .ok()?;
+                let cond = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                Some(Item::ComptimeAssert(ComptimeAssert { cond, span }))
+            }
             _ => {
                 self.diags.error(
                     format!("expected item, found `{:?}`", self.peek_kind()),

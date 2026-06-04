@@ -661,6 +661,9 @@ item          = fn_def | extern_fn_def | static_def | const_def
               | peripheral_def | import_stmt | export_stmt
               | struct_def
               | enum_def
+              | comptime_assert
+
+comptime_assert = "comptime_assert" "(" expr ")" ";"
 
 fn_def        = "fn" ident "(" [params] ")" ["->" type]
                 [ fn_annotation ] block
@@ -823,6 +826,26 @@ not wrap the loop variable's type.
 `..` is no longer accepted inside a for-loop; it remains valid only in
 `bit[L..H]` peripheral field declarations.
 
+### `comptime_assert`
+
+`comptime_assert(cond);` is a module-level item that checks a compile-time
+constant condition and fails compilation if it does not hold. It produces no
+runtime code. Use it to pin hardware-layout invariants:
+
+```bml
+comptime_assert(sizeof(GPIO) == 0x28);
+comptime_assert(sizeof(u32) == 4);
+const RATE: u32 = 8;
+comptime_assert(RATE > 0 && RATE < 100);
+```
+
+The condition must evaluate to a constant `b1`: integer/bool literals, `const`
+values, `sizeof(...)`, `as` casts, the usual arithmetic / bitwise / shift
+operators, comparisons, and `&&` / `||` / `!`. A condition that is false is
+`E342`; one that is not a compile-time-constant boolean (e.g. references a
+runtime `static` or evaluates to an integer) is `E343`. Unlike `assert`, which
+is a verifier obligation, `comptime_assert` is checked by `bml build` itself.
+
 ### `assume` / `assert` semantics
 
 Both are intended for `bml verify`, but `bml build` treats them differently:
@@ -928,6 +951,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |
 | E340  | `assume` condition must be b1 |
 | E341  | `assert` condition must be b1 |
+| E342  | `comptime_assert` condition is false |
+| E343  | `comptime_assert` condition is not a compile-time-constant `b1` expression |
 
 Verification (`bml verify`) findings use V-series codes (V100–V999). They are
 listed separately in [verification-codes.md](./verification-codes.md).

@@ -1,0 +1,4 @@
+// A non-constant condition (references a runtime static) is E343.
+static s: u32 = 5;
+comptime_assert(s == 5);
+fn main() @context(thread) { }

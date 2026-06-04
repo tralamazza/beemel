@@ -330,6 +330,6 @@ fn item_def_span(item: &Item) -> Option<Span> {
         Item::PeripheralDef(p) => Some(p.name.1),
         Item::StructDef(s) => Some(s.name.1),
         Item::EnumDef(e) => Some(e.name.1),
-        Item::Import(_) | Item::Export(_) => None,
+        Item::Import(_) | Item::Export(_) | Item::ComptimeAssert(_) => None,
     }
 }

@@ -59,6 +59,7 @@ pub enum TokenKind {
     Writeonly,
     Assume,
     Assert,
+    ComptimeAssert,
     Asm,
     AsmBody(String),
 
@@ -751,6 +752,7 @@ fn keyword_or_ident(s: &str) -> TokenKind {
         "writeonly" => TokenKind::Writeonly,
         "assume" => TokenKind::Assume,
         "assert" => TokenKind::Assert,
+        "comptime_assert" => TokenKind::ComptimeAssert,
         "asm" => TokenKind::Asm,
         "true" => TokenKind::BoolLiteral(true),
         "false" => TokenKind::BoolLiteral(false),

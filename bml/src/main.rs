@@ -478,6 +478,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
                     e.variants.len()
                 );
             }
+            ast::Item::ComptimeAssert(_) => {}
         }
     }
 }

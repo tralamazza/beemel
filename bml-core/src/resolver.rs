@@ -113,6 +113,8 @@ impl Resolver {
                 ast::Item::Export(_) => {
                     // Export statements are consumed by import resolver
                 }
+                // Defines no symbol; checked separately during type checking.
+                ast::Item::ComptimeAssert(_) => {}
             }
         }
 

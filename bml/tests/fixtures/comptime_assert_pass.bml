@@ -1,0 +1,9 @@
+// comptime_assert holds at compile time: sizeof, const arithmetic, logical ops.
+struct GPIO { moder: u32, otyper: u32 }
+const RATE: u32 = 8;
+const DOUBLE: u32 = RATE * 2;
+comptime_assert(sizeof(u32) == 4);
+comptime_assert(sizeof(GPIO) == 8);
+comptime_assert(DOUBLE == 16);
+comptime_assert(RATE > 0 && RATE < 100);
+fn main() @context(thread) { }

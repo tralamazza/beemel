@@ -103,6 +103,139 @@ impl Checker {
                 check_fn(fn_def, symbols, diags);
             }
         }
+        check_comptime_asserts(program, symbols, diags);
+    }
+}
+
+/// A compile-time constant value.
+#[derive(Clone, Copy)]
+enum ConstVal {
+    Int(i128),
+    Bool(bool),
+}
+
+/// Evaluate a const expression. Returns `None` for anything not compile-time
+/// constant. All arithmetic is checked so an overflowing user expression yields
+/// `None` rather than panicking the compiler.
+fn const_eval(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    vals: &HashMap<String, i128>,
+) -> Option<ConstVal> {
+    use crate::ast::{BinaryOp as B, UnaryOp as U};
+    Some(match expr {
+        Expr::IntLiteral(n, _, _) => ConstVal::Int(i128::from(*n)),
+        Expr::BoolLiteral(b, _) => ConstVal::Bool(*b),
+        Expr::Group(inner) | Expr::Cast(inner, _) => const_eval(inner, symbols, vals)?,
+        Expr::Ident((name, _)) => ConstVal::Int(*vals.get(name)?),
+        Expr::SizeOf(ty_expr, _) => {
+            let ty = types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
+            if matches!(ty, Type::Unresolved(_)) {
+                return None;
+            }
+            ConstVal::Int(i128::from(types::element_size(&ty)))
+        }
+        Expr::Unary(U::Neg, inner) => match const_eval(inner, symbols, vals)? {
+            ConstVal::Int(v) => ConstVal::Int(v.checked_neg()?),
+            ConstVal::Bool(_) => return None,
+        },
+        Expr::Unary(U::BitNot, inner) => match const_eval(inner, symbols, vals)? {
+            ConstVal::Int(v) => ConstVal::Int(!v),
+            ConstVal::Bool(_) => return None,
+        },
+        Expr::Unary(U::Not, inner) => match const_eval(inner, symbols, vals)? {
+            ConstVal::Bool(b) => ConstVal::Bool(!b),
+            ConstVal::Int(_) => return None,
+        },
+        Expr::Binary(lhs, op, rhs) => {
+            let lv = const_eval(lhs, symbols, vals)?;
+            let rv = const_eval(rhs, symbols, vals)?;
+            match (lv, rv) {
+                (ConstVal::Int(x), ConstVal::Int(y)) => match op {
+                    B::Add => ConstVal::Int(x.checked_add(y)?),
+                    B::Sub => ConstVal::Int(x.checked_sub(y)?),
+                    B::Mul => ConstVal::Int(x.checked_mul(y)?),
+                    B::Div => ConstVal::Int(x.checked_div(y)?),
+                    B::Mod => ConstVal::Int(x.checked_rem(y)?),
+                    B::BitAnd => ConstVal::Int(x & y),
+                    B::BitOr => ConstVal::Int(x | y),
+                    B::BitXor => ConstVal::Int(x ^ y),
+                    B::Shl => ConstVal::Int(u32::try_from(y).ok().and_then(|s| x.checked_shl(s))?),
+                    B::Shr => ConstVal::Int(u32::try_from(y).ok().and_then(|s| x.checked_shr(s))?),
+                    B::Eq => ConstVal::Bool(x == y),
+                    B::NotEq => ConstVal::Bool(x != y),
+                    B::Lt => ConstVal::Bool(x < y),
+                    B::Gt => ConstVal::Bool(x > y),
+                    B::LtEq => ConstVal::Bool(x <= y),
+                    B::GtEq => ConstVal::Bool(x >= y),
+                    _ => return None,
+                },
+                (ConstVal::Bool(x), ConstVal::Bool(y)) => match op {
+                    B::And => ConstVal::Bool(x && y),
+                    B::Or => ConstVal::Bool(x || y),
+                    B::Eq => ConstVal::Bool(x == y),
+                    B::NotEq => ConstVal::Bool(x != y),
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// Compile-time values of all `const` items, resolved to a fixpoint so a
+/// `const` defined in terms of another resolves regardless of order.
+fn collect_const_values(program: &Program, symbols: &SymbolTable) -> HashMap<String, i128> {
+    let mut vals: HashMap<String, i128> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for item in &program.items {
+            if let ast::Item::ConstDef(c) = item
+                && !vals.contains_key(&c.name.0)
+                && let Some(ConstVal::Int(v)) = const_eval(&c.value, symbols, &vals)
+            {
+                vals.insert(c.name.0.clone(), v);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    vals
+}
+
+/// Evaluate every `comptime_assert(cond);` at compile time.
+fn check_comptime_asserts(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    if !program
+        .items
+        .iter()
+        .any(|i| matches!(i, ast::Item::ComptimeAssert(_)))
+    {
+        return;
+    }
+    let vals = collect_const_values(program, symbols);
+    for item in &program.items {
+        if let ast::Item::ComptimeAssert(ca) = item {
+            match const_eval(&ca.cond, symbols, &vals) {
+                Some(ConstVal::Bool(true)) => {}
+                Some(ConstVal::Bool(false)) => {
+                    diags.error(
+                        "comptime_assert failed: condition is false",
+                        "E342",
+                        ca.span,
+                    );
+                }
+                Some(ConstVal::Int(_)) | None => {
+                    diags.error(
+                        "comptime_assert condition must be a compile-time-constant `b1` expression",
+                        "E343",
+                        ca.span,
+                    );
+                }
+            }
+        }
     }
 }
 
