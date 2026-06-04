@@ -1,0 +1,9 @@
+// A match pattern value outside the scrutinee type's range is rejected (E344);
+// 300 does not fit u8.
+fn main() @context(thread) {
+    var n: u8 = 0u8;
+    match n {
+        300 { }
+        _ { }
+    }
+}

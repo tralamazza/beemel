@@ -721,7 +721,13 @@ fn check_match_coverage(
         return;
     }
 
+    let (min, max) = if is_int {
+        int_range(scrutinee_ty)
+    } else {
+        (0, 0)
+    };
     let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_ints: std::collections::HashSet<i128> = std::collections::HashSet::new();
     let mut has_wildcard = false;
     for arm in arms {
         for pat in &arm.patterns {
@@ -746,9 +752,30 @@ fn check_match_coverage(
                         diags.error("enum-variant pattern in an integer match", "E324", *v_span);
                     }
                 }
-                ast::MatchPattern::Int(_, span) | ast::MatchPattern::Range(_, _, span) => {
+                ast::MatchPattern::Int(v, span) => {
                     if enum_info.is_some() {
                         diags.error("integer pattern in an enum match", "E324", *span);
+                    } else if *v < min || *v > max {
+                        diags.error(
+                            format!("pattern value {v} is out of range for `{scrutinee_ty:?}`"),
+                            "E344",
+                            *span,
+                        );
+                    } else if !seen_ints.insert(*v) {
+                        diags.error(format!("duplicate pattern value {v}"), "E319", *span);
+                    }
+                }
+                ast::MatchPattern::Range(lo, hi, span) => {
+                    if enum_info.is_some() {
+                        diags.error("integer pattern in an enum match", "E324", *span);
+                    } else if lo > hi {
+                        diags.error(format!("empty range `{lo}..{hi}` (lo > hi)"), "E344", *span);
+                    } else if *lo < min || *hi > max {
+                        diags.error(
+                            format!("range `{lo}..{hi}` is out of range for `{scrutinee_ty:?}`"),
+                            "E344",
+                            *span,
+                        );
                     }
                 }
                 ast::MatchPattern::Wildcard(span) => {

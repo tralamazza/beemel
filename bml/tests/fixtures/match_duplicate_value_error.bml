@@ -1,0 +1,10 @@
+// The same integer pattern value in two arms is a duplicate (E319); the second
+// arm would be unreachable.
+fn main() @context(thread) {
+    var n: u32 = 0;
+    match n {
+        5 { }
+        5 { }
+        _ { }
+    }
+}

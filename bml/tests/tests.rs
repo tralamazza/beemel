@@ -982,6 +982,18 @@ assert_error!(
     "E325"
 );
 assert_error!(test_match_int_kind, "match_int_kind_error.bml", "E324");
+// A pattern value outside the scrutinee type's range is E344; the same value in
+// two arms (an unreachable second arm) is E319.
+assert_error!(
+    test_match_pattern_range,
+    "match_pattern_range_error.bml",
+    "E344"
+);
+assert_error!(
+    test_match_duplicate_value,
+    "match_duplicate_value_error.bml",
+    "E319"
+);
 
 // ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
 assert_error!(

@@ -721,7 +721,10 @@ match_pattern = ident "@" ident         (* enum variant *)
               ;; A match scrutinee is an enum (variant patterns, exhaustive over
               ;; the variants or `_`) or an integer (int/range patterns; must
               ;; include `_`). Arms are tried top-to-bottom; the first match
-              ;; wins. Ranges are inclusive on both ends.
+              ;; wins. Ranges are inclusive on both ends. A pattern value/range
+              ;; outside the scrutinee type's range, or an empty range, is E344;
+              ;; the same value in two arms is E319. (A value covered by an
+              ;; earlier range is allowed -- first match wins -- not flagged.)
 
 match_expr    = "match" expr "{"
                  { match_arm_expr }
@@ -1001,6 +1004,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E341  | `assert` condition must be b1 |
 | E342  | `comptime_assert` condition is false |
 | E343  | `comptime_assert` condition is not a compile-time-constant `b1` expression |
+| E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
 
 Verification (`bml verify`) findings use V-series codes (V100–V999). They are
 listed separately in [verification-codes.md](./verification-codes.md).
