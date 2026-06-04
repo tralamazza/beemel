@@ -289,6 +289,10 @@ assert_exec!(exec_view_strided, "view_strided.bml");
 // locals, array elements, struct fields, pointer derefs, and peripheral fields.
 assert_exec!(exec_compound_assign, "compound_assign.bml");
 
+// Compound assignment across signedness and width: arithmetic shift / signed
+// division, narrow-type wrapping, and 64-bit operands.
+assert_exec!(exec_compound_assign_widths, "compound_assign_widths.bml");
+
 // Inline asm with operands (outputs/inputs/clobbers, single + struct-return).
 assert_exec!(exec_asm_operands, "asm_operands.bml");
 

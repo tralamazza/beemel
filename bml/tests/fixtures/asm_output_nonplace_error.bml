@@ -1,0 +1,6 @@
+// An asm output operand must be an assignable place, not an arbitrary
+// expression (E314).
+fn main() @context(thread) {
+    var x: u32 = 0;
+    asm { movs $0, #1 } : "=r"(x + 1);
+}

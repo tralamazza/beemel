@@ -954,6 +954,27 @@ assert_error!(
     "E343"
 );
 
+// Compound assignment reuses the assignment/operator checks: assigning to a
+// `val` is E309, and a type mismatch in the implied `x = x OP y` is E310.
+assert_error!(
+    test_compound_assign_val,
+    "compound_assign_val_error.bml",
+    "E309"
+);
+assert_error!(
+    test_compound_assign_type,
+    "compound_assign_type_error.bml",
+    "E310"
+);
+// `@align(N)` requires a power-of-two N.
+assert_error!(test_align_bad_value, "align_bad_value_error.bml", "E104");
+// An asm output operand must be an assignable place.
+assert_error!(
+    test_asm_output_nonplace,
+    "asm_output_nonplace_error.bml",
+    "E314"
+);
+
 // ─── checker diagnostics (added to close diagnostic-coverage gaps) ─────────
 assert_error!(
     test_assign_type_mismatch,

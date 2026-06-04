@@ -1,0 +1,7 @@
+// Compound arithmetic between different integer types is rejected (E310);
+// the operands must be cast. (`+=` type-checks as `x = x + y`.)
+fn main() @context(thread) {
+    var x: u8 = 1u8;
+    var y: u32 = 1;
+    x += y;
+}
