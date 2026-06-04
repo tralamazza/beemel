@@ -171,7 +171,10 @@ field offsets matching the hardware. Natural alignment would insert
 padding between `u8` and `u32` fields, breaking register access.
 
 For non-MMIO structs, packed layout is also simpler and predictable.
-Alignment can be added later as an opt-in annotation.
+
+Whole-object alignment is available via the `@align(N)` annotation on statics
+(e.g. for DMA buffers); see language.md §4. Per-field padding control inside a
+struct is still future work -- struct layout remains packed.
 
 ## 13. Why `extractvalue` for struct field reads (not GEP+load)?
 
