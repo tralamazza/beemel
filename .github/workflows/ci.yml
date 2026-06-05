@@ -17,3 +17,16 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets
       - run: cargo test
+
+  # Copy-paste detection gate. Config lives in .jscpd.json; it MUST keep maxLines
+  # high, or jscpd silently skips files over 1000 lines (ir.rs, checker.rs,
+  # parser.rs -- the ones most likely to grow duplication) and reports a falsely
+  # low number. Isolated from the Rust job so a registry hiccup can't block it.
+  duplication:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx --yes jscpd@4.2.4

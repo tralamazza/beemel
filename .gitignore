@@ -1,1 +1,5 @@
 /target
+
+# jscpd copy-paste detector output / cache
+/report
+/.jscpd

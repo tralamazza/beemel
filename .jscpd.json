@@ -1,0 +1,9 @@
+{
+  "format": ["rust"],
+  "path": ["bml-core/src"],
+  "minTokens": 50,
+  "maxLines": 100000,
+  "maxSize": "5mb",
+  "threshold": 2.6,
+  "reporters": ["console"]
+}
