@@ -35,6 +35,19 @@ pub struct FnSymbol {
     pub max_depth: u32,
 }
 
+impl FnSymbol {
+    /// The function-pointer type produced by reading this function as a value
+    /// (a bare function name or `&fn`): parameter types in order, with `void`
+    /// for an absent return. The type checker and the IR emitter must agree on
+    /// this, so both go through here.
+    #[must_use]
+    pub fn fn_pointer_type(&self) -> crate::types::Type {
+        let params = self.params.iter().map(|(_, t)| t.clone()).collect();
+        let ret = self.ret.clone().unwrap_or(crate::types::Type::Void);
+        crate::types::Type::Fn(params, Box::new(ret))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StaticSymbol {
     pub ty: crate::types::Type,

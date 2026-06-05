@@ -1182,17 +1182,9 @@ fn check_expr(
     diags: &mut DiagnosticBag,
 ) -> Type {
     match expr {
-        Expr::IntLiteral(_, suffix, _) => match suffix {
-            crate::ast::IntSuffix::I8 => Type::I8,
-            crate::ast::IntSuffix::I16 => Type::I16,
-            crate::ast::IntSuffix::I32 => Type::I32,
-            crate::ast::IntSuffix::I64 => Type::I64,
-            crate::ast::IntSuffix::U8 => Type::U8,
-            crate::ast::IntSuffix::U16 => Type::U16,
-            crate::ast::IntSuffix::U32 => Type::U32,
-            crate::ast::IntSuffix::U64 => Type::U64,
-            crate::ast::IntSuffix::None => Type::U32,
-        },
+        // Unsuffixed literals type-check as `u32`; fitting into a wider
+        // expected type is checked at the assignment/coercion site.
+        Expr::IntLiteral(_, suffix, _) => types::int_suffix_type(*suffix).unwrap_or(Type::U32),
         Expr::FloatLiteral(n, suffix, span) => {
             let ty = match suffix {
                 crate::ast::FloatSuffix::H => Type::F16,
@@ -1255,9 +1247,7 @@ fn check_expr(
                         *span,
                     );
                 }
-                let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
-                let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
-                return Type::Fn(params, Box::new(ret));
+                return fn_sym.fn_pointer_type();
             }
 
             diags.error(format!("undefined name: `{name}`"), "E305", *span);
@@ -1324,10 +1314,7 @@ fn check_expr(
                     if let Expr::Ident((name, _)) = inner.as_ref()
                         && let Some(fn_sym) = symbols.functions.get(name)
                     {
-                        let params: Vec<Type> =
-                            fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
-                        let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
-                        return Type::Fn(params, Box::new(ret));
+                        return fn_sym.fn_pointer_type();
                     }
                     if inner_ty.is_move() {
                         Type::ConstPtr(Box::new(inner_ty.inner().clone()))

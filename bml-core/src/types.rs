@@ -206,6 +206,28 @@ impl Type {
     }
 }
 
+/// Type of an integer literal from its explicit suffix.
+///
+/// Returns `None` for an unsuffixed literal: the default is context-dependent
+/// and each caller decides it (the type checker treats unsuffixed as `u32`; the
+/// IR emitter widens to `u64` for values above `u32::MAX`). Keep both callers in
+/// sync through this single mapping for the explicit suffixes.
+#[must_use]
+pub fn int_suffix_type(suffix: crate::ast::IntSuffix) -> Option<Type> {
+    use crate::ast::IntSuffix;
+    Some(match suffix {
+        IntSuffix::I8 => Type::I8,
+        IntSuffix::I16 => Type::I16,
+        IntSuffix::I32 => Type::I32,
+        IntSuffix::I64 => Type::I64,
+        IntSuffix::U8 => Type::U8,
+        IntSuffix::U16 => Type::U16,
+        IntSuffix::U32 => Type::U32,
+        IntSuffix::U64 => Type::U64,
+        IntSuffix::None => return None,
+    })
+}
+
 /// Map from enum name to (underlying type, (variant name, discriminant) list)
 pub type EnumDefs = HashMap<String, (Type, Vec<(String, i64)>)>;
 

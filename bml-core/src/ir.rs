@@ -2183,32 +2183,8 @@ impl IrEmitter {
                     // descriptor, assume the index is in range so the verifier
                     // can prove the access, then typed GEP + load.
                     let agg = self.emit_expr(base, symbols, fn_name);
-                    let ptr_field = self.new_reg();
-                    self.line(&format!(
-                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
-                    ));
-                    let len_field = self.new_reg();
-                    self.line(&format!(
-                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
-                    ));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    // assume(idx < len), unsigned: also rules out negative idx.
-                    let cond = self.new_reg();
-                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
-                    let ok_lbl = self.new_label("view_idx_ok");
-                    let oob_lbl = self.new_label("view_idx_oob");
-                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{oob_lbl}:"));
-                    self.indent += 1;
-                    self.line("unreachable");
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{ok_lbl}:"));
-                    self.indent += 1;
+                    let (ptr_field, idx_i32) =
+                        self.view_ptr_len_checked(&agg, index, symbols, fn_name);
                     let ll_elem = llvm_type(elem_ty);
                     let gep = self.new_reg();
                     self.line(&format!(
@@ -2224,31 +2200,8 @@ impl IrEmitter {
                     // keeps the GEP typed, so the verifier bounds it just like
                     // the contiguous case. assume(i < len) bounds the logical i.
                     let agg = self.emit_expr(base, symbols, fn_name);
-                    let ptr_field = self.new_reg();
-                    self.line(&format!(
-                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
-                    ));
-                    let len_field = self.new_reg();
-                    self.line(&format!(
-                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
-                    ));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    let cond = self.new_reg();
-                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
-                    let ok_lbl = self.new_label("view_idx_ok");
-                    let oob_lbl = self.new_label("view_idx_oob");
-                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{oob_lbl}:"));
-                    self.indent += 1;
-                    self.line("unreachable");
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{ok_lbl}:"));
-                    self.indent += 1;
+                    let (ptr_field, idx_i32) =
+                        self.view_ptr_len_checked(&agg, index, symbols, fn_name);
                     let scaled = self.new_reg();
                     self.line(&format!("{scaled} = mul i32 {idx_i32}, {k}"));
                     let ll_elem = llvm_type(elem_ty);
@@ -2270,16 +2223,8 @@ impl IrEmitter {
                     // to [0, cap) trivially for IKOS.
                     let agg = self.emit_expr(base, symbols, fn_name);
                     let ty = "{ ptr, i32, i32, i32 }";
-                    let ptr_field = self.new_reg();
-                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
-                    let head_field = self.new_reg();
-                    self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    let sum = self.new_reg();
-                    self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
-                    let phys = self.ring_physical_index(&agg, ty, *cap_hint, &sum);
+                    let (ptr_field, phys) =
+                        self.view_ring_addr(&agg, ty, *cap_hint, index, symbols, fn_name);
                     let ll_elem = llvm_type(elem_ty);
                     let gep = self.new_reg();
                     self.line(&format!(
@@ -3425,31 +3370,8 @@ impl IrEmitter {
                     let ll_elem = llvm_type(elem_ty);
                     let agg = self.new_reg();
                     self.line(&format!("{agg} = load {{ ptr, i32 }}, ptr {base_ptr}"));
-                    let ptr_field = self.new_reg();
-                    self.line(&format!(
-                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
-                    ));
-                    let len_field = self.new_reg();
-                    self.line(&format!(
-                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
-                    ));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    let cond = self.new_reg();
-                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
-                    let ok_lbl = self.new_label("view_idx_ok");
-                    let oob_lbl = self.new_label("view_idx_oob");
-                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{oob_lbl}:"));
-                    self.indent += 1;
-                    self.line("unreachable");
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{ok_lbl}:"));
-                    self.indent += 1;
+                    let (ptr_field, idx_i32) =
+                        self.view_ptr_len_checked(&agg, index, symbols, fn_name);
                     let gep = self.new_reg();
                     self.line(&format!(
                         "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {idx_i32}{dbg}"
@@ -3465,31 +3387,8 @@ impl IrEmitter {
                     let ll_elem = llvm_type(elem_ty);
                     let agg = self.new_reg();
                     self.line(&format!("{agg} = load {{ ptr, i32 }}, ptr {base_ptr}"));
-                    let ptr_field = self.new_reg();
-                    self.line(&format!(
-                        "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
-                    ));
-                    let len_field = self.new_reg();
-                    self.line(&format!(
-                        "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
-                    ));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    let cond = self.new_reg();
-                    self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
-                    let ok_lbl = self.new_label("view_idx_ok");
-                    let oob_lbl = self.new_label("view_idx_oob");
-                    self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{oob_lbl}:"));
-                    self.indent += 1;
-                    self.line("unreachable");
-                    self.line("");
-                    self.indent -= 1;
-                    self.line(&format!("{ok_lbl}:"));
-                    self.indent += 1;
+                    let (ptr_field, idx_i32) =
+                        self.view_ptr_len_checked(&agg, index, symbols, fn_name);
                     let scaled = self.new_reg();
                     self.line(&format!("{scaled} = mul i32 {idx_i32}, {k}"));
                     let gep = self.new_reg();
@@ -3507,16 +3406,8 @@ impl IrEmitter {
                     let ty = "{ ptr, i32, i32, i32 }";
                     let agg = self.new_reg();
                     self.line(&format!("{agg} = load {ty}, ptr {base_ptr}"));
-                    let ptr_field = self.new_reg();
-                    self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
-                    let head_field = self.new_reg();
-                    self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
-                    let idx_reg = self.emit_expr(index, symbols, fn_name);
-                    let idx_ty = self.expr_type(index, symbols);
-                    let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
-                    let sum = self.new_reg();
-                    self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
-                    let phys = self.ring_physical_index(&agg, ty, *cap_hint, &sum);
+                    let (ptr_field, phys) =
+                        self.view_ring_addr(&agg, ty, *cap_hint, index, symbols, fn_name);
                     let gep = self.new_reg();
                     self.line(&format!(
                         "{gep} = getelementptr {ll_elem}, ptr {ptr_field}, i32 {phys}{dbg}"
@@ -3739,6 +3630,76 @@ impl IrEmitter {
         let n = self.label_counter;
         self.label_counter += 1;
         format!("{prefix}.{n}")
+    }
+
+    /// Extract `{ ptr, i32 }` from a linear or strided view descriptor `agg`,
+    /// lower `index`, and emit `assume(idx < len)` as a branch to `unreachable`
+    /// on out-of-range (so the verifier can prove the access). Returns the base
+    /// pointer register and the in-range `i32` index, leaving the builder in
+    /// the in-range block. Shared by reads (`Expr::Index`) and writes
+    /// (`LValue::Index`); the caller adds the typed GEP, scaling the index by
+    /// the stride for strided views.
+    fn view_ptr_len_checked(
+        &mut self,
+        agg: &str,
+        index: &Expr,
+        symbols: &SymbolTable,
+        fn_name: &str,
+    ) -> (String, String) {
+        let ptr_field = self.new_reg();
+        self.line(&format!(
+            "{ptr_field} = extractvalue {{ ptr, i32 }} {agg}, 0"
+        ));
+        let len_field = self.new_reg();
+        self.line(&format!(
+            "{len_field} = extractvalue {{ ptr, i32 }} {agg}, 1"
+        ));
+        let idx_reg = self.emit_expr(index, symbols, fn_name);
+        let idx_ty = self.expr_type(index, symbols);
+        let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+        // assume(idx < len), unsigned: also rules out a negative index.
+        let cond = self.new_reg();
+        self.line(&format!("{cond} = icmp ult i32 {idx_i32}, {len_field}"));
+        let ok_lbl = self.new_label("view_idx_ok");
+        let oob_lbl = self.new_label("view_idx_oob");
+        self.line(&format!("br i1 {cond}, label %{ok_lbl}, label %{oob_lbl}"));
+        self.line("");
+        self.indent -= 1;
+        self.line(&format!("{oob_lbl}:"));
+        self.indent += 1;
+        self.line("unreachable");
+        self.line("");
+        self.indent -= 1;
+        self.line(&format!("{ok_lbl}:"));
+        self.indent += 1;
+        (ptr_field, idx_i32)
+    }
+
+    /// Extract the base pointer and compute the physical element index for a
+    /// ring view descriptor `agg` of LLVM type `ty`:
+    /// `phys = (head + i) % capacity` (a constant mask when the capacity is a
+    /// power of two). Returns the base pointer and physical-index registers.
+    /// Shared by ring reads and writes; the caller adds the typed GEP.
+    fn view_ring_addr(
+        &mut self,
+        agg: &str,
+        ty: &str,
+        cap_hint: Option<u32>,
+        index: &Expr,
+        symbols: &SymbolTable,
+        fn_name: &str,
+    ) -> (String, String) {
+        let ptr_field = self.new_reg();
+        self.line(&format!("{ptr_field} = extractvalue {ty} {agg}, 0"));
+        let head_field = self.new_reg();
+        self.line(&format!("{head_field} = extractvalue {ty} {agg}, 2"));
+        let idx_reg = self.emit_expr(index, symbols, fn_name);
+        let idx_ty = self.expr_type(index, symbols);
+        let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
+        let sum = self.new_reg();
+        self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
+        let phys = self.ring_physical_index(agg, ty, cap_hint, &sum);
+        (ptr_field, phys)
     }
 
     /// Lower a ring view's physical index from `sum = head + i`. With a
@@ -4120,20 +4081,17 @@ impl IrEmitter {
 
     fn expr_type(&self, expr: &Expr, symbols: &SymbolTable) -> Type {
         match expr {
-            Expr::IntLiteral(n, suffix, _) => match suffix {
-                crate::ast::IntSuffix::I8 => Type::I8,
-                crate::ast::IntSuffix::I16 => Type::I16,
-                crate::ast::IntSuffix::I32 => Type::I32,
-                crate::ast::IntSuffix::I64 => Type::I64,
-                crate::ast::IntSuffix::U8 => Type::U8,
-                crate::ast::IntSuffix::U16 => Type::U16,
-                crate::ast::IntSuffix::U32 => Type::U32,
-                crate::ast::IntSuffix::U64 => Type::U64,
-                // Matches the emit width above: a >32-bit unsuffixed literal is
-                // 64-bit (it only type-checks in a 64-bit context).
-                crate::ast::IntSuffix::None if *n > u64::from(u32::MAX) => Type::U64,
-                crate::ast::IntSuffix::None => Type::U32,
-            },
+            Expr::IntLiteral(n, suffix, _) => {
+                crate::types::int_suffix_type(*suffix).unwrap_or({
+                    // Matches the emit width: a >32-bit unsuffixed literal is
+                    // 64-bit (it only type-checks in a 64-bit context).
+                    if *n > u64::from(u32::MAX) {
+                        Type::U64
+                    } else {
+                        Type::U32
+                    }
+                })
+            }
             Expr::FloatLiteral(_, suffix, _) => match suffix {
                 crate::ast::FloatSuffix::H => Type::F16,
                 crate::ast::FloatSuffix::F | crate::ast::FloatSuffix::None => Type::F32,
@@ -4160,14 +4118,10 @@ impl IrEmitter {
                 if let Some(symbol) = self.alias_fn_symbols.get(name)
                     && let Some(fn_sym) = symbols.functions.get(symbol)
                 {
-                    let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
-                    let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
-                    return Type::Fn(params, Box::new(ret));
+                    return fn_sym.fn_pointer_type();
                 }
                 if let Some(fn_sym) = symbols.functions.get(name) {
-                    let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
-                    let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
-                    return Type::Fn(params, Box::new(ret));
+                    return fn_sym.fn_pointer_type();
                 }
                 Type::U32 // default for unresolved locals
             }
