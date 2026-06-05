@@ -817,6 +817,26 @@ assert_error!(
     "E201"
 );
 assert_error!(test_ptr_mut_val, "ptr_mut_val_error.bml", "E309");
+assert_error!(
+    test_ptr_mut_val_index,
+    "ptr_mut_val_index_error.bml",
+    "E309"
+);
+assert_error!(
+    test_ptr_mut_const_deref,
+    "ptr_mut_const_deref_error.bml",
+    "E314"
+);
+assert_error!(
+    test_ptr_mut_const_index,
+    "ptr_mut_const_index_error.bml",
+    "E314"
+);
+assert_error!(
+    test_ptr_mut_readonly_view_index,
+    "ptr_mut_readonly_view_index_error.bml",
+    "E334"
+);
 assert_error!(test_ptr_void_deref, "ptr_void_deref_error.bml", "E315");
 assert_error!(
     test_struct_field_not_found,

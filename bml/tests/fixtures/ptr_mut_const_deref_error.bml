@@ -1,0 +1,5 @@
+fn main() @context(thread) {
+    var x: u32 = 1u32;
+    val p: *u32 = &x;
+    var q: *mut u32 = &mut *p;
+}

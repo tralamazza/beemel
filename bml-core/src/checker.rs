@@ -1261,8 +1261,20 @@ fn check_expr(
             use crate::ast::UnaryOp;
             // Taking the address of a local borrows it; it does not consume a
             // Move-typed value. So read the operand's type without consuming.
-            let inner_ty = if matches!(op, UnaryOp::AddrOf | UnaryOp::AddrOfMut) {
-                read_place_type(inner, symbols, scope, fn_name, expected_ret, diags)
+            let place_info = if matches!(op, UnaryOp::AddrOf | UnaryOp::AddrOfMut) {
+                Some(read_place_info(
+                    inner,
+                    symbols,
+                    scope,
+                    fn_name,
+                    expected_ret,
+                    diags,
+                ))
+            } else {
+                None
+            };
+            let inner_ty = if let Some(info) = &place_info {
+                info.ty.clone()
             } else {
                 check_expr(inner, symbols, scope, fn_name, expected_ret, diags)
             };
@@ -1321,16 +1333,8 @@ fn check_expr(
                     }
                 }
                 UnaryOp::AddrOfMut => {
-                    // Can only take &mut of mutable variables or statics
-                    if let Expr::Ident((name, span)) = inner.as_ref()
-                        && let Some(info) = scope.lookup(name)
-                        && !info.mutable
-                    {
-                        diags.error(
-                            format!("cannot take mutable address of immutable `{name}`"),
-                            "E309",
-                            *span,
-                        );
+                    if let Some(error) = place_info.and_then(|info| info.mut_borrow_error) {
+                        error.emit(diags);
                     }
                     let ty = if inner_ty.is_move() {
                         inner_ty.inner().clone()
@@ -2183,6 +2187,158 @@ fn check_expr(
             diags.error(format!("undefined enum type: `{name}`"), "E305", *span);
             Type::Unresolved(name.clone())
         }
+    }
+}
+
+struct PlaceInfo {
+    ty: Type,
+    mut_borrow_error: Option<MutBorrowError>,
+}
+
+enum MutBorrowError {
+    ImmutableBinding(String, crate::source::Span),
+    ConstPtr(crate::source::Span),
+    ReadonlyView(crate::source::Span),
+    NotMutablePlace(crate::source::Span),
+}
+
+impl MutBorrowError {
+    fn emit(self, diags: &mut DiagnosticBag) {
+        match self {
+            MutBorrowError::ImmutableBinding(name, span) => {
+                diags.error(
+                    format!("cannot take mutable address of immutable `{name}`"),
+                    "E309",
+                    span,
+                );
+            }
+            MutBorrowError::ConstPtr(span) => {
+                diags.error(
+                    "cannot write through const pointer (`*T`) -- use `*mut T`",
+                    "E314",
+                    span,
+                );
+            }
+            MutBorrowError::ReadonlyView(span) => {
+                diags.error(
+                    "cannot write through a readonly `view`; only reads are allowed".to_string(),
+                    "E334",
+                    span,
+                );
+            }
+            MutBorrowError::NotMutablePlace(span) => {
+                diags.error(
+                    "cannot take mutable address of this expression",
+                    "E309",
+                    span,
+                );
+            }
+        }
+    }
+}
+
+fn read_place_info(
+    expr: &Expr,
+    symbols: &SymbolTable,
+    scope: &mut ScopeStack,
+    fn_name: &str,
+    expected_ret: Option<&Type>,
+    diags: &mut DiagnosticBag,
+) -> PlaceInfo {
+    match expr {
+        Expr::Ident((name, span)) => {
+            if let Some(info) = scope.lookup(name) {
+                if info.moved {
+                    diags.error(format!("use of moved value: `{name}`"), "E304", *span);
+                }
+                return PlaceInfo {
+                    ty: info.ty.clone(),
+                    mut_borrow_error: (!info.mutable)
+                        .then(|| MutBorrowError::ImmutableBinding(name.clone(), *span)),
+                };
+            }
+
+            let ty = check_expr(expr, symbols, scope, fn_name, expected_ret, diags);
+            PlaceInfo {
+                ty,
+                mut_borrow_error: (!symbols.statics.contains_key(name))
+                    .then_some(MutBorrowError::NotMutablePlace(*span)),
+            }
+        }
+        Expr::Group(inner) => read_place_info(inner, symbols, scope, fn_name, expected_ret, diags),
+        Expr::FieldAccess(base, field) => {
+            let base_info = read_place_info(base, symbols, scope, fn_name, expected_ret, diags);
+            let ty = if let Type::Struct(name, fields) = &base_info.ty {
+                fields
+                    .iter()
+                    .find(|(field_name, _)| field_name == &field.0)
+                    .map_or_else(
+                        || {
+                            let guard = diags.error(
+                                format!("struct `{name}` has no field `{}`", field.0),
+                                "E318",
+                                field.1,
+                            );
+                            Type::Error(guard)
+                        },
+                        |(_, field_ty)| field_ty.clone(),
+                    )
+            } else {
+                check_expr(expr, symbols, scope, fn_name, expected_ret, diags)
+            };
+            PlaceInfo {
+                ty,
+                mut_borrow_error: base_info.mut_borrow_error,
+            }
+        }
+        Expr::Index(base, index) => {
+            let base_info = read_place_info(base, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+            let ty = index_element_type(base_info.ty.clone(), base, diags);
+            let mut_borrow_error = match &base_info.ty {
+                Type::Array(_, _) => base_info.mut_borrow_error,
+                Type::Ptr(_) => None,
+                Type::ConstPtr(_) => Some(MutBorrowError::ConstPtr(base.span())),
+                Type::LinearView(_, true)
+                | Type::StridedView(_, true, _)
+                | Type::RingView(_, true, _)
+                | Type::BitView(true) => None,
+                Type::LinearView(_, false)
+                | Type::StridedView(_, false, _)
+                | Type::RingView(_, false, _)
+                | Type::BitView(false) => Some(MutBorrowError::ReadonlyView(base.span())),
+                _ => None,
+            };
+            PlaceInfo {
+                ty,
+                mut_borrow_error,
+            }
+        }
+        Expr::Unary(crate::ast::UnaryOp::Deref, inner) => {
+            let ptr_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
+            match &ptr_ty {
+                Type::Ptr(pointee) => PlaceInfo {
+                    ty: pointee.as_ref().clone(),
+                    mut_borrow_error: None,
+                },
+                Type::ConstPtr(pointee) => PlaceInfo {
+                    ty: pointee.as_ref().clone(),
+                    mut_borrow_error: Some(MutBorrowError::ConstPtr(inner.span())),
+                },
+                _ => {
+                    let guard =
+                        diags.error("dereference requires pointer type", "E315", inner.span());
+                    PlaceInfo {
+                        ty: Type::Error(guard),
+                        mut_borrow_error: None,
+                    }
+                }
+            }
+        }
+        _ => PlaceInfo {
+            ty: check_expr(expr, symbols, scope, fn_name, expected_ret, diags),
+            mut_borrow_error: Some(MutBorrowError::NotMutablePlace(expr.span())),
+        },
     }
 }
 
