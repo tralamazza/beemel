@@ -2463,7 +2463,7 @@ impl IrEmitter {
                         _ => 0,
                     };
                     let k = match stride.as_ref() {
-                        Expr::IntLiteral(v, _, _) => (*v as usize).max(1),
+                        Expr::IntLiteral(v, _, _) => usize::try_from(*v).unwrap_or(1).max(1),
                         _ => 1,
                     };
                     let len_reg = self.new_reg();
@@ -4173,7 +4173,7 @@ impl IrEmitter {
                     // Strided view: element type from the array, stride K from
                     // the literal. Mutability is irrelevant to lowering.
                     let k = match stride.as_ref() {
-                        Expr::IntLiteral(v, _, _) => (*v as u32).max(1),
+                        Expr::IntLiteral(v, _, _) => u32::try_from(*v).unwrap_or(1).max(1),
                         _ => 1,
                     };
                     let elem = match base_inner {
@@ -4200,8 +4200,10 @@ impl IrEmitter {
                     // array form, where there is no explicit `capacity` argument),
                     // which enables the `& (n - 1)` mask at the index site.
                     Type::Array(inner, n) => {
-                        let cap_hint =
-                            (capacity.is_none() && n.is_power_of_two()).then_some(n as u32);
+                        let cap_hint = capacity
+                            .is_none()
+                            .then(|| u32::try_from(n).ok().filter(|_| n.is_power_of_two()))
+                            .flatten();
                         Type::RingView(inner, false, cap_hint)
                     }
                     _ => Type::RingView(Box::new(Type::U32), false, None),

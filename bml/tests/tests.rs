@@ -385,6 +385,21 @@ assert_error!(
     "E332"
 );
 assert_error!(
+    test_view_strided_large_stride,
+    "view_strided_large_stride_error.bml",
+    "E332"
+);
+assert_error!(
+    test_view_strided_anno_stride_zero,
+    "view_strided_anno_stride_zero_error.bml",
+    "E332"
+);
+assert_error!(
+    test_view_strided_anno_stride_large,
+    "view_strided_anno_stride_large_error.bml",
+    "E332"
+);
+assert_error!(
     test_view_strided_move,
     "view_strided_move_error.bml",
     "E304"
@@ -1510,6 +1525,26 @@ assert_error!(
     test_peripheral_bit_range_error,
     "peripheral_bit_range_error.bml",
     "E114"
+);
+assert_error!(
+    test_peripheral_duplicate_top_level,
+    "peripheral_duplicate_top_level_error.bml",
+    "E200"
+);
+assert_error!(
+    test_peripheral_duplicate_reg,
+    "peripheral_duplicate_reg_error.bml",
+    "E200"
+);
+assert_error!(
+    test_peripheral_duplicate_field,
+    "peripheral_duplicate_field_error.bml",
+    "E319"
+);
+assert_error!(
+    test_peripheral_field_view_stride,
+    "peripheral_field_view_stride_error.bml",
+    "E332"
 );
 
 // 6. large enum discriminant should be caught (not wrap negative)

@@ -1,0 +1,5 @@
+peripheral P at 0x40000000 {
+    reg R offset 0 {
+        field F: view u32 stride 4294967297 bit[0]
+    }
+}

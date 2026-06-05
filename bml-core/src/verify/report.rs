@@ -13,7 +13,7 @@ pub struct Finding {
     pub column: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Status {
     Error,
     Warning,
@@ -24,10 +24,20 @@ pub enum Status {
 /// Deduplicate findings that report the same check at the same location.
 #[must_use]
 pub fn deduplicate(findings: Vec<Finding>) -> Vec<Finding> {
-    let mut seen: HashSet<(String, PathBuf, u32)> = HashSet::new();
+    let mut seen: HashSet<(String, String, Status, String, PathBuf, u32, u32)> = HashSet::new();
     findings
         .into_iter()
-        .filter(|f| seen.insert((f.check.clone(), f.file.clone(), f.line)))
+        .filter(|f| {
+            seen.insert((
+                f.check.clone(),
+                f.code.clone(),
+                f.status,
+                f.message.clone(),
+                f.file.clone(),
+                f.line,
+                f.column,
+            ))
+        })
         .collect()
 }
 
@@ -85,4 +95,35 @@ pub fn apply_suppressions<S: std::hash::BuildHasher>(
             !(matches_line(f.line) || (f.line > 1 && matches_line(f.line - 1)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finding(column: u32, message: &str) -> Finding {
+        Finding {
+            check: "buffer-overflow".to_string(),
+            code: "V101".to_string(),
+            status: Status::Warning,
+            message: message.to_string(),
+            file: PathBuf::from("main.bml"),
+            line: 7,
+            column,
+        }
+    }
+
+    #[test]
+    fn deduplicate_keeps_distinct_columns_on_same_line() {
+        let findings = vec![finding(3, "first"), finding(20, "second")];
+
+        assert_eq!(deduplicate(findings).len(), 2);
+    }
+
+    #[test]
+    fn deduplicate_removes_exact_duplicate_findings() {
+        let findings = vec![finding(3, "same"), finding(3, "same")];
+
+        assert_eq!(deduplicate(findings).len(), 1);
+    }
 }

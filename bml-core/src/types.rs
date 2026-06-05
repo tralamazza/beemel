@@ -249,11 +249,14 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
         }
         TypeExpr::StridedView(inner, mutable, stride) => {
             // Stride is a compile-time element multiplier; constfold has already
-            // reduced a const expression to a literal. A non-literal (or 0)
-            // stride is left as 0 here and rejected by the checker, mirroring
-            // how `Array` resolves a non-literal size to 0.
+            // reduced a const expression to a literal. A non-literal, zero, or
+            // out-of-range (> u32::MAX) stride is collapsed to the `0` sentinel
+            // here and rejected by the checker (`validate_type_ann`), mirroring
+            // how `Array` resolves a non-literal size to 0. Casting with `as`
+            // would silently fold an out-of-range literal onto a valid stride
+            // (e.g. `u32::MAX + 2` -> 1), so use a checked conversion.
             let k = match stride.as_ref() {
-                crate::ast::Expr::IntLiteral(n, _, _) => *n as u32,
+                crate::ast::Expr::IntLiteral(n, _, _) => u32::try_from(*n).unwrap_or(0),
                 _ => 0,
             };
             Type::StridedView(

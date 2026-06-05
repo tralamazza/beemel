@@ -99,6 +99,7 @@ impl ScopeStack {
 
 impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+        validate_type_annotations(program, diags);
         check_global_initializers(program, symbols, diags);
         for item in &program.items {
             // `len` is intercepted as a builtin before function resolution, so a
@@ -122,6 +123,94 @@ impl Checker {
             }
         }
         check_comptime_asserts(program, symbols, diags);
+    }
+}
+
+/// Validate literals embedded in declared type annotations that
+/// [`types::resolve_type_expr`] would otherwise coerce into a valid-looking
+/// `Type`. Currently this is the strided-view stride: `resolve_type_expr`
+/// collapses an out-of-range or zero stride to the `0` sentinel, which loses
+/// the literal and its span, so we check the `TypeExpr` here instead.
+///
+/// Covers the *signature and top-level* annotation positions (struct fields,
+/// statics, consts, fn/extern params and returns). Body-local `val`/`var`
+/// annotations are validated inline where the checker already visits every
+/// `VarDecl`, so nesting inside block/if/match expressions is handled too.
+fn validate_type_annotations(program: &Program, diags: &mut DiagnosticBag) {
+    for item in &program.items {
+        match item {
+            ast::Item::FnDef(f) => validate_sig_anns(&f.params, f.ret.as_ref(), diags),
+            ast::Item::ExternFnDef(f) => validate_sig_anns(&f.params, f.ret.as_ref(), diags),
+            ast::Item::StaticDef(s) => validate_type_ann(&s.ty, diags),
+            ast::Item::ConstDef(c) => validate_type_ann(&c.ty, diags),
+            ast::Item::StructDef(s) => {
+                for field in &s.fields {
+                    validate_type_ann(&field.ty, diags);
+                }
+            }
+            ast::Item::PeripheralDef(p) => {
+                for reg in &p.regs {
+                    for field in &reg.fields {
+                        validate_type_ann(&field.ty, diags);
+                    }
+                }
+            }
+            // Enum underlying types are named integers and cannot carry a
+            // strided-view stride.
+            ast::Item::EnumDef(_)
+            | ast::Item::Import(_)
+            | ast::Item::Export(_)
+            | ast::Item::ComptimeAssert(_) => {}
+        }
+    }
+}
+
+fn validate_sig_anns(
+    params: &[ast::Param],
+    ret: Option<&ast::TypeExpr>,
+    diags: &mut DiagnosticBag,
+) {
+    for p in params {
+        validate_type_ann(&p.ty, diags);
+    }
+    if let Some(ret) = ret {
+        validate_type_ann(ret, diags);
+    }
+}
+
+/// Reject a strided-view annotation whose compile-time stride is not in
+/// `1..=u32::MAX`. Recurses through nested view/pointer/array/fn types so a
+/// stride buried in, say, `*mut view u32 stride K` is still caught.
+fn validate_type_ann(ty: &ast::TypeExpr, diags: &mut DiagnosticBag) {
+    match ty {
+        ast::TypeExpr::StridedView(inner, _, stride) => {
+            let in_range = matches!(
+                stride.as_ref(),
+                ast::Expr::IntLiteral(n, _, _) if (1..=u64::from(u32::MAX)).contains(n)
+            );
+            if !in_range {
+                diags.error(
+                    "`view` stride must be a compile-time integer in 1..=4294967295".to_string(),
+                    "E332",
+                    stride.span(),
+                );
+            }
+            validate_type_ann(inner, diags);
+        }
+        ast::TypeExpr::View(inner, _)
+        | ast::TypeExpr::Ring(inner, _)
+        | ast::TypeExpr::Ptr(inner)
+        | ast::TypeExpr::ConstPtr(inner)
+        | ast::TypeExpr::Array(inner, _) => validate_type_ann(inner, diags),
+        ast::TypeExpr::Fn(params, ret) => {
+            for p in params {
+                validate_type_ann(p, diags);
+            }
+            if let Some(ret) = ret {
+                validate_type_ann(ret, diags);
+            }
+        }
+        ast::TypeExpr::Named(_) | ast::TypeExpr::Bits(_) | ast::TypeExpr::Void(_) => {}
     }
 }
 
@@ -412,6 +501,7 @@ fn check_block(
             Stmt::VarDecl(vd) => {
                 let init_ty = check_expr(&vd.init, symbols, scope, fn_name, expected_ret, diags);
                 let ty = if let Some(ty_ann) = &vd.ty_ann {
+                    validate_type_ann(ty_ann, diags);
                     let ann_ty = types::resolve_type_expr(ty_ann, &symbols.structs, &symbols.enums);
                     // Check that init type is compatible with annotation
                     // (unsuffixed literals are allowed if their value fits)
@@ -1656,10 +1746,15 @@ fn check_expr(
                 // type, not a runtime descriptor field. Element type comes from
                 // the array; the logical length `N/K` is computed at lowering.
                 let k = match stride.as_ref() {
-                    crate::ast::Expr::IntLiteral(n, _, _) if *n >= 1 => *n as u32,
+                    crate::ast::Expr::IntLiteral(n, _, _)
+                        if (1..=u64::from(u32::MAX)).contains(n) =>
+                    {
+                        u32::try_from(*n).expect("stride was range-checked")
+                    }
                     _ => {
                         let guard = diags.error(
-                            "`view` stride must be a compile-time integer >= 1".to_string(),
+                            "`view` stride must be a compile-time integer in 1..=4294967295"
+                                .to_string(),
                             "E332",
                             stride.span(),
                         );
@@ -1782,7 +1877,7 @@ fn check_expr(
                     // Capacity is the array length. Carry it as a compile-time
                     // hint only when it is a power of two, which is what lets
                     // the physical index lower to `& (n - 1)` instead of `urem`.
-                    let cap_hint = n.is_power_of_two().then_some(*n as u32);
+                    let cap_hint = u32::try_from(*n).ok().filter(|_| n.is_power_of_two());
                     Type::RingView(Box::new((**inner).clone()), mutable, cap_hint)
                 } else {
                     let guard = diags.error(

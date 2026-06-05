@@ -97,7 +97,15 @@ impl Target {
             let val = val.trim();
 
             match key {
-                "arch" => target.arch = val.to_string(),
+                "arch" => {
+                    if !is_supported_arch(val) {
+                        return Err(format!(
+                            "line {}: unknown arch `{val}` (expected armv6m, armv7m, or armv7em)",
+                            line_num + 1
+                        ));
+                    }
+                    target.arch = val.to_string();
+                }
                 "cpu" => target.cpu = Some(val.to_string()),
                 "priority_bits" => {
                     target.priority_bits = val.parse::<u8>().map_err(|_| {
@@ -148,7 +156,7 @@ impl Target {
             "armv6m" => crate::arch::Arch::Armv6m,
             "armv7m" => crate::arch::Arch::Armv7m,
             "armv7em" => crate::arch::Arch::Armv7em,
-            _ => crate::arch::Arch::Armv7em,
+            other => unreachable!("target arch was validated during parse: {other}"),
         }
     }
 
@@ -255,6 +263,10 @@ SECTIONS
     }
 }
 
+fn is_supported_arch(arch: &str) -> bool {
+    matches!(arch, "armv6m" | "armv7m" | "armv7em")
+}
+
 fn parse_bool(val: &str, key: &str, line: usize) -> Result<bool, String> {
     match val {
         "true" => Ok(true),
@@ -302,6 +314,12 @@ mod tests {
     fn parses_cpu_field() {
         let target = t("arch = armv7em\ncpu = cortex-m4\n");
         assert_eq!(target.cpu.as_deref(), Some("cortex-m4"));
+    }
+
+    #[test]
+    fn parse_errors_on_unknown_arch() {
+        let err = Target::parse("arch = armv9m\n").unwrap_err();
+        assert!(err.contains("armv9m"), "got: {err}");
     }
 
     #[test]

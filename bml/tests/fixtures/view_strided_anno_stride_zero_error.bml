@@ -1,0 +1,8 @@
+// A strided-view *annotation* with a zero stride is rejected even when no
+// `view(...)` expression is present to carry the diagnostic (E332).
+struct S {
+    v: view u32 stride 0
+}
+
+fn main() @context(thread) {
+}

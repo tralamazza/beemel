@@ -1,0 +1,7 @@
+// A strided-view annotation stride above u32::MAX must not silently truncate:
+// `as u32` would fold 4294967297 onto a valid stride of 1. Reject it (E332).
+fn takes(v: view u32 stride 4294967297) @context(thread) {
+}
+
+fn main() @context(thread) {
+}

@@ -1,0 +1,8 @@
+peripheral GPIOA at 0x40020000 {
+    reg ODR offset 0x14 {
+        field ODR0: b1 bit[0]
+    }
+    reg ODR offset 0x18 {
+        field ODR1: b1 bit[1]
+    }
+}

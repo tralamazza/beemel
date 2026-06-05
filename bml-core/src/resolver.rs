@@ -127,12 +127,7 @@ impl Resolver {
 
     fn collect_fn(&mut self, f: &ast::FnDef, diags: &mut DiagnosticBag) {
         let name = f.name.0.clone();
-        if self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", f.name.1);
             return;
         }
@@ -178,12 +173,7 @@ impl Resolver {
 
     fn collect_extern_fn(&mut self, e: &ast::ExternFnDef, diags: &mut DiagnosticBag) {
         let name = e.name.0.clone();
-        if self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", e.name.1);
             return;
         }
@@ -230,12 +220,7 @@ impl Resolver {
 
     fn collect_static(&mut self, s: &ast::StaticDef, diags: &mut DiagnosticBag) {
         let name = s.name.0.clone();
-        if self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", s.name.1);
             return;
         }
@@ -255,12 +240,7 @@ impl Resolver {
 
     fn collect_const(&mut self, c: &ast::ConstDef, diags: &mut DiagnosticBag) {
         let name = c.name.0.clone();
-        if self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", c.name.1);
             return;
         }
@@ -271,15 +251,36 @@ impl Resolver {
 
     fn collect_peripheral(&mut self, p: &ast::PeripheralDef, diags: &mut DiagnosticBag) {
         let name = p.name.0.clone();
-        if self.table.peripherals.contains_key(&name) {
-            diags.error(format!("duplicate peripheral: `{name}`"), "E200", p.name.1);
+        if self.top_level_name_exists(&name) {
+            diags.error(format!("duplicate name: `{name}`"), "E200", p.name.1);
             return;
         }
 
         let mut regs = HashMap::new();
         for reg in &p.regs {
+            if regs.contains_key(&reg.name.0) {
+                diags.error(
+                    format!("duplicate register `{}` in peripheral `{name}`", reg.name.0),
+                    "E200",
+                    reg.name.1,
+                );
+                continue;
+            }
+
             let mut fields = HashMap::new();
             for field in &reg.fields {
+                if fields.contains_key(&field.name.0) {
+                    diags.error(
+                        format!(
+                            "duplicate field `{}` in register `{}.{}`",
+                            field.name.0, name, reg.name.0
+                        ),
+                        "E319",
+                        field.name.1,
+                    );
+                    continue;
+                }
+
                 let ty = crate::types::resolve_type_expr(
                     &field.ty,
                     &self.table.structs,
@@ -344,14 +345,7 @@ impl Resolver {
 
     fn collect_struct(&mut self, s: &ast::StructDef, diags: &mut DiagnosticBag) {
         let name = s.name.0.clone();
-        if self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-            || self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", s.name.1);
             return;
         }
@@ -385,14 +379,7 @@ impl Resolver {
 
     fn collect_enum(&mut self, e: &ast::EnumDef, diags: &mut DiagnosticBag) {
         let name = e.name.0.clone();
-        if self.table.enums.contains_key(&name)
-            || self.table.functions.contains_key(&name)
-            || self.table.statics.contains_key(&name)
-            || self.table.consts.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-            || self.table.enums.contains_key(&name)
-            || self.table.structs.contains_key(&name)
-        {
+        if self.top_level_name_exists(&name) {
             diags.error(format!("duplicate name: `{name}`"), "E200", e.name.1);
             return;
         }
@@ -587,6 +574,15 @@ impl Resolver {
                 }
             }
         }
+    }
+
+    fn top_level_name_exists(&self, name: &str) -> bool {
+        self.table.functions.contains_key(name)
+            || self.table.statics.contains_key(name)
+            || self.table.consts.contains_key(name)
+            || self.table.peripherals.contains_key(name)
+            || self.table.structs.contains_key(name)
+            || self.table.enums.contains_key(name)
     }
 }
 
