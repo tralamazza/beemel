@@ -1184,6 +1184,11 @@ assert_error!(
     "fn_ptr_error_context.bml",
     "E408"
 );
+assert_error!(
+    test_fn_ptr_bare_error_context,
+    "fn_ptr_bare_error_context.bml",
+    "E408"
+);
 assert_error!(test_fn_ptr_error_type, "fn_ptr_error_type.bml", "E300");
 
 // Vector table tests

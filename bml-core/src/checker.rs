@@ -1248,6 +1248,13 @@ fn check_expr(
             }
             // Check functions
             if let Some(fn_sym) = symbols.functions.get(name) {
+                if fn_sym.context != crate::context::Context::Any {
+                    diags.error(
+                        format!("cannot take address of non-any-context function `{name}` -- only functions without @context restriction can be used as function pointers"),
+                        "E408",
+                        *span,
+                    );
+                }
                 let params: Vec<Type> = fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
                 let ret = fn_sym.ret.clone().unwrap_or(Type::Void);
                 return Type::Fn(params, Box::new(ret));
