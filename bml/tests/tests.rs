@@ -54,6 +54,30 @@ fn extract_fn_body(ir: &str, fn_name: &str) -> String {
     }
 }
 
+fn assert_alloca_before_first_label(body: &str, var_name: &str) {
+    let alloca = format!("%__{var_name}.");
+    let alloca_pos = body.find(&alloca).unwrap_or_else(|| {
+        panic!("missing alloca for `{var_name}`\n--- IR ---\n{body}\n-----------")
+    });
+    let first_label_pos = body
+        .lines()
+        .scan(0usize, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find_map(|(offset, line)| {
+            let label = line.trim();
+            (label.ends_with(':') && label != "entry:").then_some(offset)
+        })
+        .unwrap_or(body.len());
+
+    assert!(
+        alloca_pos < first_label_pos,
+        "expected `{var_name}` alloca in entry block before first label\n--- IR ---\n{body}\n-----------"
+    );
+}
+
 fn bml_ir(fixture: &str) -> String {
     bml_ir_with_target(fixture, None)
 }
@@ -1224,6 +1248,51 @@ fn test_array_init() {
     assert!(
         ir.contains("store i32"),
         "expected element stores\n--- IR ---\n{ir}\n-----------"
+    );
+}
+
+#[test]
+fn test_nested_expr_allocas_are_in_entry_block() {
+    let body = extract_fn_body(&bml_ir("entry_allocas_nested_exprs.bml"), "@main");
+    for var_name in [
+        "view_len_tmp",
+        "ring_cap_tmp",
+        "ring_head_tmp",
+        "ring_len_tmp",
+        "bit_off_tmp",
+        "bit_len_tmp",
+        "if_cond_tmp",
+        "while_cond_tmp",
+        "for_start_tmp",
+        "for_end_tmp",
+        "for_step_tmp",
+        "match_scrut_tmp",
+        "asm_out_idx_tmp",
+        "asm_in_tmp",
+    ] {
+        assert_alloca_before_first_label(&body, var_name);
+    }
+}
+
+#[test]
+fn test_nested_expr_phi_incoming_labels() {
+    let body = extract_fn_body(&bml_ir("phi_incoming_nested_exprs.bml"), "@main");
+    let phi_lines: Vec<_> = body
+        .lines()
+        .filter(|line| line.contains(" = phi i32 "))
+        .collect();
+
+    assert!(
+        phi_lines
+            .iter()
+            .any(|line| line.contains("%view_idx_ok.") && line.contains("%if_else.")),
+        "expected if-expression phi to use the view read's final label\n--- IR ---\n{body}\n-----------"
+    );
+    assert!(
+        phi_lines
+            .iter()
+            .any(|line| line.contains("%view_idx_ok.") && line.contains("%match_arm.")),
+        "expected match-expression phi to use the view read's final label\n--- IR ---\n{body}\n-----------"
     );
 }
 

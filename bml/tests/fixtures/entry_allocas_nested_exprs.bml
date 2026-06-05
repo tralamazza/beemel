@@ -1,0 +1,51 @@
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 1u32, 2u32, 3u32];
+    var bytes: [u8; 1] = [0u8];
+
+    if true {
+        val v: view u32 = view(&buf[0], { var view_len_tmp: u32 = 4u32; view_len_tmp });
+        var view_read_tmp: u32 = v[0u32];
+    }
+
+    if true {
+        val r: ring u32 = ring(
+            &buf[0],
+            { var ring_cap_tmp: u32 = 4u32; ring_cap_tmp },
+            { var ring_head_tmp: u32 = 0u32; ring_head_tmp },
+            { var ring_len_tmp: u32 = 4u32; ring_len_tmp }
+        );
+        var ring_read_tmp: u32 = r[0u32];
+    }
+
+    if true {
+        val b: bits = bits(
+            &bytes[0],
+            { var bit_off_tmp: u32 = 0u32; bit_off_tmp },
+            { var bit_len_tmp: u32 = 8u32; bit_len_tmp }
+        );
+        var bit_read_tmp: b1 = b[0u32];
+    }
+
+    if { var if_cond_tmp: b1 = true; if_cond_tmp } {
+        var if_body_tmp: u32 = 1u32;
+    }
+
+    while { var while_cond_tmp: b1 = false; while_cond_tmp } {
+        var while_body_tmp: u32 = 2u32;
+    }
+
+    for i: u32 in { var for_start_tmp: u32 = 0u32; for_start_tmp }
+        upto { var for_end_tmp: u32 = 0u32; for_end_tmp }
+        step { var for_step_tmp: u32 = 1u32; for_step_tmp } {
+        var for_body_tmp: u32 = i;
+    }
+
+    match { var match_scrut_tmp: u32 = 0u32; match_scrut_tmp } {
+        0u32 { var match_body_tmp: u32 = 3u32; }
+        _ { var match_else_tmp: u32 = 4u32; }
+    }
+
+    asm { mov $0, $1 } :
+        "=r"(buf[{ var asm_out_idx_tmp: u32 = 0u32; asm_out_idx_tmp }]) :
+        "r"({ var asm_in_tmp: u32 = 7u32; asm_in_tmp });
+}

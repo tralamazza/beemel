@@ -491,6 +491,11 @@ impl IrEmitter {
                 self.collect_and_emit_allocas_expr(&vd.init, symbols);
             }
             Stmt::For(for_stmt) => {
+                self.collect_and_emit_allocas_expr(&for_stmt.start, symbols);
+                self.collect_and_emit_allocas_expr(&for_stmt.end, symbols);
+                if let Some(step) = &for_stmt.step {
+                    self.collect_and_emit_allocas_expr(step, symbols);
+                }
                 let bml_type =
                     crate::types::resolve_type_expr(&for_stmt.ty, &symbols.structs, &symbols.enums);
                 let llvm_ty = llvm_type(&bml_type);
@@ -506,18 +511,21 @@ impl IrEmitter {
                 self.collect_and_emit_allocas_block(&for_stmt.body, symbols);
             }
             Stmt::While(w) => {
+                self.collect_and_emit_allocas_expr(&w.cond, symbols);
                 self.collect_and_emit_allocas_block(&w.body, symbols);
             }
             Stmt::Loop(l) => {
                 self.collect_and_emit_allocas_block(&l.body, symbols);
             }
             Stmt::If(i) => {
+                self.collect_and_emit_allocas_expr(&i.cond, symbols);
                 self.collect_and_emit_allocas_block(&i.then_block, symbols);
                 if let Some(else_branch) = &i.else_branch {
                     self.collect_and_emit_allocas_stmt(else_branch, symbols);
                 }
             }
             Stmt::Match(m) => {
+                self.collect_and_emit_allocas_expr(&m.scrutinee, symbols);
                 for arm in &m.arms {
                     self.collect_and_emit_allocas_block(&arm.body, symbols);
                 }
@@ -531,9 +539,11 @@ impl IrEmitter {
                 }
             }
             Stmt::Assign(assign) => {
+                self.collect_and_emit_allocas_expr(&assign.target.to_expr(), symbols);
                 self.collect_and_emit_allocas_expr(&assign.value, symbols);
             }
             Stmt::CompoundAssign(ca) => {
+                self.collect_and_emit_allocas_expr(&ca.target.to_expr(), symbols);
                 self.collect_and_emit_allocas_expr(&ca.value, symbols);
             }
             Stmt::Expr(expr) => {
@@ -545,7 +555,15 @@ impl IrEmitter {
             Stmt::Assert(assert) => {
                 self.collect_and_emit_allocas_expr(&assert.cond, symbols);
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
+            Stmt::Asm(asm_stmt) => {
+                for (_, expr) in &asm_stmt.outputs {
+                    self.collect_and_emit_allocas_expr(expr, symbols);
+                }
+                for (_, expr) in &asm_stmt.inputs {
+                    self.collect_and_emit_allocas_expr(expr, symbols);
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => {}
         }
     }
 
@@ -555,10 +573,12 @@ impl IrEmitter {
                 self.collect_and_emit_allocas_block(&block_expr.block, symbols);
             }
             Expr::If(if_expr) => {
+                self.collect_and_emit_allocas_expr(&if_expr.cond, symbols);
                 self.collect_and_emit_allocas_block(&if_expr.then_block, symbols);
                 self.collect_and_emit_allocas_expr(&if_expr.else_branch, symbols);
             }
             Expr::Match(match_expr) => {
+                self.collect_and_emit_allocas_expr(&match_expr.scrutinee, symbols);
                 for arm in &match_expr.arms {
                     self.collect_and_emit_allocas_block(&arm.body, symbols);
                 }
@@ -568,7 +588,8 @@ impl IrEmitter {
                 self.collect_and_emit_allocas_expr(left, symbols);
                 self.collect_and_emit_allocas_expr(right, symbols);
             }
-            Expr::Call(_, args) => {
+            Expr::Call(func_expr, args) => {
+                self.collect_and_emit_allocas_expr(func_expr, symbols);
                 for arg in args {
                     self.collect_and_emit_allocas_expr(arg, symbols);
                 }
@@ -588,6 +609,45 @@ impl IrEmitter {
             Expr::StructInit { fields, .. } => {
                 for (_, expr) in fields {
                     self.collect_and_emit_allocas_expr(expr, symbols);
+                }
+            }
+            Expr::ViewNew {
+                base, len, stride, ..
+            } => {
+                self.collect_and_emit_allocas_expr(base, symbols);
+                if let Some(len) = len {
+                    self.collect_and_emit_allocas_expr(len, symbols);
+                }
+                if let Some(stride) = stride {
+                    self.collect_and_emit_allocas_expr(stride, symbols);
+                }
+            }
+            Expr::RingNew {
+                base,
+                capacity,
+                head,
+                len,
+                ..
+            } => {
+                self.collect_and_emit_allocas_expr(base, symbols);
+                if let Some(capacity) = capacity {
+                    self.collect_and_emit_allocas_expr(capacity, symbols);
+                }
+                self.collect_and_emit_allocas_expr(head, symbols);
+                self.collect_and_emit_allocas_expr(len, symbols);
+            }
+            Expr::BitNew {
+                base,
+                bit_offset,
+                len_bits,
+                ..
+            } => {
+                self.collect_and_emit_allocas_expr(base, symbols);
+                if let Some(bit_offset) = bit_offset {
+                    self.collect_and_emit_allocas_expr(bit_offset, symbols);
+                }
+                if let Some(len_bits) = len_bits {
+                    self.collect_and_emit_allocas_expr(len_bits, symbols);
                 }
             }
             _ => {}
@@ -2656,12 +2716,21 @@ impl IrEmitter {
                 // (checker should have rejected with E328) we still need a value of
                 // the right LLVM type so the phi verifies.
                 let phi_bml_ty = self.expr_type(&if_expr.else_branch, symbols);
-                let then_val = if then_term {
-                    None
+                let (then_val, then_edge_label) = if then_term {
+                    (None, None)
                 } else if let Some(ref trailing) = if_expr.then_block.trailing {
-                    Some(self.emit_expr(trailing, symbols, fn_name))
+                    let value = self.emit_expr(trailing, symbols, fn_name);
+                    let label = self
+                        .current_label
+                        .clone()
+                        .unwrap_or_else(|| then_lbl.clone());
+                    (Some(value), Some(label))
                 } else {
-                    Some(default_value_literal(&phi_bml_ty))
+                    let label = self
+                        .current_label
+                        .clone()
+                        .unwrap_or_else(|| then_lbl.clone());
+                    (Some(default_value_literal(&phi_bml_ty)), Some(label))
                 };
                 // When then terminates we skip the join entirely and let the caller
                 // continue emitting into the else block; otherwise both arms branch
@@ -2691,8 +2760,10 @@ impl IrEmitter {
                     let result = self.new_reg();
                     let phi_llvm_ty = llvm_type(&phi_bml_ty);
                     let then_val = then_val.expect("then_val is Some whenever then_term is false");
+                    let then_edge_label = then_edge_label
+                        .expect("then_edge_label is Some whenever then_term is false");
                     self.line(&format!(
-                        "{result} = phi {phi_llvm_ty} [ {then_val}, %{then_lbl} ], [ {else_val}, %{else_edge_label} ]"
+                        "{result} = phi {phi_llvm_ty} [ {then_val}, %{then_edge_label} ], [ {else_val}, %{else_edge_label} ]"
                     ));
                     result
                 }
@@ -2756,7 +2827,8 @@ impl IrEmitter {
                         self.line(&format!("{reg} = add {ll_ty} 0, 0  ; no trailing"));
                         reg
                     };
-                    phi_pairs.push((arm_val, arm_lbl));
+                    let arm_edge_label = self.current_label.clone().unwrap_or(arm_lbl);
+                    phi_pairs.push((arm_val, arm_edge_label));
                     if !arm_term {
                         self.line(&format!("br label %{end_lbl}"));
                     }
