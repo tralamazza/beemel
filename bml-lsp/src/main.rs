@@ -277,7 +277,14 @@ impl Server {
         let ident = find_ident_at(&analysis.program, offset)?;
         let name = &ident.0;
 
-        let (bml_decl, extra) = if let Some(f) = analysis.symbols.functions.get(name) {
+        // A local binding in the enclosing function shadows any global of the
+        // same name, so resolve it first.
+        let local_ty =
+            enclosing_fn(&analysis.program, offset).and_then(|f| local_type_in_fn(f, name));
+
+        let (bml_decl, extra) = if let Some(ty) = local_ty {
+            (ty, None)
+        } else if let Some(f) = analysis.symbols.functions.get(name) {
             let params: Vec<String> = f.params.iter().map(|(n, t)| format!("{n}: {t}")).collect();
             let ret = f
                 .ret
@@ -357,9 +364,7 @@ impl Server {
             }
             (format!("import alias `{name}`"), Some(counts.join(", ")))
         } else {
-            let ty =
-                find_local_type(name, &analysis.program).unwrap_or_else(|| format!("ident {name}"));
-            (ty, None)
+            (format!("ident {name}"), None)
         };
 
         let value = if let Some(extra) = extra {
@@ -392,7 +397,7 @@ impl Server {
         let ident = find_ident_at(&analysis.program, offset)?;
         let name = &ident.0;
 
-        let target_range = find_definition_span(name, &analysis.program)
+        let target_range = find_definition_span(name, &analysis.program, offset)
             .or_else(|| find_def_in_aliases(name, &analysis.symbols))?;
 
         let target_uri = if target_range.file == analysis.root_file_id {
@@ -720,7 +725,17 @@ fn find_ident_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Ident> {
                 .find_map(|arm| find_ident_in_block(&arm.body, offset))
         }),
         ast::Stmt::Block(b) => find_ident_in_block(b, offset),
-        _ => None,
+        ast::Stmt::CompoundAssign(a) => {
+            find_ident_in_lvalue(&a.target, offset).or_else(|| find_ident_in_expr(&a.value, offset))
+        }
+        ast::Stmt::Asm(a) => a
+            .outputs
+            .iter()
+            .chain(a.inputs.iter())
+            .find_map(|(_, e)| find_ident_in_expr(e, offset)),
+        ast::Stmt::Assume(a) => find_ident_in_expr(&a.cond, offset),
+        ast::Stmt::Assert(a) => find_ident_in_expr(&a.cond, offset),
+        ast::Stmt::Break(_) | ast::Stmt::Continue(_) => None,
     }
 }
 
@@ -769,7 +784,47 @@ fn find_ident_in_expr(expr: &ast::Expr, offset: usize) -> Option<ast::Ident> {
         ast::Expr::If(i) => find_ident_in_expr(&i.cond, offset)
             .or_else(|| find_ident_in_block(&i.then_block, offset))
             .or_else(|| find_ident_in_expr(&i.else_branch, offset)),
-        _ => None,
+        ast::Expr::ViewNew {
+            base, len, stride, ..
+        } => find_ident_in_expr(base, offset)
+            .or_else(|| len.as_ref().and_then(|e| find_ident_in_expr(e, offset)))
+            .or_else(|| stride.as_ref().and_then(|e| find_ident_in_expr(e, offset))),
+        ast::Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => find_ident_in_expr(base, offset)
+            .or_else(|| {
+                capacity
+                    .as_ref()
+                    .and_then(|e| find_ident_in_expr(e, offset))
+            })
+            .or_else(|| find_ident_in_expr(head, offset))
+            .or_else(|| find_ident_in_expr(len, offset)),
+        ast::Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => find_ident_in_expr(base, offset)
+            .or_else(|| {
+                bit_offset
+                    .as_ref()
+                    .and_then(|e| find_ident_in_expr(e, offset))
+            })
+            .or_else(|| {
+                len_bits
+                    .as_ref()
+                    .and_then(|e| find_ident_in_expr(e, offset))
+            }),
+        ast::Expr::IntLiteral(..)
+        | ast::Expr::FloatLiteral(..)
+        | ast::Expr::BoolLiteral(..)
+        | ast::Expr::StringLiteral(..)
+        | ast::Expr::NullLiteral(_)
+        | ast::Expr::SizeOf(..) => None,
     }
 }
 
@@ -782,7 +837,9 @@ fn find_ident_in_lvalue(lv: &ast::LValue, offset: usize) -> Option<ast::Ident> {
             }
             find_ident_in_lvalue(l, offset)
         }
-        ast::LValue::Index(l, _) => find_ident_in_lvalue(l, offset),
+        ast::LValue::Index(l, index) => {
+            find_ident_in_lvalue(l, offset).or_else(|| find_ident_in_expr(index, offset))
+        }
         ast::LValue::Deref(e) => find_ident_in_expr(e, offset),
     }
 }
@@ -791,21 +848,26 @@ fn span_contains(span: &source::Span, offset: usize) -> bool {
     offset >= span.start && offset < span.end
 }
 
-fn find_local_type(name: &str, program: &ast::Program) -> Option<String> {
-    for item in &program.items {
-        if let ast::Item::FnDef(f) = item {
-            for p in &f.params {
-                if p.name.0 == name {
-                    return Some(format!("{name}: {}", p.ty));
-                }
-            }
-            // Search in function body for var/val declarations
-            if let Some(ty) = find_local_in_block(name, &f.body) {
-                return Some(ty);
-            }
+/// Find the function whose signature or body contains `offset`. Functions do
+/// not overlap, so the first match is unique. The range spans from the name
+/// (`f.name.1.start`) through the body end so goto/hover on a parameter
+/// declaration still resolves to its own function.
+fn enclosing_fn(program: &ast::Program, offset: usize) -> Option<&ast::FnDef> {
+    program.items.iter().find_map(|item| match item {
+        ast::Item::FnDef(f) if offset >= f.name.1.start && offset < f.body.span.end => Some(f),
+        _ => None,
+    })
+}
+
+/// Resolve `name` to a parameter or local declaration *within* a single
+/// function. Used so a local correctly shadows a same-named global.
+fn local_type_in_fn(f: &ast::FnDef, name: &str) -> Option<String> {
+    for p in &f.params {
+        if p.name.0 == name {
+            return Some(format!("{name}: {}", p.ty));
         }
     }
-    None
+    find_local_in_block(name, &f.body)
 }
 
 fn find_local_in_block(name: &str, block: &ast::Block) -> Option<String> {
@@ -1008,32 +1070,27 @@ fn find_local_def_in_expr(name: &str, expr: &ast::Expr) -> Option<source::Span> 
     }
 }
 
-fn find_definition_span(name: &str, program: &ast::Program) -> Option<source::Span> {
+fn find_definition_span(name: &str, program: &ast::Program, offset: usize) -> Option<source::Span> {
+    // Prefer a binding in the enclosing function: a parameter or a local
+    // declaration. This keeps resolution scoped, so a local never jumps to a
+    // same-named local/param in another function and correctly shadows globals.
+    if let Some(f) = enclosing_fn(program, offset) {
+        for p in &f.params {
+            if p.name.0 == name {
+                return Some(p.name.1);
+            }
+        }
+        if let Some(span) = find_local_def_in_block(name, &f.body) {
+            return Some(span);
+        }
+    }
+
+    // Fall back to top-level item definitions, matching names only. Never
+    // descend into other functions' params/locals.
     for item in &program.items {
         match item {
-            ast::Item::FnDef(f) => {
-                if f.name.0 == name {
-                    return Some(f.name.1);
-                }
-                for p in &f.params {
-                    if p.name.0 == name {
-                        return Some(p.name.1);
-                    }
-                }
-                if let Some(span) = find_local_def_in_block(name, &f.body) {
-                    return Some(span);
-                }
-            }
-            ast::Item::ExternFnDef(e) => {
-                if e.name.0 == name {
-                    return Some(e.name.1);
-                }
-                for p in &e.params {
-                    if p.name.0 == name {
-                        return Some(p.name.1);
-                    }
-                }
-            }
+            ast::Item::FnDef(f) if f.name.0 == name => return Some(f.name.1),
+            ast::Item::ExternFnDef(e) if e.name.0 == name => return Some(e.name.1),
             ast::Item::StaticDef(s) if s.name.0 == name => return Some(s.name.1),
             ast::Item::ConstDef(c) if c.name.0 == name => return Some(c.name.1),
             ast::Item::PeripheralDef(p) => {
@@ -1566,7 +1623,15 @@ fn find_call_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Expr> {
                 .find_map(|arm| find_call_in_block(&arm.body, offset))
         }),
         ast::Stmt::Block(b) => find_call_in_block(b, offset),
-        _ => None,
+        ast::Stmt::CompoundAssign(a) => find_call_in_expr(&a.value, offset),
+        ast::Stmt::Asm(a) => a
+            .outputs
+            .iter()
+            .chain(a.inputs.iter())
+            .find_map(|(_, e)| find_call_in_expr(e, offset)),
+        ast::Stmt::Assume(a) => find_call_in_expr(&a.cond, offset),
+        ast::Stmt::Assert(a) => find_call_in_expr(&a.cond, offset),
+        ast::Stmt::Break(_) | ast::Stmt::Continue(_) => None,
     }
 }
 
@@ -1609,6 +1674,33 @@ fn find_call_in_expr(expr: &ast::Expr, offset: usize) -> Option<ast::Expr> {
         ast::Expr::If(i) => find_call_in_expr(&i.cond, offset)
             .or_else(|| find_call_in_block(&i.then_block, offset))
             .or_else(|| find_call_in_expr(&i.else_branch, offset)),
+        ast::Expr::ViewNew {
+            base, len, stride, ..
+        } => find_call_in_expr(base, offset)
+            .or_else(|| len.as_ref().and_then(|e| find_call_in_expr(e, offset)))
+            .or_else(|| stride.as_ref().and_then(|e| find_call_in_expr(e, offset))),
+        ast::Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => find_call_in_expr(base, offset)
+            .or_else(|| capacity.as_ref().and_then(|e| find_call_in_expr(e, offset)))
+            .or_else(|| find_call_in_expr(head, offset))
+            .or_else(|| find_call_in_expr(len, offset)),
+        ast::Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => find_call_in_expr(base, offset)
+            .or_else(|| {
+                bit_offset
+                    .as_ref()
+                    .and_then(|e| find_call_in_expr(e, offset))
+            })
+            .or_else(|| len_bits.as_ref().and_then(|e| find_call_in_expr(e, offset))),
         _ => None,
     }
 }
@@ -1826,5 +1918,125 @@ fn main() {
         );
 
         assert!(contains_label(&labels, "i"));
+    }
+
+    // ─── hover / goto-definition resolution ────────────────────────────
+
+    /// Parse + analyze a snippet containing a single `$0` cursor marker and
+    /// return the analysis plus the byte offset where the marker stood.
+    /// Asserts the snippet is free of diagnostics.
+    fn analyze_at(source: &str) -> (AnalysisResult, usize) {
+        let (analysis, offset, diags) = parse_at(source);
+        assert!(!diags.has_errors(), "unexpected diagnostics");
+        (analysis, offset)
+    }
+
+    /// Like `analyze_at` but does not assert on diagnostics, for snippets whose
+    /// AST we want even if later checker stages reject them.
+    fn parse_at(source: &str) -> (AnalysisResult, usize, DiagnosticBag) {
+        let marker = "$0";
+        let offset = source
+            .find(marker)
+            .expect("source must contain cursor marker");
+        let source = source.replace(marker, "");
+        let (analysis, diags) = analyze_file(Path::new("/tmp/lsp_resolve_test.bml"), &source);
+        (analysis, offset, diags)
+    }
+
+    #[test]
+    fn definition_resolves_local_in_enclosing_fn() {
+        // Both functions declare `x`; the cursor is on the second's use of it.
+        let src = "\
+fn first() {
+    val x: u32 = 1u32;
+    val a: u32 = x;
+}
+fn second() {
+    val x: u32 = 2u32;
+    val b: u32 = $0x;
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let ident = find_ident_at(&analysis.program, offset).expect("ident at cursor");
+        assert_eq!(ident.0, "x");
+
+        let span =
+            find_definition_span("x", &analysis.program, offset).expect("definition resolved");
+        let clean = src.replace("$0", "");
+        // The `x` of the *second* `val x` declaration, not the first.
+        let second_decl = clean.match_indices("val x").nth(1).expect("two decls").0 + "val ".len();
+        assert_eq!(span.start, second_decl);
+    }
+
+    #[test]
+    fn hover_resolves_enclosing_fn_param_and_local() {
+        let src = "\
+fn main(p: u32) {
+    val local_v: u32 = 1u32;
+    val b: u32 = $0local_v;
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let f = enclosing_fn(&analysis.program, offset).expect("enclosing fn");
+        assert_eq!(
+            local_type_in_fn(f, "local_v").as_deref(),
+            Some("local_v: u32")
+        );
+        assert_eq!(local_type_in_fn(f, "p").as_deref(), Some("p: u32"));
+    }
+
+    #[test]
+    fn definition_found_in_compound_assign_rhs() {
+        let src = "\
+fn helper() -> u32 {
+    return 1u32;
+}
+fn main() {
+    var x: u32 = 0u32;
+    x += $0helper();
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let ident = find_ident_at(&analysis.program, offset).expect("ident in compound-assign");
+        assert_eq!(ident.0, "helper");
+
+        let span =
+            find_definition_span("helper", &analysis.program, offset).expect("definition resolved");
+        let clean = src.replace("$0", "");
+        // First "helper" is the function definition's name.
+        assert_eq!(span.start, clean.find("helper").expect("fn name"));
+    }
+
+    #[test]
+    fn ident_found_in_view_constructor() {
+        let src = "\
+fn main() @context(thread) {
+    var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    val v: view u32 = view($0buf);
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let ident = find_ident_at(&analysis.program, offset).expect("ident in view ctor");
+        assert_eq!(ident.0, "buf");
+
+        let span =
+            find_definition_span("buf", &analysis.program, offset).expect("definition resolved");
+        let clean = src.replace("$0", "");
+        // First "buf" is the `var buf` declaration.
+        assert_eq!(span.start, clean.find("buf").expect("buf decl"));
+    }
+
+    #[test]
+    fn ident_found_in_index_lvalue() {
+        let src = "\
+fn main() @context(thread) {
+    var arr: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
+    val idx: u32 = 1u32;
+    arr[$0idx] = 5u32;
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let ident = find_ident_at(&analysis.program, offset).expect("ident in index lvalue");
+        assert_eq!(ident.0, "idx");
     }
 }
