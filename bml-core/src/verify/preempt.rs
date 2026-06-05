@@ -77,6 +77,12 @@ fn compute_writers(program: &Program, symbols: &SymbolTable) -> HashMap<String, 
         .collect();
 
     let fn_names: HashSet<String> = symbols.functions.keys().cloned().collect();
+    let fn_pointer_targets: HashSet<String> = symbols
+        .functions
+        .iter()
+        .filter(|(_, sym)| sym.context == Context::Any)
+        .map(|(name, _)| name.clone())
+        .collect();
     let mut direct_by_fn: HashMap<String, HashSet<String>> = HashMap::new();
     let mut callees_by_fn: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -89,6 +95,7 @@ fn compute_writers(program: &Program, symbols: &SymbolTable) -> HashMap<String, 
                 &fn_def.body,
                 &shared_statics,
                 &fn_names,
+                &fn_pointer_targets,
                 &mut writes,
                 &mut callees,
             );
@@ -133,6 +140,7 @@ fn collect_written_statics(
     block: &ast::Block,
     shared_statics: &HashSet<String>,
     fn_names: &HashSet<String>,
+    fn_pointer_targets: &HashSet<String>,
     out: &mut HashSet<String>,
     callees: &mut HashSet<String>,
 ) {
@@ -142,30 +150,80 @@ fn collect_written_statics(
                 if let Some(name) = written_static_name(&assign.target, shared_statics) {
                     out.insert(name.clone());
                 }
-                collect_lvalue_effects(&assign.target, shared_statics, fn_names, out, callees);
-                collect_expr_writes(&assign.value, shared_statics, fn_names, out, callees);
+                collect_lvalue_effects(
+                    &assign.target,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+                collect_expr_writes(
+                    &assign.value,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::CompoundAssign(ca) => {
                 if let Some(name) = written_static_name(&ca.target, shared_statics) {
                     out.insert(name.clone());
                 }
-                collect_lvalue_effects(&ca.target, shared_statics, fn_names, out, callees);
-                collect_expr_writes(&ca.value, shared_statics, fn_names, out, callees);
+                collect_lvalue_effects(
+                    &ca.target,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+                collect_expr_writes(
+                    &ca.value,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
-            Stmt::Expr(expr) => collect_expr_writes(expr, shared_statics, fn_names, out, callees),
+            Stmt::Expr(expr) => collect_expr_writes(
+                expr,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            ),
             Stmt::If(if_stmt) => {
-                collect_expr_writes(&if_stmt.cond, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &if_stmt.cond,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
                 collect_written_statics(
                     &if_stmt.then_block,
                     shared_statics,
                     fn_names,
+                    fn_pointer_targets,
                     out,
                     callees,
                 );
                 if let Some(else_branch) = &if_stmt.else_branch {
                     match else_branch.as_ref() {
                         Stmt::Block(b) => {
-                            collect_written_statics(b, shared_statics, fn_names, out, callees);
+                            collect_written_statics(
+                                b,
+                                shared_statics,
+                                fn_names,
+                                fn_pointer_targets,
+                                out,
+                                callees,
+                            );
                         }
                         Stmt::If(inner) => {
                             let wrapper = ast::Block {
@@ -177,6 +235,7 @@ fn collect_written_statics(
                                 &wrapper,
                                 shared_statics,
                                 fn_names,
+                                fn_pointer_targets,
                                 out,
                                 callees,
                             );
@@ -186,48 +245,140 @@ fn collect_written_statics(
                 }
             }
             Stmt::For(for_stmt) => {
-                collect_expr_writes(&for_stmt.start, shared_statics, fn_names, out, callees);
-                collect_expr_writes(&for_stmt.end, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &for_stmt.start,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+                collect_expr_writes(
+                    &for_stmt.end,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
                 if let Some(step) = &for_stmt.step {
-                    collect_expr_writes(step, shared_statics, fn_names, out, callees);
+                    collect_expr_writes(
+                        step,
+                        shared_statics,
+                        fn_names,
+                        fn_pointer_targets,
+                        out,
+                        callees,
+                    );
                 }
-                collect_written_statics(&for_stmt.body, shared_statics, fn_names, out, callees);
+                collect_written_statics(
+                    &for_stmt.body,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::Loop(loop_stmt) => {
-                collect_written_statics(&loop_stmt.body, shared_statics, fn_names, out, callees);
+                collect_written_statics(
+                    &loop_stmt.body,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::While(while_stmt) => {
-                collect_expr_writes(&while_stmt.cond, shared_statics, fn_names, out, callees);
-                collect_written_statics(&while_stmt.body, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &while_stmt.cond,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+                collect_written_statics(
+                    &while_stmt.body,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::Match(match_stmt) => {
                 collect_expr_writes(
                     &match_stmt.scrutinee,
                     shared_statics,
                     fn_names,
+                    fn_pointer_targets,
                     out,
                     callees,
                 );
                 for arm in &match_stmt.arms {
-                    collect_written_statics(&arm.body, shared_statics, fn_names, out, callees);
+                    collect_written_statics(
+                        &arm.body,
+                        shared_statics,
+                        fn_names,
+                        fn_pointer_targets,
+                        out,
+                        callees,
+                    );
                 }
             }
             Stmt::Return(ret) => {
                 if let Some(val) = &ret.value {
-                    collect_expr_writes(val, shared_statics, fn_names, out, callees);
+                    collect_expr_writes(
+                        val,
+                        shared_statics,
+                        fn_names,
+                        fn_pointer_targets,
+                        out,
+                        callees,
+                    );
                 }
             }
             Stmt::Block(inner) => {
-                collect_written_statics(inner, shared_statics, fn_names, out, callees);
+                collect_written_statics(
+                    inner,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::VarDecl(vd) => {
-                collect_expr_writes(&vd.init, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &vd.init,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::Assume(assume) => {
-                collect_expr_writes(&assume.cond, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &assume.cond,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::Assert(assert) => {
-                collect_expr_writes(&assert.cond, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    &assert.cond,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             Stmt::Asm(asm_stmt) => {
                 for (_, target) in &asm_stmt.outputs {
@@ -235,11 +386,25 @@ fn collect_written_statics(
                         if let Some(name) = written_static_name(&target, shared_statics) {
                             out.insert(name.clone());
                         }
-                        collect_lvalue_effects(&target, shared_statics, fn_names, out, callees);
+                        collect_lvalue_effects(
+                            &target,
+                            shared_statics,
+                            fn_names,
+                            fn_pointer_targets,
+                            out,
+                            callees,
+                        );
                     }
                 }
                 for (_, value) in &asm_stmt.inputs {
-                    collect_expr_writes(value, shared_statics, fn_names, out, callees);
+                    collect_expr_writes(
+                        value,
+                        shared_statics,
+                        fn_names,
+                        fn_pointer_targets,
+                        out,
+                        callees,
+                    );
                 }
             }
             Stmt::Break(_) | Stmt::Continue(_) => {}
@@ -247,7 +412,14 @@ fn collect_written_statics(
     }
 
     if let Some(ref trailing) = block.trailing {
-        collect_expr_writes(trailing, shared_statics, fn_names, out, callees);
+        collect_expr_writes(
+            trailing,
+            shared_statics,
+            fn_names,
+            fn_pointer_targets,
+            out,
+            callees,
+        );
     }
 }
 
@@ -255,76 +427,220 @@ fn collect_expr_writes(
     expr: &Expr,
     shared_statics: &HashSet<String>,
     fn_names: &HashSet<String>,
+    fn_pointer_targets: &HashSet<String>,
     out: &mut HashSet<String>,
     callees: &mut HashSet<String>,
 ) {
     match expr {
-        Expr::Unary(_, inner) => collect_expr_writes(inner, shared_statics, fn_names, out, callees),
+        Expr::Unary(_, inner) => collect_expr_writes(
+            inner,
+            shared_statics,
+            fn_names,
+            fn_pointer_targets,
+            out,
+            callees,
+        ),
         Expr::Binary(left, _, right) => {
-            collect_expr_writes(left, shared_statics, fn_names, out, callees);
-            collect_expr_writes(right, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                left,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_expr_writes(
+                right,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         Expr::Call(callee, args) => {
-            // Propagate write effects only through direct named calls. Computed
-            // callees/function pointers are not resolved by this analysis.
             if let Expr::Ident((name, _)) = callee.as_ref()
                 && fn_names.contains(name)
             {
                 callees.insert(name.clone());
+            } else {
+                // Function pointers may target any unrestricted function. Be
+                // conservative rather than missing an ISR writer.
+                callees.extend(fn_pointer_targets.iter().cloned());
             }
-            collect_expr_writes(callee, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                callee,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
             for arg in args {
-                collect_expr_writes(arg, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    arg,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::FieldAccess(base, _) => {
-            collect_expr_writes(base, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         Expr::Index(base, index) => {
-            collect_expr_writes(base, shared_statics, fn_names, out, callees);
-            collect_expr_writes(index, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_expr_writes(
+                index,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
-        Expr::Group(inner) => collect_expr_writes(inner, shared_statics, fn_names, out, callees),
-        Expr::Cast(inner, _) => collect_expr_writes(inner, shared_statics, fn_names, out, callees),
+        Expr::Group(inner) => collect_expr_writes(
+            inner,
+            shared_statics,
+            fn_names,
+            fn_pointer_targets,
+            out,
+            callees,
+        ),
+        Expr::Cast(inner, _) => collect_expr_writes(
+            inner,
+            shared_statics,
+            fn_names,
+            fn_pointer_targets,
+            out,
+            callees,
+        ),
         Expr::ArrayInit(elems, _) => {
             for elem in elems {
-                collect_expr_writes(elem, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    elem,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::StructInit { fields, .. } => {
             for (_, expr) in fields {
-                collect_expr_writes(expr, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    expr,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::Block(block_expr) => {
-            collect_written_statics(&block_expr.block, shared_statics, fn_names, out, callees);
+            collect_written_statics(
+                &block_expr.block,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         Expr::Match(match_expr) => {
             collect_expr_writes(
                 &match_expr.scrutinee,
                 shared_statics,
                 fn_names,
+                fn_pointer_targets,
                 out,
                 callees,
             );
             for arm in &match_expr.arms {
-                collect_written_statics(&arm.body, shared_statics, fn_names, out, callees);
+                collect_written_statics(
+                    &arm.body,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::If(if_expr) => {
-            collect_expr_writes(&if_expr.cond, shared_statics, fn_names, out, callees);
-            collect_written_statics(&if_expr.then_block, shared_statics, fn_names, out, callees);
-            collect_expr_writes(&if_expr.else_branch, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                &if_expr.cond,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_written_statics(
+                &if_expr.then_block,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_expr_writes(
+                &if_expr.else_branch,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         Expr::ViewNew {
             base, len, stride, ..
         } => {
-            collect_expr_writes(base, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
             if let Some(len) = len {
-                collect_expr_writes(len, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    len,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             if let Some(stride) = stride {
-                collect_expr_writes(stride, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    stride,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::RingNew {
@@ -334,12 +650,40 @@ fn collect_expr_writes(
             len,
             ..
         } => {
-            collect_expr_writes(base, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
             if let Some(capacity) = capacity {
-                collect_expr_writes(capacity, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    capacity,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
-            collect_expr_writes(head, shared_statics, fn_names, out, callees);
-            collect_expr_writes(len, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                head,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_expr_writes(
+                len,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         Expr::BitNew {
             base,
@@ -347,12 +691,33 @@ fn collect_expr_writes(
             len_bits,
             ..
         } => {
-            collect_expr_writes(base, shared_statics, fn_names, out, callees);
+            collect_expr_writes(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
             if let Some(bit_offset) = bit_offset {
-                collect_expr_writes(bit_offset, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    bit_offset,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
             if let Some(len_bits) = len_bits {
-                collect_expr_writes(len_bits, shared_statics, fn_names, out, callees);
+                collect_expr_writes(
+                    len_bits,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
             }
         }
         Expr::IntLiteral(..)
@@ -370,19 +735,48 @@ fn collect_lvalue_effects(
     lvalue: &LValue,
     shared_statics: &HashSet<String>,
     fn_names: &HashSet<String>,
+    fn_pointer_targets: &HashSet<String>,
     out: &mut HashSet<String>,
     callees: &mut HashSet<String>,
 ) {
     match lvalue {
         LValue::Name(_) => {}
         LValue::Field(base, _) => {
-            collect_lvalue_effects(base, shared_statics, fn_names, out, callees);
+            collect_lvalue_effects(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
         LValue::Index(base, index) => {
-            collect_lvalue_effects(base, shared_statics, fn_names, out, callees);
-            collect_expr_writes(index, shared_statics, fn_names, out, callees);
+            collect_lvalue_effects(
+                base,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
+            collect_expr_writes(
+                index,
+                shared_statics,
+                fn_names,
+                fn_pointer_targets,
+                out,
+                callees,
+            );
         }
-        LValue::Deref(expr) => collect_expr_writes(expr, shared_statics, fn_names, out, callees),
+        LValue::Deref(expr) => collect_expr_writes(
+            expr,
+            shared_statics,
+            fn_names,
+            fn_pointer_targets,
+            out,
+            callees,
+        ),
     }
 }
 
@@ -465,6 +859,34 @@ mod tests {
 
             fn timer() @isr(priority = 1) {
                 helper();
+            }
+            ",
+        );
+
+        assert!(
+            info.preemptable
+                .get(&("main".to_string(), "X".to_string()))
+                .is_some_and(|writers| writers.contains("timer"))
+        );
+    }
+
+    #[test]
+    fn shared_write_through_function_pointer_marks_isr_caller() {
+        let info = analyze_source(
+            r"
+            static X: u32 @shared(ceiling = 1) = 0u32;
+
+            fn helper() {
+                X = 1u32;
+            }
+
+            fn main() @context(thread) {
+                var y: u32 = X;
+            }
+
+            fn timer() @isr(priority = 1) {
+                var fp: fn() = &helper;
+                fp();
             }
             ",
         );
