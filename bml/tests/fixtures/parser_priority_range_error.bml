@@ -1,0 +1,2 @@
+fn timer() @isr(priority = 256) {
+}

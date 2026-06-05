@@ -1,0 +1,8 @@
+fn helper() -> u32 {
+    return 7;
+}
+
+fn call_isr() @isr("DMA2", priority = 2, tailchain = true) {
+    var tmp: u32 = 0;
+    asm { mov $0, $1 } : "=r"(tmp) : "r"(helper());
+}

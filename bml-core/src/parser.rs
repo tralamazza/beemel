@@ -444,7 +444,16 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Priority, "expected `priority`")
             .ok()?;
         self.expect(&TokenKind::Eq, "expected `=`").ok()?;
+        let span = self.peek_span();
         let val = self.parse_int_literal()?;
+        if val > u64::from(u8::MAX) {
+            self.diags.error(
+                format!("@isr priority must be in 0..=255, got {val}"),
+                "E103",
+                span,
+            );
+            return None;
+        }
         Some(val as u8)
     }
 
@@ -491,7 +500,16 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Ceiling, "expected `ceiling`")
                     .ok()?;
                 self.expect(&TokenKind::Eq, "expected `=`").ok()?;
+                let span = self.peek_span();
                 let prio = self.parse_int_literal()?;
+                if prio > u64::from(u8::MAX) {
+                    self.diags.error(
+                        format!("@shared ceiling must be in 0..=255, got {prio}"),
+                        "E104",
+                        span,
+                    );
+                    return None;
+                }
                 self.expect(&TokenKind::RParen, "expected `)`").ok()?;
                 Some(StorageAnnotation::Shared(prio as u8))
             }
@@ -524,9 +542,9 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::LParen, "expected `(`").ok()?;
                 let n = self.parse_int_literal()?;
                 self.expect(&TokenKind::RParen, "expected `)`").ok()?;
-                if n == 0 || (n & (n - 1)) != 0 {
+                if n == 0 || n > u64::from(u32::MAX) || (n & (n - 1)) != 0 {
                     self.diags.error(
-                        format!("@align value must be a power of two, got {n}"),
+                        format!("@align value must be a u32 power of two, got {n}"),
                         "E104",
                         span,
                     );

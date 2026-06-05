@@ -1,0 +1,9 @@
+// Calls inside asm operands must obey context restrictions.
+fn thread_only() -> u32 @context(thread) {
+    return 1;
+}
+
+fn timer() @isr(priority = 1) {
+    var tmp: u32 = 0;
+    asm { mov $0, $1 } : "=r"(tmp) : "r"(thread_only());
+}

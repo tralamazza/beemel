@@ -77,7 +77,49 @@ fn expr_has_calls(expr: &ast::Expr) -> bool {
                 || block_has_calls(&if_expr.then_block)
                 || expr_has_calls(&if_expr.else_branch)
         }
-        _ => false,
+        ast::Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            expr_has_calls(base)
+                || len.as_ref().is_some_and(|len| expr_has_calls(len))
+                || stride.as_ref().is_some_and(|stride| expr_has_calls(stride))
+        }
+        ast::Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            expr_has_calls(base)
+                || capacity
+                    .as_ref()
+                    .is_some_and(|capacity| expr_has_calls(capacity))
+                || expr_has_calls(head)
+                || expr_has_calls(len)
+        }
+        ast::Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            expr_has_calls(base)
+                || bit_offset
+                    .as_ref()
+                    .is_some_and(|bit_offset| expr_has_calls(bit_offset))
+                || len_bits
+                    .as_ref()
+                    .is_some_and(|len_bits| expr_has_calls(len_bits))
+        }
+        ast::Expr::IntLiteral(..)
+        | ast::Expr::FloatLiteral(..)
+        | ast::Expr::BoolLiteral(..)
+        | ast::Expr::StringLiteral(..)
+        | ast::Expr::NullLiteral(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::EnumVariant { .. }
+        | ast::Expr::SizeOf(..) => false,
     }
 }
 
@@ -113,7 +155,14 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
                 || for_stmt.step.as_ref().is_some_and(expr_has_calls)
                 || block_has_calls(&for_stmt.body)
         }
-        ast::Stmt::Asm(_) | ast::Stmt::Break(_) | ast::Stmt::Continue(_) => false,
+        ast::Stmt::Asm(asm_stmt) => {
+            asm_stmt
+                .outputs
+                .iter()
+                .any(|(_, expr)| expr_has_calls(expr))
+                || asm_stmt.inputs.iter().any(|(_, expr)| expr_has_calls(expr))
+        }
+        ast::Stmt::Break(_) | ast::Stmt::Continue(_) => false,
         ast::Stmt::Assume(assume) => expr_has_calls(&assume.cond),
         ast::Stmt::Assert(assert) => expr_has_calls(&assert.cond),
     }

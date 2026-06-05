@@ -136,7 +136,16 @@ fn check_stmt(
             check_expr(&assert.cond, current_fn, current_ctx, symbols, diags);
         }
 
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) => {}
+        Stmt::Asm(asm_stmt) => {
+            for (_, target) in &asm_stmt.outputs {
+                check_expr(target, current_fn, current_ctx, symbols, diags);
+            }
+            for (_, value) in &asm_stmt.inputs {
+                check_expr(value, current_fn, current_ctx, symbols, diags);
+            }
+        }
+
+        Stmt::Break(_) | Stmt::Continue(_) => {}
 
         Stmt::Block(inner) => {
             check_fn_body(inner, current_fn, current_ctx, symbols, diags);
@@ -237,10 +246,15 @@ fn check_expr(
             );
         }
 
-        Expr::ViewNew { base, len, .. } => {
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
             check_expr(base, current_fn, current_ctx, symbols, diags);
             if let Some(len) = len {
                 check_expr(len, current_fn, current_ctx, symbols, diags);
+            }
+            if let Some(stride) = stride {
+                check_expr(stride, current_fn, current_ctx, symbols, diags);
             }
         }
 
@@ -274,6 +288,22 @@ fn check_expr(
             }
         }
 
+        Expr::Cast(inner, _) => {
+            check_expr(inner, current_fn, current_ctx, symbols, diags);
+        }
+
+        Expr::ArrayInit(elems, _) => {
+            for elem in elems {
+                check_expr(elem, current_fn, current_ctx, symbols, diags);
+            }
+        }
+
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                check_expr(value, current_fn, current_ctx, symbols, diags);
+            }
+        }
+
         // Literals never need borrow checks
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)
@@ -281,9 +311,6 @@ fn check_expr(
         | Expr::StringLiteral(_, _)
         | Expr::NullLiteral(_)
         | Expr::SizeOf(..)
-        | Expr::Cast(_, _)
-        | Expr::ArrayInit(_, _)
-        | Expr::StructInit { .. }
         | Expr::EnumVariant { .. } => {}
     }
 }

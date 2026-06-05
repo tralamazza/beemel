@@ -1,0 +1,8 @@
+// Calls inside array initializers must obey context restrictions.
+fn thread_only() -> u32 @context(thread) {
+    return 1;
+}
+
+fn timer() @isr(priority = 1) {
+    var xs: [u32; 1] = [thread_only()];
+}

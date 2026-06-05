@@ -432,9 +432,22 @@ fn stmt_contribution(
 
         Stmt::Block(block) => block_contribution(block, symbols, defined_fns),
 
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Asm(_) | Stmt::Assume(_) | Stmt::Assert(_) => {
-            Contribution::empty()
+        Stmt::Asm(asm_stmt) => {
+            let mut contribution = Contribution::empty();
+            for (_, target) in &asm_stmt.outputs {
+                contribution = contribution.merge(expr_contribution(target, symbols, defined_fns));
+            }
+            for (_, value) in &asm_stmt.inputs {
+                contribution = contribution.merge(expr_contribution(value, symbols, defined_fns));
+            }
+            contribution
         }
+
+        Stmt::Assume(assume) => expr_contribution(&assume.cond, symbols, defined_fns),
+
+        Stmt::Assert(assert) => expr_contribution(&assert.cond, symbols, defined_fns),
+
+        Stmt::Break(_) | Stmt::Continue(_) => Contribution::empty(),
     }
 }
 
@@ -586,12 +599,17 @@ fn expr_contribution(
 
         Expr::EnumVariant { .. } => Contribution::empty(),
 
-        Expr::ViewNew { base, len, .. } => {
-            let c = expr_contribution(base, symbols, defined_fns);
-            match len {
-                Some(len) => c.merge(expr_contribution(len, symbols, defined_fns)),
-                None => c,
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            let mut c = expr_contribution(base, symbols, defined_fns);
+            if let Some(len) = len {
+                c = c.merge(expr_contribution(len, symbols, defined_fns));
             }
+            if let Some(stride) = stride {
+                c = c.merge(expr_contribution(stride, symbols, defined_fns));
+            }
+            c
         }
         Expr::RingNew {
             base,

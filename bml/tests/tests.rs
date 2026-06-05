@@ -681,6 +681,16 @@ assert_pass!(test_missing_context, "missing_context.bml");
 assert_error!(test_exclusive_violation, "exclusive_violation.bml", "E401");
 assert_error!(test_shared_ceiling, "shared_ceiling_violation.bml", "E402");
 assert_error!(test_call_context, "call_context_error.bml", "E403");
+assert_error!(
+    test_borrow_array_init_context,
+    "borrow_array_init_context_error.bml",
+    "E403"
+);
+assert_error!(
+    test_borrow_asm_input_context,
+    "borrow_asm_input_context_error.bml",
+    "E403"
+);
 assert_error!(test_thread_only, "thread_only_violation.bml", "E404");
 assert_pass!(test_missing_float_suffix, "missing_float_suffix.bml");
 assert_pass!(test_unsuffixed_literal_init, "unsuffixed_literal_init.bml");
@@ -974,6 +984,16 @@ assert_error!(
     "E108"
 );
 assert_error!(
+    test_parser_priority_range,
+    "parser_priority_range_error.bml",
+    "E103"
+);
+assert_error!(
+    test_parser_shared_ceiling_range,
+    "parser_shared_ceiling_range_error.bml",
+    "E104"
+);
+assert_error!(
     test_parser_const_in_fn,
     "parser_const_in_fn_error.bml",
     "E112"
@@ -1014,6 +1034,7 @@ assert_error!(
 );
 // `@align(N)` requires a power-of-two N.
 assert_error!(test_align_bad_value, "align_bad_value_error.bml", "E104");
+assert_error!(test_align_too_large, "align_too_large_error.bml", "E104");
 // An asm output operand must be an assignable place.
 assert_error!(
     test_asm_output_nonplace,
@@ -1334,6 +1355,19 @@ fn test_tailchain_calls() {
         "expected call_isr in vector table\n--- IR ---\n{ir}\n-----------"
     );
     check_snapshot("tailchain_calls", &extract_fn_body(&ir, "@call_isr"));
+}
+
+#[test]
+fn test_tailchain_asm_input_calls() {
+    let body = extract_fn_body(&bml_ir("tailchain_asm_input_calls.bml"), "@call_isr");
+    assert!(
+        body.contains("push {lr}"),
+        "expected tailchain ISR with asm operand call to save lr:\n{body}"
+    );
+    assert!(
+        body.contains("pop {pc}"),
+        "expected tailchain ISR with asm operand call to restore via pc:\n{body}"
+    );
 }
 
 // ─── Stack analysis tests ─────────────────────────────────────────────
