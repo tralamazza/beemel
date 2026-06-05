@@ -1,0 +1,10 @@
+fn thread_a() @context(thread) {
+}
+
+fn thread_b() @context(thread) {
+}
+
+fn main() @context(thread) {
+    var a = &thread_a;
+    var b = &thread_b;
+}

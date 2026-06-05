@@ -1,0 +1,6 @@
+fn timer() @isr(priority = 1) {
+}
+
+fn main() @context(thread) {
+    var fp = &timer;
+}

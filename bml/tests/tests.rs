@@ -1189,6 +1189,48 @@ assert_error!(
     "fn_ptr_bare_error_context.bml",
     "E408"
 );
+// `&context_fn` must report E408 exactly once: reading the `&` operand and the
+// AddrOf type computation both used to emit it.
+#[test]
+fn test_fn_ptr_error_context_single_diagnostic() {
+    let (ok, output) = bml_check("fn_ptr_error_context.bml");
+    assert!(!ok, "expected error, got success");
+    let count = output.matches("error[E408]").count();
+    assert_eq!(count, 1, "expected exactly one E408:\n{output}");
+}
+// The bare form (`fp = context_fn`, no `&`) reaches the same function-symbol
+// branch and must also report E408 exactly once.
+#[test]
+fn test_fn_ptr_bare_error_context_single_diagnostic() {
+    let (ok, output) = bml_check("fn_ptr_bare_error_context.bml");
+    assert!(!ok, "expected error, got success");
+    let count = output.matches("error[E408]").count();
+    assert_eq!(count, 1, "expected exactly one E408:\n{output}");
+}
+// Dedup is per-site, not per-function: two distinct `&context_fn` sites must
+// report E408 exactly twice (the pre-fix bug emitted four).
+#[test]
+fn test_fn_ptr_error_context_multi_site() {
+    let (ok, output) = bml_check("fn_ptr_error_context_multi.bml");
+    assert!(!ok, "expected error, got success");
+    let count = output.matches("error[E408]").count();
+    assert_eq!(
+        count, 2,
+        "expected exactly two E408 (one per site):\n{output}"
+    );
+}
+// `&context_fn` in call-argument position must also report E408 exactly once,
+// independent of the surrounding syntax.
+#[test]
+fn test_fn_ptr_arg_error_context_single_diagnostic() {
+    let (ok, output) = bml_check("fn_ptr_arg_error_context.bml");
+    assert!(!ok, "expected error, got success");
+    let count = output.matches("error[E408]").count();
+    assert_eq!(count, 1, "expected exactly one E408:\n{output}");
+}
+// Address-of an `@isr` function is rejected the same as `@context(thread)`:
+// only unrestricted (any-context) functions can become function pointers.
+assert_error!(test_fn_ptr_error_isr, "fn_ptr_error_isr.bml", "E408");
 assert_error!(test_fn_ptr_error_type, "fn_ptr_error_type.bml", "E300");
 
 // Vector table tests

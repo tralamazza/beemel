@@ -1317,17 +1317,13 @@ fn check_expr(
                     }
                 },
                 UnaryOp::AddrOf => {
-                    // Taking address of a function produces a function pointer
-                    if let Expr::Ident((name, span)) = inner.as_ref()
+                    // Taking the address of a function produces a function
+                    // pointer. The non-any-context rejection (E408) is already
+                    // emitted while reading the operand above, so here we only
+                    // compute the function-pointer type.
+                    if let Expr::Ident((name, _)) = inner.as_ref()
                         && let Some(fn_sym) = symbols.functions.get(name)
                     {
-                        if fn_sym.context != crate::context::Context::Any {
-                            diags.error(
-                                format!("cannot take address of non-any-context function `{name}` -- only functions without @context restriction can be used as function pointers"),
-                                "E408",
-                                *span,
-                            );
-                        }
                         let params: Vec<Type> =
                             fn_sym.params.iter().map(|(_, t)| t.clone()).collect();
                         let ret = fn_sym.ret.clone().unwrap_or(Type::Void);

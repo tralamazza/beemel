@@ -1,0 +1,8 @@
+extern fn register_callback(cb: fn() -> void);
+
+fn thread_only() @context(thread) {
+}
+
+fn main() @context(thread) {
+    register_callback(&thread_only);
+}
