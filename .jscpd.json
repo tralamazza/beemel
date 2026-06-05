@@ -4,6 +4,6 @@
   "minTokens": 50,
   "maxLines": 100000,
   "maxSize": "5mb",
-  "threshold": 2.6,
+  "threshold": 2.4,
   "reporters": ["console"]
 }

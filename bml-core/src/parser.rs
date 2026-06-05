@@ -25,6 +25,18 @@ pub struct Parser<'a> {
 /// anything hand-written code reaches. Hitting it yields `E113`, not a crash.
 const MAX_PARSE_DEPTH: u32 = 128;
 
+/// The shared head of a function declaration, returned by `parse_fn_signature`.
+/// `fn` consumes all fields; `extern fn` ignores `naked`/`section`.
+struct FnSignature {
+    name: Ident,
+    params: Vec<Param>,
+    ret: Option<TypeExpr>,
+    context: ContextExpr,
+    isr: Option<IsrAnnotation>,
+    naked: bool,
+    section: Option<String>,
+}
+
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str, file: FileId, diags: &'a mut DiagnosticBag) -> Self {
         let mut lexer = Lexer::new(source, file, diags);
@@ -184,13 +196,7 @@ impl<'a> Parser<'a> {
             TokenKind::Struct => self.parse_struct_def().map(Item::StructDef),
             TokenKind::Enum => self.parse_enum_def().map(Item::EnumDef),
             TokenKind::ComptimeAssert => {
-                let span = self.peek_span();
-                self.advance();
-                self.expect(&TokenKind::LParen, "expected `(` after `comptime_assert`")
-                    .ok()?;
-                let cond = self.parse_expr()?;
-                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
-                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                let (cond, span) = self.parse_paren_cond("comptime_assert")?;
                 Some(Item::ComptimeAssert(ComptimeAssert { cond, span }))
             }
             _ => {
@@ -205,57 +211,24 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_extern_fn_def(&mut self) -> Option<ExternFnDef> {
-        use crate::ast::ExternFnDef;
-        self.advance(); // extern
-
-        self.expect(&TokenKind::Fn, "expected `fn` after `extern`")
+    /// Parse `( expr ) ;` for a keyword form whose keyword has been peeked but
+    /// not yet consumed (`assume`, `assert`, `comptime_assert`). Captures the
+    /// keyword span, advances past it, and returns `(cond, span)`.
+    fn parse_paren_cond(&mut self, kw: &str) -> Option<(Expr, Span)> {
+        let span = self.peek_span();
+        self.advance();
+        self.expect(&TokenKind::LParen, &format!("expected `(` after `{kw}`"))
             .ok()?;
-
-        let name = self.parse_ident()?;
-
-        self.expect(&TokenKind::LParen, "expected `(` after function name")
-            .ok()?;
-
-        let mut params = Vec::new();
-        if !self.check(&TokenKind::RParen) {
-            while let Some(p) = self.parse_param() {
-                params.push(p);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-
-        self.expect(&TokenKind::RParen, "expected `)` after parameters")
-            .ok()?;
-
-        let ret = if self.eat(&TokenKind::Arrow) {
-            self.parse_type_expr()
-        } else {
-            None
-        };
-
-        let (context, isr, _naked, _section) = self.parse_fn_annotations()?;
-
-        self.expect(
-            &TokenKind::Semicolon,
-            "expected `;` after extern fn declaration",
-        )
-        .ok()?;
-
-        Some(ExternFnDef {
-            name,
-            params,
-            ret,
-            context: Some(context),
-            isr,
-        })
+        let cond = self.parse_expr()?;
+        self.expect(&TokenKind::RParen, "expected `)`").ok()?;
+        self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+        Some((cond, span))
     }
 
-    fn parse_fn_def(&mut self) -> Option<FnDef> {
-        self.advance(); // fn
-
+    /// Parse the common head of a function declaration: name, `(params)`, an
+    /// optional `-> ret`, and the trailing annotations. Shared by `fn` and
+    /// `extern fn`, which diverge only after this (a body vs. a `;`).
+    fn parse_fn_signature(&mut self) -> Option<FnSignature> {
         let name = self.parse_ident()?;
 
         self.expect(&TokenKind::LParen, "expected `(` after function name")
@@ -282,9 +255,7 @@ impl<'a> Parser<'a> {
 
         let (context, isr, naked, section) = self.parse_fn_annotations()?;
 
-        let body = self.parse_block()?;
-
-        Some(FnDef {
+        Some(FnSignature {
             name,
             params,
             ret,
@@ -292,6 +263,49 @@ impl<'a> Parser<'a> {
             isr,
             naked,
             section,
+        })
+    }
+
+    fn parse_extern_fn_def(&mut self) -> Option<ExternFnDef> {
+        use crate::ast::ExternFnDef;
+        self.advance(); // extern
+
+        self.expect(&TokenKind::Fn, "expected `fn` after `extern`")
+            .ok()?;
+
+        // `naked`/`section` are accepted but meaningless on an extern decl.
+        let sig = self.parse_fn_signature()?;
+
+        self.expect(
+            &TokenKind::Semicolon,
+            "expected `;` after extern fn declaration",
+        )
+        .ok()?;
+
+        Some(ExternFnDef {
+            name: sig.name,
+            params: sig.params,
+            ret: sig.ret,
+            context: Some(sig.context),
+            isr: sig.isr,
+        })
+    }
+
+    fn parse_fn_def(&mut self) -> Option<FnDef> {
+        self.advance(); // fn
+
+        let sig = self.parse_fn_signature()?;
+
+        let body = self.parse_block()?;
+
+        Some(FnDef {
+            name: sig.name,
+            params: sig.params,
+            ret: sig.ret,
+            context: sig.context,
+            isr: sig.isr,
+            naked: sig.naked,
+            section: sig.section,
             body,
         })
     }
@@ -978,23 +992,11 @@ impl<'a> Parser<'a> {
                 None
             }
             TokenKind::Assume => {
-                let span = self.peek_span();
-                self.advance();
-                self.expect(&TokenKind::LParen, "expected `(` after `assume`")
-                    .ok()?;
-                let cond = self.parse_expr()?;
-                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
-                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                let (cond, span) = self.parse_paren_cond("assume")?;
                 Some(Stmt::Assume(AssumeStmt { cond, span }))
             }
             TokenKind::Assert => {
-                let span = self.peek_span();
-                self.advance();
-                self.expect(&TokenKind::LParen, "expected `(` after `assert`")
-                    .ok()?;
-                let cond = self.parse_expr()?;
-                self.expect(&TokenKind::RParen, "expected `)`").ok()?;
-                self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+                let (cond, span) = self.parse_paren_cond("assert")?;
                 Some(Stmt::Assert(AssertStmt { cond, span }))
             }
             TokenKind::Return => self.parse_return_stmt().map(Stmt::Return),
