@@ -2,7 +2,7 @@ use bml_core::ast;
 use bml_core::borrow::BorrowChecker;
 use bml_core::checker::Checker;
 use bml_core::errors::{self, DiagnosticBag, Level};
-use bml_core::imports::ImportResolver;
+use bml_core::imports::{ImportResolver, ModuleCache};
 use bml_core::parser::Parser;
 use bml_core::resolver::{self, Resolver, SymbolTable};
 use bml_core::source::{self, SourceMap};
@@ -17,8 +17,9 @@ use lsp_types::{
     MarkupContent, MarkupKind, Position, PositionEncodingKind, PublishDiagnosticsParams, Range,
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 struct AnalysisResult {
     program: ast::Program,
@@ -32,7 +33,17 @@ struct Server {
     file_sources: HashMap<Uri, String>,
     analysis_cache: HashMap<Uri, AnalysisResult>,
     position_encoding: PositionEncodingKind,
+    /// Documents edited since their last analysis. Drained by `flush_dirty`
+    /// after the debounce window, or before serving a feature request.
+    dirty: HashSet<Uri>,
+    /// Persistent parse cache for imported modules, reused across analyses so
+    /// unchanged imports aren't re-read and re-parsed on every keystroke.
+    module_cache: ModuleCache,
 }
+
+/// How long to wait for typing to settle before re-analyzing a changed
+/// document and publishing diagnostics.
+const DEBOUNCE: Duration = Duration::from_millis(200);
 
 fn main() {
     let (conn, io_threads) = Connection::stdio();
@@ -71,6 +82,8 @@ fn main() {
         file_sources: HashMap::new(),
         analysis_cache: HashMap::new(),
         position_encoding,
+        dirty: HashSet::new(),
+        module_cache: ModuleCache::default(),
     };
 
     server.run(&conn);
@@ -106,7 +119,21 @@ fn select_position_encoding(params: &InitializeParams) -> Option<PositionEncodin
 impl Server {
     fn run(&mut self, conn: &Connection) {
         loop {
-            let Ok(msg) = conn.receiver.recv() else {
+            // While edits are pending, only wait out the debounce window before
+            // flushing; otherwise block until the next message.
+            let msg = if self.dirty.is_empty() {
+                conn.receiver.recv().ok()
+            } else {
+                match conn.receiver.recv_timeout(DEBOUNCE) {
+                    Ok(m) => Some(m),
+                    Err(e) if e.is_timeout() => {
+                        self.flush_dirty(conn);
+                        continue;
+                    }
+                    Err(_) => None, // disconnected
+                }
+            };
+            let Some(msg) = msg else {
                 return;
             };
 
@@ -115,12 +142,31 @@ impl Server {
                     if conn.handle_shutdown(&req).unwrap() {
                         return;
                     }
+                    // Feature requests read the analysis cache, so make sure any
+                    // pending edits are analyzed before answering.
+                    if !self.dirty.is_empty() {
+                        self.flush_dirty(conn);
+                    }
                     self.handle_request(conn, &req);
                 }
                 Message::Notification(not) => {
                     self.handle_notification(conn, not);
                 }
                 Message::Response(_) => {}
+            }
+        }
+    }
+
+    /// Re-analyze and publish diagnostics for every document edited since its
+    /// last analysis.
+    fn flush_dirty(&mut self, conn: &Connection) {
+        let pending: Vec<Uri> = self.dirty.drain().collect();
+        for uri in pending {
+            if let (Some(path), Some(source)) = (
+                self.file_paths.get(&uri).cloned(),
+                self.file_sources.get(&uri).cloned(),
+            ) {
+                self.check_and_publish(conn, &uri, &path, &source);
             }
         }
     }
@@ -193,11 +239,13 @@ impl Server {
                     serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(not.params)
                 {
                     let uri = params.text_document.uri;
-                    if let Some(path) = self.file_paths.get(&uri).cloned()
+                    // Store the new text and defer analysis; the debounce in
+                    // `run` (or the next feature request) flushes it.
+                    if self.file_paths.contains_key(&uri)
                         && let Some(last) = params.content_changes.last()
                     {
                         self.file_sources.insert(uri.clone(), last.text.clone());
-                        self.check_and_publish(conn, &uri, &path, &last.text);
+                        self.dirty.insert(uri);
                     }
                 }
             }
@@ -221,6 +269,7 @@ impl Server {
                     self.file_paths.remove(&uri);
                     self.file_sources.remove(&uri);
                     self.analysis_cache.remove(&uri);
+                    self.dirty.remove(&uri);
                     // Clear diagnostics for the closed file
                     let params = PublishDiagnosticsParams {
                         uri,
@@ -239,7 +288,9 @@ impl Server {
     }
 
     fn check_and_publish(&mut self, conn: &Connection, uri: &Uri, path: &Path, source: &str) {
-        let (analysis, diags) = analyze_file(path, source);
+        // This document is now being analyzed, so it's no longer pending.
+        self.dirty.remove(uri);
+        let (analysis, diags) = analyze_file(path, source, &mut self.module_cache);
 
         let lsp_diags: Vec<Diagnostic> = diags
             .diagnostics()
@@ -433,7 +484,11 @@ impl Server {
     }
 }
 
-fn analyze_file(path: &Path, source: &str) -> (AnalysisResult, DiagnosticBag) {
+fn analyze_file(
+    path: &Path,
+    source: &str,
+    module_cache: &mut ModuleCache,
+) -> (AnalysisResult, DiagnosticBag) {
     let mut source_map = SourceMap::new();
     let file_id = source_map.add_file_with_source(path.to_path_buf(), source.to_string());
     let source_text = source_map.source(file_id);
@@ -446,7 +501,11 @@ fn analyze_file(path: &Path, source: &str) -> (AnalysisResult, DiagnosticBag) {
     if !diags.has_errors() {
         let mut import_resolver = ImportResolver::new();
         import_resolver.source_map = source_map;
+        // Lend the persistent parse cache to the resolver and take it back
+        // (now updated) afterwards.
+        std::mem::swap(&mut import_resolver.cache, module_cache);
         let (resolved_program, aliases) = import_resolver.resolve(program, path);
+        std::mem::swap(&mut import_resolver.cache, module_cache);
         program = resolved_program;
         source_map = import_resolver.source_map;
         diags.merge(import_resolver.diags);
@@ -1748,7 +1807,11 @@ mod tests {
             .find(marker)
             .expect("source must contain cursor marker");
         let source = source.replace(marker, "");
-        let (analysis, diags) = analyze_file(Path::new("/tmp/completion_test.bml"), &source);
+        let (analysis, diags) = analyze_file(
+            Path::new("/tmp/completion_test.bml"),
+            &source,
+            &mut ModuleCache::default(),
+        );
         assert!(!diags.has_errors());
         collect_completions(&analysis.program, &analysis.symbols, offset)
             .into_iter()
@@ -1939,7 +2002,11 @@ fn main() {
             .find(marker)
             .expect("source must contain cursor marker");
         let source = source.replace(marker, "");
-        let (analysis, diags) = analyze_file(Path::new("/tmp/lsp_resolve_test.bml"), &source);
+        let (analysis, diags) = analyze_file(
+            Path::new("/tmp/lsp_resolve_test.bml"),
+            &source,
+            &mut ModuleCache::default(),
+        );
         (analysis, offset, diags)
     }
 
@@ -2038,5 +2105,70 @@ fn main() @context(thread) {
         let (analysis, offset) = analyze_at(src);
         let ident = find_ident_at(&analysis.program, offset).expect("ident in index lvalue");
         assert_eq!(ident.0, "idx");
+    }
+
+    // ─── persistent import parse cache ─────────────────────────────────
+
+    /// The `FileId` of the inlined `helper` definition in a resolved program.
+    fn helper_file(a: &AnalysisResult) -> source::FileId {
+        for item in &a.program.items {
+            if let ast::Item::FnDef(f) = item
+                && f.name.0 == "helper"
+            {
+                return f.name.1.file;
+            }
+        }
+        panic!("`helper` not inlined into resolved program");
+    }
+
+    #[test]
+    fn module_cache_reuses_import_parse_across_analyses() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Unique temp dir so parallel/repeat runs don't collide.
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("bml_lsp_cache_{}_{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let lib_path = dir.join("helper_lib.bml");
+        fs::write(
+            &lib_path,
+            "export fn helper;\n\nfn helper() -> u32 @context(thread) {\n    return 1;\n}\n",
+        )
+        .unwrap();
+
+        let main_path = dir.join("main.bml");
+        let main_src = "\
+import helper_lib { helper };
+
+fn main() @context(thread) {
+    var x = helper();
+}
+";
+        fs::write(&main_path, main_src).unwrap();
+
+        let mut cache = ModuleCache::default();
+
+        let (a1, d1) = analyze_file(&main_path, main_src, &mut cache);
+        assert!(!d1.has_errors(), "first analysis should be clean");
+        let f1 = helper_file(&a1);
+        assert_eq!(a1.source_map.get_path(f1), lib_path.as_path());
+
+        let (a2, d2) = analyze_file(&main_path, main_src, &mut cache);
+        assert!(!d2.has_errors(), "second analysis should be clean");
+        let f2 = helper_file(&a2);
+
+        // A cache miss would re-`add_file` and mint a fresh FileId; equality
+        // proves the cached parse (and its SourceFile) was reused and that its
+        // spans stay valid in the second analysis's fresh SourceMap.
+        assert_eq!(f1, f2, "imported parse should be reused from the cache");
+        assert_eq!(a2.source_map.get_path(f2), lib_path.as_path());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

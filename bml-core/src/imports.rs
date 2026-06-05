@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::ast::{self, Item, Program};
 use crate::errors::DiagnosticBag;
 use crate::parser::Parser;
-use crate::source::{SourceMap, Span};
+use crate::source::{SourceFile, SourceMap, Span};
 
 pub type Exports = HashMap<String, Item>;
 pub type AliasMap = HashMap<String, AliasInfo>;
@@ -15,14 +16,37 @@ pub struct AliasInfo {
     pub items: Vec<Item>,
 }
 
+/// Cross-analysis parse cache for imported modules. A long-lived process (the
+/// LSP) holds one of these and threads it through each `ImportResolver` so an
+/// unchanged imported file is read from disk and parsed only once, not on every
+/// keystroke. Only the raw per-file parse is cached; the flatten/alias logic in
+/// `resolve_imports` still runs fresh each time.
+#[derive(Default)]
+pub struct ModuleCache {
+    entries: HashMap<PathBuf, CachedModule>,
+}
+
+/// One cached file parse. `file` carries the original `SourceFile` (and its
+/// `FileId`) so the cached AST's spans can be made valid in a fresh
+/// `SourceMap`; `mtime` is the on-disk modified time used for invalidation.
+struct CachedModule {
+    mtime: SystemTime,
+    file: SourceFile,
+    program: Program,
+}
+
 pub struct ImportResolver {
     pub source_map: SourceMap,
     pub diags: DiagnosticBag,
     pub aliases: AliasMap,
+    /// Persistent across analyses when the caller swaps in its own cache;
+    /// otherwise an empty per-run cache. See [`ModuleCache`].
+    pub cache: ModuleCache,
     visiting: Vec<PathBuf>,
     /// Resolved modules, keyed by canonical path. Cached so a module reached
     /// via two import paths (diamond) shares one parse / one set of `FileId`s,
-    /// keeping span-based dedup stable.
+    /// keeping span-based dedup stable. Per-run only (a fresh resolver clears
+    /// it), unlike [`ImportResolver::cache`].
     resolved: HashMap<PathBuf, ResolvedModule>,
 }
 
@@ -45,6 +69,7 @@ impl ImportResolver {
             source_map: SourceMap::new(),
             diags: DiagnosticBag::new(),
             aliases: HashMap::new(),
+            cache: ModuleCache::default(),
             visiting: Vec::new(),
             resolved: HashMap::new(),
         }
@@ -114,7 +139,7 @@ impl ImportResolver {
                             .expect("AlreadyResolved implies cached")
                             .clone()
                     } else {
-                        let Ok(parsed) = self.load_and_parse(&path) else {
+                        let Ok(parsed) = self.load_and_parse(&path, &canon) else {
                             if matches!(cycle_state, CycleState::Pushed) {
                                 self.visiting.pop();
                             }
@@ -198,7 +223,20 @@ impl ImportResolver {
         candidate.exists().then_some(candidate)
     }
 
-    fn load_and_parse(&mut self, path: &Path) -> Result<Program, ()> {
+    fn load_and_parse(&mut self, path: &Path, canon: &Path) -> Result<Program, ()> {
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+
+        // Reuse a cached parse when the file is unchanged on disk. Re-inject its
+        // `SourceFile` (preserving the original `FileId`) so the cached AST's
+        // spans stay valid in this analysis's fresh `SourceMap`.
+        if let Some(mtime) = mtime
+            && let Some(entry) = self.cache.entries.get(canon)
+            && entry.mtime == mtime
+        {
+            self.source_map.insert_file(entry.file.clone());
+            return Ok(entry.program.clone());
+        }
+
         let file_id = match self.source_map.add_file(path.to_path_buf()) {
             Ok(id) => id,
             Err(e) => {
@@ -217,6 +255,21 @@ impl ImportResolver {
 
         if self.diags.has_errors() {
             return Err(());
+        }
+
+        // Cache the clean parse keyed by canonical path + mtime. Skipped when
+        // the mtime is unavailable, so we never serve a stale entry we can't
+        // invalidate.
+        if let Some(mtime) = mtime {
+            let file = self.source_map.get_file(file_id).clone();
+            self.cache.entries.insert(
+                canon.to_path_buf(),
+                CachedModule {
+                    mtime,
+                    file,
+                    program: program.clone(),
+                },
+            );
         }
 
         Ok(program)

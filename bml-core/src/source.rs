@@ -108,6 +108,16 @@ impl SourceMap {
         id
     }
 
+    /// Re-insert a previously parsed file, preserving its existing `FileId`.
+    /// The LSP module cache uses this so a cached AST's spans (which reference
+    /// the original `FileId`) stay valid even though each analysis builds a
+    /// fresh `SourceMap`.
+    pub fn insert_file(&mut self, file: SourceFile) {
+        let line_starts = compute_line_starts(&file.source);
+        self.line_starts.insert(file.id, line_starts);
+        self.files.push(file);
+    }
+
     /// Look up a file by its ID.
     ///
     /// # Panics
