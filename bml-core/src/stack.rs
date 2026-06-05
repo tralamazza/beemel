@@ -300,8 +300,14 @@ fn stmt_contribution(
                 .as_ref()
                 .map(|s| expr_contribution(s, symbols, defined_fns));
 
+            let step_frame = step_contrib.as_ref().map_or(0, |sc| sc.frame);
+
             Contribution {
-                frame: size + body_contrib.frame,
+                frame: size
+                    + start_contrib.frame
+                    + end_contrib.frame
+                    + step_frame
+                    + body_contrib.frame,
                 callees: {
                     let mut c = Vec::new();
                     c.extend(start_contrib.callees);
@@ -341,14 +347,15 @@ fn stmt_contribution(
                 Contribution::empty()
             };
 
-            // Frame: max across branches (only one executes)
+            // Locals from all branches are pre-emitted into the entry block, so
+            // stack frame size is their sum, not the runtime max branch.
             // Callees: union across all branches
             let mut callees = cond_contrib.callees;
             callees.extend(then_contrib.callees);
             callees.extend(else_contrib.callees);
 
             Contribution {
-                frame: std::cmp::max(then_contrib.frame, else_contrib.frame),
+                frame: cond_contrib.frame + then_contrib.frame + else_contrib.frame,
                 callees,
                 has_indirect: cond_contrib.has_indirect
                     || then_contrib.has_indirect
@@ -366,7 +373,7 @@ fn stmt_contribution(
             callees.extend(body_contrib.callees);
 
             Contribution {
-                frame: body_contrib.frame,
+                frame: cond_contrib.frame + body_contrib.frame,
                 callees,
                 has_indirect: cond_contrib.has_indirect || body_contrib.has_indirect,
             }
@@ -374,21 +381,19 @@ fn stmt_contribution(
 
         Stmt::Match(match_stmt) => {
             let scrut_contrib = expr_contribution(&match_stmt.scrutinee, symbols, defined_fns);
-            let mut max_frame: u32 = 0;
+            let mut arms_frame: u32 = 0;
             let mut callees = scrut_contrib.callees;
             let mut has_indirect = scrut_contrib.has_indirect;
 
             for arm in &match_stmt.arms {
                 let body_contrib = block_contribution(&arm.body, symbols, defined_fns);
-                if body_contrib.frame > max_frame {
-                    max_frame = body_contrib.frame;
-                }
+                arms_frame += body_contrib.frame;
                 callees.extend(body_contrib.callees);
                 has_indirect = has_indirect || body_contrib.has_indirect;
             }
 
             Contribution {
-                frame: max_frame,
+                frame: scrut_contrib.frame + arms_frame,
                 callees,
                 has_indirect,
             }
@@ -534,10 +539,9 @@ fn expr_contribution(
             callees.extend(then_contrib.callees);
             callees.extend(else_contrib.callees);
 
-            // Frame: no extra alloca (if-expr doesn't generate a temp),
-            // but branches may contain allocas -- take max
+            // No result temp, but all branch locals are pre-emitted in entry.
             Contribution {
-                frame: std::cmp::max(then_contrib.frame, else_contrib.frame),
+                frame: cond_contrib.frame + then_contrib.frame + else_contrib.frame,
                 callees,
                 has_indirect: cond_contrib.has_indirect
                     || then_contrib.has_indirect
@@ -547,21 +551,19 @@ fn expr_contribution(
 
         Expr::Match(match_expr) => {
             let scrut_contrib = expr_contribution(&match_expr.scrutinee, symbols, defined_fns);
-            let mut max_frame: u32 = 0;
+            let mut arms_frame: u32 = 0;
             let mut callees = scrut_contrib.callees;
             let mut has_indirect = scrut_contrib.has_indirect;
 
             for arm in &match_expr.arms {
                 let body_contrib = block_contribution(&arm.body, symbols, defined_fns);
-                if body_contrib.frame > max_frame {
-                    max_frame = body_contrib.frame;
-                }
+                arms_frame += body_contrib.frame;
                 callees.extend(body_contrib.callees);
                 has_indirect = has_indirect || body_contrib.has_indirect;
             }
 
             Contribution {
-                frame: max_frame,
+                frame: scrut_contrib.frame + arms_frame,
                 callees,
                 has_indirect,
             }

@@ -1591,6 +1591,17 @@ fn test_stack_struct() {
     );
 }
 
+#[test]
+fn test_stack_branch_locals() {
+    let (ok, output) = bml_check_stack("stack_branch_locals.bml");
+    assert!(ok, "expected pass:\n{output}");
+    // All branch locals are pre-emitted in the entry block: five u32 locals.
+    assert!(
+        output.contains("frame=  20"),
+        "expected frame=20 for all branch locals\n{output}"
+    );
+}
+
 // ─── new tests for bugfixes ─────────────────────────────────────────
 
 // 1. return should not produce double terminators
