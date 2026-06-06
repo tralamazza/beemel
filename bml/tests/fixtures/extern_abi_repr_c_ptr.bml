@@ -1,0 +1,15 @@
+struct Config @repr(C) {
+    tag: u8,
+    value: u32,
+}
+
+extern fn init(cfg: *Config, done: fn(i32) -> void) -> b8;
+
+fn callback(status: i32) {
+    var _ = status;
+}
+
+fn main() @context(thread) {
+    var cfg = Config { tag: 1u8, value: 2u32 };
+    var ok: b8 = init(&cfg, &callback);
+}

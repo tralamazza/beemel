@@ -1,0 +1,4 @@
+extern fn register(cb: fn(b1) -> void);
+
+fn main() @context(thread) {
+}

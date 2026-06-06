@@ -1,0 +1,4 @@
+extern fn write(buf: [u8; 4]);
+
+fn main() @context(thread) {
+}

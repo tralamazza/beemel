@@ -338,6 +338,40 @@ fn main() @context(thread) {
 }
 ```
 
+`extern fn` signatures are checked against bml's C ABI-safe subset:
+
+- Allowed scalar values: integer types, `f32`, `f64`, `b8`, and enums.
+- `b1` is rejected at C boundaries; use `b8` for C booleans.
+- `f16` is rejected at C boundaries; use `f32` or `f64`.
+- Pointers to ABI-safe scalars/enums and `*void` / `*mut void` are allowed.
+- Pointers to `@repr(C)` structs are allowed.
+- Default explicit-layout structs and `@repr(packed)` structs are rejected by
+  pointer at extern boundaries; use `*void` for opaque handles.
+- Structs are rejected by value, including `@repr(C)` structs. Pass a pointer
+  instead; by-value aggregate lowering is target ABI-specific and not supported
+  yet.
+- Arrays are rejected by value; pass a pointer to the first element.
+- `view`, `ring`, `bits`, and storage-qualified types are BML-only and cannot
+  appear in `extern fn` signatures.
+- Function pointer parameters/returns are allowed when their nested signature is
+  also ABI-safe.
+
+Examples:
+
+```bml
+struct Config @repr(C) {
+    flags: u8,
+    baud: u32,
+}
+
+extern fn init(cfg: *Config) -> i32;     // OK
+extern fn callback(cb: fn(i32) -> void); // OK
+
+extern fn bad_flag(flag: b1);            // error: use b8
+extern fn bad_view(v: view u8);          // error: BML-only descriptor
+extern fn bad_value(cfg: Config);        // error: pass *Config
+```
+
 ### Function pointers
 
 Function pointer types use the `fn` keyword in type position:

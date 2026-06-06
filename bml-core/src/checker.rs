@@ -101,6 +101,7 @@ impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
         validate_type_annotations(program, diags);
         validate_struct_layouts(program, symbols, diags);
+        validate_extern_abi(program, symbols, diags);
         check_global_initializers(program, symbols, diags);
         for item in &program.items {
             // `len` is intercepted as a builtin before function resolution, so a
@@ -225,6 +226,132 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
                 s.name.1,
             );
         }
+    }
+}
+
+fn validate_extern_abi(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    for item in &program.items {
+        let ast::Item::ExternFnDef(f) = item else {
+            continue;
+        };
+        for param in &f.params {
+            let ty = types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums);
+            if let Err(reason) = extern_abi_value_error(&ty, false) {
+                diags.error(
+                    format!(
+                        "extern fn `{}` parameter `{}` is not C ABI-safe: {reason}",
+                        f.name.0, param.name.0
+                    ),
+                    "E356",
+                    param.name.1,
+                );
+            }
+        }
+        if let Some(ret) = &f.ret {
+            let ty = types::resolve_type_expr(ret, &symbols.structs, &symbols.enums);
+            if let Err(reason) = extern_abi_value_error(&ty, true) {
+                diags.error(
+                    format!(
+                        "extern fn `{}` return type is not C ABI-safe: {reason}",
+                        f.name.0
+                    ),
+                    "E356",
+                    f.name.1,
+                );
+            }
+        }
+    }
+}
+
+fn extern_abi_value_error(ty: &Type, allow_void: bool) -> Result<(), String> {
+    match ty.inner() {
+        Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::F32
+        | Type::F64
+        | Type::B8
+        | Type::Enum(..) => Ok(()),
+        Type::Void if allow_void => Ok(()),
+        Type::Void => Err("use no parameter instead of `void`".to_string()),
+        Type::B1 => Err("`b1` lowers to a 1-bit value; use `b8` for C booleans".to_string()),
+        Type::F16 => Err("`f16` has no portable C ABI in bml; use `f32` or `f64`".to_string()),
+        Type::Ptr(inner) | Type::ConstPtr(inner) => extern_abi_pointee_error(inner),
+        Type::Fn(params, ret) => {
+            for (idx, param) in params.iter().enumerate() {
+                extern_abi_value_error(param, false)
+                    .map_err(|reason| format!("function pointer parameter {idx}: {reason}"))?;
+            }
+            extern_abi_value_error(ret, true)
+                .map_err(|reason| format!("function pointer return type: {reason}"))
+        }
+        Type::Struct(..) => Err(
+            "structs are not supported by value across extern boundaries; pass `*@repr(C) Struct` instead"
+                .to_string(),
+        ),
+        Type::Array(..) => Err("arrays are not C ABI values; pass a pointer to the first element".to_string()),
+        Type::LinearView(..) | Type::StridedView(..) | Type::RingView(..) | Type::BitView(..) => {
+            Err("bml view/ring/bits descriptors are not C ABI types".to_string())
+        }
+        Type::Exclusive(_)
+        | Type::Shared(_, _)
+        | Type::Mmio(_)
+        | Type::Dma(_)
+        | Type::External(_) => Err("storage-qualified types cannot cross extern boundaries".to_string()),
+        Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
+    }
+}
+
+fn extern_abi_pointee_error(ty: &Type) -> Result<(), String> {
+    match ty.inner() {
+        Type::Void
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::F32
+        | Type::F64
+        | Type::B8
+        | Type::Enum(..) => Ok(()),
+        Type::B1 => Err("pointers to `b1` are not C ABI-safe; use `*b8`".to_string()),
+        Type::F16 => Err("pointers to `f16` are not C ABI-safe; use `*f32` or `*f64`".to_string()),
+        Type::Struct(_, StructRepr::C, _) => Ok(()),
+        Type::Struct(name, StructRepr::Explicit, _) => Err(format!(
+            "pointer to struct `{name}` requires `@repr(C)` at extern boundaries; use `*void` for opaque handles"
+        )),
+        Type::Struct(name, StructRepr::Packed, _) => Err(format!(
+            "pointer to packed struct `{name}` is not C ABI-safe; use `*void` for opaque handles"
+        )),
+        Type::Array(inner, _) => extern_abi_pointee_error(inner),
+        Type::Ptr(inner) | Type::ConstPtr(inner) => extern_abi_pointee_error(inner),
+        Type::Fn(params, ret) => {
+            for (idx, param) in params.iter().enumerate() {
+                extern_abi_value_error(param, false)
+                    .map_err(|reason| format!("function pointer parameter {idx}: {reason}"))?;
+            }
+            extern_abi_value_error(ret, true)
+                .map_err(|reason| format!("function pointer return type: {reason}"))
+        }
+        Type::LinearView(..) | Type::StridedView(..) | Type::RingView(..) | Type::BitView(..) => {
+            Err("pointers to bml view/ring/bits descriptors are not C ABI-safe".to_string())
+        }
+        Type::Exclusive(_)
+        | Type::Shared(_, _)
+        | Type::Mmio(_)
+        | Type::Dma(_)
+        | Type::External(_) => {
+            Err("pointers to storage-qualified types cannot cross extern boundaries".to_string())
+        }
+        Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
     }
 }
 

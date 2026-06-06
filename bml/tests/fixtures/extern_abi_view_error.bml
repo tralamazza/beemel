@@ -1,0 +1,4 @@
+extern fn consume(v: view u8);
+
+fn main() @context(thread) {
+}

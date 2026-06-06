@@ -1,0 +1,4 @@
+extern fn set_flag(flag: b1);
+
+fn main() @context(thread) {
+}

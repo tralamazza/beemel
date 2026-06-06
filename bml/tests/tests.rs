@@ -616,6 +616,34 @@ assert_pass!(test_pointers, "pointers.bml");
 assert_pass!(test_pointer_casts, "pointer_casts.bml");
 assert_pass!(test_pointer_void, "pointer_void.bml");
 assert_pass!(test_extern_ptr, "extern_ptr.bml");
+assert_pass!(test_extern_abi_repr_c_ptr, "extern_abi_repr_c_ptr.bml");
+assert_error!(test_extern_abi_b1, "extern_abi_b1_error.bml", "E356");
+assert_error!(test_extern_abi_view, "extern_abi_view_error.bml", "E356");
+assert_error!(
+    test_extern_abi_struct_value,
+    "extern_abi_struct_value_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_struct_ptr,
+    "extern_abi_struct_ptr_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_packed_ptr,
+    "extern_abi_packed_ptr_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_fn_ptr,
+    "extern_abi_fn_ptr_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_array_value,
+    "extern_abi_array_value_error.bml",
+    "E356"
+);
 assert_pass!(test_ptr_coercion, "ptr_coercion.bml");
 assert_pass!(test_struct_basic, "struct_basic.bml");
 assert_pass!(test_struct_ptr, "struct_ptr.bml");

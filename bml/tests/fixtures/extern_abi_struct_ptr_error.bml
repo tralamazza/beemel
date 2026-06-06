@@ -1,0 +1,10 @@
+struct Config {
+    tag: u8,
+    _: [u8; 3],
+    value: u32,
+}
+
+extern fn init(cfg: *Config);
+
+fn main() @context(thread) {
+}

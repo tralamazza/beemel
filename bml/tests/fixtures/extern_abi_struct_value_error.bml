@@ -1,0 +1,9 @@
+struct Config @repr(C) {
+    tag: u8,
+    value: u32,
+}
+
+extern fn init(cfg: Config);
+
+fn main() @context(thread) {
+}

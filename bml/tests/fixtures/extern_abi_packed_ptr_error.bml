@@ -1,0 +1,9 @@
+struct Packet @repr(packed) {
+    tag: u8,
+    value: u32,
+}
+
+extern fn send(packet: *Packet);
+
+fn main() @context(thread) {
+}
