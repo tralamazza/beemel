@@ -4,7 +4,7 @@ use crate::ast::{self, BitSpec, Program, StorageAnnotation};
 use crate::context::Context;
 use crate::errors::DiagnosticBag;
 use crate::imports::AliasInfo;
-use crate::types::Type;
+use crate::types::{StructInfo, Type};
 
 #[derive(Debug, Default, Clone)]
 pub struct SymbolTable {
@@ -12,7 +12,7 @@ pub struct SymbolTable {
     pub statics: HashMap<String, StaticSymbol>,
     pub consts: HashMap<String, ConstSymbol>,
     pub peripherals: HashMap<String, PeripheralSymbol>,
-    pub structs: HashMap<String, Vec<(String, crate::types::Type)>>,
+    pub structs: HashMap<String, StructInfo>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
     pub import_aliases: HashMap<String, AliasInfo>,
 }
@@ -363,9 +363,12 @@ impl Resolver {
             return;
         }
 
-        // Check for duplicate field names
+        // Check for duplicate field names. `_` is explicit padding and may be repeated.
         let mut seen: HashSet<String> = HashSet::new();
         for field in &s.fields {
+            if field.name.0 == "_" {
+                continue;
+            }
             if seen.contains(&field.name.0) {
                 diags.error(
                     format!("duplicate field `{}` in struct `{name}`", field.name.0),
@@ -387,7 +390,13 @@ impl Resolver {
                 )
             })
             .collect();
-        self.table.structs.insert(name, fields);
+        self.table.structs.insert(
+            name,
+            StructInfo {
+                repr: s.repr,
+                fields,
+            },
+        );
     }
 
     fn collect_enum(&mut self, e: &ast::EnumDef, diags: &mut DiagnosticBag) {
@@ -474,7 +483,13 @@ impl Resolver {
                         (f.name.0.clone(), ty)
                     })
                     .collect();
-                self.table.structs.insert(name, resolved_fields);
+                self.table.structs.insert(
+                    name,
+                    StructInfo {
+                        repr: s.repr,
+                        fields: resolved_fields,
+                    },
+                );
             }
         }
 

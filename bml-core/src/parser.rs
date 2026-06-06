@@ -591,6 +591,7 @@ impl<'a> Parser<'a> {
     fn parse_struct_def(&mut self) -> Option<StructDef> {
         self.advance(); // struct
         let name = self.parse_ident()?;
+        let repr = self.parse_struct_repr()?;
         self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
 
         let mut fields = Vec::new();
@@ -610,7 +611,49 @@ impl<'a> Parser<'a> {
 
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
 
-        Some(StructDef { name, fields })
+        Some(StructDef { name, repr, fields })
+    }
+
+    fn parse_struct_repr(&mut self) -> Option<crate::ast::StructRepr> {
+        let mut repr = crate::ast::StructRepr::Explicit;
+        while self.eat(&TokenKind::AtSign) {
+            let span = self.peek_span();
+            let TokenKind::Ident(name) = self.peek_kind() else {
+                self.diags.error("expected `repr` annotation", "E108", span);
+                return None;
+            };
+            if name != "repr" {
+                self.diags
+                    .error("expected `@repr(C)` or `@repr(packed)`", "E108", span);
+                return None;
+            }
+            if !matches!(repr, crate::ast::StructRepr::Explicit) {
+                self.diags.error("duplicate @repr annotation", "E108", span);
+                return None;
+            }
+            self.advance();
+            self.expect(&TokenKind::LParen, "expected `(` after `repr`")
+                .ok()?;
+            let arg_span = self.peek_span();
+            let TokenKind::Ident(arg) = self.peek_kind() else {
+                self.diags
+                    .error("expected `C` or `packed` in @repr", "E108", arg_span);
+                return None;
+            };
+            repr = match arg.as_str() {
+                "C" => crate::ast::StructRepr::C,
+                "packed" => crate::ast::StructRepr::Packed,
+                _ => {
+                    self.diags
+                        .error("expected `C` or `packed` in @repr", "E108", arg_span);
+                    return None;
+                }
+            };
+            self.advance();
+            self.expect(&TokenKind::RParen, "expected `)` after @repr")
+                .ok()?;
+        }
+        Some(repr)
     }
 
     fn parse_enum_def(&mut self) -> Option<EnumDef> {

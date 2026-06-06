@@ -1,0 +1,6 @@
+struct Bad {
+    _: u32,
+}
+
+fn main() @context(thread) {
+}

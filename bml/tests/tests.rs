@@ -858,6 +858,52 @@ assert_error!(
     "struct_duplicate_init_field.bml",
     "E321"
 );
+assert_pass!(test_struct_layout_explicit, "struct_layout_explicit.bml");
+assert_ir_contains!(
+    test_struct_layout_explicit_ir,
+    "struct_layout_explicit.bml",
+    "{ i8, [1 x i8], i16 }"
+);
+assert_pass!(test_struct_repr_c, "struct_repr_c.bml");
+assert_ir_contains!(test_struct_repr_c_ir, "struct_repr_c.bml", "{ i8, i32 }");
+assert_pass!(test_struct_repr_packed, "struct_repr_packed.bml");
+#[test]
+fn test_struct_repr_packed_ir() {
+    let ir = bml_ir("struct_repr_packed.bml");
+    assert!(
+        ir.contains("<{ i8, i32 }>"),
+        "expected packed struct type\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        ir.contains("align 1"),
+        "expected packed field access to use align 1\n--- IR ---\n{ir}\n-----------"
+    );
+}
+assert_error!(
+    test_struct_padding_bad_type,
+    "struct_padding_bad_type_error.bml",
+    "E351"
+);
+assert_error!(
+    test_struct_layout_misaligned,
+    "struct_layout_misaligned_error.bml",
+    "E352"
+);
+assert_error!(
+    test_struct_layout_tail,
+    "struct_layout_tail_error.bml",
+    "E353"
+);
+assert_error!(
+    test_struct_padding_init,
+    "struct_padding_init_error.bml",
+    "E354"
+);
+assert_error!(
+    test_struct_padding_access,
+    "struct_padding_access_error.bml",
+    "E355"
+);
 assert_error!(
     test_sizeof_undefined_type,
     "sizeof_undefined_type_error.bml",

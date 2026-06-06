@@ -1,0 +1,9 @@
+struct CLayout @repr(C) {
+    a: u8,
+    b: u32,
+}
+
+fn main() @context(thread) {
+    var s = CLayout { a: 1u8, b: 2u32 };
+    var x: u32 = sizeof(CLayout);
+}

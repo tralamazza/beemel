@@ -2,7 +2,7 @@ use std::fmt;
 
 use std::collections::HashMap;
 
-use crate::ast::{Item, TypeExpr};
+use crate::ast::{Item, StructRepr, TypeExpr};
 use crate::errors::ErrorGuaranteed;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +57,8 @@ pub enum Type {
     Mmio(Box<Type>),
     Dma(Box<Type>),
     External(Box<Type>),
-    // User-defined struct types: name + ordered field list
-    Struct(String, Vec<(String, Type)>),
+    // User-defined struct types: name + representation + ordered field list
+    Struct(String, StructRepr, Vec<(String, Type)>),
     // User-defined enum types: name + underlying type + (variant_name, discriminant)
     Enum(String, Box<Type>, Vec<(String, i64)>),
     // A named type whose lookup hasn't run yet. Produced during the early
@@ -112,7 +112,7 @@ impl fmt::Display for Type {
             Type::Mmio(t) => write!(f, "@mmio({t})"),
             Type::Dma(t) => write!(f, "@dma({t})"),
             Type::External(t) => write!(f, "@external({t})"),
-            Type::Struct(name, _) => write!(f, "struct {name}"),
+            Type::Struct(name, _, _) => write!(f, "struct {name}"),
             Type::Enum(name, _, _) => write!(f, "enum {name}"),
             Type::Unresolved(name) => write!(f, "{name}"),
             Type::Fn(params, ret) => {
@@ -166,7 +166,7 @@ impl Type {
                 }
             }
             Type::Array(inner, _) | Type::Ptr(inner) | Type::ConstPtr(inner) => inner.semantics(),
-            Type::Struct(_, fields) => {
+            Type::Struct(_, _, fields) => {
                 if fields.iter().all(|(_, ty)| ty.is_copy()) {
                     Semantics::Copy
                 } else {
@@ -228,6 +228,12 @@ pub fn int_suffix_type(suffix: crate::ast::IntSuffix) -> Option<Type> {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructInfo {
+    pub repr: StructRepr,
+    pub fields: Vec<(String, Type)>,
+}
+
 /// Map from enum name to (underlying type, (variant name, discriminant) list)
 pub type EnumDefs = HashMap<String, (Type, Vec<(String, i64)>)>;
 
@@ -237,7 +243,7 @@ pub type EnumDefs = HashMap<String, (Type, Vec<(String, i64)>)>;
 #[must_use]
 pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
     ty: &TypeExpr,
-    structs: &HashMap<String, Vec<(String, Type)>, S>,
+    structs: &HashMap<String, StructInfo, S>,
     enums: &EnumDefs,
 ) -> Type {
     match ty {
@@ -257,8 +263,8 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
             "b8" => Type::B8,
             "void" => Type::Void,
             _ => {
-                if let Some(fields) = structs.get(name.as_str()) {
-                    Type::Struct(name.clone(), fields.clone())
+                if let Some(info) = structs.get(name.as_str()) {
+                    Type::Struct(name.clone(), info.repr, info.fields.clone())
                 } else if let Some((inner_ty, variants)) = enums.get(name.as_str()) {
                     Type::Enum(name.clone(), Box::new(inner_ty.clone()), variants.clone())
                 } else {
@@ -331,10 +337,10 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
 #[must_use]
 pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
     items: &[Item],
-    base_structs: &HashMap<String, Vec<(String, Type)>, S>,
+    base_structs: &HashMap<String, StructInfo, S>,
     base_enums: &EnumDefs,
-) -> (HashMap<String, Vec<(String, Type)>>, EnumDefs) {
-    let mut structs: HashMap<String, Vec<(String, Type)>> = base_structs
+) -> (HashMap<String, StructInfo>, EnumDefs) {
+    let mut structs: HashMap<String, StructInfo> = base_structs
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
@@ -347,7 +353,13 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
                 .iter()
                 .map(|field| (field.name.0.clone(), Type::Unresolved(field.name.0.clone())))
                 .collect();
-            structs.insert(s.name.0.clone(), fields);
+            structs.insert(
+                s.name.0.clone(),
+                StructInfo {
+                    repr: s.repr,
+                    fields,
+                },
+            );
         }
     }
 
@@ -364,7 +376,13 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
                         )
                     })
                     .collect();
-                structs.insert(s.name.0.clone(), fields);
+                structs.insert(
+                    s.name.0.clone(),
+                    StructInfo {
+                        repr: s.repr,
+                        fields,
+                    },
+                );
             }
             Item::EnumDef(e) => {
                 let inner_ty = resolve_type_expr(&e.ty, &structs, &enums);
@@ -534,6 +552,7 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::I32 | Type::U32 | Type::F32 => 4,
         Type::I64 | Type::U64 | Type::F64 => 8,
         Type::B1 | Type::Void => 1,
+        Type::Array(inner, size) => element_size(inner) * u32::try_from(*size).unwrap_or(u32::MAX),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => 4,
         // `{ ptr, i32 }` descriptor on a 32-bit target: 4 + 4.
         // Same `{ ptr, i32 }` descriptor as the contiguous view; the stride is
@@ -543,8 +562,68 @@ pub fn element_size(ty: &Type) -> u32 {
         Type::RingView(_, _, _) => 16,
         // `{ ptr, bit_offset, len_bits }` on a 32-bit target: 4 + 4 + 4.
         Type::BitView(_) => 12,
-        Type::Struct(_, fields) => fields.iter().map(|(_, ty)| element_size(ty)).sum(),
+        Type::Struct(_, repr, fields) => struct_size(*repr, fields),
         Type::Enum(_, inner_ty, _) => element_size(inner_ty),
         _ => 4,
+    }
+}
+
+#[must_use]
+pub fn align_of(ty: &Type) -> u32 {
+    match ty.inner() {
+        Type::I8 | Type::U8 | Type::B1 | Type::B8 | Type::Void => 1,
+        Type::I16 | Type::U16 | Type::F16 => 2,
+        Type::I32
+        | Type::U32
+        | Type::F32
+        | Type::Ptr(_)
+        | Type::ConstPtr(_)
+        | Type::Fn(..)
+        | Type::LinearView(_, _)
+        | Type::StridedView(_, _, _)
+        | Type::RingView(_, _, _)
+        | Type::BitView(_) => 4,
+        Type::I64 | Type::U64 | Type::F64 => 8,
+        Type::Array(inner, _) => align_of(inner),
+        Type::Struct(_, StructRepr::Packed, _) => 1,
+        Type::Struct(_, _, fields) => fields.iter().map(|(_, ty)| align_of(ty)).max().unwrap_or(1),
+        Type::Enum(_, inner_ty, _) => align_of(inner_ty),
+        Type::Exclusive(inner)
+        | Type::Shared(inner, _)
+        | Type::Mmio(inner)
+        | Type::Dma(inner)
+        | Type::External(inner) => align_of(inner),
+        Type::Unresolved(_) | Type::Null | Type::Error(_) => 4,
+    }
+}
+
+#[must_use]
+pub fn struct_size(repr: StructRepr, fields: &[(String, Type)]) -> u32 {
+    match repr {
+        StructRepr::Explicit | StructRepr::Packed => {
+            fields.iter().map(|(_, ty)| element_size(ty)).sum()
+        }
+        StructRepr::C => {
+            let mut offset = 0;
+            let mut max_align = 1;
+            for (_, ty) in fields {
+                let align = align_of(ty);
+                max_align = max_align.max(align);
+                offset = align_to(offset, align);
+                offset += element_size(ty);
+            }
+            align_to(offset, max_align)
+        }
+    }
+}
+
+#[must_use]
+pub fn align_to(value: u32, align: u32) -> u32 {
+    debug_assert!(align > 0);
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
     }
 }

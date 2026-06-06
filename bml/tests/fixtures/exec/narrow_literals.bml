@@ -19,6 +19,7 @@ fn add_u16(a: u16, b: u16) -> u16 {
 
 struct Bytes {
     a: u8,
+    _: [u8; 1],
     b: u16,
 }
 

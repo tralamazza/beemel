@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{self, Expr, Item, LValue, Program, Stmt};
+use crate::ast::{self, Expr, Item, LValue, Program, Stmt, StructRepr};
 use crate::consteval::{self, ConstVal};
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
@@ -100,6 +100,7 @@ impl ScopeStack {
 impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
         validate_type_annotations(program, diags);
+        validate_struct_layouts(program, symbols, diags);
         check_global_initializers(program, symbols, diags);
         for item in &program.items {
             // `len` is intercepted as a builtin before function resolution, so a
@@ -161,6 +162,68 @@ fn validate_type_annotations(program: &Program, diags: &mut DiagnosticBag) {
             | ast::Item::Import(_)
             | ast::Item::Export(_)
             | ast::Item::ComptimeAssert(_) => {}
+        }
+    }
+}
+
+fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    for item in &program.items {
+        let ast::Item::StructDef(s) = item else {
+            continue;
+        };
+        let Some(info) = symbols.structs.get(&s.name.0) else {
+            continue;
+        };
+
+        for (field, (_, ty)) in s.fields.iter().zip(info.fields.iter()) {
+            if field.name.0 == "_"
+                && !matches!(ty, Type::Array(inner, _) if inner.as_ref() == &Type::U8)
+            {
+                diags.error(
+                    "padding field `_` must have type `[u8; N]`",
+                    "E351",
+                    field.name.1,
+                );
+            }
+        }
+
+        if s.repr != StructRepr::Explicit {
+            continue;
+        }
+
+        let mut offset = 0;
+        let mut max_align = 1;
+        for (field, (_, ty)) in s.fields.iter().zip(info.fields.iter()) {
+            let align = types::align_of(ty);
+            max_align = max_align.max(align);
+            if field.name.0 != "_" {
+                let rem = offset % align;
+                if rem != 0 {
+                    let pad = align - rem;
+                    diags.error(
+                        format!(
+                            "field `{}` is at offset {offset} but requires alignment {align}; add `_: [u8; {pad}],` before it or reorder fields",
+                            field.name.0
+                        ),
+                        "E352",
+                        field.name.1,
+                    );
+                }
+            }
+            offset += types::element_size(ty);
+        }
+
+        let rem = offset % max_align;
+        if rem != 0 {
+            let pad = max_align - rem;
+            diags.error(
+                format!(
+                    "struct `{}` has size {offset} but alignment {max_align}; add tail padding `_: [u8; {pad}],`",
+                    s.name.0
+                ),
+                "E353",
+                s.name.1,
+            );
         }
     }
 }
@@ -1131,7 +1194,7 @@ fn check_ast_call_args(
     callee_span: crate::source::Span,
     args: &[Expr],
     symbols: &SymbolTable,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, types::StructInfo>,
     enums: &types::EnumDefs,
     scope: &mut ScopeStack,
     fn_name: &str,
@@ -1627,7 +1690,11 @@ fn check_expr(
 
             let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
             // Check if it's a struct field access
-            if let Type::Struct(name, fields) = &base_ty {
+            if field.0 == "_" {
+                let guard = diags.error("padding field `_` is not addressable", "E355", field.1);
+                return Type::Error(guard);
+            }
+            if let Type::Struct(name, _, fields) = &base_ty {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
                 }
@@ -1640,7 +1707,7 @@ fn check_expr(
             }
             // Check if it's a pointer to struct (auto-deref for field access)
             if let Type::Ptr(inner) | Type::ConstPtr(inner) = &base_ty
-                && let Type::Struct(name, fields) = inner.as_ref()
+                && let Type::Struct(name, _, fields) = inner.as_ref()
             {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
@@ -2094,9 +2161,13 @@ fn check_expr(
         } => {
             let struct_type = Type::Unresolved(struct_name.clone());
             // Resolve struct definition
-            if let Some(struct_fields) = symbols.structs.get(struct_name) {
+            if let Some(struct_info) = symbols.structs.get(struct_name) {
+                let struct_fields = &struct_info.fields;
                 // Check all required fields are provided
                 for (fname, ftype) in struct_fields {
+                    if fname == "_" {
+                        continue;
+                    }
                     let provided = fields.iter().find(|(n, _)| n.0 == *fname);
                     match provided {
                         Some((_, expr)) => {
@@ -2128,6 +2199,14 @@ fn check_expr(
                 }
                 // Check for unknown fields
                 for (fname, _) in fields {
+                    if fname.0 == "_" {
+                        diags.error(
+                            "padding field `_` cannot be initialized by name",
+                            "E354",
+                            fname.1,
+                        );
+                        continue;
+                    }
                     if !struct_fields.iter().any(|(n, _)| n == &fname.0) {
                         diags.error(
                             format!("unknown field `{}` in struct `{struct_name}`", fname.0),
@@ -2148,7 +2227,7 @@ fn check_expr(
                     }
                     seen.insert(fname.0.clone());
                 }
-                Type::Struct(struct_name.clone(), struct_fields.clone())
+                Type::Struct(struct_name.clone(), struct_info.repr, struct_fields.clone())
             } else {
                 diags.error(
                     format!("unknown struct type: `{struct_name}`"),
@@ -2258,7 +2337,10 @@ fn read_place_info(
         Expr::Group(inner) => read_place_info(inner, symbols, scope, fn_name, expected_ret, diags),
         Expr::FieldAccess(base, field) => {
             let base_info = read_place_info(base, symbols, scope, fn_name, expected_ret, diags);
-            let ty = if let Type::Struct(name, fields) = &base_info.ty {
+            let ty = if field.0 == "_" {
+                let guard = diags.error("padding field `_` is not addressable", "E355", field.1);
+                Type::Error(guard)
+            } else if let Type::Struct(name, _, fields) = &base_info.ty {
                 fields
                     .iter()
                     .find(|(field_name, _)| field_name == &field.0)
@@ -2458,7 +2540,11 @@ fn check_lvalue(
 
             let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags, false);
             // Check if it's a struct field write
-            if let Type::Struct(name, fields) = &base_ty {
+            if field.0 == "_" {
+                let guard = diags.error("padding field `_` is not addressable", "E355", field.1);
+                return Type::Error(guard);
+            }
+            if let Type::Struct(name, _, fields) = &base_ty {
                 if let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0) {
                     return field_ty.clone();
                 }

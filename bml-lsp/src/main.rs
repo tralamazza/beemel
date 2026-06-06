@@ -371,7 +371,11 @@ impl Server {
             let extra = format!("in {periph_name}.{reg_name}");
             (bml, Some(extra))
         } else if let Some(s) = analysis.symbols.structs.get(name) {
-            let fields: Vec<String> = s.iter().map(|(n, t)| format!("  {n}: {t}")).collect();
+            let fields: Vec<String> = s
+                .fields
+                .iter()
+                .map(|(n, t)| format!("  {n}: {t}"))
+                .collect();
             (
                 format!("struct {name} {{\n{}\n}}", fields.join(",\n")),
                 None,

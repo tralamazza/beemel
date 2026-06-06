@@ -548,7 +548,15 @@ pub enum BitSpec {
 #[derive(Debug, Clone)]
 pub struct StructDef {
     pub name: Ident,
+    pub repr: StructRepr,
     pub fields: Vec<StructFieldDef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructRepr {
+    Explicit,
+    C,
+    Packed,
 }
 
 #[derive(Debug, Clone)]

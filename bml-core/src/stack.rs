@@ -688,8 +688,8 @@ fn infer_type_from_expr(expr: &Expr, symbols: &SymbolTable) -> types::Type {
         Expr::NullLiteral(_) => types::Type::Ptr(Box::new(types::Type::U8)),
         Expr::StructInit { name, .. } => {
             // Look up the struct in the symbol table
-            if let Some(fields) = symbols.structs.get(&name.0) {
-                types::Type::Struct(name.0.clone(), fields.clone())
+            if let Some(info) = symbols.structs.get(&name.0) {
+                types::Type::Struct(name.0.clone(), info.repr, info.fields.clone())
             } else {
                 types::Type::U32 // safe default
             }
@@ -721,8 +721,8 @@ fn infer_type_from_expr(expr: &Expr, symbols: &SymbolTable) -> types::Type {
 
 /// Get the struct size in bytes by looking up its fields.
 fn struct_frame_size(name: &str, symbols: &SymbolTable) -> u32 {
-    if let Some(fields) = symbols.structs.get(name) {
-        fields.iter().map(|(_, ty)| types::element_size(ty)).sum()
+    if let Some(info) = symbols.structs.get(name) {
+        types::struct_size(info.repr, &info.fields)
     } else {
         4 // safe default for unknown struct
     }

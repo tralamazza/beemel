@@ -2140,7 +2140,7 @@ impl IrEmitter {
                 }
                 // Struct field access: extractvalue from loaded struct
                 let base_ty = self.expr_type(base, symbols);
-                if let Type::Struct(_name, fields) = &base_ty
+                if let Type::Struct(_name, _, fields) = &base_ty
                     && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                 {
                     let base_reg = self.emit_expr(base, symbols, fn_name);
@@ -2153,7 +2153,7 @@ impl IrEmitter {
                 }
                 // Pointer to struct field access: GEP + load
                 if let Type::Ptr(inner) | Type::ConstPtr(inner) = &base_ty
-                    && let Type::Struct(_name, fields) = inner.as_ref()
+                    && let Type::Struct(_name, repr, fields) = inner.as_ref()
                     && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                 {
                     let base_ptr = self.emit_expr(base, symbols, fn_name);
@@ -2165,7 +2165,12 @@ impl IrEmitter {
                     let field_ty = &fields[idx].1;
                     let ll_field = llvm_type(field_ty);
                     let reg = self.new_reg();
-                    self.line(&format!("{reg} = load {ll_field}, ptr {gep}"));
+                    let align = if *repr == ast::StructRepr::Packed {
+                        ", align 1"
+                    } else {
+                        ""
+                    };
+                    self.line(&format!("{reg} = load {ll_field}, ptr {gep}{align}"));
                     return reg;
                 }
                 // Fallback: struct field access via GEP
@@ -2798,14 +2803,20 @@ impl IrEmitter {
             }
             Expr::StructInit { name, fields, .. } => {
                 let struct_name = &name.0;
-                let struct_fields = symbols
-                    .structs
-                    .get(struct_name)
-                    .cloned()
-                    .unwrap_or_default();
-                let struct_llvm_ty =
-                    llvm_type(&Type::Struct(struct_name.clone(), struct_fields.clone()));
+                let struct_info = symbols.structs.get(struct_name).cloned();
+                let (repr, struct_fields) = struct_info
+                    .map_or((ast::StructRepr::Explicit, Vec::new()), |info| {
+                        (info.repr, info.fields)
+                    });
+                let struct_llvm_ty = llvm_type(&Type::Struct(
+                    struct_name.clone(),
+                    repr,
+                    struct_fields.clone(),
+                ));
                 let alloca = self.alloca(&struct_llvm_ty, &format!("struct_{struct_name}"));
+                self.line(&format!(
+                    "store {struct_llvm_ty} zeroinitializer, ptr {alloca}"
+                ));
                 // Store each field via GEP
                 for (idx, (fname, ftype)) in struct_fields.iter().enumerate() {
                     if let Some((_, init_expr)) = fields.iter().find(|(n, _)| n.0 == *fname) {
@@ -2817,7 +2828,12 @@ impl IrEmitter {
                         self.line(&format!(
                             "{gep} = getelementptr {struct_llvm_ty}, ptr {alloca}, i32 0, i32 {idx}"
                         ));
-                        self.line(&format!("store {ll_field} {init_reg}, ptr {gep}"));
+                        let align = if repr == ast::StructRepr::Packed {
+                            ", align 1"
+                        } else {
+                            ""
+                        };
+                        self.line(&format!("store {ll_field} {init_reg}, ptr {gep}{align}"));
                     }
                 }
                 // Load the whole struct and return
@@ -3150,7 +3166,7 @@ impl IrEmitter {
                 // Get pointer to the base struct, then GEP to the field
                 let base_ptr = self.emit_lvalue_ptr(base, symbols);
                 let base_ty = self.expr_type(base, symbols);
-                if let Type::Struct(_, fields) = &base_ty
+                if let Type::Struct(_, _, fields) = &base_ty
                     && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                 {
                     let struct_llvm_ty = llvm_type(&base_ty);
@@ -3203,7 +3219,7 @@ impl IrEmitter {
             }
             LValue::Field(base, field) => {
                 let (base_ptr, base_ty) = self.lvalue_base_info(base, symbols, fn_name)?;
-                if let Type::Struct(_, fields) = &base_ty {
+                if let Type::Struct(_, _, fields) = &base_ty {
                     let idx = fields.iter().position(|(n, _)| n == &field.0)?;
                     let field_ty = fields[idx].1.clone();
                     let struct_llvm_ty = llvm_type(&base_ty);
@@ -3339,7 +3355,7 @@ impl IrEmitter {
                 if let LValue::Name((base_name, _)) = base.as_ref() {
                     let info = self.locals.get(base_name).cloned();
                     if let Some(info) = info
-                        && let Type::Struct(_, fields) = &info.bml_type
+                        && let Type::Struct(_, repr, fields) = &info.bml_type
                         && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                     {
                         let field_ty = fields[idx].1.clone();
@@ -3351,7 +3367,14 @@ impl IrEmitter {
                             "{gep} = getelementptr {llvm_ty}, ptr {alloca}, i32 0, i32 {idx}"
                         ));
                         let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &field_ty);
-                        self.line(&format!("store {ll_field} {val_reg}, ptr {gep}{dbg}"));
+                        let align = if *repr == ast::StructRepr::Packed {
+                            ", align 1"
+                        } else {
+                            ""
+                        };
+                        self.line(&format!(
+                            "store {ll_field} {val_reg}, ptr {gep}{align}{dbg}"
+                        ));
                         return val_reg;
                     }
                 }
@@ -3859,7 +3882,7 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
-            Type::Struct(name, fields) => {
+            Type::Struct(name, repr, fields) => {
                 let mut offset_bits: u32 = 0;
                 let field_debug: Vec<String> = fields
                     .iter()
@@ -3872,6 +3895,9 @@ impl IrEmitter {
                             Type::I64|Type::U64|Type::F64 => 64,
                             _ => crate::types::element_size(fty) * 8,
                         };
+                        if *repr == ast::StructRepr::C {
+                            offset_bits = crate::types::align_to(offset_bits, crate::types::align_of(fty) * 8);
+                        }
                         let s = format!("!DIDerivedType(tag: DW_TAG_member, name: \"{fname}\", scope: !{id}, file: !{}, line: 0, baseType: !{fty_id}, size: {size_bits}, offset: {offset_bits})",
                             self.cu_file_id.unwrap_or(0));
                         offset_bits += size_bits;
@@ -4163,13 +4189,13 @@ impl IrEmitter {
                     return field_sym.ty.clone();
                 }
                 let base_ty = self.expr_type(base, symbols);
-                if let Type::Struct(_, fields) = &base_ty
+                if let Type::Struct(_, _, fields) = &base_ty
                     && let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0)
                 {
                     return field_ty.clone();
                 }
                 if let Type::Ptr(inner) | Type::ConstPtr(inner) = &base_ty
-                    && let Type::Struct(_, fields) = inner.as_ref()
+                    && let Type::Struct(_, _, fields) = inner.as_ref()
                     && let Some((_, field_ty)) = fields.iter().find(|(n, _)| n == &field.0)
                 {
                     return field_ty.clone();
@@ -4250,8 +4276,8 @@ impl IrEmitter {
             }
             Expr::Group(inner) => self.expr_type(inner, symbols),
             Expr::StructInit { name, .. } => {
-                if let Some(fields) = symbols.structs.get(&name.0) {
-                    Type::Struct(name.0.clone(), fields.clone())
+                if let Some(info) = symbols.structs.get(&name.0) {
+                    Type::Struct(name.0.clone(), info.repr, info.fields.clone())
                 } else {
                     // Checker should have reported the unknown struct already.
                     Type::Error(crate::errors::ErrorGuaranteed::unchecked_claim_error_was_emitted())
@@ -4456,9 +4482,13 @@ fn llvm_type(ty: &Type) -> String {
         // so we still produce valid (if meaningless) IR for already-broken
         // input rather than panicking.
         Type::Unresolved(_) | Type::Error(_) => "i32".into(),
-        Type::Struct(_, fields) => {
+        Type::Struct(_, repr, fields) => {
             let inner: Vec<String> = fields.iter().map(|(_, ty)| llvm_type(ty)).collect();
-            format!("{{ {} }}", inner.join(", "))
+            if *repr == ast::StructRepr::Packed {
+                format!("<{{ {} }}>", inner.join(", "))
+            } else {
+                format!("{{ {} }}", inner.join(", "))
+            }
         }
         Type::Enum(_, inner_ty, _) => llvm_type(inner_ty),
     }
@@ -4576,7 +4606,7 @@ fn symbols_with_alias_items(
 
 fn fn_symbol_from_fn_def(
     f: &ast::FnDef,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, crate::types::StructInfo>,
     enums: &crate::types::EnumDefs,
 ) -> FnSymbol {
     let context = if let Some(isr) = &f.isr {
@@ -4616,7 +4646,7 @@ fn fn_symbol_from_fn_def(
 
 fn fn_symbol_from_extern_fn(
     f: &ast::ExternFnDef,
-    structs: &HashMap<String, Vec<(String, Type)>>,
+    structs: &HashMap<String, crate::types::StructInfo>,
     enums: &crate::types::EnumDefs,
 ) -> FnSymbol {
     let context = if let Some(isr) = &f.isr {
@@ -4697,7 +4727,7 @@ fn const_init(
                 .collect();
             format!("[{}]", parts.join(", "))
         }
-        (Type::Struct(_, fields), Expr::StructInit { fields: init, .. }) => {
+        (Type::Struct(_, repr, fields), Expr::StructInit { fields: init, .. }) => {
             let parts: Vec<String> = fields
                 .iter()
                 .map(|(name, field_ty)| {
@@ -4710,7 +4740,11 @@ fn const_init(
                     format!("{} {value}", llvm_type(field_ty))
                 })
                 .collect();
-            format!("{{ {} }}", parts.join(", "))
+            if *repr == ast::StructRepr::Packed {
+                format!("<{{ {} }}>", parts.join(", "))
+            } else {
+                format!("{{ {} }}", parts.join(", "))
+            }
         }
         // An aggregate `const`/`static` initialized by naming another `const`:
         // inline that const's initializer. Emitting a bare scalar here would

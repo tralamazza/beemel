@@ -1,0 +1,9 @@
+struct Padded {
+    a: u8,
+    _: [u8; 1],
+    b: u16,
+}
+
+fn main() @context(thread) {
+    var s = Padded { a: 1u8, _: [0u8], b: 2u16 };
+}

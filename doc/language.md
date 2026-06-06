@@ -146,6 +146,8 @@ USART1 = 37
 | `@dma` | Statics | DMA-accessible RAM |
 | `@external` | Statics | External/C-accessible RAM |
 | `@align(N)` | Statics | Minimum byte alignment `N` (a power of two); over-aligns the static (e.g. DMA buffers) |
+| `@repr(C)` | Structs | C-compatible aligned layout with hidden ABI padding |
+| `@repr(packed)` | Structs | Byte-packed layout; misaligned fields are allowed |
 
 Annotations may be combined in any order. For example:
 ```bml
@@ -470,8 +472,10 @@ and thread (same byte) can lose updates; the v1 bit view is single-context.
 ## 6. Struct types
 
 Structs are user-defined composite types with named, ordered fields.
-Packed layout (no alignment padding), nominal typing (same field layout
-with different name = different type).
+Structs are nominally typed (same field layout with different name = different
+type). The default layout is explicit: the compiler never inserts hidden
+padding, and misaligned fields are rejected until the source adds visible
+padding or reorders fields.
 
 ### Definition
 
@@ -484,14 +488,63 @@ struct Point {
 
 Fields are comma-separated. Each field is declared `name: Type`.
 
+### Layout
+
+Default structs have **explicit aligned layout**:
+
+- Field offsets are exactly the sum of previous field sizes.
+- Non-padding fields must start at their natural alignment.
+- The final struct size must be a multiple of the struct alignment, so arrays
+  of the struct keep each element aligned.
+- Padding must be written as `_` fields of type `[u8; N]`.
+- `_` fields may be repeated, are zero-initialized, and cannot be named in
+  initializers or accessed with `.`.
+
+```bml
+struct Header {
+    tag: u8,
+    _: [u8; 3],   // explicit padding before a u32
+    len: u32,
+}
+
+struct TailPadded {
+    word: u32,
+    byte: u8,
+    _: [u8; 3],   // explicit tail padding for arrays
+}
+```
+
+Use `@repr(C)` when matching a C struct or generated header. This opts into
+target C layout and may insert hidden padding:
+
+```bml
+struct Config @repr(C) {
+    flags: u8,
+    baud: u32,    // hidden C padding before this field
+}
+```
+
+Use `@repr(packed)` for byte-exact formats where misaligned fields are allowed:
+
+```bml
+struct Packet @repr(packed) {
+    kind: u8,
+    value: u32,   // offset 1
+}
+```
+
+For hardware, wire, flash, or DMA layouts, prefer explicit `sizeof(...)`
+checks with `comptime_assert(...)`.
+
 ### Initialization
 
 ```
 var p = Point { x: 10, y: 20 };
 ```
 
-All fields must be provided (no default values). Duplicate field names in
-the initializer are errors (E321).
+All non-padding fields must be provided (no default values). Padding fields are
+zero-initialized automatically. Duplicate field names in the initializer are
+errors (E321).
 
 ### Field access
 
@@ -507,14 +560,20 @@ Structs containing `@exclusive` or `@shared` fields are Move-typed.
 
 ### LLVM lowering
 
-Struct types are lowered to LLVM anonymous struct types:
+Default and `@repr(C)` structs are lowered to LLVM anonymous struct types:
 ```
 Point → { i32, i32 }
 ```
 
+`@repr(packed)` structs lower to LLVM packed structs:
+```
+Packet → <{ i8, i32 }>
+```
+
 - Field read: `extractvalue { i32, i32 } %struct_val, 0`
 - Field write: `getelementptr { i32, i32 }, ptr %alloca, i32 0, i32 0` + `store`
-- Struct init: allocate temp, GEP + store each field, load whole struct
+- Struct init: allocate temp, zero-initialize the aggregate, GEP + store each
+  named field, load whole struct
 
 ## 7. Enum types
 
@@ -734,7 +793,8 @@ import_stmt   = "import" ident ["{" ident {"," ident} "}"] ["as" ident] ";"
 export_stmt   = "export" ("fn" | "static" | "const" | "peripheral" | "struct" | "enum")
                 ident {"," ident} ";"
 
-struct_def    = "struct" ident "{" { ident ":" type "," } "}"
+struct_def    = "struct" ident [ "@repr" "(" ("C" | "packed") ")" ]
+                "{" { ident ":" type "," } "}"
 
 enum_def      = "enum" ident ":" type "{" { ident ["=" int] "," } "}"
 
