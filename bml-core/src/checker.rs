@@ -99,7 +99,7 @@ impl ScopeStack {
 
 impl Checker {
     pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
-        validate_type_annotations(program, diags);
+        validate_type_annotations(program, symbols, diags);
         validate_struct_layouts(program, symbols, diags);
         validate_extern_abi(program, symbols, diags);
         check_global_initializers(program, symbols, diags);
@@ -138,22 +138,24 @@ impl Checker {
 /// statics, consts, fn/extern params and returns). Body-local `val`/`var`
 /// annotations are validated inline where the checker already visits every
 /// `VarDecl`, so nesting inside block/if/match expressions is handled too.
-fn validate_type_annotations(program: &Program, diags: &mut DiagnosticBag) {
+fn validate_type_annotations(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
     for item in &program.items {
         match item {
-            ast::Item::FnDef(f) => validate_sig_anns(&f.params, f.ret.as_ref(), diags),
-            ast::Item::ExternFnDef(f) => validate_sig_anns(&f.params, f.ret.as_ref(), diags),
-            ast::Item::StaticDef(s) => validate_type_ann(&s.ty, diags),
-            ast::Item::ConstDef(c) => validate_type_ann(&c.ty, diags),
+            ast::Item::FnDef(f) => validate_sig_anns(&f.params, f.ret.as_ref(), symbols, diags),
+            ast::Item::ExternFnDef(f) => {
+                validate_sig_anns(&f.params, f.ret.as_ref(), symbols, diags);
+            }
+            ast::Item::StaticDef(s) => validate_type_ann_resolved(&s.ty, symbols, diags),
+            ast::Item::ConstDef(c) => validate_type_ann_resolved(&c.ty, symbols, diags),
             ast::Item::StructDef(s) => {
                 for field in &s.fields {
-                    validate_type_ann(&field.ty, diags);
+                    validate_type_ann_resolved(&field.ty, symbols, diags);
                 }
             }
             ast::Item::PeripheralDef(p) => {
                 for reg in &p.regs {
                     for field in &reg.fields {
-                        validate_type_ann(&field.ty, diags);
+                        validate_type_ann_resolved(&field.ty, symbols, diags);
                     }
                 }
             }
@@ -189,6 +191,11 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
         }
 
         if s.repr != StructRepr::Explicit {
+            continue;
+        }
+
+        let struct_ty = Type::Struct(s.name.0.clone(), s.repr, info.fields.clone());
+        if !validate_resolved_type_size(&struct_ty, s.name.1, diags) {
             continue;
         }
 
@@ -423,13 +430,41 @@ fn extern_abi_field_error(
 fn validate_sig_anns(
     params: &[ast::Param],
     ret: Option<&ast::TypeExpr>,
+    symbols: &SymbolTable,
     diags: &mut DiagnosticBag,
 ) {
     for p in params {
-        validate_type_ann(&p.ty, diags);
+        validate_type_ann_resolved(&p.ty, symbols, diags);
     }
     if let Some(ret) = ret {
-        validate_type_ann(ret, diags);
+        validate_type_ann_resolved(ret, symbols, diags);
+    }
+}
+
+fn validate_type_ann_resolved(
+    ty: &ast::TypeExpr,
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+) {
+    validate_type_ann(ty, diags);
+    let resolved = types::resolve_type_expr(ty, &symbols.structs, &symbols.enums);
+    validate_resolved_type_size(&resolved, ty.span(), diags);
+}
+
+fn validate_resolved_type_size(
+    ty: &Type,
+    span: crate::source::Span,
+    diags: &mut DiagnosticBag,
+) -> bool {
+    if types::checked_element_size(ty).is_some() {
+        true
+    } else {
+        diags.error(
+            format!("type `{ty}` is too large; maximum supported size is 4294967295 bytes"),
+            "E358",
+            span,
+        );
+        false
     }
 }
 
@@ -758,6 +793,7 @@ fn check_block(
                 let ty = if let Some(ty_ann) = &vd.ty_ann {
                     validate_type_ann(ty_ann, diags);
                     let ann_ty = types::resolve_type_expr(ty_ann, &symbols.structs, &symbols.enums);
+                    validate_resolved_type_size(&ann_ty, ty_ann.span(), diags);
                     // Check that init type is compatible with annotation
                     // (unsuffixed literals are allowed if their value fits)
                     if !types::types_compatible(&ann_ty, &init_ty)
@@ -1571,6 +1607,12 @@ fn check_expr(
                     {
                         return fn_sym.fn_pointer_type();
                     }
+                    if let Some(error) = place_info
+                        .as_ref()
+                        .and_then(|info| info.addr_borrow_error.as_ref())
+                    {
+                        error.emit(diags);
+                    }
                     if inner_ty.is_move() {
                         Type::ConstPtr(Box::new(inner_ty.inner().clone()))
                     } else {
@@ -1578,6 +1620,12 @@ fn check_expr(
                     }
                 }
                 UnaryOp::AddrOfMut => {
+                    if let Some(error) = place_info
+                        .as_ref()
+                        .and_then(|info| info.addr_borrow_error.as_ref())
+                    {
+                        error.emit(diags);
+                    }
                     if let Some(error) = place_info.and_then(|info| info.mut_borrow_error) {
                         error.emit(diags);
                     }
@@ -1984,6 +2032,7 @@ fn check_expr(
             {
                 diags.error(format!("undefined type: `{name}`"), "E305", *type_span);
             }
+            validate_resolved_type_size(&resolved, ty_expr.span(), diags);
             Type::U32
         }
         Expr::ViewNew {
@@ -2454,6 +2503,29 @@ fn check_expr(
 struct PlaceInfo {
     ty: Type,
     mut_borrow_error: Option<MutBorrowError>,
+    addr_borrow_error: Option<AddrBorrowError>,
+}
+
+#[derive(Clone)]
+struct AddrBorrowError {
+    struct_name: String,
+    field_name: String,
+    field_offset: u32,
+    field_align: u32,
+    span: crate::source::Span,
+}
+
+impl AddrBorrowError {
+    fn emit(&self, diags: &mut DiagnosticBag) {
+        diags.error(
+            format!(
+                "cannot take address of packed field `{}.{}` at offset {}; packed structs are byte-aligned but field alignment is {}",
+                self.struct_name, self.field_name, self.field_offset, self.field_align
+            ),
+            "E357",
+            self.span,
+        );
+    }
 }
 
 enum MutBorrowError {
@@ -2516,6 +2588,7 @@ fn read_place_info(
                     ty: info.ty.clone(),
                     mut_borrow_error: (!info.mutable)
                         .then(|| MutBorrowError::ImmutableBinding(name.clone(), *span)),
+                    addr_borrow_error: None,
                 };
             }
 
@@ -2524,18 +2597,20 @@ fn read_place_info(
                 ty,
                 mut_borrow_error: (!symbols.statics.contains_key(name))
                     .then_some(MutBorrowError::NotMutablePlace(*span)),
+                addr_borrow_error: None,
             }
         }
         Expr::Group(inner) => read_place_info(inner, symbols, scope, fn_name, expected_ret, diags),
         Expr::FieldAccess(base, field) => {
             let base_info = read_place_info(base, symbols, scope, fn_name, expected_ret, diags);
+            let mut addr_borrow_error = base_info.addr_borrow_error.clone();
             let ty = if field.0 == "_" {
                 let guard = diags.error("padding field `_` is not addressable", "E355", field.1);
                 Type::Error(guard)
-            } else if let Type::Struct(name, _, fields) = &base_info.ty {
+            } else if let Type::Struct(name, repr, fields) = &base_info.ty {
                 fields
                     .iter()
-                    .find(|(field_name, _)| field_name == &field.0)
+                    .position(|(field_name, _)| field_name == &field.0)
                     .map_or_else(
                         || {
                             let guard = diags.error(
@@ -2545,7 +2620,13 @@ fn read_place_info(
                             );
                             Type::Error(guard)
                         },
-                        |(_, field_ty)| field_ty.clone(),
+                        |idx| {
+                            if *repr == StructRepr::Packed {
+                                addr_borrow_error =
+                                    packed_field_addr_error(name, fields, idx, field);
+                            }
+                            fields[idx].1.clone()
+                        },
                     )
             } else {
                 check_expr(expr, symbols, scope, fn_name, expected_ret, diags)
@@ -2553,6 +2634,7 @@ fn read_place_info(
             PlaceInfo {
                 ty,
                 mut_borrow_error: base_info.mut_borrow_error,
+                addr_borrow_error,
             }
         }
         Expr::Index(base, index) => {
@@ -2576,6 +2658,7 @@ fn read_place_info(
             PlaceInfo {
                 ty,
                 mut_borrow_error,
+                addr_borrow_error: base_info.addr_borrow_error,
             }
         }
         Expr::Unary(crate::ast::UnaryOp::Deref, inner) => {
@@ -2584,10 +2667,12 @@ fn read_place_info(
                 Type::Ptr(pointee) => PlaceInfo {
                     ty: pointee.as_ref().clone(),
                     mut_borrow_error: None,
+                    addr_borrow_error: None,
                 },
                 Type::ConstPtr(pointee) => PlaceInfo {
                     ty: pointee.as_ref().clone(),
                     mut_borrow_error: Some(MutBorrowError::ConstPtr(inner.span())),
+                    addr_borrow_error: None,
                 },
                 _ => {
                     let guard =
@@ -2595,6 +2680,7 @@ fn read_place_info(
                     PlaceInfo {
                         ty: Type::Error(guard),
                         mut_borrow_error: None,
+                        addr_borrow_error: None,
                     }
                 }
             }
@@ -2602,8 +2688,30 @@ fn read_place_info(
         _ => PlaceInfo {
             ty: check_expr(expr, symbols, scope, fn_name, expected_ret, diags),
             mut_borrow_error: Some(MutBorrowError::NotMutablePlace(expr.span())),
+            addr_borrow_error: None,
         },
     }
+}
+
+fn packed_field_addr_error(
+    struct_name: &str,
+    fields: &[(String, Type)],
+    idx: usize,
+    field: &crate::ast::Ident,
+) -> Option<AddrBorrowError> {
+    let field_ty = &fields[idx].1;
+    let field_align = types::align_of(field_ty);
+    let mut field_offset = 0u32;
+    for (_, ty) in fields.iter().take(idx) {
+        field_offset = field_offset.checked_add(types::element_size(ty))?;
+    }
+    (field_align > 1).then(|| AddrBorrowError {
+        struct_name: struct_name.to_string(),
+        field_name: field.0.clone(),
+        field_offset,
+        field_align,
+        span: field.1,
+    })
 }
 
 #[allow(clippy::only_used_in_recursion)]

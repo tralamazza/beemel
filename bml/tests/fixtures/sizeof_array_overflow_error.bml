@@ -1,0 +1,3 @@
+fn main() @context(thread) {
+    var x: u32 = sizeof([u16; 4294967295]);
+}

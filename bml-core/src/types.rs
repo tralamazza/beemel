@@ -546,25 +546,32 @@ pub fn is_ptr(ty: &Type) -> bool {
 /// Size of a type in bytes (for pointer diff arithmetic).
 #[must_use]
 pub fn element_size(ty: &Type) -> u32 {
+    checked_element_size(ty).unwrap_or(u32::MAX)
+}
+
+#[must_use]
+pub fn checked_element_size(ty: &Type) -> Option<u32> {
     match ty {
-        Type::I8 | Type::U8 | Type::B8 => 1,
-        Type::I16 | Type::U16 | Type::F16 => 2,
-        Type::I32 | Type::U32 | Type::F32 => 4,
-        Type::I64 | Type::U64 | Type::F64 => 8,
-        Type::B1 | Type::Void => 1,
-        Type::Array(inner, size) => element_size(inner) * u32::try_from(*size).unwrap_or(u32::MAX),
-        Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => 4,
+        Type::I8 | Type::U8 | Type::B8 => Some(1),
+        Type::I16 | Type::U16 | Type::F16 => Some(2),
+        Type::I32 | Type::U32 | Type::F32 => Some(4),
+        Type::I64 | Type::U64 | Type::F64 => Some(8),
+        Type::B1 | Type::Void => Some(1),
+        Type::Array(inner, size) => {
+            checked_element_size(inner)?.checked_mul(u32::try_from(*size).ok()?)
+        }
+        Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => Some(4),
         // `{ ptr, i32 }` descriptor on a 32-bit target: 4 + 4.
         // Same `{ ptr, i32 }` descriptor as the contiguous view; the stride is
         // type-level, not a runtime field.
-        Type::LinearView(_, _) | Type::StridedView(_, _, _) => 8,
+        Type::LinearView(_, _) | Type::StridedView(_, _, _) => Some(8),
         // `{ ptr, capacity, head, len }` on a 32-bit target: 4 + 4 + 4 + 4.
-        Type::RingView(_, _, _) => 16,
+        Type::RingView(_, _, _) => Some(16),
         // `{ ptr, bit_offset, len_bits }` on a 32-bit target: 4 + 4 + 4.
-        Type::BitView(_) => 12,
-        Type::Struct(_, repr, fields) => struct_size(*repr, fields),
-        Type::Enum(_, inner_ty, _) => element_size(inner_ty),
-        _ => 4,
+        Type::BitView(_) => Some(12),
+        Type::Struct(_, repr, fields) => checked_struct_size(*repr, fields),
+        Type::Enum(_, inner_ty, _) => checked_element_size(inner_ty),
+        _ => Some(4),
     }
 }
 
@@ -599,9 +606,16 @@ pub fn align_of(ty: &Type) -> u32 {
 
 #[must_use]
 pub fn struct_size(repr: StructRepr, fields: &[(String, Type)]) -> u32 {
+    checked_struct_size(repr, fields).unwrap_or(u32::MAX)
+}
+
+#[must_use]
+pub fn checked_struct_size(repr: StructRepr, fields: &[(String, Type)]) -> Option<u32> {
     match repr {
         StructRepr::Explicit | StructRepr::Packed => {
-            fields.iter().map(|(_, ty)| element_size(ty)).sum()
+            fields.iter().try_fold(0u32, |offset, (_, ty)| {
+                offset.checked_add(checked_element_size(ty)?)
+            })
         }
         StructRepr::C => {
             let mut offset = 0;
@@ -609,21 +623,26 @@ pub fn struct_size(repr: StructRepr, fields: &[(String, Type)]) -> u32 {
             for (_, ty) in fields {
                 let align = align_of(ty);
                 max_align = max_align.max(align);
-                offset = align_to(offset, align);
-                offset += element_size(ty);
+                offset = checked_align_to(offset, align)?;
+                offset = offset.checked_add(checked_element_size(ty)?)?;
             }
-            align_to(offset, max_align)
+            checked_align_to(offset, max_align)
         }
     }
 }
 
 #[must_use]
 pub fn align_to(value: u32, align: u32) -> u32 {
+    checked_align_to(value, align).unwrap_or(u32::MAX)
+}
+
+#[must_use]
+pub fn checked_align_to(value: u32, align: u32) -> Option<u32> {
     debug_assert!(align > 0);
     let rem = value % align;
     if rem == 0 {
-        value
+        Some(value)
     } else {
-        value + (align - rem)
+        value.checked_add(align - rem)
     }
 }

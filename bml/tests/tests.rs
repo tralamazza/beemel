@@ -923,6 +923,16 @@ fn test_struct_repr_packed_ir() {
     );
 }
 assert_error!(
+    test_struct_repr_packed_addr,
+    "struct_repr_packed_addr_error.bml",
+    "E357"
+);
+assert_error!(
+    test_sizeof_array_overflow,
+    "sizeof_array_overflow_error.bml",
+    "E358"
+);
+assert_error!(
     test_struct_padding_bad_type,
     "struct_padding_bad_type_error.bml",
     "E351"
