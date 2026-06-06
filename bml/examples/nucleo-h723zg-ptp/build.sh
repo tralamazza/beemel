@@ -65,6 +65,8 @@ check_dma_addr() {
 
 check_dma_addr TX_BUFFER TX_BUFFER_ADDR
 check_dma_addr TX_DESC TX_DESC_ADDR
+check_dma_addr RX_BUFFER RX_BUFFER_ADDR
+check_dma_addr RX_DESC RX_DESC_ADDR
 
 llvm-objcopy -O binary "$BASE.elf" "$BASE.bin"
 

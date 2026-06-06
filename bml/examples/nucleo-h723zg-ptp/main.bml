@@ -52,11 +52,13 @@ fn main() @context(thread) {
     eth_init_clocks_and_pins();
     phy_probe();
     eth_init_tx();
+    eth_init_rx();
     ptp_init();
 
     var seq: u32 = 0;
     loop {
         phy_poll_link();
+        eth_poll_rx();
         val now = ptp_now();
         eth_send_heartbeat(seq, now.seconds, now.nanoseconds);
         seq = seq + 1;

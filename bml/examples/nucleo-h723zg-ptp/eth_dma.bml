@@ -10,7 +10,7 @@ import svd.ethernet_mac;
 import svd.ethernet_dma;
 import svd.ethernet_mtl;
 
-export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_send_heartbeat;
+export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx;
 
 const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
 
@@ -24,18 +24,38 @@ const MAC5: u8 = 0x3A;
 
 static TX_BUFFER: [u8; 128] @dma @align(32);
 static TX_DESC: [u32; 8] @dma @align(32);
+static RX_BUFFER: [u8; 1024] @dma @align(32);
+static RX_DESC: [u32; 8] @dma @align(32);
 static TX_DESC_INDEX: u32;
+static RX_DESC_INDEX: u32;
+static RX_PACKET_COUNT: u32;
+static RX_LAST_LEN: u32;
+static RX_LAST_DESC3: u32;
+static RX_LAST_ETHERTYPE: u32;
+static RX_LAST_SRC0: u32;
+static RX_LAST_SRC1: u32;
 
 // Current BML lacks an address-of operation for @dma statics that lowers to the
 // backing symbol address. These constants match the linker layout for this file.
 const TX_BUFFER_ADDR: u32 = 0x30000020;
 const TX_DESC_ADDR: u32 = 0x300000A0;
+const RX_BUFFER_ADDR: u32 = 0x300000C0;
+const RX_DESC_ADDR: u32 = 0x300004C0;
 const TX_DESC_COUNT: u32 = 2;
 const TX_DESC_WORDS: u32 = 4;
 const TX_DESC_OWN: u32 = 0x80000000;
 const TX_DESC_FD: u32 = 0x20000000;
 const TX_DESC_LD: u32 = 0x10000000;
 const TX_DESC_LEN_MASK: u32 = 0x00003FFF;
+const RX_DESC_COUNT: u32 = 2;
+const RX_DESC_WORDS: u32 = 4;
+const RX_DESC_OWN: u32 = 0x80000000;
+const RX_DESC_FD: u32 = 0x20000000;
+const RX_DESC_LD: u32 = 0x10000000;
+const RX_DESC_BUF1V: u32 = 0x01000000;
+const RX_DESC_ERROR: u32 = 0x00008000;
+const RX_DESC_LEN_MASK: u32 = 0x00007FFF;
+const RX_BUFFER_LEN: u32 = 512;
 
 fn configure_rmii_pin_a(pin: u32) {
     if pin == 1 {
@@ -164,12 +184,50 @@ fn eth_init_tx() {
     Ethernet_MAC.MACCR.TE = true;
 }
 
+fn eth_init_rx() {
+    RX_DESC[0] = rx_buffer_addr(0);
+    RX_DESC[1] = 0;
+    RX_DESC[2] = 0;
+    RX_DESC[3] = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[4] = rx_buffer_addr(1);
+    RX_DESC[5] = 0;
+    RX_DESC[6] = 0;
+    RX_DESC[7] = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC_INDEX = 0;
+    RX_PACKET_COUNT = 0;
+    RX_LAST_LEN = 0;
+    RX_LAST_DESC3 = 0;
+    RX_LAST_ETHERTYPE = 0;
+    RX_LAST_SRC0 = 0;
+    RX_LAST_SRC1 = 0;
+
+    val desc0 = rx_desc_addr(0);
+    Ethernet_DMA.DMACRxRLR.RDRL = RX_DESC_COUNT - 1;
+    Ethernet_DMA.DMACRxDLAR.RDESLA = desc0 >> 2;
+    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr((RX_DESC_COUNT - 1) * RX_DESC_WORDS) >> 2;
+    Ethernet_DMA.DMACRxCR.RBSZ = RX_BUFFER_LEN;
+
+    // Promiscuous receive keeps first RX bring-up independent from host-side MAC
+    // addressing and lets us inspect any raw frame sent from the Mac.
+    Ethernet_MAC.MACPFR.PR = true;
+    Ethernet_DMA.DMACRxCR.SR = true;
+    Ethernet_MAC.MACCR.RE = true;
+}
+
 fn tx_desc_addr(word_index: u32) -> u32 {
     return TX_DESC_ADDR + (word_index * 4);
 }
 
 fn tx_buffer_addr() -> u32 {
     return TX_BUFFER_ADDR;
+}
+
+fn rx_desc_addr(word_index: u32) -> u32 {
+    return RX_DESC_ADDR + (word_index * 4);
+}
+
+fn rx_buffer_addr(desc_index: u32) -> u32 {
+    return RX_BUFFER_ADDR + (desc_index * RX_BUFFER_LEN);
 }
 
 fn put8(index: u32, value: u8) {
@@ -240,4 +298,51 @@ fn eth_send_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) {
 
     val next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR.TDT = next_desc_addr >> 2;
+}
+
+fn rx_get8(index: u32) -> u32 {
+    val buffer = rx_buffer_addr(RX_DESC_INDEX) as *u8;
+    return buffer[index] as u32;
+}
+
+fn rx_desc_get32(word_index: u32) -> u32 {
+    val desc = RX_DESC_ADDR as *u32;
+    return desc[word_index];
+}
+
+fn rx_rearm(desc_word: u32) {
+    val desc_index = desc_word / RX_DESC_WORDS;
+    RX_DESC[desc_word] = rx_buffer_addr(desc_index);
+    RX_DESC[desc_word + 1] = 0;
+    RX_DESC[desc_word + 2] = 0;
+    RX_DESC[desc_word + 3] = RX_DESC_OWN | RX_DESC_BUF1V;
+    asm { dmb } : : : "memory";
+    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr(desc_word) >> 2;
+}
+
+fn eth_poll_rx() {
+    val desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
+    asm { dmb } : : : "memory";
+    val desc3 = rx_desc_get32(desc_word + 3);
+
+    if (desc3 & RX_DESC_OWN) != 0 {
+        return;
+    }
+
+    RX_LAST_DESC3 = desc3;
+
+    if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
+        RX_LAST_LEN = desc3 & RX_DESC_LEN_MASK;
+        RX_LAST_ETHERTYPE = (rx_get8(12) << 8) | rx_get8(13);
+        RX_LAST_SRC0 = (rx_get8(6) << 24) | (rx_get8(7) << 16) | (rx_get8(8) << 8) | rx_get8(9);
+        RX_LAST_SRC1 = (rx_get8(10) << 8) | rx_get8(11);
+        RX_PACKET_COUNT = RX_PACKET_COUNT + 1;
+    }
+
+    rx_rearm(desc_word);
+
+    RX_DESC_INDEX = RX_DESC_INDEX + 1;
+    if RX_DESC_INDEX == RX_DESC_COUNT {
+        RX_DESC_INDEX = 0;
+    }
 }
