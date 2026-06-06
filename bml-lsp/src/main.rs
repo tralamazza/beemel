@@ -325,13 +325,13 @@ impl Server {
         let analysis = self.analysis_cache.get(&uri)?;
 
         let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
-        let ident = find_ident_at(&analysis.program, offset)?;
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)?;
         let name = &ident.0;
 
         // A local binding in the enclosing function shadows any global of the
         // same name, so resolve it first.
-        let local_ty =
-            enclosing_fn(&analysis.program, offset).and_then(|f| local_type_in_fn(f, name));
+        let local_ty = enclosing_fn(&analysis.program, analysis.root_file_id, offset)
+            .and_then(|f| local_type_in_fn(f, name));
 
         let (bml_decl, extra) = if let Some(ty) = local_ty {
             (ty, None)
@@ -344,7 +344,7 @@ impl Server {
                 .unwrap_or_default();
             let sig = format!("fn {name}({}){ret}", params.join(", "));
 
-            let call_info = find_call_at(&analysis.program, offset)
+            let call_info = find_call_at(&analysis.program, analysis.root_file_id, offset)
                 .and_then(|call| format_call_args(&call, f, name));
             (sig, call_info)
         } else if let Some(s) = analysis.symbols.statics.get(name) {
@@ -449,11 +449,12 @@ impl Server {
         let analysis = self.analysis_cache.get(&uri)?;
 
         let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
-        let ident = find_ident_at(&analysis.program, offset)?;
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)?;
         let name = &ident.0;
 
-        let target_range = find_definition_span(name, &analysis.program, offset)
-            .or_else(|| find_def_in_aliases(name, &analysis.symbols))?;
+        let target_range =
+            find_definition_span(name, &analysis.program, analysis.root_file_id, offset)
+                .or_else(|| find_def_in_aliases(name, &analysis.symbols))?;
 
         let target_uri = if target_range.file == analysis.root_file_id {
             uri.clone()
@@ -480,7 +481,12 @@ impl Server {
 
         let offset = pos_to_offset(source, lsp_pos, &self.position_encoding);
 
-        let items = collect_completions(&analysis.program, &analysis.symbols, offset);
+        let items = collect_completions(
+            &analysis.program,
+            &analysis.symbols,
+            analysis.root_file_id,
+            offset,
+        );
         Some(CompletionResponse::List(CompletionList {
             is_incomplete: false,
             items,
@@ -684,8 +690,33 @@ fn utf16_pos_to_offset(line: &str, line_start: usize, character: usize) -> usize
     line_start + line.len()
 }
 
-fn find_ident_at(program: &ast::Program, offset: usize) -> Option<ast::Ident> {
+/// The `FileId` that an item's spans belong to, i.e. the file it was parsed
+/// from. After import resolution `program.items` holds items inlined from many
+/// files, each carrying byte offsets local to its own file; offset-based
+/// position lookups must restrict to the requested file or a main.bml offset
+/// can collide with a span from an imported module.
+fn item_file(item: &ast::Item) -> Option<source::FileId> {
+    match item {
+        ast::Item::FnDef(f) => Some(f.name.1.file),
+        ast::Item::ExternFnDef(e) => Some(e.name.1.file),
+        ast::Item::StaticDef(s) => Some(s.name.1.file),
+        ast::Item::ConstDef(c) => Some(c.name.1.file),
+        ast::Item::PeripheralDef(p) => Some(p.name.1.file),
+        ast::Item::StructDef(s) => Some(s.name.1.file),
+        ast::Item::EnumDef(e) => Some(e.name.1.file),
+        _ => None,
+    }
+}
+
+fn find_ident_at(
+    program: &ast::Program,
+    file: source::FileId,
+    offset: usize,
+) -> Option<ast::Ident> {
     for item in &program.items {
+        if item_file(item) != Some(file) {
+            continue;
+        }
         if let Some(ident) = find_ident_in_item(item, offset) {
             return Some(ident);
         }
@@ -914,10 +945,19 @@ fn span_contains(span: &source::Span, offset: usize) -> bool {
 /// Find the function whose signature or body contains `offset`. Functions do
 /// not overlap, so the first match is unique. The range spans from the name
 /// (`f.name.1.start`) through the body end so goto/hover on a parameter
-/// declaration still resolves to its own function.
-fn enclosing_fn(program: &ast::Program, offset: usize) -> Option<&ast::FnDef> {
+/// declaration still resolves to its own function. Restricted to `file` so an
+/// offset never matches a same-offset function inlined from an imported module.
+fn enclosing_fn(
+    program: &ast::Program,
+    file: source::FileId,
+    offset: usize,
+) -> Option<&ast::FnDef> {
     program.items.iter().find_map(|item| match item {
-        ast::Item::FnDef(f) if offset >= f.name.1.start && offset < f.body.span.end => Some(f),
+        ast::Item::FnDef(f)
+            if f.name.1.file == file && offset >= f.name.1.start && offset < f.body.span.end =>
+        {
+            Some(f)
+        }
         _ => None,
     })
 }
@@ -1133,11 +1173,16 @@ fn find_local_def_in_expr(name: &str, expr: &ast::Expr) -> Option<source::Span> 
     }
 }
 
-fn find_definition_span(name: &str, program: &ast::Program, offset: usize) -> Option<source::Span> {
+fn find_definition_span(
+    name: &str,
+    program: &ast::Program,
+    file: source::FileId,
+    offset: usize,
+) -> Option<source::Span> {
     // Prefer a binding in the enclosing function: a parameter or a local
     // declaration. This keeps resolution scoped, so a local never jumps to a
     // same-named local/param in another function and correctly shadows globals.
-    if let Some(f) = enclosing_fn(program, offset) {
+    if let Some(f) = enclosing_fn(program, file, offset) {
         for p in &f.params {
             if p.name.0 == name {
                 return Some(p.name.1);
@@ -1214,6 +1259,7 @@ impl CompletionScope {
 fn collect_completions(
     program: &ast::Program,
     symbols: &SymbolTable,
+    file: source::FileId,
     offset: usize,
 ) -> Vec<CompletionItem> {
     let mut items = Vec::new();
@@ -1340,6 +1386,7 @@ fn collect_completions(
     let mut scope = CompletionScope::new();
     for item in &program.items {
         if let ast::Item::FnDef(f) = item
+            && f.name.1.file == file
             && offset >= f.body.span.start
             && offset < f.body.span.end
         {
@@ -1636,9 +1683,10 @@ fn expr_to_string(expr: &ast::Expr) -> String {
     }
 }
 
-fn find_call_at(program: &ast::Program, offset: usize) -> Option<ast::Expr> {
+fn find_call_at(program: &ast::Program, file: source::FileId, offset: usize) -> Option<ast::Expr> {
     for item in &program.items {
         if let ast::Item::FnDef(f) = item
+            && f.name.1.file == file
             && let Some(call) = find_call_in_block(&f.body, offset)
         {
             return Some(call);
@@ -1817,10 +1865,15 @@ mod tests {
             &mut ModuleCache::default(),
         );
         assert!(!diags.has_errors());
-        collect_completions(&analysis.program, &analysis.symbols, offset)
-            .into_iter()
-            .map(|item| item.label)
-            .collect()
+        collect_completions(
+            &analysis.program,
+            &analysis.symbols,
+            analysis.root_file_id,
+            offset,
+        )
+        .into_iter()
+        .map(|item| item.label)
+        .collect()
     }
 
     fn contains_label(labels: &[String], label: &str) -> bool {
@@ -2028,11 +2081,12 @@ fn second() {
 }
 ";
         let (analysis, offset) = analyze_at(src);
-        let ident = find_ident_at(&analysis.program, offset).expect("ident at cursor");
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)
+            .expect("ident at cursor");
         assert_eq!(ident.0, "x");
 
-        let span =
-            find_definition_span("x", &analysis.program, offset).expect("definition resolved");
+        let span = find_definition_span("x", &analysis.program, analysis.root_file_id, offset)
+            .expect("definition resolved");
         let clean = src.replace("$0", "");
         // The `x` of the *second* `val x` declaration, not the first.
         let second_decl = clean.match_indices("val x").nth(1).expect("two decls").0 + "val ".len();
@@ -2048,7 +2102,8 @@ fn main(p: u32) {
 }
 ";
         let (analysis, offset) = analyze_at(src);
-        let f = enclosing_fn(&analysis.program, offset).expect("enclosing fn");
+        let f =
+            enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
         assert_eq!(
             local_type_in_fn(f, "local_v").as_deref(),
             Some("local_v: u32")
@@ -2068,11 +2123,12 @@ fn main() {
 }
 ";
         let (analysis, offset) = analyze_at(src);
-        let ident = find_ident_at(&analysis.program, offset).expect("ident in compound-assign");
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)
+            .expect("ident in compound-assign");
         assert_eq!(ident.0, "helper");
 
-        let span =
-            find_definition_span("helper", &analysis.program, offset).expect("definition resolved");
+        let span = find_definition_span("helper", &analysis.program, analysis.root_file_id, offset)
+            .expect("definition resolved");
         let clean = src.replace("$0", "");
         // First "helper" is the function definition's name.
         assert_eq!(span.start, clean.find("helper").expect("fn name"));
@@ -2087,11 +2143,12 @@ fn main() @context(thread) {
 }
 ";
         let (analysis, offset) = analyze_at(src);
-        let ident = find_ident_at(&analysis.program, offset).expect("ident in view ctor");
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)
+            .expect("ident in view ctor");
         assert_eq!(ident.0, "buf");
 
-        let span =
-            find_definition_span("buf", &analysis.program, offset).expect("definition resolved");
+        let span = find_definition_span("buf", &analysis.program, analysis.root_file_id, offset)
+            .expect("definition resolved");
         let clean = src.replace("$0", "");
         // First "buf" is the `var buf` declaration.
         assert_eq!(span.start, clean.find("buf").expect("buf decl"));
@@ -2107,8 +2164,90 @@ fn main() @context(thread) {
 }
 ";
         let (analysis, offset) = analyze_at(src);
-        let ident = find_ident_at(&analysis.program, offset).expect("ident in index lvalue");
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, offset)
+            .expect("ident in index lvalue");
         assert_eq!(ident.0, "idx");
+    }
+
+    /// Regression: after import resolution `program.items` inlines items from
+    /// every imported module, each with byte offsets local to its own file.
+    /// Position lookups must restrict to the requested file, otherwise an offset
+    /// in main.bml collides with a same-offset span in an imported module and
+    /// goto-definition jumps into the wrong file. See the NUCLEO example where
+    /// goto on a local `board_init()` call landed in an imported SVD module.
+    #[test]
+    fn definition_does_not_cross_into_imported_file() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("bml_lsp_scope_{}_{nonce}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let main_src = "\
+import biglib;
+
+fn board_init() {
+}
+
+fn main() @context(thread) {
+    board_init();
+}
+";
+        // Byte offset of the *call* to `board_init`. The definition is followed
+        // by ` {`, so the `();` form matches only the call site.
+        let call_off = main_src.find("board_init();").expect("call site");
+
+        // Craft an imported module whose `imported_pad` definition-name starts
+        // at exactly `call_off` in its own file: a leading comment pads the
+        // prefix so `// + filler + \n + "fn "` is `call_off` bytes long. With
+        // offset-only matching, find_ident_at would return this imported name
+        // when the cursor is on the call in main.bml.
+        let mut biglib = String::from("//");
+        biglib.push_str(&"x".repeat(call_off - 6));
+        biglib.push('\n');
+        biglib.push_str("fn imported_pad() {\n}\n");
+        assert_eq!(
+            biglib.find("imported_pad"),
+            Some(call_off),
+            "scaffolding: imported name must collide with the call offset"
+        );
+
+        let main_path = dir.join("main.bml");
+        fs::write(&main_path, main_src).unwrap();
+        fs::write(dir.join("biglib.bml"), &biglib).unwrap();
+
+        let (analysis, diags) = analyze_file(&main_path, main_src, &mut ModuleCache::default());
+        assert!(!diags.has_errors(), "snippet should analyze cleanly");
+
+        let ident = find_ident_at(&analysis.program, analysis.root_file_id, call_off)
+            .expect("ident at call site");
+        assert_eq!(
+            ident.0, "board_init",
+            "must resolve the call in main.bml, not the colliding imported name"
+        );
+
+        let span = find_definition_span(
+            "board_init",
+            &analysis.program,
+            analysis.root_file_id,
+            call_off,
+        )
+        .expect("definition resolved");
+        assert_eq!(
+            span.file, analysis.root_file_id,
+            "definition must stay in main.bml"
+        );
+        assert_eq!(
+            span.start,
+            main_src.find("fn board_init").unwrap() + "fn ".len()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ─── persistent import parse cache ─────────────────────────────────
