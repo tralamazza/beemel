@@ -1,0 +1,12 @@
+struct Outer @repr(C) {
+    inner: Inner,
+}
+
+struct Inner @repr(C) {
+    flag: b1,
+}
+
+extern fn g(p: *Outer);
+
+fn main() @context(thread) {
+}

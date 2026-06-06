@@ -1,0 +1,8 @@
+struct Bad @repr(C) {
+    v: view u8,
+}
+
+extern fn f(p: *Bad);
+
+fn main() @context(thread) {
+}

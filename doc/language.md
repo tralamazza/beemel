@@ -344,7 +344,10 @@ fn main() @context(thread) {
 - `b1` is rejected at C boundaries; use `b8` for C booleans.
 - `f16` is rejected at C boundaries; use `f32` or `f64`.
 - Pointers to ABI-safe scalars/enums and `*void` / `*mut void` are allowed.
-- Pointers to `@repr(C)` structs are allowed.
+- Pointers to `@repr(C)` structs are allowed, but their fields are checked
+  recursively: a `view`/`b1`/`f16`/non-`@repr(C)`-struct member is rejected, so a
+  BML-only layout cannot be smuggled across the boundary inside a struct. Nested
+  `@repr(C)` structs and array members are checked element by element.
 - Default explicit-layout structs and `@repr(packed)` structs are rejected by
   pointer at extern boundaries; use `*void` for opaque handles.
 - Structs are rejected by value, including `@repr(C)` structs. Pass a pointer

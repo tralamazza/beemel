@@ -644,6 +644,21 @@ assert_error!(
     "extern_abi_array_value_error.bml",
     "E356"
 );
+assert_error!(
+    test_extern_abi_struct_field_view,
+    "extern_abi_struct_field_view_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_struct_field_nested,
+    "extern_abi_struct_field_nested_error.bml",
+    "E356"
+);
+assert_error!(
+    test_extern_abi_struct_field_forward_nested,
+    "extern_abi_struct_field_forward_nested_error.bml",
+    "E356"
+);
 assert_pass!(test_ptr_coercion, "ptr_coercion.bml");
 assert_pass!(test_struct_basic, "struct_basic.bml");
 assert_pass!(test_struct_ptr, "struct_ptr.bml");

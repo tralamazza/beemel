@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{self, Expr, Item, LValue, Program, Stmt, StructRepr};
 use crate::consteval::{self, ConstVal};
@@ -236,7 +236,7 @@ fn validate_extern_abi(program: &Program, symbols: &SymbolTable, diags: &mut Dia
         };
         for param in &f.params {
             let ty = types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums);
-            if let Err(reason) = extern_abi_value_error(&ty, false) {
+            if let Err(reason) = extern_abi_value_error(&ty, false, &symbols.structs) {
                 diags.error(
                     format!(
                         "extern fn `{}` parameter `{}` is not C ABI-safe: {reason}",
@@ -249,7 +249,7 @@ fn validate_extern_abi(program: &Program, symbols: &SymbolTable, diags: &mut Dia
         }
         if let Some(ret) = &f.ret {
             let ty = types::resolve_type_expr(ret, &symbols.structs, &symbols.enums);
-            if let Err(reason) = extern_abi_value_error(&ty, true) {
+            if let Err(reason) = extern_abi_value_error(&ty, true, &symbols.structs) {
                 diags.error(
                     format!(
                         "extern fn `{}` return type is not C ABI-safe: {reason}",
@@ -263,7 +263,21 @@ fn validate_extern_abi(program: &Program, symbols: &SymbolTable, diags: &mut Dia
     }
 }
 
-fn extern_abi_value_error(ty: &Type, allow_void: bool) -> Result<(), String> {
+fn extern_abi_value_error(
+    ty: &Type,
+    allow_void: bool,
+    structs: &HashMap<String, types::StructInfo>,
+) -> Result<(), String> {
+    let mut visiting = HashSet::new();
+    extern_abi_value_error_inner(ty, allow_void, structs, &mut visiting)
+}
+
+fn extern_abi_value_error_inner(
+    ty: &Type,
+    allow_void: bool,
+    structs: &HashMap<String, types::StructInfo>,
+    visiting: &mut HashSet<String>,
+) -> Result<(), String> {
     match ty.inner() {
         Type::I8
         | Type::I16
@@ -281,13 +295,15 @@ fn extern_abi_value_error(ty: &Type, allow_void: bool) -> Result<(), String> {
         Type::Void => Err("use no parameter instead of `void`".to_string()),
         Type::B1 => Err("`b1` lowers to a 1-bit value; use `b8` for C booleans".to_string()),
         Type::F16 => Err("`f16` has no portable C ABI in bml; use `f32` or `f64`".to_string()),
-        Type::Ptr(inner) | Type::ConstPtr(inner) => extern_abi_pointee_error(inner),
+        Type::Ptr(inner) | Type::ConstPtr(inner) => {
+            extern_abi_pointee_error(inner, structs, visiting)
+        }
         Type::Fn(params, ret) => {
             for (idx, param) in params.iter().enumerate() {
-                extern_abi_value_error(param, false)
+                extern_abi_value_error_inner(param, false, structs, visiting)
                     .map_err(|reason| format!("function pointer parameter {idx}: {reason}"))?;
             }
-            extern_abi_value_error(ret, true)
+            extern_abi_value_error_inner(ret, true, structs, visiting)
                 .map_err(|reason| format!("function pointer return type: {reason}"))
         }
         Type::Struct(..) => Err(
@@ -307,7 +323,11 @@ fn extern_abi_value_error(ty: &Type, allow_void: bool) -> Result<(), String> {
     }
 }
 
-fn extern_abi_pointee_error(ty: &Type) -> Result<(), String> {
+fn extern_abi_pointee_error(
+    ty: &Type,
+    structs: &HashMap<String, types::StructInfo>,
+    visiting: &mut HashSet<String>,
+) -> Result<(), String> {
     match ty.inner() {
         Type::Void
         | Type::I8
@@ -324,21 +344,26 @@ fn extern_abi_pointee_error(ty: &Type) -> Result<(), String> {
         | Type::Enum(..) => Ok(()),
         Type::B1 => Err("pointers to `b1` are not C ABI-safe; use `*b8`".to_string()),
         Type::F16 => Err("pointers to `f16` are not C ABI-safe; use `*f32` or `*f64`".to_string()),
-        Type::Struct(_, StructRepr::C, _) => Ok(()),
+        // A pointer reaches the struct's fields, so each field must itself be C
+        // ABI-safe; otherwise a `view`/`b1`/non-`@repr(C)` member would smuggle a
+        // BML-only layout across the boundary unchecked.
+        s @ Type::Struct(_, StructRepr::C, _) => extern_abi_field_error(s, structs, visiting),
         Type::Struct(name, StructRepr::Explicit, _) => Err(format!(
             "pointer to struct `{name}` requires `@repr(C)` at extern boundaries; use `*void` for opaque handles"
         )),
         Type::Struct(name, StructRepr::Packed, _) => Err(format!(
             "pointer to packed struct `{name}` is not C ABI-safe; use `*void` for opaque handles"
         )),
-        Type::Array(inner, _) => extern_abi_pointee_error(inner),
-        Type::Ptr(inner) | Type::ConstPtr(inner) => extern_abi_pointee_error(inner),
+        Type::Array(inner, _) => extern_abi_pointee_error(inner, structs, visiting),
+        Type::Ptr(inner) | Type::ConstPtr(inner) => {
+            extern_abi_pointee_error(inner, structs, visiting)
+        }
         Type::Fn(params, ret) => {
             for (idx, param) in params.iter().enumerate() {
-                extern_abi_value_error(param, false)
+                extern_abi_value_error_inner(param, false, structs, visiting)
                     .map_err(|reason| format!("function pointer parameter {idx}: {reason}"))?;
             }
-            extern_abi_value_error(ret, true)
+            extern_abi_value_error_inner(ret, true, structs, visiting)
                 .map_err(|reason| format!("function pointer return type: {reason}"))
         }
         Type::LinearView(..) | Type::StridedView(..) | Type::RingView(..) | Type::BitView(..) => {
@@ -352,6 +377,46 @@ fn extern_abi_pointee_error(ty: &Type) -> Result<(), String> {
             Err("pointers to storage-qualified types cannot cross extern boundaries".to_string())
         }
         Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
+    }
+}
+
+/// Validate a single field of a `@repr(C)` struct that an extern pointer reaches.
+/// A field is laid out inline in memory, so aggregates differ from the by-value
+/// parameter rules: arrays and nested `@repr(C)` structs recurse instead of being
+/// rejected, and a bare `void` member is meaningless (the `*void` pointee rule
+/// does not apply inside a struct). Everything else (scalars, enums, pointers,
+/// function pointers, views, storage-qualified types) is judged exactly as a
+/// by-value parameter, so it delegates to [`extern_abi_value_error`]; that match
+/// is exhaustive, so a new `Type` variant fails to compile there rather than
+/// silently slipping through this delegation.
+fn extern_abi_field_error(
+    ty: &Type,
+    structs: &HashMap<String, types::StructInfo>,
+    visiting: &mut HashSet<String>,
+) -> Result<(), String> {
+    match ty.inner() {
+        Type::Struct(name, StructRepr::C, fields) => {
+            if !visiting.insert(name.clone()) {
+                return Ok(());
+            }
+
+            let fields = structs.get(name).map_or(fields, |info| &info.fields);
+            for (fname, fty) in fields {
+                extern_abi_field_error(fty, structs, visiting)
+                    .map_err(|reason| format!("field `{fname}` of struct `{name}`: {reason}"))?;
+            }
+            visiting.remove(name);
+            Ok(())
+        }
+        Type::Struct(name, StructRepr::Explicit, _) => Err(format!(
+            "field of struct `{name}` needs `@repr(C)` for a stable C layout"
+        )),
+        Type::Struct(name, StructRepr::Packed, _) => Err(format!(
+            "field of packed struct `{name}` has no portable C layout"
+        )),
+        Type::Array(inner, _) => extern_abi_field_error(inner, structs, visiting),
+        Type::Void => Err("`void` is not a valid C struct field".to_string()),
+        _ => extern_abi_value_error_inner(ty, false, structs, visiting),
     }
 }
 
