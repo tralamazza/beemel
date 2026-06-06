@@ -34,6 +34,9 @@ static RX_LAST_DESC3: u32;
 static RX_LAST_ETHERTYPE: u32;
 static RX_LAST_SRC0: u32;
 static RX_LAST_SRC1: u32;
+static RX_TIMESTAMP_COUNT: u32;
+static RX_LAST_TIMESTAMP_NS: u32;
+static RX_LAST_TIMESTAMP_SECONDS: u32;
 
 // Current BML lacks an address-of operation for @dma statics that lowers to the
 // backing symbol address. These constants match the linker layout for this file.
@@ -50,6 +53,7 @@ const TX_DESC_LEN_MASK: u32 = 0x00003FFF;
 const RX_DESC_COUNT: u32 = 2;
 const RX_DESC_WORDS: u32 = 4;
 const RX_DESC_OWN: u32 = 0x80000000;
+const RX_DESC_CTXT: u32 = 0x40000000;
 const RX_DESC_FD: u32 = 0x20000000;
 const RX_DESC_LD: u32 = 0x10000000;
 const RX_DESC_BUF1V: u32 = 0x01000000;
@@ -200,6 +204,9 @@ fn eth_init_rx() {
     RX_LAST_ETHERTYPE = 0;
     RX_LAST_SRC0 = 0;
     RX_LAST_SRC1 = 0;
+    RX_TIMESTAMP_COUNT = 0;
+    RX_LAST_TIMESTAMP_NS = 0;
+    RX_LAST_TIMESTAMP_SECONDS = 0;
 
     val desc0 = rx_desc_addr(0);
     Ethernet_DMA.DMACRxRLR.RDRL = RX_DESC_COUNT - 1;
@@ -331,7 +338,11 @@ fn eth_poll_rx() {
 
     RX_LAST_DESC3 = desc3;
 
-    if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
+    if (desc3 & RX_DESC_CTXT) != 0 {
+        RX_LAST_TIMESTAMP_NS = rx_desc_get32(desc_word);
+        RX_LAST_TIMESTAMP_SECONDS = rx_desc_get32(desc_word + 1);
+        RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
+    } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
         RX_LAST_LEN = desc3 & RX_DESC_LEN_MASK;
         RX_LAST_ETHERTYPE = (rx_get8(12) << 8) | rx_get8(13);
         RX_LAST_SRC0 = (rx_get8(6) << 24) | (rx_get8(7) << 16) | (rx_get8(8) << 8) | rx_get8(9);
