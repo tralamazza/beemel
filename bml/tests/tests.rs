@@ -1398,6 +1398,30 @@ fn test_startup_user_reset() {
     );
 }
 
+#[test]
+fn test_startup_init_writes() {
+    // A [startup] entry becomes a read-modify-write OR at the very top of
+    // reset_handler, before the .data/.bss copy (CMSIS SystemInit ordering).
+    // 0x5802453C = 1476543804, 0x60000000 = 1610612736.
+    // Uses its own source fixture (not startup_basic.bml) so the .ll output path
+    // does not race with test_startup_basic.
+    let ir = bml_ir_with_target("startup_init.bml", Some("startup_init.target"));
+    let body = extract_fn_body(&ir, "@reset_handler");
+    assert!(
+        body.contains("load volatile i32, ptr inttoptr (i32 1476543804 to ptr)")
+            && body.contains("or i32")
+            && body.contains("1610612736")
+            && body.contains("store volatile i32"),
+        "expected startup RMW-OR write\n--- reset_handler ---\n{body}"
+    );
+    let store = body.find("store volatile i32").expect("startup store");
+    let data_copy = body.find("data_copy_test").expect("data copy block");
+    assert!(
+        store < data_copy,
+        "startup write must precede the .data copy\n--- reset_handler ---\n{body}"
+    );
+}
+
 // Array tests
 #[test]
 fn test_array_init() {

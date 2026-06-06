@@ -1,0 +1,16 @@
+// Cortex-M7 cache-maintenance register the generated SVD does not model.
+//
+// The STM32H7x3 SVD exposes the SCB (svd/scb.bml, including CCR.DC/CCR.IC) and
+// the read-only cache info registers (svd/pf.bml: CLIDR/CTR/CCSIDR), but it does
+// not declare ICIALLU. It is a CPU-internal CMSIS register, not a device
+// peripheral, so it has to be hand-written here. Use svd.scb for everything else.
+//
+// ICIALLU lives at 0xE000EF50 (SCB base + 0x250). Write-only: any value written
+// invalidates the entire instruction cache to the Point of Unification.
+
+export peripheral CM7_CACHE;
+
+peripheral CM7_CACHE at 0xE000EF50 {
+    reg ICIALLU offset 0x00 {
+    }
+}

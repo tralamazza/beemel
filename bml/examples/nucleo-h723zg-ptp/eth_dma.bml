@@ -1,0 +1,242 @@
+// Minimal ETH MAC/DMA bring-up skeleton.
+
+import svd.rcc;
+import svd.syscfg;
+import svd.gpioa;
+import svd.gpiob;
+import svd.gpioc;
+import svd.gpiog;
+import svd.ethernet_mac;
+import svd.ethernet_dma;
+import svd.ethernet_mtl;
+
+export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_send_heartbeat;
+
+const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
+
+// Use a locally administered source MAC for bring-up.
+const MAC0: u8 = 0x02;
+const MAC1: u8 = 0x00;
+const MAC2: u8 = 0x00;
+const MAC3: u8 = 0x00;
+const MAC4: u8 = 0x72;
+const MAC5: u8 = 0x3A;
+
+static TX_BUFFER: [u8; 128] @dma @align(32);
+static TX_DESC: [u32; 8] @dma @align(32);
+static TX_DESC_INDEX: u32;
+
+// Current BML lacks an address-of operation for @dma statics that lowers to the
+// backing symbol address. These constants match the linker layout for this file.
+const TX_BUFFER_ADDR: u32 = 0x30000020;
+const TX_DESC_ADDR: u32 = 0x300000A0;
+const TX_DESC_COUNT: u32 = 2;
+const TX_DESC_WORDS: u32 = 4;
+const TX_DESC_OWN: u32 = 0x80000000;
+const TX_DESC_FD: u32 = 0x20000000;
+const TX_DESC_LD: u32 = 0x10000000;
+const TX_DESC_LEN_MASK: u32 = 0x00003FFF;
+
+fn configure_rmii_pin_a(pin: u32) {
+    if pin == 1 {
+        GPIOA.MODER.MODE1 = 2;
+        GPIOA.OSPEEDR.OSPEED1 = 3;
+        GPIOA.PUPDR.PUPD1 = 0;
+        GPIOA.AFRL.AFSEL1 = 11;
+    } else if pin == 2 {
+        GPIOA.MODER.MODE2 = 2;
+        GPIOA.OSPEEDR.OSPEED2 = 3;
+        GPIOA.PUPDR.PUPD2 = 0;
+        GPIOA.AFRL.AFSEL2 = 11;
+    } else if pin == 7 {
+        GPIOA.MODER.MODE7 = 2;
+        GPIOA.OSPEEDR.OSPEED7 = 3;
+        GPIOA.PUPDR.PUPD7 = 0;
+        GPIOA.AFRL.AFSEL7 = 11;
+    }
+}
+
+fn configure_rmii_pin_b13() {
+    GPIOB.MODER.MODE13 = 2;
+    GPIOB.OSPEEDR.OSPEED13 = 3;
+    GPIOB.PUPDR.PUPD13 = 0;
+    GPIOB.AFRH.AFSEL13 = 11;
+}
+
+fn configure_rmii_pin_c(pin: u32) {
+    if pin == 1 {
+        GPIOC.MODER.MODE1 = 2;
+        GPIOC.OSPEEDR.OSPEED1 = 3;
+        GPIOC.PUPDR.PUPD1 = 0;
+        GPIOC.AFRL.AFSEL1 = 11;
+    } else if pin == 4 {
+        GPIOC.MODER.MODE4 = 2;
+        GPIOC.OSPEEDR.OSPEED4 = 3;
+        GPIOC.PUPDR.PUPD4 = 0;
+        GPIOC.AFRL.AFSEL4 = 11;
+    } else if pin == 5 {
+        GPIOC.MODER.MODE5 = 2;
+        GPIOC.OSPEEDR.OSPEED5 = 3;
+        GPIOC.PUPDR.PUPD5 = 0;
+        GPIOC.AFRL.AFSEL5 = 11;
+    }
+}
+
+fn configure_rmii_pin_g(pin: u32) {
+    if pin == 11 {
+        GPIOG.MODER.MODE11 = 2;
+        GPIOG.OSPEEDR.OSPEED11 = 3;
+        GPIOG.PUPDR.PUPD11 = 0;
+        GPIOG.AFRH.AFSEL11 = 11;
+    } else if pin == 13 {
+        GPIOG.MODER.MODE13 = 2;
+        GPIOG.OSPEEDR.OSPEED13 = 3;
+        GPIOG.PUPDR.PUPD13 = 0;
+        GPIOG.AFRH.AFSEL13 = 11;
+    }
+}
+
+fn eth_init_clocks_and_pins() {
+    RCC.C1_AHB4ENR.GPIOAEN = true;
+    RCC.C1_AHB4ENR.GPIOBEN = true;
+    RCC.C1_AHB4ENR.GPIOCEN = true;
+    RCC.C1_AHB4ENR.GPIOGEN = true;
+
+    // Select RMII before enabling the ETH clocks. The PHY interface in
+    // SYSCFG_PMCR is latched as the MAC comes out of reset, so it must be set
+    // while the ETH clocks are still gated; setting it afterwards can leave the
+    // MAC in the default MII mode. In STM32H7 CMSIS EPIS = 4 is
+    // SYSCFG_PMCR_EPIS_SEL_2.
+    RCC.C1_APB4ENR.SYSCFGEN = true;
+    SYSCFG.PMCR.EPIS = 4;
+
+    RCC.C1_AHB1ENR.ETH1MACEN = true;
+    RCC.C1_AHB1ENR.ETH1TXEN = true;
+    RCC.C1_AHB1ENR.ETH1RXEN = true;
+
+    // Common Nucleo-144 RMII routing: PA1 REF_CLK, PA2 MDIO, PA7 CRS_DV,
+    // PC1 MDC, PC4 RXD0, PC5 RXD1, PG11 TX_EN, PG13 TXD0, PB13 TXD1.
+    configure_rmii_pin_a(1);
+    configure_rmii_pin_a(2);
+    configure_rmii_pin_a(7);
+    configure_rmii_pin_c(1);
+    configure_rmii_pin_c(4);
+    configure_rmii_pin_c(5);
+    configure_rmii_pin_g(11);
+    configure_rmii_pin_g(13);
+    configure_rmii_pin_b13();
+}
+
+fn eth_init_tx() {
+    Ethernet_DMA.DMAMR.SWR = true;
+    while Ethernet_DMA.DMAMR.SWR {
+        asm { }
+    }
+
+    Ethernet_MAC.MACA0LR.ADDRLO = 0x00000002;
+    Ethernet_MAC.MACA0HR.ADDRHI = 0x00003A72;
+
+    Ethernet_MTL.MTLTxQOMR.TSF = true;
+    Ethernet_MTL.MTLRxQOMR.RSF = true;
+    Ethernet_DMA.DMASBMR.AAL = true;
+    Ethernet_DMA.DMACCR.PBLX8 = true;
+    Ethernet_DMA.DMACTxCR.TXPBL = 32;
+
+    TX_DESC[0] = 0;
+    TX_DESC[1] = 0;
+    TX_DESC[2] = 0;
+    TX_DESC[3] = 0;
+    TX_DESC[4] = 0;
+    TX_DESC[5] = 0;
+    TX_DESC[6] = 0;
+    TX_DESC[7] = 0;
+    TX_DESC_INDEX = 0;
+
+    val desc0 = tx_desc_addr(0);
+    Ethernet_DMA.DMACTxRLR.TDRL = TX_DESC_COUNT - 1;
+    Ethernet_DMA.DMACTxDLAR.TDESLA = desc0 >> 2;
+    Ethernet_DMA.DMACTxDTPR.TDT = desc0 >> 2;
+    Ethernet_DMA.DMACTxCR.ST = true;
+
+    Ethernet_MAC.MACCR.FES = true;
+    Ethernet_MAC.MACCR.DM = true;
+    Ethernet_MAC.MACCR.TE = true;
+}
+
+fn tx_desc_addr(word_index: u32) -> u32 {
+    return TX_DESC_ADDR + (word_index * 4);
+}
+
+fn tx_buffer_addr() -> u32 {
+    return TX_BUFFER_ADDR;
+}
+
+fn put8(index: u32, value: u8) {
+    TX_BUFFER[index] = value;
+}
+
+fn put32_be(index: u32, value: u32) {
+    put8(index, (value >> 24) as u8);
+    put8(index + 1, (value >> 16) as u8);
+    put8(index + 2, (value >> 8) as u8);
+    put8(index + 3, value as u8);
+}
+
+fn fill_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
+    // Destination: broadcast.
+    put8(0, 0xFF);
+    put8(1, 0xFF);
+    put8(2, 0xFF);
+    put8(3, 0xFF);
+    put8(4, 0xFF);
+    put8(5, 0xFF);
+
+    put8(6, MAC0);
+    put8(7, MAC1);
+    put8(8, MAC2);
+    put8(9, MAC3);
+    put8(10, MAC4);
+    put8(11, MAC5);
+
+    put8(12, (HEARTBEAT_ETHERTYPE >> 8) as u8);
+    put8(13, HEARTBEAT_ETHERTYPE as u8);
+
+    // Payload: "BMLPTP" + seq + seconds + nanoseconds.
+    put8(14, 0x42);
+    put8(15, 0x4D);
+    put8(16, 0x4C);
+    put8(17, 0x50);
+    put8(18, 0x54);
+    put8(19, 0x50);
+    put32_be(20, seq);
+    put32_be(24, seconds);
+    put32_be(28, nanoseconds);
+
+    var index: u32 = 32;
+    while index < 60 {
+        put8(index, 0);
+        index = index + 1;
+    }
+
+    return 60u32;
+}
+
+fn eth_send_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) {
+    val len = fill_heartbeat(seq, seconds, nanoseconds);
+    val desc_word = TX_DESC_INDEX * TX_DESC_WORDS;
+
+    TX_DESC[desc_word] = tx_buffer_addr();
+    TX_DESC[desc_word + 1] = 0;
+    TX_DESC[desc_word + 2] = len & TX_DESC_LEN_MASK;
+    TX_DESC[desc_word + 3] = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
+
+    TX_DESC_INDEX = TX_DESC_INDEX + 1;
+    if TX_DESC_INDEX == TX_DESC_COUNT {
+        TX_DESC_INDEX = 0;
+    }
+
+    asm { dmb } : : : "memory";
+
+    val next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
+    Ethernet_DMA.DMACTxDTPR.TDT = next_desc_addr >> 2;
+}

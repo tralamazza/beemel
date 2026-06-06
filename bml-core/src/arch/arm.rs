@@ -251,11 +251,23 @@ pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
     e.line("define void @reset_handler() #2 {");
     e.indent += 1;
 
+    let ptr_ty = e.arch.ptr_type();
+
     e.line("entry:");
+    // Target-specific MMIO init (Target::startup_init), applied before the
+    // .data/.bss copy below -- the CMSIS SystemInit ordering. Each is a
+    // read-modify-write OR (`*addr |= mask`), typically to ungate a RAM clock
+    // whose SRAM holds the stack/.data/.bss (e.g. STM32H7 D2 SRAM). This runs
+    // with registers only, so it is safe even though RAM is not yet usable.
+    let startup_init = e.startup_init.clone();
+    for (addr, mask) in startup_init {
+        let p = format!("inttoptr ({ptr_ty} {addr} to ptr)");
+        let old = e.emit_line(&format!("load volatile i32, ptr {p}"));
+        let updated = e.emit_line(&format!("or i32 {old}, {mask}"));
+        e.line(&format!("store volatile i32 {updated}, ptr {p}"));
+    }
     e.line("  br label %data_copy_test");
     e.line("");
-
-    let ptr_ty = e.arch.ptr_type();
 
     // Named values for phi-node back-edges (values from successor blocks
     // referenced by the phi before their definition).

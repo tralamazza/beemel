@@ -1,0 +1,13 @@
+// LAN8742 PHY helpers for the NUCLEO-H723ZG Ethernet jack.
+
+export fn phy_probe;
+
+const PHY_ADDR_UNKNOWN: u32 = 0xFFFFFFFF;
+
+static PHY_ADDR: u32 = 0xFFFFFFFF;
+
+fn phy_probe() {
+    // TODO: use ETH MAC MDIO registers from generated svd.eth to scan PHY
+    // addresses 0..31 and store the detected LAN8742 address in PHY_ADDR.
+    PHY_ADDR = PHY_ADDR_UNKNOWN;
+}

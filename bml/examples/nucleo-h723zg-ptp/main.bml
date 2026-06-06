@@ -1,0 +1,60 @@
+// NUCLEO-H723ZG Ethernet PTP bring-up.
+//
+// First milestone: initialize board support, then keep the low-level ETH/PTP
+// bring-up sequence explicit. The ETH implementation is intentionally staged;
+// see BRINGUP.md.
+
+import eth_dma;
+import ptp_clock;
+import phy_lan8742;
+import svd.scb;
+import cache;
+
+// Core/cache setup for first bring-up. Keep D-cache disabled so the CPU and ETH
+// DMA see the same descriptor and packet-buffer contents without explicit cache
+// maintenance. Enable I-cache; it does not create DMA coherency issues. This is
+// the minimal version: it does not clean/invalidate the D-cache by set/way.
+// Production code should configure an MPU non-cacheable region for ETH
+// descriptors and buffers instead.
+//
+// SCB comes from the generated SVD; only ICIALLU is hand-written (see cache.bml).
+fn board_init() {
+    SCB.CCR.DC = false;
+    asm { dsb } : : : "memory";
+    asm { isb } : : : "memory";
+
+    CM7_CACHE.ICIALLU = 0;
+    asm { dsb } : : : "memory";
+    asm { isb } : : : "memory";
+    SCB.CCR.IC = true;
+    asm { dsb } : : : "memory";
+    asm { isb } : : : "memory";
+}
+
+fn delay() {
+    var count: u32 = 0;
+    while count < 1000000 {
+        asm { }
+        count = count + 1;
+    }
+}
+
+fn main() @context(thread) {
+    // The D2 AHB SRAM clock (where the stack/.data/.bss/DMA buffers live) is
+    // ungated in startup before .data/.bss init -- see the [startup] section in
+    // stm32h723zg.target.
+    board_init();
+
+    eth_init_clocks_and_pins();
+    phy_probe();
+    eth_init_tx();
+    ptp_init();
+
+    var seq: u32 = 0;
+    loop {
+        val now = ptp_now();
+        eth_send_heartbeat(seq, now.seconds, now.nanoseconds);
+        seq = seq + 1;
+        delay();
+    }
+}

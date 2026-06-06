@@ -39,6 +39,9 @@ pub struct IrEmitter {
     verify_mode: bool,
     current_fn_name: String,
     preempt: Option<PreemptInfo>,
+    /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
+    /// before `.data`/`.bss` init. See `Target::startup_init`.
+    pub(crate) startup_init: Vec<(u64, u64)>,
 }
 
 #[derive(Clone)]
@@ -210,6 +213,7 @@ impl IrEmitter {
             verify_mode: false,
             current_fn_name: String::new(),
             preempt: None,
+            startup_init: Vec::new(),
         }
     }
 
@@ -249,6 +253,7 @@ impl IrEmitter {
             verify_mode: true,
             current_fn_name: String::new(),
             preempt: None,
+            startup_init: Vec::new(),
         }
     }
 
@@ -257,6 +262,13 @@ impl IrEmitter {
     /// write. Without this, every `@shared` read is unconditionally havoc'd.
     pub fn set_preempt(&mut self, preempt: PreemptInfo) {
         self.preempt = Some(preempt);
+    }
+
+    /// Install target-specific MMIO writes (`(address, or_mask)`) to apply at the
+    /// start of `reset_handler`, before `.data`/`.bss` init. See
+    /// `Target::startup_init`.
+    pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
+        self.startup_init = writes;
     }
 
     #[must_use]

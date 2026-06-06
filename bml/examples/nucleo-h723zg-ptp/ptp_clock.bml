@@ -1,0 +1,60 @@
+// ETH PTP timestamp clock helpers.
+
+import svd.ethernet_mac;
+
+export struct PtpTime;
+export fn ptp_init, fn ptp_now;
+
+struct PtpTime {
+    seconds: u32,
+    nanoseconds: u32,
+}
+
+// Sub-second increment: nanoseconds added to the system time on each accumulator
+// overflow. 20 ns corresponds to a 50 MHz effective tick with digital (ns)
+// rollover (TSCTRLSSR).
+const PTP_SSINC: u32 = 20;
+
+// Timestamp addend for fine update mode. In fine mode a 32-bit accumulator adds
+// TSAR every PTP reference clock and bumps the system time by SSINC on overflow,
+// so the overflow rate is ptp_ref * (TSAR / 2^32). For ~1:1 real time:
+//   TSAR = 2^32 * 1e9 / (ptp_ref_hz * SSINC)
+// This assumes the PTP reference (ETH hclk) is the ~64 MHz HSI, since the example
+// does not configure the PLLs: 2^32 * 1e9 / (64e6 * 20) = 0xC8000000. The rate is
+// therefore approximate until a real clock tree is set up; calibrate TSAR against
+// wall-clock once SYSCLK is configured.
+const PTP_ADDEND: u32 = 0xC8000000;
+
+fn ptp_init() {
+    // Fine update mode. The previous coarse-mode config (TSCFUPDT clear) did not
+    // free-run on this MAC, leaving the system time stuck at 0.
+    Ethernet_MAC.MACTSCR.TSENA = true;
+    Ethernet_MAC.MACTSCR.TSCFUPDT = true;
+    Ethernet_MAC.MACTSCR.TSCTRLSSR = true;
+    Ethernet_MAC.MACTSCR.TSENALL = true;
+
+    Ethernet_MAC.MACSSIR.SSINC = PTP_SSINC;
+    Ethernet_MAC.MACSSIR.SNSINC = 0;
+
+    // Load the addend into the accumulator and wait for the update to apply.
+    Ethernet_MAC.MACTSAR.TSAR = PTP_ADDEND;
+    Ethernet_MAC.MACTSCR.TSADDREG = true;
+    while Ethernet_MAC.MACTSCR.TSADDREG {
+        asm { }
+    }
+
+    // Initialize the system time to zero.
+    Ethernet_MAC.MACSTSUR.TSS = 0;
+    Ethernet_MAC.MACSTNUR.TSSS = 0;
+    Ethernet_MAC.MACSTNUR.ADDSUB = false;
+    Ethernet_MAC.MACTSCR.TSINIT = true;
+    while Ethernet_MAC.MACTSCR.TSINIT {
+        asm { }
+    }
+}
+
+fn ptp_now() -> PtpTime {
+    val seconds = Ethernet_MAC.MACSTSR.TSS;
+    val nanoseconds = Ethernet_MAC.MACSTNR.TSSS;
+    return PtpTime { seconds: seconds, nanoseconds: nanoseconds };
+}

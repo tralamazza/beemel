@@ -553,13 +553,14 @@ fn build_file(
 
     let arch = target.to_arch();
     let triple = target.to_llvm_target_triple();
-    let emitter = IrEmitter::new(
+    let mut emitter = IrEmitter::new(
         arch,
         target.interrupts.clone(),
         target.has_bitband,
         debug,
         Some(source_map),
     );
+    emitter.set_startup_init(target.startup_init.clone());
     let llvm_ir = emitter.emit(&program, &symbols);
 
     let ll_path = path.with_extension("ll");

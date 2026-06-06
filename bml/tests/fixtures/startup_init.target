@@ -1,0 +1,15 @@
+# Target with a [startup] section: MMIO writes applied at the start of
+# reset_handler, before .data/.bss init (CMSIS SystemInit ordering).
+arch = armv7em
+priority_bits = 4
+has_fpu = true
+has_bitband = true
+has_mpu = true
+flash_base = 0x08000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 64K
+vector_table_offset = 0x08000000
+
+[startup]
+0x5802453C = 0x60000000

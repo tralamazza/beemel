@@ -18,6 +18,13 @@ pub struct Target {
     pub ram_size: u64,
     pub vector_table_offset: u64,
     pub interrupts: HashMap<String, u16>,
+    /// MMIO read-modify-write OR writes applied at the very start of
+    /// `reset_handler`, before `.data`/`.bss` init -- the equivalent of CMSIS
+    /// `SystemInit` running before the RAM copy. Each entry is `(address,
+    /// or_mask)` meaning `*(volatile u32*)address |= or_mask`. The canonical use
+    /// is enabling a RAM clock (e.g. STM32H7 D2 SRAM) when the stack lives in a
+    /// clock-gated SRAM, since `reset_handler` touches RAM before `main` runs.
+    pub startup_init: Vec<(u64, u64)>,
 }
 
 impl Default for Target {
@@ -35,6 +42,7 @@ impl Default for Target {
             ram_size: 64 * 1024,
             vector_table_offset: 0x0800_0000,
             interrupts: HashMap::new(),
+            startup_init: Vec::new(),
         }
     }
 }
@@ -84,6 +92,37 @@ impl Target {
                     format!("line {}: invalid interrupt slot `{slot}`", line_num + 1)
                 })?;
                 target.interrupts.insert(label, slot);
+                continue;
+            }
+            // In [startup] section: address = or_mask (RMW: *address |= or_mask)
+            if section == Some("startup") {
+                let (addr_s, mask_s) = line.split_once('=').ok_or_else(|| {
+                    format!(
+                        "line {}: expected `address = or_mask`, got `{line}`",
+                        line_num + 1
+                    )
+                })?;
+                let addr = parse_int(addr_s.trim()).map_err(|_| {
+                    format!(
+                        "line {}: invalid startup address `{}`",
+                        line_num + 1,
+                        addr_s.trim()
+                    )
+                })?;
+                let mask = parse_int(mask_s.trim()).map_err(|_| {
+                    format!(
+                        "line {}: invalid startup or_mask `{}`",
+                        line_num + 1,
+                        mask_s.trim()
+                    )
+                })?;
+                if addr > u64::from(u32::MAX) || mask > u64::from(u32::MAX) {
+                    return Err(format!(
+                        "line {}: startup address/or_mask must fit in 32 bits",
+                        line_num + 1
+                    ));
+                }
+                target.startup_init.push((addr, mask));
                 continue;
             }
             // Top-level key = value
@@ -373,6 +412,18 @@ mod tests {
         let target = t("arch = armv7em\n");
         let err = target.to_gcc_flags().unwrap_err();
         assert!(err.contains("cpu"), "got: {err}");
+    }
+
+    #[test]
+    fn parses_startup_section() {
+        let target = t("arch = armv7em\n[startup]\n0x5802453C = 0x60000000\n");
+        assert_eq!(target.startup_init, vec![(0x5802_453C, 0x6000_0000)]);
+    }
+
+    #[test]
+    fn startup_rejects_out_of_range() {
+        let err = Target::parse("arch = armv7em\n[startup]\n0x100000000 = 0x1\n").unwrap_err();
+        assert!(err.contains("32 bits"), "got: {err}");
     }
 
     #[test]
