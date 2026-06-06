@@ -1,13 +1,142 @@
 // LAN8742 PHY helpers for the NUCLEO-H723ZG Ethernet jack.
 
-export fn phy_probe;
+import svd.ethernet_mac;
+
+export fn phy_probe, fn phy_poll_link;
 
 const PHY_ADDR_UNKNOWN: u32 = 0xFFFFFFFF;
+const PHY_READ_INVALID: u32 = 0xFFFFFFFF;
+
+const PHY_STATE_UNKNOWN: u32 = 0;
+const PHY_STATE_MISSING: u32 = 1;
+const PHY_STATE_LINK_DOWN: u32 = 2;
+const PHY_STATE_LINK_UP: u32 = 3;
+const PHY_STATE_MDIO_TIMEOUT: u32 = 4;
+
+const MDIO_WAIT_LIMIT: u32 = 100000;
+const MDIO_CR_DIV42: u32 = 0;
+const MDIO_OP_READ: u32 = 3;
+
+const PHY_REG_BMSR: u32 = 1;
+const PHY_REG_ID1: u32 = 2;
+const PHY_REG_ID2: u32 = 3;
+
+const PHY_BMSR_LINK_STATUS: u32 = 0x0004;
+const LAN8742_ID_MASK: u32 = 0xFFFFFFF0;
+const LAN8742_ID: u32 = 0x0007C130;
 
 static PHY_ADDR: u32 = 0xFFFFFFFF;
+static PHY_STATE: u32 = PHY_STATE_UNKNOWN;
+static PHY_ID1: u32 = 0;
+static PHY_ID2: u32 = 0;
+static PHY_BMSR: u32 = 0;
+static PHY_IS_LAN8742: u32 = 0;
+
+fn mdio_wait_idle() -> b1 {
+    var count: u32 = 0;
+    while Ethernet_MAC.MACMDIOAR.MB {
+        if count >= MDIO_WAIT_LIMIT {
+            return false;
+        }
+        count = count + 1;
+    }
+    return true;
+}
+
+fn mdio_read(phy_addr: u32, reg_addr: u32) -> u32 {
+    if !mdio_wait_idle() {
+        PHY_STATE = PHY_STATE_MDIO_TIMEOUT;
+        return PHY_READ_INVALID;
+    }
+
+    Ethernet_MAC.MACMDIOAR.C45E = false;
+    Ethernet_MAC.MACMDIOAR.PA = phy_addr;
+    Ethernet_MAC.MACMDIOAR.RDA = reg_addr;
+    Ethernet_MAC.MACMDIOAR.CR = MDIO_CR_DIV42;
+    Ethernet_MAC.MACMDIOAR.GOC = MDIO_OP_READ;
+    Ethernet_MAC.MACMDIOAR.MB = true;
+
+    if !mdio_wait_idle() {
+        PHY_STATE = PHY_STATE_MDIO_TIMEOUT;
+        return PHY_READ_INVALID;
+    }
+
+    return Ethernet_MAC.MACMDIODR.MD;
+}
+
+fn phy_id_is_present(id1: u32, id2: u32) -> b1 {
+    if id1 == 0 {
+        return false;
+    }
+    if id1 == 0xFFFF {
+        return false;
+    }
+    if id2 == 0 {
+        return false;
+    }
+    if id2 == 0xFFFF {
+        return false;
+    }
+    return true;
+}
+
+fn update_link_state() {
+    // BMSR link status is latched low; read twice and keep the second value.
+    val first = mdio_read(PHY_ADDR, PHY_REG_BMSR);
+    val second = mdio_read(PHY_ADDR, PHY_REG_BMSR);
+    PHY_BMSR = second;
+
+    if first == PHY_READ_INVALID || second == PHY_READ_INVALID {
+        return;
+    }
+
+    if (second & PHY_BMSR_LINK_STATUS) != 0 {
+        PHY_STATE = PHY_STATE_LINK_UP;
+    } else {
+        PHY_STATE = PHY_STATE_LINK_DOWN;
+    }
+}
 
 fn phy_probe() {
-    // TODO: use ETH MAC MDIO registers from generated svd.eth to scan PHY
-    // addresses 0..31 and store the detected LAN8742 address in PHY_ADDR.
     PHY_ADDR = PHY_ADDR_UNKNOWN;
+    PHY_STATE = PHY_STATE_MISSING;
+    PHY_ID1 = 0;
+    PHY_ID2 = 0;
+    PHY_BMSR = 0;
+    PHY_IS_LAN8742 = 0;
+
+    var addr: u32 = 0;
+    while addr < 32 {
+        val id1 = mdio_read(addr, PHY_REG_ID1);
+        val id2 = mdio_read(addr, PHY_REG_ID2);
+
+        if PHY_STATE == PHY_STATE_MDIO_TIMEOUT {
+            return;
+        }
+
+        if phy_id_is_present(id1, id2) {
+            PHY_ADDR = addr;
+            PHY_ID1 = id1;
+            PHY_ID2 = id2;
+
+            val phy_id = (id1 << 16) | id2;
+            if (phy_id & LAN8742_ID_MASK) == LAN8742_ID {
+                PHY_IS_LAN8742 = 1;
+            }
+
+            update_link_state();
+            return;
+        }
+
+        addr = addr + 1;
+    }
+
+    PHY_ADDR = PHY_ADDR_UNKNOWN;
+    PHY_STATE = PHY_STATE_MISSING;
+}
+
+fn phy_poll_link() {
+    if PHY_ADDR != PHY_ADDR_UNKNOWN {
+        update_link_state();
+    }
 }

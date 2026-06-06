@@ -125,13 +125,14 @@ fn eth_init_clocks_and_pins() {
     configure_rmii_pin_g(11);
     configure_rmii_pin_g(13);
     configure_rmii_pin_b13();
-}
 
-fn eth_init_tx() {
     Ethernet_DMA.DMAMR.SWR = true;
     while Ethernet_DMA.DMAMR.SWR {
         asm { }
     }
+}
+
+fn eth_init_tx() {
 
     Ethernet_MAC.MACA0LR.ADDRLO = 0x00000002;
     Ethernet_MAC.MACA0HR.ADDRHI = 0x00003A72;

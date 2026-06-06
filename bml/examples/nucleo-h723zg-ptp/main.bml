@@ -10,6 +10,10 @@ import phy_lan8742;
 import svd.scb;
 import cache;
 
+// Empirically tuned from the first tcpdump capture: 1,000,000 loop iterations
+// produced ~15.6 ms between heartbeats on the reset clock tree.
+const HEARTBEAT_DELAY_COUNT: u32 = 64000000;
+
 // Core/cache setup for first bring-up. Keep D-cache disabled so the CPU and ETH
 // DMA see the same descriptor and packet-buffer contents without explicit cache
 // maintenance. Enable I-cache; it does not create DMA coherency issues. This is
@@ -33,7 +37,7 @@ fn board_init() {
 
 fn delay() {
     var count: u32 = 0;
-    while count < 1000000 {
+    while count < HEARTBEAT_DELAY_COUNT {
         asm { }
         count = count + 1;
     }
@@ -52,6 +56,7 @@ fn main() @context(thread) {
 
     var seq: u32 = 0;
     loop {
+        phy_poll_link();
         val now = ptp_now();
         eth_send_heartbeat(seq, now.seconds, now.nanoseconds);
         seq = seq + 1;
