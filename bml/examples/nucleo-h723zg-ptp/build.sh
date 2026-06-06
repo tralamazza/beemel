@@ -1,12 +1,25 @@
 #!/bin/sh
-# Build the NUCLEO-H723ZG PTP bring-up example.
+# Build a NUCLEO-H723ZG PTP bring-up role: controller or mic_node.
 
 set -e
 
 DIR="$(dirname "$0")"
 ROOT="$DIR/../../.."
-BASE="$DIR/main"
 TARGET="$DIR/stm32h723zg.target"
+
+ROLE="${1:-}"
+case "$ROLE" in
+  controller) SRC="$DIR/main_controller.bml" ;;
+  mic_node)   SRC="$DIR/main_mic_node.bml" ;;
+  *)
+    echo "Usage: $0 {controller|mic_node}" >&2
+    exit 1
+    ;;
+esac
+
+# bml derives output paths from the input file name, so each role builds to its
+# own main_<role>.{o,ld,elf,bin} without colliding with the other.
+BASE="${SRC%.bml}"
 
 if command -v ld.lld >/dev/null 2>&1; then
   LD=ld.lld
@@ -36,13 +49,14 @@ else
 fi
 
 cargo run --manifest-path "$ROOT/Cargo.toml" --bin bml -- \
-  build --target "$TARGET" "$DIR/main.bml"
+  build --target "$TARGET" "$SRC"
 
 "$LD" $LD_FLAGS -T "$BASE.ld" "$BASE.o" -o "$BASE.elf"
 
 # Address-drift guard. BML has no address-of for @dma statics yet, so eth_dma.bml
 # hardcodes their addresses. Fail loudly if the linker placed them elsewhere -- a
-# silent mismatch points the ETH DMA at the wrong memory.
+# silent mismatch points the ETH DMA at the wrong memory. Both roles link the same
+# shared statics, so the same hardcoded addresses must hold for each.
 check_dma_addr() {
   sym="$1"        # linker symbol, e.g. TX_BUFFER
   const_name="$2" # const in eth_dma.bml, e.g. TX_BUFFER_ADDR

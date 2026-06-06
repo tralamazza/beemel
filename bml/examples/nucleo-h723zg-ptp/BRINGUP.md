@@ -186,24 +186,36 @@ Verified by sending IPv6 multicast from macOS on `en8`; firmware received
 ethertype `0x86dd` frames from source MAC `6c:1f:f7:be:86:43` and captured RX
 timestamp context descriptors.
 
-### 7. Split Two-Board Roles - Next
+### 7. Split Two-Board Roles - Done
 
-Refactor the example into explicit roles:
+Refactored the example into explicit roles:
 
-- `main_controller.bml`: switch/controller stand-in.
-- `main_mic_node.bml`: mic-board stand-in.
+- `main_controller.bml`: switch/controller stand-in, board id 1.
+- `main_mic_node.bml`: mic-board stand-in, board id 2.
+- Shared power-on path lifted into `board.bml` (`board_bringup()` runs cache/core
+  init plus the ETH/PHY/PTP init sequence; `delay()` for the heartbeat loop).
 - Shared modules stay in `eth_dma.bml`, `phy_lan8742.bml`, `ptp_clock.bml`, and
-  new protocol modules.
+  `board.bml`.
+
+`build.sh` and `flash.sh` take a role argument (`controller` or `mic_node`) and
+emit/flash `main_<role>.{o,ld,elf,bin}`. The DMA address-drift guard runs per
+role; both roles link the same shared statics, so the hardcoded `eth_dma.bml`
+addresses hold for each.
+
+For this milestone the two roles share the heartbeat path and source MAC and
+differ only by a board id byte at payload offset 32. The two binaries differ by
+exactly those two immediate bytes. Per-board MACs and a real header arrive in
+milestone 8.
 
 Success criteria:
 
-- Each role builds from this example directory.
+- Each role builds from this example directory. Done.
 - Both roles still use the same target, generated SVD, PHY, ETH DMA, and PTP
-  helpers.
+  helpers. Done.
 - The controller role can be flashed to one NUCLEO and the mic-node role to the
-  other.
+  other. Build verified; on-hardware flash of both boards pending.
 
-### 8. Product Layer 2 Health Protocol
+### 8. Product Layer 2 Health Protocol - Next
 
 Define a small custom product protocol on ethertype `0x88b5`.
 

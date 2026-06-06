@@ -1,0 +1,29 @@
+// NUCLEO-H723ZG PTP bring-up: mic-board role.
+//
+// Mic-board stand-in for the N:1 product network: future PTP slave, audio
+// producer, and health responder. For this milestone it shares the controller's
+// heartbeat path and is distinguished only by its board id on the wire.
+// See BRINGUP.md milestone 7.
+
+import board;
+import eth_dma;
+import ptp_clock;
+import phy_lan8742;
+
+// Board id placed in the heartbeat payload so a sniffer can tell the two roles
+// apart. Becomes a real protocol header field in milestone 8.
+const BOARD_ID: u32 = 2;
+
+fn main() @context(thread) {
+    board_bringup();
+
+    var seq: u32 = 0;
+    loop {
+        phy_poll_link();
+        eth_poll_rx();
+        val now = ptp_now();
+        eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+        seq = seq + 1;
+        delay();
+    }
+}

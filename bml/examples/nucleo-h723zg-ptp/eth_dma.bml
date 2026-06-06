@@ -248,7 +248,7 @@ fn put32_be(index: u32, value: u32) {
     put8(index + 3, value as u8);
 }
 
-fn fill_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
+fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
     // Destination: broadcast.
     put8(0, 0xFF);
     put8(1, 0xFF);
@@ -267,7 +267,7 @@ fn fill_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
     put8(12, (HEARTBEAT_ETHERTYPE >> 8) as u8);
     put8(13, HEARTBEAT_ETHERTYPE as u8);
 
-    // Payload: "BMLPTP" + seq + seconds + nanoseconds.
+    // Payload: "BMLPTP" + seq + seconds + nanoseconds + board_id.
     put8(14, 0x42);
     put8(15, 0x4D);
     put8(16, 0x4C);
@@ -277,8 +277,9 @@ fn fill_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
     put32_be(20, seq);
     put32_be(24, seconds);
     put32_be(28, nanoseconds);
+    put8(32, board_id as u8);
 
-    var index: u32 = 32;
+    var index: u32 = 33;
     while index < 60 {
         put8(index, 0);
         index = index + 1;
@@ -287,8 +288,8 @@ fn fill_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
     return 60u32;
 }
 
-fn eth_send_heartbeat(seq: u32, seconds: u32, nanoseconds: u32) {
-    val len = fill_heartbeat(seq, seconds, nanoseconds);
+fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+    val len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
     val desc_word = TX_DESC_INDEX * TX_DESC_WORDS;
 
     TX_DESC[desc_word] = tx_buffer_addr();

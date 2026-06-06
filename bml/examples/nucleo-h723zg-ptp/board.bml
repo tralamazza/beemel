@@ -1,14 +1,16 @@
-// NUCLEO-H723ZG Ethernet PTP bring-up.
+// Shared board bring-up for every NUCLEO-H723ZG PTP role.
 //
-// First milestone: initialize board support, then keep the low-level ETH/PTP
-// bring-up sequence explicit. The ETH implementation is intentionally staged;
-// see BRINGUP.md.
+// Role-specific behavior (controller vs mic node) lives in the main_<role>.bml
+// entrypoints; everything common to power-on stays here so both roles share one
+// init path. See BRINGUP.md milestone 7.
 
-import eth_dma;
-import ptp_clock;
-import phy_lan8742;
 import svd.scb;
 import cache;
+import eth_dma;
+import phy_lan8742;
+import ptp_clock;
+
+export fn board_bringup, fn delay;
 
 // Empirically tuned from the first tcpdump capture: 1,000,000 loop iterations
 // produced ~15.6 ms between heartbeats on the reset clock tree.
@@ -35,33 +37,26 @@ fn board_init() {
     asm { isb } : : : "memory";
 }
 
-fn delay() {
-    var count: u32 = 0;
-    while count < HEARTBEAT_DELAY_COUNT {
-        asm { }
-        count = count + 1;
-    }
-}
-
-fn main() @context(thread) {
-    // The D2 AHB SRAM clock (where the stack/.data/.bss/DMA buffers live) is
-    // ungated in startup before .data/.bss init -- see the [startup] section in
-    // stm32h723zg.target.
+// Full power-on bring-up shared by all roles: cache/core init, then ETH clocks
+// and pins, PHY probe, TX/RX rings, and the free-running PTP clock. After this
+// returns the role main loop only needs to poll link/RX and drive its own TX.
+//
+// The D2 AHB SRAM clock (where the stack/.data/.bss/DMA buffers live) is ungated
+// in startup before .data/.bss init -- see the [startup] section in
+// stm32h723zg.target.
+fn board_bringup() {
     board_init();
-
     eth_init_clocks_and_pins();
     phy_probe();
     eth_init_tx();
     eth_init_rx();
     ptp_init();
+}
 
-    var seq: u32 = 0;
-    loop {
-        phy_poll_link();
-        eth_poll_rx();
-        val now = ptp_now();
-        eth_send_heartbeat(seq, now.seconds, now.nanoseconds);
-        seq = seq + 1;
-        delay();
+fn delay() {
+    var count: u32 = 0;
+    while count < HEARTBEAT_DELAY_COUNT {
+        asm { }
+        count = count + 1;
     }
 }
