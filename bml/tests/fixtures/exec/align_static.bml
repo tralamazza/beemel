@@ -4,9 +4,9 @@
 // checks the runtime address is actually aligned.
 import harness.semihost;
 
-static a16: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
-static a64: [u8; 8] @align(64) = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
-static a256: [u32; 2] @align(256) = [0u32, 0u32];
+var a16: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
+var a64: [u8; 8] @align(64) = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+var a256: [u32; 2] @align(256) = [0u32, 0u32];
 
 fn main() @context(thread) {
     expect_u32((&a16[0]) as u32 % 16, 0);

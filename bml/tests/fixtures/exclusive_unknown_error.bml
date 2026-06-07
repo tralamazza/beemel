@@ -1,5 +1,5 @@
 // Error: @exclusive references unknown function
-static buf: u8 @exclusive(ghost_isr);  // E201: references unknown function
+var buf: u8 @exclusive(ghost_isr);  // E201: references unknown function
 
 fn main() @context(thread) {
     var x = buf;

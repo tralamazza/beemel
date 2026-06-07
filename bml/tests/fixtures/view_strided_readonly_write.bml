@@ -1,7 +1,7 @@
 // Writing through a readonly strided view is rejected (E334), same as the
 // contiguous and ring readonly views.
 fn main() @context(thread) {
-    val buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
-    val v: view u32 stride 2 = view(buf, stride 2);
+    const buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
+    const v: view u32 stride 2 = view(buf, stride 2);
     v[0u32] = 9u32;
 }

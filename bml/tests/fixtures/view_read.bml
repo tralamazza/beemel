@@ -2,6 +2,6 @@
 // Intra-procedural, so the verifier sees the backing allocation directly.
 fn main() @context(thread) {
     var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
-    val v: view u32 = view(&buf[0], 4u32);
+    const v: view u32 = view(&buf[0], 4u32);
     var x: u32 = v[2u32];
 }

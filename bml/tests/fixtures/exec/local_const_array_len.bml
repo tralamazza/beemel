@@ -1,0 +1,22 @@
+// A local `const` with a compile-time initializer is usable in const positions,
+// e.g. an array length: `const N = 4; var buf: [u32; N];`. A `var` could not.
+// If N/M did not fold, the lengths would resolve to 0 and the in-bounds writes
+// below would fail to typecheck, so a regression breaks the build, not just a
+// runtime check. N is also a normal immutable binding, read at runtime as `N-1`.
+import harness.semihost;
+
+fn main() @context(thread) {
+    const N: u32 = 4;
+    var buf: [u32; N] = [0u32, 0u32, 0u32, 0u32];
+
+    const M: u32 = N * 2;
+    var wide: [u8; M] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+
+    buf[N - 1] = 0xBEEF; // index 3 -- in bounds only if [u32; N] folded to 4
+    wide[M - 1] = 0xAB;  // index 7 -- in bounds only if [u8; M] folded to 8
+
+    expect_u32(buf[3], 0xBEEF);
+    expect_u32(wide[7] as u32, 0xAB);
+
+    done();
+}

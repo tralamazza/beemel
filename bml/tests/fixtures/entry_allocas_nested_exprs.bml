@@ -3,12 +3,12 @@ fn main() @context(thread) {
     var bytes: [u8; 1] = [0u8];
 
     if true {
-        val v: view u32 = view(&buf[0], { var view_len_tmp: u32 = 4u32; view_len_tmp });
+        const v: view u32 = view(&buf[0], { var view_len_tmp: u32 = 4u32; view_len_tmp });
         var view_read_tmp: u32 = v[0u32];
     }
 
     if true {
-        val r: ring u32 = ring(
+        const r: ring u32 = ring(
             &buf[0],
             { var ring_cap_tmp: u32 = 4u32; ring_cap_tmp },
             { var ring_head_tmp: u32 = 0u32; ring_head_tmp },
@@ -18,7 +18,7 @@ fn main() @context(thread) {
     }
 
     if true {
-        val b: bits = bits(
+        const b: bits = bits(
             &bytes[0],
             { var bit_off_tmp: u32 = 0u32; bit_off_tmp },
             { var bit_len_tmp: u32 = 8u32; bit_len_tmp }

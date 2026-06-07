@@ -54,7 +54,7 @@ fn ptp_init() {
 }
 
 fn ptp_now() -> PtpTime {
-    val seconds = Ethernet_MAC.MACSTSR.TSS;
-    val nanoseconds = Ethernet_MAC.MACSTNR.TSSS;
+    const seconds = Ethernet_MAC.MACSTSR.TSS;
+    const nanoseconds = Ethernet_MAC.MACSTNR.TSSS;
     return PtpTime { seconds: seconds, nanoseconds: nanoseconds };
 }

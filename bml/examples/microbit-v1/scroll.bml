@@ -101,7 +101,7 @@ fn main() @context(thread) {
 
     var pos: u32 = 0;
     loop {
-        val cols: view u32 = view(&FB[pos], DISPLAY_COLS);
+        const cols: view u32 = view(&FB[pos], DISPLAY_COLS);
         refresh(cols, FRAMES);
 
         pos += 1;

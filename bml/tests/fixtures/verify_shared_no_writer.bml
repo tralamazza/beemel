@@ -1,6 +1,6 @@
 // No ISR writes X, so the preempt shim must NOT havoc the read.
 // With Fix 1, this assert is provable.
-static X: u32 @shared(ceiling = 0) = 5;
+var X: u32 @shared(ceiling = 0) = 5;
 
 fn main() @context(thread) {
     var y: u32 = X;

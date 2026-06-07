@@ -1,5 +1,5 @@
 // Compound assignment to an immutable `val` binding is rejected (E309).
 fn main() @context(thread) {
-    val x: u32 = 1;
+    const x: u32 = 1;
     x += 1;
 }

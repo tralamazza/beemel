@@ -1,8 +1,8 @@
 // UART driver example -- tests parser Phase 1
 
-static tx_buf: [u8; 256] @exclusive(uart_isr);
-static rx_buf: [u8; 256] @exclusive(uart_isr);
-static bytes_sent: u32 @shared(ceiling = 2);
+var tx_buf: [u8; 256] @exclusive(uart_isr);
+var rx_buf: [u8; 256] @exclusive(uart_isr);
+var bytes_sent: u32 @shared(ceiling = 2);
 
 const BAUD_RATE: u32 = 115200;
 
@@ -23,7 +23,7 @@ fn main() @context(thread) {
 }
 
 fn uart_isr() @isr(priority = 2) {
-    val status = 0;
+    const status = 0;
     loop {
         if status == 1 {
             return;

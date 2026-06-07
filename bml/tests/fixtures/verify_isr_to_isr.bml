@@ -1,7 +1,7 @@
 // ISR(priority=1) can preempt ISR(priority=5) -- lower number = higher
 // priority on ARM. The reader must havoc X and the assert must NOT be
 // provable, even though neither side is a thread.
-static X: u32 @shared(ceiling = 1) = 5;
+var X: u32 @shared(ceiling = 1) = 5;
 
 fn high() @isr(priority = 1) {
     X = 99u32;

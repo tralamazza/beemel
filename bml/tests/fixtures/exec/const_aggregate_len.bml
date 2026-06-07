@@ -21,20 +21,20 @@ fn main() @context(thread) {
     var local: [u32; FB_LEN] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32];
     expect_u32(len(local), 6);
 
-    val v: view u32 = view(FB);
+    const v: view u32 = view(FB);
     expect_u32(len(v), 6);
     expect_u32(v[2u32], 30);
 
-    val s: view u32 stride 2 = view(FB, stride 2);
+    const s: view u32 stride 2 = view(FB, stride 2);
     expect_u32(len(s), 3);
     expect_u32(s[2u32], 50);
 
-    val r: ring u32 = ring(FB, 4u32, len(FB));
+    const r: ring u32 = ring(FB, 4u32, len(FB));
     expect_u32(len(r), 6);
     expect_u32(r[1u32], 60);
 
     var bytes: [u8; 2] = [0u8, 0u8];
-    val bits_view: bits = bits(bytes);
+    const bits_view: bits = bits(bytes);
     expect_u32(len(bits_view), 16);
 
     done();

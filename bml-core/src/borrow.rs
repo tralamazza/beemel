@@ -355,7 +355,7 @@ fn check_static_access(
     if sym.storage.is_empty() && current_ctx.is_isr() {
         diags.error(
             format!(
-                "static `{name}` has no annotations and is thread-only; cannot access from ISR `{current_fn}`"
+                "global `{name}` has no annotations and is thread-only; cannot access from ISR `{current_fn}`"
             ),
             "E404",
             *span,
@@ -369,7 +369,7 @@ fn check_static_access(
                 if owner != current_fn {
                     diags.error(
                         format!(
-                            "static `{name}` is @exclusive to `{owner}`, cannot access from `{current_fn}`"
+                            "global `{name}` is @exclusive to `{owner}`, cannot access from `{current_fn}`"
                         ),
                         "E401",
                         *span,
@@ -381,7 +381,7 @@ fn check_static_access(
                 if !current_ctx.can_access(*ceiling) {
                     diags.error(
                         format!(
-                            "static `{name}` has @shared(ceiling={ceiling}), but current priority is {level} (lower = higher priority in ARM)"
+                            "global `{name}` has @shared(ceiling={ceiling}), but current priority is {level} (lower = higher priority in ARM)"
                         ),
                         "E402",
                         *span,

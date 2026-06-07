@@ -1,6 +1,6 @@
 // Thread context accessing @shared(ceiling=2) -- must emit cpsid i / cpsie i
 
-static counter: u32 @shared(ceiling = 2);
+var counter: u32 @shared(ceiling = 2);
 
 fn main() @context(thread) {
     var x: u32 = counter;

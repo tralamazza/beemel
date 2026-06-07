@@ -5,10 +5,18 @@
 | Declaration  | Scope   | Mutability                  | Storage          |
 |-------------|---------|-----------------------------|------------------|
 | `var`       | Fn body | Mutable                     | Stack            |
-| `val`       | Fn body | Immutable                   | Stack            |
+| `var`       | Module  | Mutable (access-controlled) | RAM (.bss/.data) |
+| `const`     | Fn body | Immutable                   | Stack / value    |
 | `const`     | Module  | Immutable                   | Flash (.rodata)  |
-| `static`    | Module  | Mutable (access-controlled) | RAM (.bss/.data) |
 | `peripheral`| Module  | Access-controlled           | MMIO bus         |
+
+There are two binding keywords, each usable at module or function scope: `var`
+is mutable, `const` is immutable. At module scope a `var` is access-controlled
+storage (and takes `@dma`/`@align`/`@shared`/`@exclusive`/`@section`), while a
+module `const` is a compile-time constant. Inside a function, `var` is a mutable
+local and `const` is an immutable binding; when a local `const`'s initializer is
+itself a compile-time constant it may also be used in const positions (e.g. an
+array length), otherwise it is an ordinary immutable runtime binding.
 
 ### Built-in types
 
@@ -61,22 +69,21 @@ var z: u8 = 300 as u8;      // narrowing with warning W301
 Exception: `*mut T` implicitly coerces to `*T` (mutable → const). The reverse
 requires an explicit `as` cast.
 
-`var`/`val` may only appear inside function bodies.
-`const`/`static`/`peripheral` may only appear at module level.
-All `static` declarations must be explicitly initialized (to zero or a value).
-`const` declarations may hold scalar or aggregate compile-time initializers,
-including arrays and structs:
+`var` and `const` may appear at module level or inside function bodies;
+`peripheral` is module level only. A module-level `var` without an initializer is
+zero-initialized (.bss). Module `const` declarations may hold scalar or aggregate
+compile-time initializers, including arrays and structs:
 
 ```bml
 const LUT: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
 const COLUMNS: u32 = len(LUT);
 ```
 
-A `const` or `static` initializer may also name another `const`, including
+A module `const` or `var` initializer may also name another `const`, including
 aggregate and float consts; it is inlined to that const's value:
 
 ```bml
-static ACTIVE: [u32; 4] = LUT; // copy of LUT's value into a mutable global
+var ACTIVE: [u32; 4] = LUT; // copy of LUT's value into a mutable global
 const COLS_ALIAS: u32 = COLUMNS;
 ```
 
@@ -175,7 +182,7 @@ The compiler uses the ARM convention directly:
 | `@shared(ceiling=N)` -- current priority must be ≥ N (ARM: lower number = higher priority; higher number = lower priority) | E402 |
 | ISR cannot call `@context(thread)` functions | E403 |
 | Thread cannot call `@isr(...)` functions | E403 |
-| Unannotated `static` -- implicitly thread-only | E404 |
+| Unannotated module `var` -- implicitly thread-only | E404 |
 
 Thread context accessing `@shared(...)` is always allowed -- the compiler
 will auto-insert a `cpsid i` / `cpsie i` critical section during codegen.
@@ -219,7 +226,7 @@ There is no `&T` in type position -- `&` is purely an expression operator.
 | Expression | Produces | Notes |
 |-----------|----------|-------|
 | `&x` | `*T` | Address of local, static, peripheral, or array element |
-| `&mut x` | `*mut T` | Mutable address; rejected on `val` bindings |
+| `&mut x` | `*mut T` | Mutable address; rejected on `const` bindings |
 | `null` | `*T` / `*mut T` | Null pointer, compatible with any pointer type |
 | `expr as *T` | `*T` | Integer→pointer cast (LLVM `inttoptr`) |
 | `expr as *mut T` | `*mut T` | Integer→mutable pointer cast |
@@ -249,13 +256,13 @@ const LUT: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
 const N: u32 = len(LUT);       // 4, compile-time constant
 
 fn main() @context(thread) {
-    val v: view u32 = view(LUT);
+    const v: view u32 = view(LUT);
     var n: u32 = len(v);       // extracts the view descriptor length
 }
 ```
 
 Supported operands are arrays, `view`, strided `view`, `ring`, and `bits`.
-For arrays the result is compile-time when the array is a `const`/`static` item,
+For arrays the result is compile-time when the array is a `const`/`var` item,
 so it can be used in other `const` expressions and array lengths. For views the
 result is the descriptor's logical length: field `len` for linear/strided views,
 ring length for `ring`, and bit count for `bits`.
@@ -477,7 +484,7 @@ The strided constructor `view(arr, stride K)` is array-only (its logical length
 pointer+stride form in v1.
 
 The array form's mutability follows the backing place (a `var` array or a static
-is mutable; a `val` binding is readonly); the pointer form's follows the
+is mutable; a `const` binding is readonly); the pointer form's follows the
 pointer's constness (`*mut T` -> mutable, `*T` -> readonly). `bits` requires a
 byte backing (`[u8; N]`/`[b8; N]` or `*u8`/`&u8`).
 
@@ -492,11 +499,11 @@ of one byte.
 
 **Backing storage.** Views can be built over storage-class arrays
 (`@dma`/`@external`/`@exclusive`); the storage class is unwrapped at construction
-and kept out of the view's type. A view over a `@shared` static is **rejected**
+and kept out of the view's type. A view over a `@shared` global is **rejected**
 (E405): the `@shared` ceiling protocol is enforced by a critical section emitted
 around *direct* static access, and a view's access (through the descriptor
 pointer) would not receive it, so it would be a silent unprotected race. Direct
-access to a scalar `@shared` static gets the critical section automatically;
+access to a scalar `@shared` global gets the critical section automatically;
 bounds-checked indexed access to a `@shared` *array* is not available yet (a
 protected-view-access mechanism is future work).
 
@@ -675,7 +682,7 @@ Enum values are just integers of the underlying type:
 - `import foo { bar, baz };` -- selective import (imports only listed items)
 - `import foo as f;` -- aliased import (access via `f.bar()` qualified syntax)
 - `export fn foo;` -- marks public (non-exported items are private)
-  - Also supports: `export struct Foo;`, `export enum Bar;`, `export static X;`, `export const Y;`, `export peripheral Z;`
+  - Also supports: `export struct Foo;`, `export enum Bar;`, `export var X;`, `export const Y;`, `export peripheral Z;`
 - No circular imports (compile error E500)
 - No header files -- compiler reads `.bml` directly
 - Module-level items are unordered within a file; forward references are fine
@@ -690,7 +697,7 @@ Enum values are just integers of the underlying type:
 export fn init, send;
 export struct Point;
 export enum State;
-export static BUF;
+export var BUF;
 export const RATE;
 export peripheral UART1;
 ```
@@ -788,7 +795,7 @@ vector_table_offset = 0x08000000
 ```
 program       = { item }
 
-item          = fn_def | extern_fn_def | static_def | const_def
+item          = fn_def | extern_fn_def | global_var_def | const_def
               | peripheral_def | import_stmt | export_stmt
               | struct_def
               | enum_def
@@ -808,7 +815,7 @@ fn_annotation = "@context" "(" "thread" ")"
               | "@naked"
               | "@section" "(" string ")"
 
-static_def    = "static" ident ":" type
+global_var_def = "var" ident ":" type
                 { "@" storage_annotation } ["=" expr] ";"
 
 const_def     = "const" ident ":" type "=" expr ";"
@@ -823,11 +830,11 @@ access        = "readonly" | "writeonly"
 storage_annotation = "exclusive" "(" ident ")"
               | "shared" "(" "ceiling" "=" int ")"
               | "dma" | "external" | "section" "(" string ")"
-              | "align" "(" int ")"          (* power of two; over-aligns the static *)
+              | "align" "(" int ")"          (* power of two; over-aligns the global *)
 
 import_stmt   = "import" ident ["{" ident {"," ident} "}"] ["as" ident] ";"
 
-export_stmt   = "export" ("fn" | "static" | "const" | "peripheral" | "struct" | "enum")
+export_stmt   = "export" ("fn" | "var" | "const" | "peripheral" | "struct" | "enum")
                 ident {"," ident} ";"
 
 struct_def    = "struct" ident [ "@repr" "(" ("C" | "packed") ")" ]
@@ -872,7 +879,7 @@ if_expr       = "if" expr block "else" (block_expr | if_expr)
               ;; if/else as expression; else branch required;
               ;; both branches must have trailing expressions
 
-var_decl      = ("var" | "val") ident [":" type] "=" expr ";"
+var_decl      = ("var" | "const") ident [":" type] "=" expr ";"
 
 assign        = lvalue ("=" | compound_op) expr ";"
 compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
@@ -1001,7 +1008,7 @@ The condition must evaluate to a constant `b1`: integer/bool literals, `const`
 values, `sizeof(...)`, `as` casts, the usual arithmetic / bitwise / shift
 operators, comparisons, and `&&` / `||` / `!`. A condition that is false is
 `E342`; one that is not a compile-time-constant boolean (e.g. references a
-runtime `static` or evaluates to an integer) is `E343`. Unlike `assert`, which
+runtime `var` or evaluates to an integer) is `E343`. Unlike `assert`, which
 is a verifier obligation, `comptime_assert` is checked by `bml build` itself.
 
 ### `assume` / `assert` semantics
@@ -1084,7 +1091,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E106  | Expected identifier |
 | E107  | Expected integer |
 | E108  | Invalid annotation (duplicate, missing, or malformed) |
-| E112  | `const`/`static` cannot be declared inside a function body |
+| E112  | (removed -- `var`/`const` may now be declared inside a function body) |
 | E113  | Nesting too deep (expression, type, or block) |
 | E114  | Register-field bit index or range out of range (must be 0..32) |
 | E200  | Duplicate name |
@@ -1098,7 +1105,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E306  | Logical not requires b1 |
 | E307  | Function argument count mismatch |
 | E308  | Function argument type mismatch |
-| E309  | Cannot assign to immutable variable (`val`) |
+| E309  | Cannot assign to immutable variable (`const`) |
 | E310  | Type mismatch in arithmetic expression -- use `as` to cast |
 | E311  | Comparison between different types -- use `as` to cast |
 | E312  | For loop variable must be integer; bound or step type does not match declared type; or literal step is zero |
@@ -1128,7 +1135,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E401  | `@exclusive` access from wrong function |
 | E402  | `@shared` ceiling violation |
 | E403  | Context-incompatible function call (ISR→thread or thread→ISR) |
-| E404  | Access to thread-only static from ISR |
+| E404  | Access to thread-only global from ISR |
 | E405  | Cannot build a view over `@shared` memory (view access bypasses the ceiling critical-section) |
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |

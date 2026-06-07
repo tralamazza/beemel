@@ -200,11 +200,24 @@ fn fold_block(
     consts: &HashMap<String, i128>,
     array_lens: &HashMap<String, usize>,
 ) {
+    // A local `const` with a compile-time initializer participates in folding
+    // within its scope, so `const N = 4; var buf: [u8; N];` resolves the length
+    // just like a module const would. Clone-on-entry gives lexical scoping: a
+    // const declared in this block (or a nested one) never leaks outward, and an
+    // initializer cannot see its own binding (it is inserted only after folding).
+    // Only immutable (`const`) locals qualify; a `var` is not a constant.
+    let mut local = consts.clone();
     for stmt in &mut block.stmts {
-        fold_stmt(stmt, consts, array_lens);
+        fold_stmt(stmt, &local, array_lens);
+        if let Stmt::VarDecl(vd) = &*stmt
+            && !vd.mutable
+            && let Some(v) = fold_const_int(&vd.init, &local, array_lens)
+        {
+            local.insert(vd.name.0.clone(), v);
+        }
     }
     if let Some(trailing) = &mut block.trailing {
-        fold_expr(trailing, consts, array_lens);
+        fold_expr(trailing, &local, array_lens);
     }
 }
 
@@ -369,6 +382,36 @@ mod tests {
         fold_array_lengths(&mut program);
         // N -> 4, M = N * 2 -> 8 (the latter exercises the const-of-const fixpoint)
         assert_eq!(var_array_lens(&program), vec![Some(4), Some(8)]);
+    }
+
+    #[test]
+    fn folds_local_const_into_array_length() {
+        // A local `const` with a compile-time initializer drives a later array
+        // length within its scope, including a const-of-const (`M = N * 2`).
+        let mut program = parse(concat!(
+            "fn f() @context(thread) {\n",
+            "    const N: u32 = 4;\n",
+            "    var a: [u8; N] = [0u8, 0u8, 0u8, 0u8];\n",
+            "    const M: u32 = N * 2;\n",
+            "    var b: [u16; M] = [0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16];\n",
+            "}\n",
+        ));
+        fold_array_lengths(&mut program);
+        assert_eq!(var_array_lens(&program), vec![Some(4), Some(8)]);
+    }
+
+    #[test]
+    fn mutable_local_does_not_fold_array_length() {
+        // A `var` is not a constant, so it must not be folded into a length; the
+        // type is left unresolved and surfaces as a normal error later.
+        let mut program = parse(concat!(
+            "fn f() @context(thread) {\n",
+            "    var n: u32 = 4;\n",
+            "    var a: [u8; n] = [0u8];\n",
+            "}\n",
+        ));
+        fold_array_lengths(&mut program);
+        assert_eq!(var_array_lens(&program), vec![None]);
     }
 
     #[test]

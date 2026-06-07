@@ -824,7 +824,7 @@ mod tests {
     fn projected_shared_write_marks_isr_writer() {
         let info = analyze_source(
             r"
-            static X: [u32; 2] @shared(ceiling = 1) = [0u32, 0u32];
+            var X: [u32; 2] @shared(ceiling = 1) = [0u32, 0u32];
 
             fn main() @context(thread) {
                 var y: u32 = X[0u32];
@@ -847,7 +847,7 @@ mod tests {
     fn shared_write_through_helper_marks_isr_caller() {
         let info = analyze_source(
             r"
-            static X: u32 @shared(ceiling = 1) = 0u32;
+            var X: u32 @shared(ceiling = 1) = 0u32;
 
             fn helper() {
                 X = 1u32;
@@ -874,7 +874,7 @@ mod tests {
     fn shared_write_through_function_pointer_marks_isr_caller() {
         let info = analyze_source(
             r"
-            static X: u32 @shared(ceiling = 1) = 0u32;
+            var X: u32 @shared(ceiling = 1) = 0u32;
 
             fn helper() {
                 X = 1u32;

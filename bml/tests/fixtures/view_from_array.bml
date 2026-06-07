@@ -9,7 +9,7 @@ fn sum2(v: view u32) -> u32 {
 
 fn main() @context(thread) {
     var buf: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
-    val v: view u32 = view(buf);
+    const v: view u32 = view(buf);
     var x: u32 = v[2u32];
     var s: u32 = sum2(view(buf));
 }

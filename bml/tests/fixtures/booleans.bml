@@ -1,7 +1,7 @@
 // Boolean types: b1 literals, if/while conditions, logical not
 fn main() @context(thread) {
-    val t: u32 = 42;
-    val f: u32 = 0;
+    const t: u32 = 42;
+    const f: u32 = 0;
 
     if true {
         var x: u32 = 1;
@@ -14,8 +14,8 @@ fn main() @context(thread) {
         break;
     }
 
-    val cond = true;
-    val neg = !cond;
-    val chained = cond || false;
-    val both = cond && true;
+    const cond = true;
+    const neg = !cond;
+    const chained = cond || false;
+    const both = cond && true;
 }

@@ -1,4 +1,4 @@
 // `view` first argument must be a pointer (E333).
 fn main() @context(thread) {
-    val v: view u32 = view(5u32, 4u32);
+    const v: view u32 = view(5u32, 4u32);
 }

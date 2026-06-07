@@ -1,5 +1,5 @@
 fn main() @context(thread) {
-    val buf: [u32; 2] = [1u32, 2u32];
-    val v: view u32 = view(buf);
+    const buf: [u32; 2] = [1u32, 2u32];
+    const v: view u32 = view(buf);
     var p: *mut u32 = &mut v[0u32];
 }

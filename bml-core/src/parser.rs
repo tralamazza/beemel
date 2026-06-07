@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
             match self.peek_kind() {
                 TokenKind::Extern
                 | TokenKind::Fn
-                | TokenKind::Static
+                | TokenKind::Var
                 | TokenKind::Const
                 | TokenKind::Peripheral
                 | TokenKind::Import
@@ -201,7 +201,7 @@ impl<'a> Parser<'a> {
         match self.peek_kind() {
             TokenKind::Extern => self.parse_extern_fn_def().map(Item::ExternFnDef),
             TokenKind::Fn => self.parse_fn_def().map(Item::FnDef),
-            TokenKind::Static => self.parse_static_def().map(Item::StaticDef),
+            TokenKind::Var => self.parse_static_def().map(Item::StaticDef),
             TokenKind::Const => self.parse_const_def().map(Item::ConstDef),
             TokenKind::Peripheral => self.parse_peripheral_def().map(Item::PeripheralDef),
             TokenKind::Import => self.parse_import().map(Item::Import),
@@ -841,7 +841,7 @@ impl<'a> Parser<'a> {
                     self.advance();
                     names.push(ExportItem::Fn(self.parse_ident()?));
                 }
-                TokenKind::Static => {
+                TokenKind::Var => {
                     self.advance();
                     names.push(ExportItem::Static(self.parse_ident()?));
                 }
@@ -996,7 +996,7 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         match self.peek_kind() {
             TokenKind::Var => self.parse_var_decl(true).map(Stmt::VarDecl),
-            TokenKind::Val => self.parse_var_decl(false).map(Stmt::VarDecl),
+            TokenKind::Const => self.parse_var_decl(false).map(Stmt::VarDecl),
             TokenKind::If => self.parse_if_stmt().map(Stmt::If),
             TokenKind::Loop => self.parse_loop_stmt().map(Stmt::Loop),
             TokenKind::While => self.parse_while_stmt().map(Stmt::While),
@@ -1028,24 +1028,6 @@ impl<'a> Parser<'a> {
                     clobbers,
                     span,
                 }))
-            }
-            TokenKind::Const => {
-                self.diags.error(
-                    "`const` cannot be declared inside a function body",
-                    "E112",
-                    self.peek_span(),
-                );
-                self.skip_to_semicolon_or_brace();
-                None
-            }
-            TokenKind::Static => {
-                self.diags.error(
-                    "`static` cannot be declared inside a function body",
-                    "E112",
-                    self.peek_span(),
-                );
-                self.skip_to_semicolon_or_brace();
-                None
             }
             TokenKind::Assume => {
                 let (cond, span) = self.parse_paren_cond("assume")?;

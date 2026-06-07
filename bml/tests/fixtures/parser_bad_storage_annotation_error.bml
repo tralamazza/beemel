@@ -1,1 +1,1 @@
-static buf: u32 @bogus = 0;
+var buf: u32 @bogus = 0;

@@ -1,4 +1,4 @@
-static X: u32 = 1;
+var X: u32 = 1;
 
 fn main() @context(thread) {
     var y: u32 = X;

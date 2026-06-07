@@ -1,6 +1,6 @@
 // ISR(priority=2) accessing @shared(ceiling=2) -- 2 > 2 is false → NO critical section
 
-static counter: u32 @shared(ceiling = 2);
+var counter: u32 @shared(ceiling = 2);
 
 fn same_isr() @isr(priority = 2) {
     var x: u32 = counter;

@@ -22,21 +22,21 @@ const MAC3: u8 = 0x00;
 const MAC4: u8 = 0x72;
 const MAC5: u8 = 0x3A;
 
-static TX_BUFFER: [u8; 128] @dma @align(32);
-static TX_DESC: [u32; 8] @dma @align(32);
-static RX_BUFFER: [u8; 1024] @dma @align(32);
-static RX_DESC: [u32; 8] @dma @align(32);
-static TX_DESC_INDEX: u32;
-static RX_DESC_INDEX: u32;
-static RX_PACKET_COUNT: u32;
-static RX_LAST_LEN: u32;
-static RX_LAST_DESC3: u32;
-static RX_LAST_ETHERTYPE: u32;
-static RX_LAST_SRC0: u32;
-static RX_LAST_SRC1: u32;
-static RX_TIMESTAMP_COUNT: u32;
-static RX_LAST_TIMESTAMP_NS: u32;
-static RX_LAST_TIMESTAMP_SECONDS: u32;
+var TX_BUFFER: [u8; 128] @dma @align(32);
+var TX_DESC: [u32; 8] @dma @align(32);
+var RX_BUFFER: [u8; 1024] @dma @align(32);
+var RX_DESC: [u32; 8] @dma @align(32);
+var TX_DESC_INDEX: u32;
+var RX_DESC_INDEX: u32;
+var RX_PACKET_COUNT: u32;
+var RX_LAST_LEN: u32;
+var RX_LAST_DESC3: u32;
+var RX_LAST_ETHERTYPE: u32;
+var RX_LAST_SRC0: u32;
+var RX_LAST_SRC1: u32;
+var RX_TIMESTAMP_COUNT: u32;
+var RX_LAST_TIMESTAMP_NS: u32;
+var RX_LAST_TIMESTAMP_SECONDS: u32;
 
 const TX_DESC_COUNT: u32 = 2;
 const TX_DESC_WORDS: u32 = 4;
@@ -171,7 +171,7 @@ fn eth_init_tx() {
     TX_DESC[7] = 0;
     TX_DESC_INDEX = 0;
 
-    val desc0 = tx_desc_addr(0);
+    const desc0 = tx_desc_addr(0);
     Ethernet_DMA.DMACTxRLR.TDRL = TX_DESC_COUNT - 1;
     Ethernet_DMA.DMACTxDLAR.TDESLA = desc0 >> 2;
     Ethernet_DMA.DMACTxDTPR.TDT = desc0 >> 2;
@@ -202,7 +202,7 @@ fn eth_init_rx() {
     RX_LAST_TIMESTAMP_NS = 0;
     RX_LAST_TIMESTAMP_SECONDS = 0;
 
-    val desc0 = rx_desc_addr(0);
+    const desc0 = rx_desc_addr(0);
     Ethernet_DMA.DMACRxRLR.RDRL = RX_DESC_COUNT - 1;
     Ethernet_DMA.DMACRxDLAR.RDESLA = desc0 >> 2;
     Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr((RX_DESC_COUNT - 1) * RX_DESC_WORDS) >> 2;
@@ -283,8 +283,8 @@ fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u3
 }
 
 fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
-    val len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
-    val desc_word = TX_DESC_INDEX * TX_DESC_WORDS;
+    const len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
+    const desc_word = TX_DESC_INDEX * TX_DESC_WORDS;
 
     TX_DESC[desc_word] = tx_buffer_addr();
     TX_DESC[desc_word + 1] = 0;
@@ -298,24 +298,24 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 
     asm { dmb } : : : "memory";
 
-    val next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
+    const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR.TDT = next_desc_addr >> 2;
 }
 
 fn rx_get8(index: u32) -> u32 {
-    val buffer = rx_buffer_addr(RX_DESC_INDEX) as *u8;
+    const buffer = rx_buffer_addr(RX_DESC_INDEX) as *u8;
     return buffer[index] as u32;
 }
 
 // A `@dma` static can be index-assigned but not index-read as an rvalue, so the
 // descriptor read goes through a `*u32` taken from the static's base address.
 fn rx_desc_get32(word_index: u32) -> u32 {
-    val desc = &RX_DESC as *u32;
+    const desc = &RX_DESC as *u32;
     return desc[word_index];
 }
 
 fn rx_rearm(desc_word: u32) {
-    val desc_index = desc_word / RX_DESC_WORDS;
+    const desc_index = desc_word / RX_DESC_WORDS;
     RX_DESC[desc_word] = rx_buffer_addr(desc_index);
     RX_DESC[desc_word + 1] = 0;
     RX_DESC[desc_word + 2] = 0;
@@ -325,9 +325,9 @@ fn rx_rearm(desc_word: u32) {
 }
 
 fn eth_poll_rx() {
-    val desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
+    const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
     asm { dmb } : : : "memory";
-    val desc3 = rx_desc_get32(desc_word + 3);
+    const desc3 = rx_desc_get32(desc_word + 3);
 
     if (desc3 & RX_DESC_OWN) != 0 {
         return;

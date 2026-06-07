@@ -2,5 +2,5 @@
 // make the logical length and the backing index degenerate.
 fn main() @context(thread) {
     var buf: [u32; 8] = [0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32];
-    val v: view u32 stride 0 = view(buf, stride 0);
+    const v: view u32 stride 0 = view(buf, stride 0);
 }

@@ -1,2 +1,2 @@
 // Test: @section() on static (bug fix -- was parsed but not emitted)
-static my_data: u32 @section("my_data") = 42;
+var my_data: u32 @section("my_data") = 42;

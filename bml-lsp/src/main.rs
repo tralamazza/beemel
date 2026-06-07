@@ -348,7 +348,7 @@ impl Server {
                 .and_then(|call| format_call_args(&call, f, name));
             (sig, call_info)
         } else if let Some(s) = analysis.symbols.statics.get(name) {
-            (format!("static {name}: {}", s.ty), None)
+            (format!("var {name}: {}", s.ty), None)
         } else if let Some(c) = analysis.symbols.consts.get(name) {
             let val = find_const_value(name, &analysis.program)
                 .map(|v| format!(" = {v}"))
@@ -1293,7 +1293,7 @@ fn collect_completions(
             items.push(CompletionItem {
                 label: name.clone(),
                 kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some(format!("static {name}: {}", s.ty)),
+                detail: Some(format!("var {name}: {}", s.ty)),
                 sort_text: Some(format!("1_{name}")),
                 ..Default::default()
             });
@@ -1585,8 +1585,6 @@ fn walk_expr_for_scope(expr: &ast::Expr, offset: usize, scope: &mut CompletionSc
 const BML_KEYWORDS: &[&str] = &[
     "fn",
     "var",
-    "val",
-    "static",
     "const",
     "peripheral",
     "reg",
@@ -1955,7 +1953,7 @@ mod tests {
         let labels = completion_labels(
             r"
 fn main() {
-    val local: u32 = 1u32;
+    const local: u32 = 1u32;
     $0
 }
 ",
@@ -1970,7 +1968,7 @@ fn main() {
             r"
 fn main() {
     $0
-    val later: u32 = 1u32;
+    const later: u32 = 1u32;
 }
 ",
         );
@@ -1983,7 +1981,7 @@ fn main() {
         let labels = completion_labels(
             r"
 fn main() {
-    val local: u32 = $01u32;
+    const local: u32 = $01u32;
 }
 ",
         );
@@ -1997,7 +1995,7 @@ fn main() {
             r"
 fn main() {
     {
-        val hidden: u32 = 1u32;
+        const hidden: u32 = 1u32;
     }
     $0
 }
@@ -2012,9 +2010,9 @@ fn main() {
         let labels = completion_labels(
             r"
 fn main() {
-    val outer: u32 = 1u32;
+    const outer: u32 = 1u32;
     {
-        val inner: u32 = 2u32;
+        const inner: u32 = 2u32;
         $0
     }
 }
@@ -2072,12 +2070,12 @@ fn main() {
         // Both functions declare `x`; the cursor is on the second's use of it.
         let src = "\
 fn first() {
-    val x: u32 = 1u32;
-    val a: u32 = x;
+    const x: u32 = 1u32;
+    const a: u32 = x;
 }
 fn second() {
-    val x: u32 = 2u32;
-    val b: u32 = $0x;
+    const x: u32 = 2u32;
+    const b: u32 = $0x;
 }
 ";
         let (analysis, offset) = analyze_at(src);
@@ -2088,8 +2086,9 @@ fn second() {
         let span = find_definition_span("x", &analysis.program, analysis.root_file_id, offset)
             .expect("definition resolved");
         let clean = src.replace("$0", "");
-        // The `x` of the *second* `val x` declaration, not the first.
-        let second_decl = clean.match_indices("val x").nth(1).expect("two decls").0 + "val ".len();
+        // The `x` of the *second* `const x` declaration, not the first.
+        let second_decl =
+            clean.match_indices("const x").nth(1).expect("two decls").0 + "const ".len();
         assert_eq!(span.start, second_decl);
     }
 
@@ -2097,8 +2096,8 @@ fn second() {
     fn hover_resolves_enclosing_fn_param_and_local() {
         let src = "\
 fn main(p: u32) {
-    val local_v: u32 = 1u32;
-    val b: u32 = $0local_v;
+    const local_v: u32 = 1u32;
+    const b: u32 = $0local_v;
 }
 ";
         let (analysis, offset) = analyze_at(src);
@@ -2139,7 +2138,7 @@ fn main() {
         let src = "\
 fn main() @context(thread) {
     var buf: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
-    val v: view u32 = view($0buf);
+    const v: view u32 = view($0buf);
 }
 ";
         let (analysis, offset) = analyze_at(src);
@@ -2159,7 +2158,7 @@ fn main() @context(thread) {
         let src = "\
 fn main() @context(thread) {
     var arr: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
-    val idx: u32 = 1u32;
+    const idx: u32 = 1u32;
     arr[$0idx] = 5u32;
 }
 ";

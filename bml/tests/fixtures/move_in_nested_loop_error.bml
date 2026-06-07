@@ -1,6 +1,6 @@
 // Move inside a nested loop: the inner-loop move leaks to the outer loop's
 // fixpoint, so the value is use-after-move on a later iteration. (E304)
-static dbuf: u32 @dma;
+var dbuf: u32 @dma;
 
 fn main() @context(thread) {
     var x = dbuf;

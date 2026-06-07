@@ -1,8 +1,8 @@
 // Float type and literal test -- suffixes required
 // 3.14d (f64), 2.5f (f32), 1.0h (f16)
-static pi: f64 = 3.14159d;
-static e: f32 = 2.71828f;
-static approx: f16 = 1.0h;
+var pi: f64 = 3.14159d;
+var e: f32 = 2.71828f;
+var approx: f16 = 1.0h;
 
 fn main() @context(thread) {
     var x: f64 = 3.14d;

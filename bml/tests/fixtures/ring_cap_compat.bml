@@ -9,6 +9,6 @@ fn first(r: ring u32) -> u32 @context(thread) {
 }
 fn main() @context(thread) {
     var buf: [u32; 8] = [0u32, 1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32];
-    val r = ring(buf, 0u32, 8u32);
+    const r = ring(buf, 0u32, 8u32);
     var x: u32 = first(r);
 }

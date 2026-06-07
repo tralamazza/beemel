@@ -1,6 +1,6 @@
 // Taking the address of a Move-typed local borrows it; it must not consume the
 // value. Both `&x` and `&mut x` are non-consuming, so `x` stays usable after.
-static dbuf: u32 @dma;
+var dbuf: u32 @dma;
 
 fn main() @context(thread) {
     var x = dbuf;            // Move-typed local

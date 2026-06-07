@@ -1,12 +1,12 @@
 // *mut T → *T implicit coercion in function calls and assignments
-static buf: u8;
+var buf: u8;
 
 fn read_buf(p: *u8) {
     var x = *p;
 }
 
 fn main() @context(thread) {
-    val p: *mut u8 = &mut buf;
+    const p: *mut u8 = &mut buf;
     // Implicit coercion: *mut u8 → *u8 in function call
     read_buf(p);
 

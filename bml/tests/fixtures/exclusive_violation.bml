@@ -1,5 +1,5 @@
 // Error: accessing @exclusive static from wrong function
-static counter: u32 @exclusive(timer_isr);
+var counter: u32 @exclusive(timer_isr);
 
 fn main() @context(thread) {
     var x: u32 = counter;

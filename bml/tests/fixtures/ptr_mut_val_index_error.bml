@@ -1,4 +1,4 @@
 fn main() @context(thread) {
-    val buf: [u32; 2] = [1u32, 2u32];
+    const buf: [u32; 2] = [1u32, 2u32];
     var p: *mut u32 = &mut buf[0u32];
 }

@@ -5,7 +5,7 @@
 // (`&(x as u32)`) does not typecheck.
 import harness.semihost;
 
-static BUF: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
+var BUF: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
 
 fn main() @context(thread) {
     // Bare and parenthesized address-of-then-cast must agree.
@@ -13,8 +13,8 @@ fn main() @context(thread) {
 
     // `&BUF[i] as u32` is `(&BUF[i]) as u32`: consecutive u32 elements are 4
     // bytes apart. The wrong grouping `&(BUF[1] as u32)` would not typecheck.
-    val a0 = &BUF[0] as u32;
-    val a1 = &BUF[1] as u32;
+    const a0 = &BUF[0] as u32;
+    const a1 = &BUF[1] as u32;
     expect_u32(a1 - a0, 4);
 
     // Address of a static is its symbol address, honoring @align(16). Also pins
@@ -24,7 +24,7 @@ fn main() @context(thread) {
     // Deref binds tighter than `as`: `*p as u32` is `(*p) as u32`. The wrong
     // grouping `*(p as u32)` would dereference an integer and fail to typecheck.
     BUF[2] = 0xCAFE;
-    val p = &BUF[2];
+    const p = &BUF[2];
     expect_u32(*p as u32, 0xCAFE);
 
     done();

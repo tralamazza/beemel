@@ -4,7 +4,7 @@ const LUT: [u32; 4] = [11u32, 22u32, 33u32, 44u32];
 
 // A static aggregate initialized by naming a const aggregate (issue #4): the
 // static is loaded at runtime, so a wrong `0` initializer would be observable.
-static FROM_CONST: [u32; 4] = LUT;
+var FROM_CONST: [u32; 4] = LUT;
 
 // A float const initialized by naming another float const (issue #6).
 const HALF7: f32 = 3.5f;

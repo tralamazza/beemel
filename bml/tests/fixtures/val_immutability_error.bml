@@ -1,5 +1,5 @@
 // Error: cannot assign to immutable val
 fn main() @context(thread) {
-    val x: u32 = 42;
+    const x: u32 = 42;
     x = 99;  // E309: cannot assign to immutable variable
 }

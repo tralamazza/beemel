@@ -1,1 +1,1 @@
-static counter: u32 @shared(ceiling = 256);
+var counter: u32 @shared(ceiling = 256);

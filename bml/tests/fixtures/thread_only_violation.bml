@@ -1,5 +1,5 @@
 // Error: ISR accessing unannotated static (thread-only by default)
-static counter: u32;
+var counter: u32;
 
 fn main() @context(thread) {
     var x: u32 = counter;  // OK -- thread context

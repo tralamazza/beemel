@@ -1,6 +1,6 @@
 // A @dma value bound to a local is Move-typed. Reading it consumes it, so the
 // second read is a use-after-move. (E304)
-static dbuf: u32 @dma;
+var dbuf: u32 @dma;
 
 fn main() @context(thread) {
     var x = dbuf;   // x: Move-typed local

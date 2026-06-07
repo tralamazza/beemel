@@ -4,6 +4,6 @@
 // bit 600 lands in byte 75, far past the 4-byte backing.
 fn main() @context(thread) {
     var buf: [u8; 4] = [0u8, 0u8, 0u8, 0u8];
-    val b: bits = bits(&buf[0u32], 0u32, 1024u32);
+    const b: bits = bits(&buf[0u32], 0u32, 1024u32);
     var x: b1 = b[600u32];
 }

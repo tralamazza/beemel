@@ -2,7 +2,7 @@ const LUT: [u32; 4] = [11u32, 22u32, 33u32, 44u32];
 
 // A static aggregate initialized by naming a const aggregate is inlined to
 // that const's value (must not collapse to `[4 x i32] 0`).
-static FROM_CONST: [u32; 4] = LUT;
+var FROM_CONST: [u32; 4] = LUT;
 
 // A float const initialized by naming another float const inherits its value.
 const PI: f32 = 3.5f;

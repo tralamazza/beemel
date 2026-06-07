@@ -31,7 +31,7 @@ var mode = if is_input { 0x00 } else { 0x01 };
 Rust's `match` pattern is natural for
 bitfield decoding. `match` as a statement, `match` as an expression,
 and `if/else` as an expression are all implemented via block trailing
-expressions. The `fn` / `var` / `val` keyword set is familiar
+expressions. The `fn` / `var` / `const` keyword set is familiar
 and unambiguous. C's `int x = ...` doesn't scale well when you add
 annotations like `@exclusive` and `@context`.
 
@@ -70,7 +70,7 @@ PEG parsers (Pest) give a clean grammar file but produce generic error
 messages. Our grammar has context-sensitive annotations:
 
 ```
-static x: u32 @exclusive(uart_isr);  // uart_isr must be a function name
+var x: u32 @exclusive(uart_isr);  // uart_isr must be a function name
 ```
 
 Hand-written recursive descent can produce domain-specific errors like:
@@ -79,14 +79,15 @@ Hand-written recursive descent can produce domain-specific errors like:
 error: 'uart_isr' in @exclusive(uart_isr) must be a function with @isr(...)
 ```
 
-## 6. Why mutable-by-default for locals (`var`) but immutable option (`val`)?
+## 6. Why mutable-by-default for locals (`var`) but immutable option (`const`)?
 
 In embedded ISR code, most locals are mutable (counters, state machines,
 buffer indices). Requiring `mut` on every binding would be visual noise.
 The borrow enforcer handles the dangerous cases (global state, peripherals).
 
 Stack frames are single-owner by definition -- there's no aliasing concern.
-`val` provides explicit immutability when needed.
+`const` provides explicit immutability when needed; when its initializer is a
+compile-time constant it is also usable in const positions (e.g. array lengths).
 
 ## 7. Why no `volatile` keyword?
 
@@ -96,7 +97,7 @@ Stack frames are single-owner by definition -- there's no aliasing concern.
 You can forget it, cast it away, or apply it inconsistently. In bml,
 volatility is a property of *where the thing lives*, not how you access
 it. A `peripheral` address is always accessed with volatile semantics.
-A `static` in `.bss` is never volatile. The compiler always knows and
+A module `var` in `.bss` is never volatile. The compiler always knows and
 never forgets.
 
 ## 8. Integer arithmetic: wrapping by default

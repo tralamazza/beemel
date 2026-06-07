@@ -2,7 +2,7 @@
 // enforced by a critical section around direct static access; a view loads/stores
 // through the descriptor pointer with no static name, so it gets no critical
 // section and would be a silent unprotected race.
-static SBUF: [u8; 4] @shared(ceiling = 1) = [0u8, 0u8, 0u8, 0u8];
+var SBUF: [u8; 4] @shared(ceiling = 1) = [0u8, 0u8, 0u8, 0u8];
 
 fn main() @context(thread) {
     var b: bits mut = bits(SBUF);

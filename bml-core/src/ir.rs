@@ -322,7 +322,7 @@ impl IrEmitter {
         // items, so recomputing it per declaration would be quadratic.
         let consts = const_values(&program.items, symbols);
         // Map each `const` to its resolved type and initializer so an
-        // initializer that names another `const` (e.g. `static s = LUT;` or
+        // initializer that names another `const` (e.g. `var s = LUT;` or
         // `const Y: f32 = X;`) can be inlined to that const's value.
         let const_defs: HashMap<String, (Type, &Expr)> = program
             .items
@@ -4721,7 +4721,7 @@ fn fn_ret_llvm_type(fn_def: &ast::FnDef, symbols: &SymbolTable) -> String {
 /// initializer like `[1, 2, 3, 4]` would otherwise collapse to `0`. The element
 /// type is taken from `ty` (so unsuffixed literals get the right width), and
 /// `.inner()` sees through a storage wrapper. An aggregate initializer that just
-/// names another `const` (e.g. `static s = LUT;`) is inlined to that const's
+/// names another `const` (e.g. `var s = LUT;`) is inlined to that const's
 /// value via `const_defs`. Falls back to the scalar path for non-aggregate types.
 fn const_init(
     ty: &Type,

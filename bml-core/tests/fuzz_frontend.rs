@@ -221,7 +221,6 @@ fn mutate(rng: &mut Rng, base: &[u8]) -> Vec<u8> {
 const TOKENS: &[&str] = &[
     "fn",
     "var",
-    "val",
     "const",
     "struct",
     "enum",
