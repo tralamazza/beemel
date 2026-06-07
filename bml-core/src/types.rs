@@ -232,6 +232,12 @@ pub fn int_suffix_type(suffix: crate::ast::IntSuffix) -> Option<Type> {
 pub struct StructInfo {
     pub repr: StructRepr,
     pub fields: Vec<(String, Type)>,
+    /// Per-field stored byte order, parallel to `fields` (same length/order).
+    /// Kept here rather than in `Type::Struct` so endianness never becomes part
+    /// of type identity -- `s.field` types as the plain field type. Codegen
+    /// consults this by struct name + field index to decide whether to byte-swap
+    /// on field load/store.
+    pub field_endian: Vec<crate::ast::FieldEndian>,
 }
 
 /// Map from enum name to (underlying type, (variant name, discriminant) list)
@@ -358,6 +364,7 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
                 StructInfo {
                     repr: s.repr,
                     fields,
+                    field_endian: s.fields.iter().map(|f| f.endian).collect(),
                 },
             );
         }
@@ -381,6 +388,7 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
                     StructInfo {
                         repr: s.repr,
                         fields,
+                        field_endian: s.fields.iter().map(|f| f.endian).collect(),
                     },
                 );
             }

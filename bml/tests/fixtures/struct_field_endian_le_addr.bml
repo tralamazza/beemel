@@ -1,0 +1,11 @@
+// `@le` is the native order on the little-endian target, so the field's stored
+// bytes already match a plain `*T` read -- taking its address is allowed (the
+// E360 rejection is target-dependent and only fires for non-native order).
+struct Frame {
+    le: u32 @le,
+}
+
+fn main() @context(thread) {
+    var f = Frame { le: 1u32 };
+    var p: *u32 = &f.le;
+}

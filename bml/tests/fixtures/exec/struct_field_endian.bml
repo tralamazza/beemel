@@ -1,0 +1,39 @@
+// Per-field endianness round-trip (language.md SS4 structs).
+// A `@be` field stores big-endian bytes but reads back as the native value; a
+// `@le` field stores native (little-endian) bytes. Verified by reading the same
+// storage both through the typed field (decoded) and as raw bytes (wire order).
+import harness.semihost;
+
+struct Frame @repr(packed) {
+    seq: u32 @be,
+    val: u32 @le,
+}
+
+fn main() @context(thread) {
+    var f = Frame { seq: 0u32, val: 0u32 };
+    var p: *mut Frame = &mut f;
+
+    (*p).seq = 0x01020304;
+    (*p).val = 0x01020304;
+
+    // Typed read decodes back to the native value for both fields.
+    expect_u32((*p).seq, 0x01020304);
+    expect_u32((*p).val, 0x01020304);
+
+    // Raw byte view of the same storage exposes the on-the-wire order.
+    var bytes: *u8 = p as *u8;
+
+    // @be: most-significant byte first.
+    expect_u32(bytes[0] as u32, 0x01);
+    expect_u32(bytes[1] as u32, 0x02);
+    expect_u32(bytes[2] as u32, 0x03);
+    expect_u32(bytes[3] as u32, 0x04);
+
+    // @le: least-significant byte first (native).
+    expect_u32(bytes[4] as u32, 0x04);
+    expect_u32(bytes[5] as u32, 0x03);
+    expect_u32(bytes[6] as u32, 0x02);
+    expect_u32(bytes[7] as u32, 0x01);
+
+    done();
+}

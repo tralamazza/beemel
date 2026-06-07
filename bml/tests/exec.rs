@@ -263,6 +263,7 @@ assert_exec!(exec_pointers, "pointers.bml");
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
 assert_exec!(exec_struct_layout_repr, "struct_layout_repr.bml");
+assert_exec!(exec_struct_field_endian, "struct_field_endian.bml");
 
 // ─── enum semantics (language.md §7) ─────────────────────────────────────────
 assert_exec!(exec_enums, "enums.bml");

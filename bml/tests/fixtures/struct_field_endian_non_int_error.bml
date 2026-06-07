@@ -1,0 +1,9 @@
+// `@be`/`@le` describe the byte order of a multi-byte integer. A single byte
+// has no byte order, so the attribute is rejected on a `u8` field (E359).
+struct Bad @repr(packed) {
+    a: u8 @be,
+}
+
+fn main() @context(thread) {
+    var b = Bad { a: 1u8 };
+}

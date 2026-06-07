@@ -580,6 +580,41 @@ struct Packet @repr(packed) {
 For hardware, wire, flash, or DMA layouts, prefer explicit `sizeof(...)`
 checks with `comptime_assert(...)`.
 
+### Field endianness
+
+A multi-byte integer field may carry a byte-order attribute after its type:
+`@be` (big-endian) or `@le` (little-endian). It is a **storage** property, not
+part of the value type: the field still has its plain integer type, and the
+byte-swap is materialized only at the field load/store. On the little-endian
+target `@le` is a no-op; `@be` byte-swaps.
+
+```bml
+struct Frame @repr(packed) {
+    ethertype: u16 @be,   // stored big-endian (wire order)
+    seq: u32 @be,
+    flags: u32,           // native (little-endian)
+}
+// f.seq = 1;   stores 00 00 00 01 in memory
+// var s = f.seq;   loads and swaps back to native 1
+```
+
+- Allowed only on `u16`/`u32`/`u64`/`i16`/`i32`/`i64` (a single byte has no
+  byte order; floats/aggregates/views are rejected) -- error `E359`.
+- The value type is unaffected: `f.seq` is a `u32`, so comparison and arithmetic
+  operate on decoded native values (`f.seq == g.seq` compares numbers, not stored
+  bytes). To compare raw bytes, read them through a byte view/pointer.
+- Whether a field is swapped is **target-derived**: it depends on the build
+  target's native byte order (`bml check`, which has no target, assumes the
+  default little-endian). So on a little-endian target `@be` swaps and `@le` is a
+  no-op; the decision is not hardcoded to the attribute.
+- `&field` on a field stored in a *non-native* order is rejected (`E360`): the
+  pointer would address byte-swapped storage that a plain `*T` read would not
+  swap. A field already in native order (e.g. `@le` on a little-endian target) is
+  addressable. Read or write a non-native field directly, or take a byte view
+  over the struct for raw bytes.
+- Compile-time struct initializers bake the correctly-ordered bytes into the
+  constant.
+
 ### Initialization
 
 ```
@@ -838,7 +873,8 @@ export_stmt   = "export" ("fn" | "var" | "const" | "peripheral" | "struct" | "en
                 ident {"," ident} ";"
 
 struct_def    = "struct" ident [ "@repr" "(" ("C" | "packed") ")" ]
-                "{" { ident ":" type "," } "}"
+                "{" { ident ":" type [ endian_attr ] "," } "}"
+endian_attr   = "@be" | "@le"   (* multi-byte integer fields only *)
 
 enum_def      = "enum" ident ":" type "{" { ident ["=" int] "," } "}"
 
@@ -1151,6 +1187,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
 | E345  | `len` is a reserved builtin and cannot be defined as a function |
 | E346  | Cast to `b1` requires a `b1` source; compare instead (e.g. `x != 0`) |
+| E359  | `@be`/`@le` field endianness requires a multi-byte integer type (u16/u32/u64/i16/i32/i64) |
+| E360  | Cannot take the address of a field stored in a non-native byte order (target-dependent) |
 
 Verification (`bml verify`) findings use V-series codes (V100–V999). They are
 listed separately in [verification-codes.md](./verification-codes.md).

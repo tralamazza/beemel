@@ -927,6 +927,46 @@ assert_error!(
     "struct_repr_packed_addr_error.bml",
     "E357"
 );
+// Per-field endianness: `@be` fields round-trip through `llvm.bswap` on both the
+// store (write) and load (read) paths; `@le`/native fields do not.
+assert_pass!(test_struct_field_endian, "struct_field_endian.bml");
+#[test]
+fn test_struct_field_endian_ir() {
+    let ir = bml_ir("struct_field_endian.bml");
+    assert!(
+        ir.contains("@llvm.bswap.i16("),
+        "expected a u16 @be field swap\n--- IR ---\n{ir}\n-----------"
+    );
+    assert!(
+        ir.contains("@llvm.bswap.i32("),
+        "expected a u32 @be field swap\n--- IR ---\n{ir}\n-----------"
+    );
+    // The `@le` field (a plain i32 store with no swap) must still be written:
+    // the store-through-a-pointer path was previously dropped entirely.
+    let fill = extract_fn_body(&ir, "fill");
+    let swaps = fill.matches("@llvm.bswap").count();
+    assert_eq!(
+        swaps, 2,
+        "expected exactly two swaps in fill (u16 @be + u32 @be), not the @le \
+         or u8 field\n--- fill ---\n{fill}\n-----------"
+    );
+}
+assert_error!(
+    test_struct_field_endian_non_int,
+    "struct_field_endian_non_int_error.bml",
+    "E359"
+);
+assert_error!(
+    test_struct_field_endian_addr,
+    "struct_field_endian_addr_error.bml",
+    "E360"
+);
+// E360 is target-dependent: `@le` is native on the little-endian target, so its
+// address is allowed (only the non-native `@be` order is rejected above).
+assert_pass!(
+    test_struct_field_endian_le_addr,
+    "struct_field_endian_le_addr.bml"
+);
 assert_error!(
     test_sizeof_array_overflow,
     "sizeof_array_overflow_error.bml",

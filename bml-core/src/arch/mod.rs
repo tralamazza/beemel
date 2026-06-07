@@ -1,5 +1,29 @@
 pub mod arm;
 
+/// Native byte order of a target. The default is little-endian, matching the
+/// only architectures currently supported (and the `e` in `datalayout`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Endianness {
+    #[default]
+    Little,
+    Big,
+}
+
+impl Endianness {
+    /// Whether a field with byte order `field` must be byte-swapped to reach the
+    /// target's native order. A field with no attribute, or one already in the
+    /// native order, never swaps; the opposite order does.
+    #[must_use]
+    pub fn swaps(self, field: crate::ast::FieldEndian) -> bool {
+        use crate::ast::FieldEndian;
+        match field {
+            FieldEndian::Native => false,
+            FieldEndian::Big => self == Endianness::Little,
+            FieldEndian::Little => self == Endianness::Big,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
     Armv6m,
@@ -11,6 +35,14 @@ impl Arch {
     #[must_use]
     pub fn datalayout(&self) -> &'static str {
         "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
+    }
+
+    #[must_use]
+    pub fn endianness(&self) -> Endianness {
+        // All supported ARM cores run little-endian here; kept as a method so
+        // byte-order decisions (field `@be`/`@le` swaps, the E360 diagnostic)
+        // derive from the target rather than a hardcoded constant.
+        Endianness::Little
     }
 
     #[must_use]

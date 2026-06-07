@@ -1,0 +1,27 @@
+// Per-field endianness: `@be` byte-swaps a multi-byte integer field at every
+// load/store, so the stored bytes are big-endian while the value the program
+// sees stays native. `@le` is a no-op on the little-endian target. Endianness
+// is a storage property, not part of the value type.
+struct Frame @repr(packed) {
+    ethertype: u16 @be,
+    seq: u32 @be,
+    native: u32 @le,
+    tag: u8,
+}
+
+fn fill(p: *mut Frame, s: u32) {
+    (*p).ethertype = 0x88B5;
+    (*p).seq = s;
+    (*p).native = s;
+    (*p).tag = 7u8;
+}
+
+fn read_seq(p: *Frame) -> u32 {
+    return (*p).seq;
+}
+
+fn main() @context(thread) {
+    var f = Frame { ethertype: 0x88B5, seq: 1u32, native: 1u32, tag: 0u8 };
+    fill(&mut f, 42u32);
+    var x = read_seq(&f);
+}

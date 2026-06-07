@@ -15,6 +15,11 @@ pub struct SymbolTable {
     pub structs: HashMap<String, StructInfo>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
     pub import_aliases: HashMap<String, AliasInfo>,
+    /// Native byte order of the build target. Resolution is target-agnostic, so
+    /// this is the default (little-endian) until a caller with a target sets it
+    /// (e.g. `bml build`/`verify`); `bml check` runs without a target and keeps
+    /// the default. Consumed by byte-order field diagnostics (E360).
+    pub target_endianness: crate::arch::Endianness,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +106,7 @@ impl Resolver {
                 structs: HashMap::new(),
                 enums: HashMap::new(),
                 import_aliases: HashMap::new(),
+                target_endianness: crate::arch::Endianness::default(),
             },
         }
     }
@@ -395,6 +401,7 @@ impl Resolver {
             StructInfo {
                 repr: s.repr,
                 fields,
+                field_endian: s.fields.iter().map(|f| f.endian).collect(),
             },
         );
     }
@@ -488,6 +495,7 @@ impl Resolver {
                     StructInfo {
                         repr: s.repr,
                         fields: resolved_fields,
+                        field_endian: s.fields.iter().map(|f| f.endian).collect(),
                     },
                 );
             }

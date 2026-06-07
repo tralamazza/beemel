@@ -312,6 +312,12 @@ impl IrEmitter {
             self.line("");
             self.line("attributes #2 = { nounwind readnone speculatable }");
         }
+        // Byte-swap intrinsics for `@be` struct fields. Declared unconditionally;
+        // unused declarations are harmless and dropped by the backend.
+        self.line("");
+        self.line("declare i16 @llvm.bswap.i16(i16)");
+        self.line("declare i32 @llvm.bswap.i32(i32)");
+        self.line("declare i64 @llvm.bswap.i64(i64)");
         self.line("");
     }
 
@@ -2152,22 +2158,26 @@ impl IrEmitter {
                 }
                 // Struct field access: extractvalue from loaded struct
                 let base_ty = self.expr_type(base, symbols);
-                if let Type::Struct(_name, _, fields) = &base_ty
+                if let Type::Struct(struct_name, _, fields) = &base_ty
                     && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                 {
+                    let field_ty = fields[idx].1.clone();
+                    let endian = Self::field_endian(struct_name, idx, symbols);
                     let base_reg = self.emit_expr(base, symbols, fn_name);
                     let struct_llvm_ty = llvm_type(&base_ty);
                     let reg = self.new_reg();
                     self.line(&format!(
                         "{reg} = extractvalue {struct_llvm_ty} {base_reg}, {idx}"
                     ));
-                    return reg;
+                    // A `@be` field's raw bits are byte-swapped; decode to native.
+                    return self.maybe_bswap(reg, &field_ty, endian);
                 }
                 // Pointer to struct field access: GEP + load
                 if let Type::Ptr(inner) | Type::ConstPtr(inner) = &base_ty
-                    && let Type::Struct(_name, repr, fields) = inner.as_ref()
+                    && let Type::Struct(struct_name, repr, fields) = inner.as_ref()
                     && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                 {
+                    let endian = Self::field_endian(struct_name, idx, symbols);
                     let base_ptr = self.emit_expr(base, symbols, fn_name);
                     let struct_llvm_ty = llvm_type(inner);
                     let gep = self.new_reg();
@@ -2183,7 +2193,7 @@ impl IrEmitter {
                         ""
                     };
                     self.line(&format!("{reg} = load {ll_field}, ptr {gep}{align}"));
-                    return reg;
+                    return self.maybe_bswap(reg, field_ty, endian);
                 }
                 // Fallback: struct field access via GEP
                 self.emit_expr(base, symbols, fn_name);
@@ -2835,6 +2845,9 @@ impl IrEmitter {
                         let init_reg = self.emit_expr(init_expr, symbols, fn_name);
                         let init_ty = self.expr_type(init_expr, symbols);
                         let init_reg = self.coerce_int(init_reg, &init_ty, ftype);
+                        // Encode `@be` fields to their stored (byte-swapped) form.
+                        let endian = Self::field_endian(struct_name, idx, symbols);
+                        let init_reg = self.maybe_bswap(init_reg, ftype, endian);
                         let ll_field = llvm_type(ftype);
                         let gep = self.new_reg();
                         self.line(&format!(
@@ -3363,22 +3376,37 @@ impl IrEmitter {
                     ));
                     return new_val;
                 }
-                // Struct field write: GEP + store
-                if let LValue::Name((base_name, _)) = base.as_ref() {
-                    let info = self.locals.get(base_name).cloned();
-                    if let Some(info) = info
-                        && let Type::Struct(_, repr, fields) = &info.bml_type
+                // Struct field write: GEP + store. Resolve the base to the
+                // struct's *address* whether it is a struct place (`s.field`), an
+                // explicit deref (`(*p).field`), or a pointer auto-deref
+                // (`p.field`). A previous version only handled the local-struct
+                // place, so writes through a pointer silently emitted no store.
+                if let Some((base_ptr, base_ty)) = self.lvalue_base_info(base, symbols, fn_name) {
+                    let (struct_addr, struct_ty) = match &base_ty {
+                        Type::Struct(..) => (base_ptr, base_ty.clone()),
+                        Type::Ptr(inner) | Type::ConstPtr(inner)
+                            if matches!(inner.as_ref(), Type::Struct(..)) =>
+                        {
+                            let loaded = self.new_reg();
+                            self.line(&format!("{loaded} = load ptr, ptr {base_ptr}"));
+                            (loaded, inner.as_ref().clone())
+                        }
+                        _ => return val_reg.to_string(),
+                    };
+                    if let Type::Struct(struct_name, repr, fields) = &struct_ty
                         && let Some(idx) = fields.iter().position(|(n, _)| n == &field.0)
                     {
                         let field_ty = fields[idx].1.clone();
                         let ll_field = llvm_type(&field_ty);
-                        let llvm_ty = info.llvm_ty.clone();
-                        let alloca = info.alloca.clone();
+                        let struct_llvm_ty = llvm_type(&struct_ty);
                         let gep = self.new_reg();
                         self.line(&format!(
-                            "{gep} = getelementptr {llvm_ty}, ptr {alloca}, i32 0, i32 {idx}"
+                            "{gep} = getelementptr {struct_llvm_ty}, ptr {struct_addr}, i32 0, i32 {idx}"
                         ));
                         let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &field_ty);
+                        // Encode a `@be` field to its stored (byte-swapped) form.
+                        let endian = Self::field_endian(struct_name, idx, symbols);
+                        let val_reg = self.maybe_bswap(val_reg, &field_ty, endian);
                         let align = if *repr == ast::StructRepr::Packed {
                             ", align 1"
                         } else {
@@ -4089,6 +4117,41 @@ impl IrEmitter {
         ));
     }
 
+    /// Stored byte order of struct `struct_name`'s field at index `idx`.
+    /// Endianness lives in `StructInfo` (not `Type`), so it is looked up here by
+    /// name + index rather than carried on the field type.
+    fn field_endian(
+        struct_name: &str,
+        idx: usize,
+        symbols: &SymbolTable,
+    ) -> crate::ast::FieldEndian {
+        symbols
+            .structs
+            .get(struct_name)
+            .and_then(|si| si.field_endian.get(idx))
+            .copied()
+            .unwrap_or(crate::ast::FieldEndian::Native)
+    }
+
+    /// Byte-swap `reg` (a value of `field_ty`) when the field's declared byte
+    /// order differs from the target's native order. A field already in native
+    /// order passes through unchanged. `field_ty` is always a multi-byte integer
+    /// here (the checker enforces E359), so the intrinsic suffix is i16/i32/i64.
+    fn maybe_bswap(
+        &mut self,
+        reg: String,
+        field_ty: &Type,
+        endian: crate::ast::FieldEndian,
+    ) -> String {
+        if !self.arch.endianness().swaps(endian) {
+            return reg;
+        }
+        let ll = llvm_type(field_ty);
+        let out = self.new_reg();
+        self.line(&format!("{out} = call {ll} @llvm.bswap.{ll}({ll} {reg})"));
+        out
+    }
+
     /// Widen or narrow an integer register from `from` to `to`, emitting the
     /// appropriate sext/zext/trunc. No-op when the widths already match or
     /// either side is not an integer.
@@ -4716,6 +4779,33 @@ fn fn_ret_llvm_type(fn_def: &ast::FnDef, symbols: &SymbolTable) -> String {
     }
 }
 
+/// Byte-swap a constant integer string for a field whose declared byte order
+/// differs from the target's native order, so the emitted global initializer
+/// carries the right bytes. Native-order fields and values that do not reduce to
+/// a non-negative integer pass through unchanged.
+fn byteswap_const(
+    value: &str,
+    field_ty: &Type,
+    endian: crate::ast::FieldEndian,
+    native: crate::arch::Endianness,
+) -> String {
+    if !native.swaps(endian) {
+        return value.to_string();
+    }
+    let Ok(n) = value.parse::<u64>() else {
+        return value.to_string();
+    };
+    let swapped = match field_ty {
+        Type::U16 | Type::I16 => u64::from(u16::try_from(n & 0xFFFF).unwrap_or(0).swap_bytes()),
+        Type::U32 | Type::I32 => {
+            u64::from(u32::try_from(n & 0xFFFF_FFFF).unwrap_or(0).swap_bytes())
+        }
+        Type::U64 | Type::I64 => n.swap_bytes(),
+        _ => return value.to_string(),
+    };
+    swapped.to_string()
+}
+
 /// Emit an LLVM constant initializer for a global of type `ty`. Needed for
 /// aggregate statics (arrays): `expr_const_val` only knows scalars, so an array
 /// initializer like `[1, 2, 3, 4]` would otherwise collapse to `0`. The element
@@ -4739,16 +4829,26 @@ fn const_init(
                 .collect();
             format!("[{}]", parts.join(", "))
         }
-        (Type::Struct(_, repr, fields), Expr::StructInit { fields: init, .. }) => {
+        (Type::Struct(struct_name, repr, fields), Expr::StructInit { fields: init, .. }) => {
             let parts: Vec<String> = fields
                 .iter()
-                .map(|(name, field_ty)| {
+                .enumerate()
+                .map(|(idx, (name, field_ty))| {
                     let value = init
                         .iter()
                         .find(|(field_name, _)| field_name.0 == *name)
                         .map_or("zeroinitializer".to_string(), |(_, value)| {
                             const_init(field_ty, value, symbols, consts, const_defs)
                         });
+                    // A compile-time `@be` field has no runtime bswap to lean on,
+                    // so the swapped bytes must be baked into the global constant.
+                    let endian = symbols
+                        .structs
+                        .get(struct_name)
+                        .and_then(|si| si.field_endian.get(idx))
+                        .copied()
+                        .unwrap_or(ast::FieldEndian::Native);
+                    let value = byteswap_const(&value, field_ty, endian, symbols.target_endianness);
                     format!("{} {value}", llvm_type(field_ty))
                 })
                 .collect();

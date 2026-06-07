@@ -613,9 +613,11 @@ impl<'a> Parser<'a> {
             self.expect(&TokenKind::Colon, "expected `:` after field name")
                 .ok()?;
             let field_ty = self.parse_type_expr()?;
+            let endian = self.parse_field_endian()?;
             fields.push(StructFieldDef {
                 name: field_name,
                 ty: field_ty,
+                endian,
             });
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -667,6 +669,38 @@ impl<'a> Parser<'a> {
                 .ok()?;
         }
         Some(repr)
+    }
+
+    /// Parse an optional `@be`/`@le` endianness attribute following a struct
+    /// field type. Absence yields `Native`.
+    fn parse_field_endian(&mut self) -> Option<crate::ast::FieldEndian> {
+        use crate::ast::FieldEndian;
+        if !self.eat(&TokenKind::AtSign) {
+            return Some(FieldEndian::Native);
+        }
+        let span = self.peek_span();
+        let TokenKind::Ident(name) = self.peek_kind() else {
+            self.diags.error(
+                "expected `be` or `le` after `@` in struct field",
+                "E108",
+                span,
+            );
+            return None;
+        };
+        let endian = match name.as_str() {
+            "be" => FieldEndian::Big,
+            "le" => FieldEndian::Little,
+            _ => {
+                self.diags.error(
+                    "expected `be` or `le` after `@` in struct field",
+                    "E108",
+                    span,
+                );
+                return None;
+            }
+        };
+        self.advance();
+        Some(endian)
     }
 
     fn parse_enum_def(&mut self) -> Option<EnumDef> {
@@ -1822,6 +1856,11 @@ pub(crate) fn expr_to_lvalue(expr: Expr) -> Option<LValue> {
             Some(LValue::Index(Box::new(base), index))
         }
         Expr::Unary(UnaryOp::Deref, inner) => Some(LValue::Deref(inner)),
+        // Peel parentheses so a parenthesized place stays assignable, e.g. the
+        // `(*p)` in `(*p).field = v` parses as `FieldAccess(Group(Deref p), …)`.
+        // Without this the conversion returned `None` and the assignment was
+        // silently dropped.
+        Expr::Group(inner) => expr_to_lvalue(*inner),
         _ => None,
     }
 }

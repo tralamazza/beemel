@@ -1,0 +1,11 @@
+// Taking the address of a `@be` field would hand out a pointer to byte-swapped
+// storage; a plain `*u32` read through it would not swap. Reject `&field` on a
+// byte-order field (E360).
+struct Frame {
+    seq: u32 @be,
+}
+
+fn main() @context(thread) {
+    var f = Frame { seq: 1u32 };
+    var p: *u32 = &f.seq;
+}

@@ -377,6 +377,8 @@ fn check_file(path: &Path, stack_analysis: bool) {
     }
 
     // Phase 2a -- Name resolution
+    // `bml check` runs without a target, so byte-order diagnostics use the
+    // default (little-endian) order; `build`/`verify` override it from the target.
     let resolver = Resolver::new();
     let symbols = resolver.resolve(&program, &mut diags, aliases);
 
@@ -524,7 +526,9 @@ fn build_file(
     }
 
     let resolver = Resolver::new();
-    let symbols = resolver.resolve(&program, &mut diags, aliases);
+    let mut symbols = resolver.resolve(&program, &mut diags, aliases);
+    // The target's native byte order drives byte-order field diagnostics (E360).
+    symbols.target_endianness = target.to_arch().endianness();
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
@@ -736,7 +740,9 @@ fn verify_file(
     }
 
     let resolver = Resolver::new();
-    let symbols = resolver.resolve(&program, &mut diags, aliases);
+    let mut symbols = resolver.resolve(&program, &mut diags, aliases);
+    // The target's native byte order drives byte-order field diagnostics (E360).
+    symbols.target_endianness = target.to_arch().endianness();
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);

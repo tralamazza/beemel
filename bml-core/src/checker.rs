@@ -188,6 +188,26 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
                     field.name.1,
                 );
             }
+            // `@be`/`@le` describe byte order of a multi-byte integer in memory.
+            // A single byte has no byte order, and aggregates/floats/views have
+            // no well-defined wire-integer swap, so restrict the attribute to
+            // multi-byte integer scalars and reject it loudly elsewhere.
+            if field.endian != ast::FieldEndian::Native && !is_multibyte_int(ty) {
+                let attr = match field.endian {
+                    ast::FieldEndian::Big => "be",
+                    ast::FieldEndian::Little => "le",
+                    ast::FieldEndian::Native => unreachable!(),
+                };
+                diags.error(
+                    format!(
+                        "endianness attribute `@{attr}` on field `{}` requires a multi-byte \
+                         integer type (u16/u32/u64/i16/i32/i64), found `{ty}`",
+                        field.name.0
+                    ),
+                    "E359",
+                    field.name.1,
+                );
+            }
         }
 
         if s.repr != StructRepr::Explicit {
@@ -234,6 +254,16 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
             );
         }
     }
+}
+
+/// A multi-byte integer scalar: the only field types for which `@be`/`@le`
+/// (byte-order) make sense. Single bytes, floats, aggregates, and views are
+/// rejected.
+fn is_multibyte_int(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::I16 | Type::I32 | Type::I64 | Type::U16 | Type::U32 | Type::U64
+    )
 }
 
 fn validate_extern_abi(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
@@ -2507,24 +2537,53 @@ struct PlaceInfo {
 }
 
 #[derive(Clone)]
-struct AddrBorrowError {
-    struct_name: String,
-    field_name: String,
-    field_offset: u32,
-    field_align: u32,
-    span: crate::source::Span,
+enum AddrBorrowError {
+    Packed {
+        struct_name: String,
+        field_name: String,
+        field_offset: u32,
+        field_align: u32,
+        span: crate::source::Span,
+    },
+    Endian {
+        struct_name: String,
+        field_name: String,
+        span: crate::source::Span,
+    },
 }
 
 impl AddrBorrowError {
     fn emit(&self, diags: &mut DiagnosticBag) {
-        diags.error(
-            format!(
-                "cannot take address of packed field `{}.{}` at offset {}; packed structs are byte-aligned but field alignment is {}",
-                self.struct_name, self.field_name, self.field_offset, self.field_align
-            ),
-            "E357",
-            self.span,
-        );
+        match self {
+            AddrBorrowError::Packed {
+                struct_name,
+                field_name,
+                field_offset,
+                field_align,
+                span,
+            } => {
+                diags.error(
+                    format!(
+                        "cannot take address of packed field `{struct_name}.{field_name}` at offset {field_offset}; packed structs are byte-aligned but field alignment is {field_align}"
+                    ),
+                    "E357",
+                    *span,
+                );
+            }
+            AddrBorrowError::Endian {
+                struct_name,
+                field_name,
+                span,
+            } => {
+                diags.error(
+                    format!(
+                        "cannot take address of field `{struct_name}.{field_name}`: it is stored in a non-native byte order for this target, so the bytes are swapped relative to a plain `*T` read through the pointer. Read or write the field directly, or take a byte view over the struct for raw bytes."
+                    ),
+                    "E360",
+                    *span,
+                );
+            }
+        }
     }
 }
 
@@ -2621,7 +2680,25 @@ fn read_place_info(
                             Type::Error(guard)
                         },
                         |idx| {
-                            if *repr == StructRepr::Packed {
+                            let endian = symbols
+                                .structs
+                                .get(name)
+                                .and_then(|si| si.field_endian.get(idx))
+                                .copied()
+                                .unwrap_or(ast::FieldEndian::Native);
+                            // Reject `&field` only when the field is stored in a
+                            // non-native order *for this target*: the address
+                            // would point at byte-swapped storage a plain `*T`
+                            // read would not swap. A field already in native
+                            // order (e.g. `@le` on a little-endian target) is
+                            // safe, so it falls through to the packed check.
+                            if symbols.target_endianness.swaps(endian) {
+                                addr_borrow_error = Some(AddrBorrowError::Endian {
+                                    struct_name: name.clone(),
+                                    field_name: field.0.clone(),
+                                    span: field.1,
+                                });
+                            } else if *repr == StructRepr::Packed {
                                 addr_borrow_error =
                                     packed_field_addr_error(name, fields, idx, field);
                             }
@@ -2705,7 +2782,7 @@ fn packed_field_addr_error(
     for (_, ty) in fields.iter().take(idx) {
         field_offset = field_offset.checked_add(types::element_size(ty))?;
     }
-    (field_align > 1).then(|| AddrBorrowError {
+    (field_align > 1).then(|| AddrBorrowError::Packed {
         struct_name: struct_name.to_string(),
         field_name: field.0.clone(),
         field_offset,

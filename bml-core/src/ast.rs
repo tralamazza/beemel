@@ -563,6 +563,23 @@ pub enum StructRepr {
 pub struct StructFieldDef {
     pub name: Ident,
     pub ty: TypeExpr,
+    /// Stored byte order for this field. `Native`/`Little` store in the target's
+    /// native order (little-endian); `Big` byte-swaps at every field load/store
+    /// so the in-memory bytes are big-endian while the value the program sees
+    /// stays native. Endianness is a storage property, not part of the value
+    /// type: `s.field` still has the plain integer type.
+    pub endian: FieldEndian,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldEndian {
+    /// No endianness attribute; stored in native (little-endian) order.
+    Native,
+    /// `@be`: stored big-endian, byte-swapped on load/store.
+    Big,
+    /// `@le`: explicitly little-endian. A no-op on the little-endian target,
+    /// accepted for documentation and symmetry.
+    Little,
 }
 
 #[derive(Debug, Clone)]
