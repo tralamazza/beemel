@@ -38,12 +38,6 @@ static RX_TIMESTAMP_COUNT: u32;
 static RX_LAST_TIMESTAMP_NS: u32;
 static RX_LAST_TIMESTAMP_SECONDS: u32;
 
-// Current BML lacks an address-of operation for @dma statics that lowers to the
-// backing symbol address. These constants match the linker layout for this file.
-const TX_BUFFER_ADDR: u32 = 0x30000020;
-const TX_DESC_ADDR: u32 = 0x300000A0;
-const RX_BUFFER_ADDR: u32 = 0x300000C0;
-const RX_DESC_ADDR: u32 = 0x300004C0;
 const TX_DESC_COUNT: u32 = 2;
 const TX_DESC_WORDS: u32 = 4;
 const TX_DESC_OWN: u32 = 0x80000000;
@@ -222,19 +216,19 @@ fn eth_init_rx() {
 }
 
 fn tx_desc_addr(word_index: u32) -> u32 {
-    return TX_DESC_ADDR + (word_index * 4);
+    return (&TX_DESC as u32) + (word_index * 4);
 }
 
 fn tx_buffer_addr() -> u32 {
-    return TX_BUFFER_ADDR;
+    return &TX_BUFFER as u32;
 }
 
 fn rx_desc_addr(word_index: u32) -> u32 {
-    return RX_DESC_ADDR + (word_index * 4);
+    return (&RX_DESC as u32) + (word_index * 4);
 }
 
 fn rx_buffer_addr(desc_index: u32) -> u32 {
-    return RX_BUFFER_ADDR + (desc_index * RX_BUFFER_LEN);
+    return (&RX_BUFFER as u32) + (desc_index * RX_BUFFER_LEN);
 }
 
 fn put8(index: u32, value: u8) {
@@ -313,8 +307,10 @@ fn rx_get8(index: u32) -> u32 {
     return buffer[index] as u32;
 }
 
+// A `@dma` static can be index-assigned but not index-read as an rvalue, so the
+// descriptor read goes through a `*u32` taken from the static's base address.
 fn rx_desc_get32(word_index: u32) -> u32 {
-    val desc = RX_DESC_ADDR as *u32;
+    val desc = &RX_DESC as *u32;
     return desc[word_index];
 }
 

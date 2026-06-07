@@ -198,9 +198,9 @@ Refactored the example into explicit roles:
   `board.bml`.
 
 `build.sh` and `flash.sh` take a role argument (`controller` or `mic_node`) and
-emit/flash `main_<role>.{o,ld,elf,bin}`. The DMA address-drift guard runs per
-role; both roles link the same shared statics, so the hardcoded `eth_dma.bml`
-addresses hold for each.
+emit/flash `main_<role>.{o,ld,elf,bin}`. The ETH DMA descriptors and buffers
+take their addresses from `&STATIC as u32`, so the linker symbol is the single
+source of truth -- no hardcoded addresses and no build-time address-drift guard.
 
 For this milestone the two roles share the heartbeat path and source MAC and
 differ only by a board id byte at payload offset 32. The two binaries differ by
