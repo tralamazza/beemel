@@ -14,13 +14,11 @@ export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_
 
 const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
 
-// Use a locally administered source MAC for bring-up.
-const MAC0: u8 = 0x02;
-const MAC1: u8 = 0x00;
-const MAC2: u8 = 0x00;
-const MAC3: u8 = 0x00;
-const MAC4: u8 = 0x72;
-const MAC5: u8 = 0x3A;
+// Constant header bytes of every heartbeat: a locally administered source MAC,
+// the broadcast destination, and the "BMLPTP" payload magic.
+const SRC_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x72, 0x3A];
+const BROADCAST: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+const MAGIC: [u8; 6] = [0x42, 0x4D, 0x4C, 0x50, 0x54, 0x50];
 
 var TX_BUFFER: [u8; 128] @dma @align(32);
 var TX_DESC: [u32; 8] @dma @align(32);
@@ -231,55 +229,42 @@ fn rx_buffer_addr(desc_index: u32) -> u32 {
     return (&RX_BUFFER as u32) + (desc_index * RX_BUFFER_LEN);
 }
 
-fn put8(index: u32, value: u8) {
-    TX_BUFFER[index] = value;
+// Wire layout of a heartbeat frame, overlaid directly on TX_BUFFER. The
+// multi-byte counters and the EtherType are `@be`, so writing a field stores it
+// big-endian (network order) while the code keeps native values -- this is what
+// replaces the old byte-at-a-time `put8`/`put32_be` framing. `@repr(packed)`
+// keeps the layout byte-exact; the `comptime_assert` pins the 60-byte size.
+struct Heartbeat @repr(packed) {
+    dst: [u8; 6],
+    src: [u8; 6],
+    ethertype: u16 @be,
+    magic: [u8; 6],
+    seq: u32 @be,
+    seconds: u32 @be,
+    nanoseconds: u32 @be,
+    board_id: u8,
+    _: [u8; 27],   // pad to the 60-byte minimum Ethernet payload
 }
 
-fn put32_be(index: u32, value: u32) {
-    put8(index, (value >> 24) as u8);
-    put8(index + 1, (value >> 16) as u8);
-    put8(index + 2, (value >> 8) as u8);
-    put8(index + 3, value as u8);
-}
+comptime_assert(sizeof(Heartbeat) == 60);
 
 fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u32 {
-    // Destination: broadcast.
-    put8(0, 0xFF);
-    put8(1, 0xFF);
-    put8(2, 0xFF);
-    put8(3, 0xFF);
-    put8(4, 0xFF);
-    put8(5, 0xFF);
-
-    put8(6, MAC0);
-    put8(7, MAC1);
-    put8(8, MAC2);
-    put8(9, MAC3);
-    put8(10, MAC4);
-    put8(11, MAC5);
-
-    put8(12, (HEARTBEAT_ETHERTYPE >> 8) as u8);
-    put8(13, HEARTBEAT_ETHERTYPE as u8);
-
-    // Payload: "BMLPTP" + seq + seconds + nanoseconds + board_id.
-    put8(14, 0x42);
-    put8(15, 0x4D);
-    put8(16, 0x4C);
-    put8(17, 0x50);
-    put8(18, 0x54);
-    put8(19, 0x50);
-    put32_be(20, seq);
-    put32_be(24, seconds);
-    put32_be(28, nanoseconds);
-    put8(32, board_id as u8);
-
-    var index: u32 = 33;
-    while index < 60 {
-        put8(index, 0);
-        index = index + 1;
-    }
-
-    return 60u32;
+    // Building the struct value zero-fills the padding; the whole-struct store
+    // then writes the frame (with big-endian fields already swapped) into the
+    // DMA buffer in one shot.
+    var frame = Heartbeat {
+        dst: BROADCAST,
+        src: SRC_MAC,
+        ethertype: HEARTBEAT_ETHERTYPE as u16,
+        magic: MAGIC,
+        seq: seq,
+        seconds: seconds,
+        nanoseconds: nanoseconds,
+        board_id: board_id as u8
+    };
+    const tx = &TX_BUFFER as *mut Heartbeat;
+    *tx = frame;
+    return sizeof(Heartbeat);
 }
 
 fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
