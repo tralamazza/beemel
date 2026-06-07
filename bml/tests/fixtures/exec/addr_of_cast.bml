@@ -1,0 +1,31 @@
+// Prefix unary binds tighter than `as` (matching Rust): the bare, unparenthesized
+// `&x as u32` parses as `(&x) as u32`, and `*p as u32` as `(*p) as u32`. This
+// fixture exercises the bare forms, so a precedence regression surfaces as a
+// runtime mismatch -- or a build failure, since the wrong grouping
+// (`&(x as u32)`) does not typecheck.
+import harness.semihost;
+
+static BUF: [u32; 4] @align(16) = [0u32, 0u32, 0u32, 0u32];
+
+fn main() @context(thread) {
+    // Bare and parenthesized address-of-then-cast must agree.
+    expect_u32(&BUF as u32, (&BUF) as u32);
+
+    // `&BUF[i] as u32` is `(&BUF[i]) as u32`: consecutive u32 elements are 4
+    // bytes apart. The wrong grouping `&(BUF[1] as u32)` would not typecheck.
+    val a0 = &BUF[0] as u32;
+    val a1 = &BUF[1] as u32;
+    expect_u32(a1 - a0, 4);
+
+    // Address of a static is its symbol address, honoring @align(16). Also pins
+    // that `&BUF as u32 % 16` groups as `((&BUF) as u32) % 16`.
+    expect_u32(&BUF as u32 % 16, 0);
+
+    // Deref binds tighter than `as`: `*p as u32` is `(*p) as u32`. The wrong
+    // grouping `*(p as u32)` would dereference an integer and fail to typecheck.
+    BUF[2] = 0xCAFE;
+    val p = &BUF[2];
+    expect_u32(*p as u32, 0xCAFE);
+
+    done();
+}

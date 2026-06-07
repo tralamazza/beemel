@@ -25,6 +25,19 @@ pub struct Parser<'a> {
 /// anything hand-written code reaches. Hitting it yields `E113`, not a crash.
 const MAX_PARSE_DEPTH: u32 = 128;
 
+/// Precedence of the `as` cast operator. Sits below the prefix unary operators
+/// (so `&x as T` parses as `(&x) as T`, matching Rust) and above every binary
+/// operator (so `x as u32 + 1` is `(x as u32) + 1`). Binary precedences run
+/// 1..=9; `as` is one step above the top binary level.
+const CAST_PREC: u8 = 10;
+
+/// Precedence at which a prefix unary operator (`-`, `!`, `~`, `*`, `&`) parses
+/// its operand. One above `CAST_PREC` so the operand stops *before* a trailing
+/// `as` instead of absorbing it (which would regroup `&x as T` into
+/// `&(x as T)`); still above all binary operators, so e.g. `-a + b` stays
+/// `(-a) + b`.
+const PREFIX_OPERAND_PREC: u8 = 11;
+
 /// The shared head of a function declaration, returned by `parse_fn_signature`.
 /// `fn` consumes all fields; `extern fn` ignores `naked`/`section`.
 struct FnSignature {
@@ -1368,6 +1381,20 @@ impl<'a> Parser<'a> {
                 }
             }
 
+            // -- `as T` cast --
+            // Binds looser than the prefix unary operators (so `&x as T` is
+            // `(&x) as T`) but tighter than every binary operator. Gating it by
+            // precedence here -- rather than lumping it with the `.`/`()`/`[]`
+            // postfix operators below -- is what stops a unary operand (parsed
+            // at PREFIX_OPERAND_PREC) from swallowing it and regrouping
+            // `&x as T` into `&(x as T)`.
+            if matches!(self.peek_kind(), TokenKind::As) && CAST_PREC >= min_prec {
+                self.advance();
+                let ty = self.parse_type_expr()?;
+                left = Expr::Cast(Box::new(left), ty);
+                continue;
+            }
+
             // -- postfix operators --
             match self.peek_kind() {
                 TokenKind::LParen => {
@@ -1407,11 +1434,6 @@ impl<'a> Parser<'a> {
                     self.expect(&TokenKind::RBracket, "expected `]`").ok()?;
                     left = Expr::Index(Box::new(left), Box::new(index));
                 }
-                TokenKind::As => {
-                    self.advance();
-                    let ty = self.parse_type_expr()?;
-                    left = Expr::Cast(Box::new(left), ty);
-                }
                 TokenKind::LBrace if allow_struct => {
                     if let Expr::Ident(name) = left {
                         self.advance();
@@ -1448,28 +1470,28 @@ impl<'a> Parser<'a> {
         match self.peek_kind() {
             TokenKind::Minus => {
                 self.advance();
-                let expr = self.parse_expr_prec(10, allow_struct)?;
+                let expr = self.parse_expr_prec(PREFIX_OPERAND_PREC, allow_struct)?;
                 Some(Expr::Unary(UnaryOp::Neg, Box::new(expr)))
             }
             TokenKind::Bang => {
                 self.advance();
-                let expr = self.parse_expr_prec(10, allow_struct)?;
+                let expr = self.parse_expr_prec(PREFIX_OPERAND_PREC, allow_struct)?;
                 Some(Expr::Unary(UnaryOp::Not, Box::new(expr)))
             }
             TokenKind::Tilde => {
                 self.advance();
-                let expr = self.parse_expr_prec(10, allow_struct)?;
+                let expr = self.parse_expr_prec(PREFIX_OPERAND_PREC, allow_struct)?;
                 Some(Expr::Unary(UnaryOp::BitNot, Box::new(expr)))
             }
             TokenKind::Star => {
                 self.advance();
-                let expr = self.parse_expr_prec(10, allow_struct)?;
+                let expr = self.parse_expr_prec(PREFIX_OPERAND_PREC, allow_struct)?;
                 Some(Expr::Unary(UnaryOp::Deref, Box::new(expr)))
             }
             TokenKind::Amp => {
                 self.advance();
                 let is_mut = self.eat(&TokenKind::Mut);
-                let expr = self.parse_expr_prec(10, allow_struct)?;
+                let expr = self.parse_expr_prec(PREFIX_OPERAND_PREC, allow_struct)?;
                 let op = if is_mut {
                     UnaryOp::AddrOfMut
                 } else {
@@ -1819,5 +1841,67 @@ pub(crate) fn expr_to_lvalue(expr: Expr) -> Option<LValue> {
         }
         Expr::Unary(UnaryOp::Deref, inner) => Some(LValue::Deref(inner)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Parser;
+    use crate::ast::{BinaryOp, Expr, UnaryOp};
+    use crate::errors::DiagnosticBag;
+    use crate::source::FileId;
+
+    fn parse_expr_str(src: &str) -> Expr {
+        let mut diags = DiagnosticBag::new();
+        let expr = Parser::new(src, FileId::new(), &mut diags).parse_expr();
+        assert!(!diags.has_errors(), "unexpected parse errors for `{src}`");
+        expr.expect("expression should parse")
+    }
+
+    // Model B precedence: a prefix unary operator binds tighter than `as`, so
+    // `&x as u32` is `(&x) as u32` -- an outer Cast wrapping `&x` -- not
+    // `&(x as u32)`. This is the case the eth_dma DMA-address use needs.
+    #[test]
+    fn addr_of_then_cast_is_cast_of_addr() {
+        let Expr::Cast(inner, _) = parse_expr_str("&x as u32") else {
+            panic!("expected outer Cast");
+        };
+        assert!(matches!(*inner, Expr::Unary(UnaryOp::AddrOf, _)));
+    }
+
+    #[test]
+    fn addr_of_mut_then_cast_is_cast_of_addr() {
+        let Expr::Cast(inner, _) = parse_expr_str("&mut x as u32") else {
+            panic!("expected outer Cast");
+        };
+        assert!(matches!(*inner, Expr::Unary(UnaryOp::AddrOfMut, _)));
+    }
+
+    #[test]
+    fn deref_then_cast_is_cast_of_deref() {
+        let Expr::Cast(inner, _) = parse_expr_str("*p as u32") else {
+            panic!("expected outer Cast");
+        };
+        assert!(matches!(*inner, Expr::Unary(UnaryOp::Deref, _)));
+    }
+
+    // `as` still binds tighter than binary operators: `x as u32 + 1` is
+    // `(x as u32) + 1`, with the cast on the left of the add.
+    #[test]
+    fn cast_binds_tighter_than_binary() {
+        let Expr::Binary(left, BinaryOp::Add, _) = parse_expr_str("x as u32 + 1") else {
+            panic!("expected outer Add");
+        };
+        assert!(matches!(*left, Expr::Cast(_, _)));
+    }
+
+    // Field/index still bind tighter than the prefix unary (unchanged by the
+    // precedence fix): `&a.b` stays `&(a.b)`.
+    #[test]
+    fn addr_of_field_unchanged() {
+        let Expr::Unary(UnaryOp::AddrOf, inner) = parse_expr_str("&a.b") else {
+            panic!("expected outer AddrOf");
+        };
+        assert!(matches!(*inner, Expr::FieldAccess(_, _)));
     }
 }

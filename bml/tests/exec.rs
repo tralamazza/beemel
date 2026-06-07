@@ -245,6 +245,11 @@ assert_exec!(exec_wrapping, "wrapping.bml");
 // ─── casts / widths (language.md §1) ─────────────────────────────────────────
 assert_exec!(exec_casts, "casts.bml");
 
+// Prefix unary (`&`, `*`) binds tighter than `as`, so the bare `&x as u32` /
+// `*p as u32` forms group as `(&x) as u32` / `(*p) as u32`. Pins that precedence
+// at runtime; the wrong grouping would not even typecheck.
+assert_exec!(exec_addr_of_cast, "addr_of_cast.bml");
+
 // ─── for loops (language.md §11) ─────────────────────────────────────────────
 assert_exec!(exec_for_loops, "for_loops.bml");
 

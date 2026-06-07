@@ -929,6 +929,11 @@ type          = ident                   (* named type: u32, i8, ... *)
 expr          = binary_expr (via Pratt parser -- see parser.rs)
 
 cast_expr     = expr "as" type
+;; `as` binds looser than the prefix unary operators (`&`, `&mut`, `*`, `-`,
+;; `!`, `~`) and tighter than the binary operators, matching Rust. So
+;; `&x as u32` is `(&x) as u32` (address of x, then cast) and `x as u32 + 1`
+;; is `(x as u32) + 1`. Field/call/index still bind tighter than the unary, so
+;; `&a.b` is `&(a.b)`.
 
 enum_variant  = expr "@" ident
 
