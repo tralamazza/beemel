@@ -331,7 +331,7 @@ impl Server {
         // A local binding in the enclosing function shadows any global of the
         // same name, so resolve it first.
         let local_ty = enclosing_fn(&analysis.program, analysis.root_file_id, offset)
-            .and_then(|f| local_type_in_fn(f, name));
+            .and_then(|f| local_type_in_fn(f, name, &analysis.symbols));
 
         let (bml_decl, extra) = if let Some(ty) = local_ty {
             (ty, None)
@@ -964,64 +964,123 @@ fn enclosing_fn(
 
 /// Resolve `name` to a parameter or local declaration *within* a single
 /// function. Used so a local correctly shadows a same-named global.
-fn local_type_in_fn(f: &ast::FnDef, name: &str) -> Option<String> {
+fn local_type_in_fn(f: &ast::FnDef, name: &str, symbols: &SymbolTable) -> Option<String> {
     for p in &f.params {
         if p.name.0 == name {
             return Some(format!("{name}: {}", p.ty));
         }
     }
-    find_local_in_block(name, &f.body)
+    find_local_in_block(name, &f.body, symbols)
 }
 
-fn find_local_in_block(name: &str, block: &ast::Block) -> Option<String> {
+/// Render a local `var`/`const` for hover. With an annotation, show it verbatim;
+/// otherwise infer the type from the initializer, falling back to "(inferred)"
+/// when the form is not one we recognize.
+fn format_local_decl(v: &ast::VarDecl, symbols: &SymbolTable) -> String {
+    let name = &v.name.0;
+    if let Some(t) = &v.ty_ann {
+        format!("{name}: {t}")
+    } else if let Some(t) = infer_init_type(&v.init, symbols) {
+        format!("{name}: {t}")
+    } else {
+        format!("{name} (inferred)")
+    }
+}
+
+/// Best-effort type of a local initializer, used only for hover when the
+/// declaration has no annotation. Covers the high-confidence forms (cast, call,
+/// struct literal, literals, a reference to a global const/static); returns
+/// `None` otherwise so the caller falls back to "(inferred)" rather than show a
+/// wrong type. This is a display aid, not the authoritative checker.
+fn infer_init_type(init: &ast::Expr, symbols: &SymbolTable) -> Option<String> {
+    use ast::Expr;
+    match init {
+        // An explicit cast names the value's type outright.
+        Expr::Cast(_, ty) => Some(format!("{ty}")),
+        Expr::StructInit { name, .. } => Some(format!("struct {}", name.0)),
+        Expr::IntLiteral(_, suffix, _) => Some(
+            bml_core::types::int_suffix_type(*suffix)
+                .map_or_else(|| "u32".to_string(), |t| format!("{t}")),
+        ),
+        Expr::FloatLiteral(_, suffix, _) => Some(
+            match suffix {
+                ast::FloatSuffix::H => "f16",
+                ast::FloatSuffix::D => "f64",
+                _ => "f32",
+            }
+            .to_string(),
+        ),
+        Expr::BoolLiteral(_, _) => Some("b1".to_string()),
+        Expr::SizeOf(_, _) => Some("u32".to_string()),
+        // A direct call resolves to the callee's declared return type.
+        Expr::Call(callee, _) => {
+            if let Expr::Ident((fname, _)) = callee.as_ref() {
+                let f = symbols.functions.get(fname)?;
+                Some(
+                    f.ret
+                        .as_ref()
+                        .map_or_else(|| "void".to_string(), |r| format!("{r}")),
+                )
+            } else {
+                None
+            }
+        }
+        // A reference to a known global const/static carries its type.
+        Expr::Ident((n, _)) => symbols
+            .consts
+            .get(n)
+            .map(|c| format!("{}", c.ty))
+            .or_else(|| symbols.statics.get(n).map(|s| format!("{}", s.ty))),
+        Expr::Group(inner) => infer_init_type(inner, symbols),
+        _ => None,
+    }
+}
+
+fn find_local_in_block(name: &str, block: &ast::Block, symbols: &SymbolTable) -> Option<String> {
     for stmt in &block.stmts {
         match stmt {
             ast::Stmt::VarDecl(v) if v.name.0 == name => {
-                let ty = v
-                    .ty_ann
-                    .as_ref()
-                    .map_or_else(|| format!("{name} (inferred)"), |t| format!("{name}: {t}"));
-                return Some(ty);
+                return Some(format_local_decl(v, symbols));
             }
             ast::Stmt::Block(b) => {
-                let r = find_local_in_block(name, b);
+                let r = find_local_in_block(name, b, symbols);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::If(i) => {
-                let r = find_local_in_block(name, &i.then_block);
+                let r = find_local_in_block(name, &i.then_block, symbols);
                 if r.is_some() {
                     return r;
                 }
                 if let Some(ref else_s) = i.else_branch {
-                    let r = find_local_in_stmt(name, else_s);
+                    let r = find_local_in_stmt(name, else_s, symbols);
                     if r.is_some() {
                         return r;
                     }
                 }
             }
             ast::Stmt::Loop(l) => {
-                let r = find_local_in_block(name, &l.body);
+                let r = find_local_in_block(name, &l.body, symbols);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::While(w) => {
-                let r = find_local_in_block(name, &w.body);
+                let r = find_local_in_block(name, &w.body, symbols);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::For(f) => {
-                let r = find_local_in_block(name, &f.body);
+                let r = find_local_in_block(name, &f.body, symbols);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::Match(m) => {
                 for arm in &m.arms {
-                    let r = find_local_in_block(name, &arm.body);
+                    let r = find_local_in_block(name, &arm.body, symbols);
                     if r.is_some() {
                         return r;
                     }
@@ -1033,37 +1092,31 @@ fn find_local_in_block(name: &str, block: &ast::Block) -> Option<String> {
     block
         .trailing
         .as_ref()
-        .and_then(|e| find_local_in_expr(name, e))
+        .and_then(|e| find_local_in_expr(name, e, symbols))
 }
 
-fn find_local_in_stmt(name: &str, stmt: &ast::Stmt) -> Option<String> {
+fn find_local_in_stmt(name: &str, stmt: &ast::Stmt, symbols: &SymbolTable) -> Option<String> {
     match stmt {
-        ast::Stmt::VarDecl(v) if v.name.0 == name => {
-            let ty = v
-                .ty_ann
-                .as_ref()
-                .map_or_else(|| format!("{name} (inferred)"), |t| format!("{name}: {t}"));
-            Some(ty)
-        }
-        ast::Stmt::Block(b) => find_local_in_block(name, b),
+        ast::Stmt::VarDecl(v) if v.name.0 == name => Some(format_local_decl(v, symbols)),
+        ast::Stmt::Block(b) => find_local_in_block(name, b, symbols),
         ast::Stmt::If(i) => {
-            let r = find_local_in_block(name, &i.then_block);
+            let r = find_local_in_block(name, &i.then_block, symbols);
             if r.is_some() {
                 return r;
             }
             i.else_branch
                 .as_ref()
-                .and_then(|s| find_local_in_stmt(name, s))
+                .and_then(|s| find_local_in_stmt(name, s, symbols))
         }
         _ => None,
     }
 }
 
-fn find_local_in_expr(name: &str, expr: &ast::Expr) -> Option<String> {
+fn find_local_in_expr(name: &str, expr: &ast::Expr, symbols: &SymbolTable) -> Option<String> {
     match expr {
-        ast::Expr::Block(b) => find_local_in_block(name, &b.block),
-        ast::Expr::If(i) => find_local_in_block(name, &i.then_block)
-            .or_else(|| find_local_in_expr(name, &i.else_branch)),
+        ast::Expr::Block(b) => find_local_in_block(name, &b.block, symbols),
+        ast::Expr::If(i) => find_local_in_block(name, &i.then_block, symbols)
+            .or_else(|| find_local_in_expr(name, &i.else_branch, symbols)),
         _ => None,
     }
 }
@@ -2104,10 +2157,42 @@ fn main(p: u32) {
         let f =
             enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
         assert_eq!(
-            local_type_in_fn(f, "local_v").as_deref(),
+            local_type_in_fn(f, "local_v", &analysis.symbols).as_deref(),
             Some("local_v: u32")
         );
-        assert_eq!(local_type_in_fn(f, "p").as_deref(), Some("p: u32"));
+        assert_eq!(
+            local_type_in_fn(f, "p", &analysis.symbols).as_deref(),
+            Some("p: u32")
+        );
+    }
+
+    #[test]
+    fn hover_infers_unannotated_local_types() {
+        let src = "\
+struct Pt { x: u32, y: u32 }
+fn helper() -> u32 {
+    return 1u32;
+}
+fn main() @context(thread) {
+    const n = $0helper();
+    const c = 5u8;
+    var p = Pt { x: 1u32, y: 2u32 };
+    const m = 0u32 as u16;
+    const z = c + c;
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let f =
+            enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
+        let s = &analysis.symbols;
+        // Call -> declared return type; literal -> its suffix; struct literal ->
+        // the struct; cast -> the cast target.
+        assert_eq!(local_type_in_fn(f, "n", s).as_deref(), Some("n: u32"));
+        assert_eq!(local_type_in_fn(f, "c", s).as_deref(), Some("c: u8"));
+        assert_eq!(local_type_in_fn(f, "p", s).as_deref(), Some("p: struct Pt"));
+        assert_eq!(local_type_in_fn(f, "m", s).as_deref(), Some("m: u16"));
+        // A form we do not infer keeps the graceful "(inferred)" fallback.
+        assert_eq!(local_type_in_fn(f, "z", s).as_deref(), Some("z (inferred)"));
     }
 
     #[test]
