@@ -2538,3 +2538,18 @@ fn test_non_handoff_write_needs_no_ownership() {
         "non-handoff write should not require ownership; stderr:\n{stderr}"
     );
 }
+
+// ─── handoff encoding (word_addr, slice 3) ─────────────────────────────────
+
+// A source-level `>> 2` feeding an auto-encoded word_addr handoff field
+// double-shifts the address (the compiler already inserts the shift), so it is
+// rejected (E606).
+#[test]
+fn test_handoff_double_shift_rejected() {
+    let (ok, stderr) = bml_build_with_target("handoff_double_shift.bml", Some("handoff.target"));
+    assert!(
+        !ok,
+        "pre-shifted handoff write should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E606"), "expected E606; stderr:\n{stderr}");
+}

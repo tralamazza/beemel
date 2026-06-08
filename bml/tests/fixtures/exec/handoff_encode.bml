@@ -1,0 +1,21 @@
+// word_addr handoff encoding: source writes the BYTE address into a field that
+// the hardware (and SVD) places at bit 2; the compiler inserts `>> 2`, the
+// field's bit position re-aligns, and the register reads back as the byte
+// address. Proven by round-tripping through a RAM-backed fake peripheral.
+import harness.semihost;
+
+peripheral FakeDma at 0x20001000 {
+    reg PTRREG offset 0x00 {
+        field ADDR: u32 bit[2..31]
+    }
+}
+
+owns FakeDma.PTRREG;
+
+fn main() @context(thread) {
+    FakeDma.PTRREG = 0;               // clear the RAM-backed register
+    FakeDma.PTRREG.ADDR = 0x20008004; // byte address; compiler inserts >> 2
+    var readback: u32 = FakeDma.PTRREG;
+    expect_u32(readback, 0x20008004);      // (0x20008004 >> 2) << 2 == 0x20008004
+    done();
+}

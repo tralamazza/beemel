@@ -348,6 +348,30 @@ fn exec_region_placement() {
     }
 }
 
+// word_addr handoff encoding: source writes the byte address into a field at
+// bit 2; the compiler inserts `>> 2` so the register reads back as the byte
+// address. Without the insertion the register would hold the wrong value, so a
+// passing run proves the encoding (not just that some IR was emitted). See
+// doc/regions-agents-plan.md slice 3.
+#[test]
+fn exec_handoff_encode() {
+    if !tools_available() {
+        eprintln!("skipping handoff_encode.bml: qemu-system-arm / arm-none-eabi-ld not found");
+        return;
+    }
+    for opt in OPT_LEVELS {
+        let out = bml_run_with_target("handoff_encode.bml", opt, "handoff_encode.target");
+        assert!(
+            out.contains("OK"),
+            "expected OK from handoff_encode at -O{opt}; captured output:\n{out}"
+        );
+        assert!(
+            !out.contains("FAIL"),
+            "handoff_encode reported a FAIL at -O{opt}; captured output:\n{out}"
+        );
+    }
+}
+
 // ─── const evaluation (language.md §1) ───────────────────────────────────────
 assert_exec!(exec_const_eval, "const_eval.bml");
 

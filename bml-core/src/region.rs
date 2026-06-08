@@ -12,17 +12,19 @@
 //!   `in`/`@section` conflict.
 //! - Slice 2a: `owns` path resolution against the peripheral table, and
 //!   cross-module exclusivity (two modules cannot own the same register).
+//! - Slice 2b/3: handoff write checks -- ownership-required (E605) and the
+//!   double-shift guard on auto-encoded `word_addr` handoffs (E606), both off a
+//!   single exhaustive write walk.
 //!
-//! The handoff-ownership-required rule (slice 2b) and the handoff provenance
-//! checks (slices 3-4) extend this module.
+//! The handoff provenance checks (slice 4) extend this module.
 
 use crate::ast::{
-    Block, Expr, Item, LValue, OwnsPath, Program, StaticDef, Stmt, StorageAnnotation,
+    BinaryOp, Block, Expr, Item, LValue, OwnsPath, Program, StaticDef, Stmt, StorageAnnotation,
 };
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::Target;
+use crate::target::{HandoffEncoding, Target};
 use std::collections::{HashMap, HashSet};
 
 /// Run the region/agent checks.
@@ -39,7 +41,7 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
         }
     }
     check_ownership_exclusivity(program, symbols, diags);
-    check_handoff_ownership(program, symbols, target, diags);
+    check_handoff_writes(program, symbols, target, diags);
 }
 
 // ---- slice 1: placement -----------------------------------------------------
@@ -230,21 +232,36 @@ fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Cla
     }
 }
 
-// ---- slice 2b: handoff-ownership-required -----------------------------------
+// ---- slices 2b + 3: handoff write checks ------------------------------------
 
-/// E605: a write to a handoff register from a module that does not own it.
-/// Handoff registers are the registers whose written value an agent
-/// dereferences on its own initiative; only the owning module may write them.
-/// This is the rule that makes "drives" derivable from `owns` -- owning a
-/// handoff register is what licenses a module to command the agent.
-fn check_handoff_ownership(
+/// One peripheral register/field write, with the source `FileId` (via `span`)
+/// and whether its right-hand side is a literal `>> 2`. `field` is `None` for a
+/// whole-register write (`P.R = x`) and `Some(F)` for a field write
+/// (`P.R.F = x`). Produced by one exhaustive walk and consumed by both the
+/// ownership rule (E605) and the double-shift guard (E606).
+struct PeriphWrite {
+    periph: String,
+    reg: String,
+    field: Option<String>,
+    span: Span,
+    rhs_is_shr2: bool,
+}
+
+/// Handoff write checks. Both rules act at peripheral-register write sites, so
+/// they share a single walk:
+/// - E605: a write to a handoff register from a file that does not own it.
+/// - E606: a source-level `>> 2` feeding a `word_addr` handoff field, which the
+///   compiler already encodes (slice 3) -- a hand-written shift double-shifts.
+fn check_handoff_writes(
     program: &Program,
     symbols: &SymbolTable,
     target: &Target,
     diags: &mut DiagnosticBag,
 ) {
-    // (peripheral, register) -> agent name, from every agent's handoff list.
+    // (peripheral, register) -> agent name, and the set of word_addr handoff
+    // field paths "P.R.F", from every agent's handoff list.
     let mut handoff_regs: HashMap<(String, String), String> = HashMap::new();
+    let mut word_addr_fields: HashSet<String> = HashSet::new();
     for agent in &target.agents {
         for h in &agent.handoffs {
             if let Some((p, r)) = handoff_register_path(&h.register) {
@@ -252,9 +269,12 @@ fn check_handoff_ownership(
                     .entry((p, r))
                     .or_insert_with(|| agent.name.clone());
             }
+            if h.encoding == HandoffEncoding::WordAddr {
+                word_addr_fields.insert(h.register.clone());
+            }
         }
     }
-    if handoff_regs.is_empty() {
+    if handoff_regs.is_empty() && word_addr_fields.is_empty() {
         return;
     }
 
@@ -278,29 +298,48 @@ fn check_handoff_ownership(
         }
     }
 
-    // Every peripheral-register write in the program, with its source file.
     let mut writes = Vec::new();
     collect_peripheral_writes(program, symbols, &mut writes);
 
-    for (periph, reg, span) in writes {
-        let Some(agent) = handoff_regs.get(&(periph.clone(), reg.clone())) else {
-            continue; // not a handoff register
-        };
-        let owned = periph_owners
-            .get(&periph)
-            .is_some_and(|s| s.contains(&span.file))
-            || reg_owners
-                .get(&(periph.clone(), reg.clone()))
-                .is_some_and(|s| s.contains(&span.file));
-        if !owned {
+    for w in &writes {
+        let key = (w.periph.clone(), w.reg.clone());
+
+        // E605: handoff register written without ownership.
+        if let Some(agent) = handoff_regs.get(&key) {
+            let owned = periph_owners
+                .get(&w.periph)
+                .is_some_and(|s| s.contains(&w.span.file))
+                || reg_owners
+                    .get(&key)
+                    .is_some_and(|s| s.contains(&w.span.file));
+            if !owned {
+                diags.error(
+                    format!(
+                        "`{}.{}` is a handoff register of agent `{agent}` and may only be \
+                         written by the module that owns it. Add `owns {}.{};` (or \
+                         `owns {};`) to this module.",
+                        w.periph, w.reg, w.periph, w.reg, w.periph
+                    ),
+                    "E605",
+                    w.span,
+                );
+            }
+        }
+
+        // E606: pre-shifted value into an auto-encoded word_addr handoff field.
+        if w.rhs_is_shr2
+            && let Some(field) = &w.field
+            && word_addr_fields.contains(&format!("{}.{}.{}", w.periph, w.reg, field))
+        {
             diags.error(
                 format!(
-                    "`{periph}.{reg}` is a handoff register of agent `{agent}` and may only be \
-                     written by the module that owns it. Add `owns {periph}.{reg};` (or \
-                     `owns {periph};`) to this module."
+                    "`{}.{}.{}` is a word_addr handoff: the compiler inserts the `>> 2`. \
+                     Writing a pre-shifted value double-shifts the address; write the byte \
+                     address directly (drop the `>> 2`).",
+                    w.periph, w.reg, field
                 ),
-                "E605",
-                span,
+                "E606",
+                w.span,
             );
         }
     }
@@ -315,16 +354,11 @@ fn handoff_register_path(s: &str) -> Option<(String, String)> {
     Some((p.to_string(), r.to_string()))
 }
 
-/// Collect every peripheral register/field *write* in the program as
-/// (peripheral, register, span). Walks all function bodies exhaustively,
-/// including statements embedded in block/if/match expressions, so a handoff
-/// write cannot hide inside an expression. Reused by later slices (encoding,
-/// provenance) which also act at handoff write sites.
-fn collect_peripheral_writes(
-    program: &Program,
-    symbols: &SymbolTable,
-    out: &mut Vec<(String, String, Span)>,
-) {
+/// Collect every peripheral register/field *write* in the program. Walks all
+/// function bodies exhaustively, including statements embedded in
+/// block/if/match expressions, so a handoff write cannot hide inside an
+/// expression. Reused by the provenance slice, which also acts at write sites.
+fn collect_peripheral_writes(program: &Program, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
     for item in &program.items {
         if let Item::FnDef(f) = item {
             walk_block(&f.body, symbols, out);
@@ -332,7 +366,7 @@ fn collect_peripheral_writes(
     }
 }
 
-fn walk_block(block: &Block, symbols: &SymbolTable, out: &mut Vec<(String, String, Span)>) {
+fn walk_block(block: &Block, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
     for stmt in &block.stmts {
         walk_stmt(stmt, symbols, out);
     }
@@ -341,15 +375,18 @@ fn walk_block(block: &Block, symbols: &SymbolTable, out: &mut Vec<(String, Strin
     }
 }
 
-fn walk_stmt(stmt: &Stmt, symbols: &SymbolTable, out: &mut Vec<(String, String, Span)>) {
+fn walk_stmt(stmt: &Stmt, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
     match stmt {
         Stmt::VarDecl(vd) => walk_expr(&vd.init, symbols, out),
         Stmt::Assign(a) => {
-            record_write(&a.target, symbols, out);
+            record_write(&a.target, Some(&a.value), symbols, out);
             walk_expr(&a.value, symbols, out);
         }
         Stmt::CompoundAssign(ca) => {
-            record_write(&ca.target, symbols, out);
+            // The RHS of a compound assign is not the stored value (it is one
+            // operand of `target OP= value`), so it is not a "pre-shifted
+            // address" for the E606 sense; pass None.
+            record_write(&ca.target, None, symbols, out);
             walk_expr(&ca.value, symbols, out);
         }
         Stmt::Expr(e) => walk_expr(e, symbols, out),
@@ -405,7 +442,7 @@ fn walk_stmt(stmt: &Stmt, symbols: &SymbolTable, out: &mut Vec<(String, String, 
 /// Exhaustive expression walk -- only needed to reach statements embedded in
 /// block/if/match expressions, but every variant is matched (no catch-all) so
 /// a new expression form cannot silently drop a nested write.
-fn walk_expr(expr: &Expr, symbols: &SymbolTable, out: &mut Vec<(String, String, Span)>) {
+fn walk_expr(expr: &Expr, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
     match expr {
         Expr::IntLiteral(..)
         | Expr::FloatLiteral(..)
@@ -492,27 +529,58 @@ fn walk_expr(expr: &Expr, symbols: &SymbolTable, out: &mut Vec<(String, String, 
     }
 }
 
-/// If `lv` is a write to a peripheral register or one of its fields, record
-/// (peripheral, register, span). `P.R = x` is `Field(Name(P), R)`; `P.R.F = x`
-/// is `Field(Field(Name(P), R), F)`.
-fn record_write(lv: &LValue, symbols: &SymbolTable, out: &mut Vec<(String, String, Span)>) {
+/// If `lv` is a write to a peripheral register or one of its fields, record it.
+/// `P.R = x` is `Field(Name(P), R)` (field `None`); `P.R.F = x` is
+/// `Field(Field(Name(P), R), F)` (field `Some(F)`). `rhs`, when present, lets
+/// the double-shift guard see a literal `>> 2`.
+fn record_write(
+    lv: &LValue,
+    rhs: Option<&Expr>,
+    symbols: &SymbolTable,
+    out: &mut Vec<PeriphWrite>,
+) {
+    let shr2 = rhs.is_some_and(is_shr_two);
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
             LValue::Name((p, _)) if symbols.peripherals.contains_key(p) => {
-                out.push((p.clone(), field.0.clone(), field.1));
+                out.push(PeriphWrite {
+                    periph: p.clone(),
+                    reg: field.0.clone(),
+                    field: None,
+                    span: field.1,
+                    rhs_is_shr2: shr2,
+                });
             }
             // P.R.F = ...  (reg is the register, field is the field)
             LValue::Field(inner, reg) => {
                 if let LValue::Name((p, _)) = inner.as_ref()
                     && symbols.peripherals.contains_key(p)
                 {
-                    out.push((p.clone(), reg.0.clone(), field.1));
+                    out.push(PeriphWrite {
+                        periph: p.clone(),
+                        reg: reg.0.clone(),
+                        field: Some(field.0.clone()),
+                        span: field.1,
+                        rhs_is_shr2: shr2,
+                    });
                 }
             }
             // A non-peripheral name (local/struct), an indexed place, or a
             // pointer deref: not a peripheral-register write path.
             LValue::Name(_) | LValue::Index(..) | LValue::Deref(_) => {}
         }
+    }
+}
+
+/// Whether `e` is, at top level, a right shift by the literal 2 (`x >> 2`),
+/// possibly wrapped in parentheses -- the hand-written word-address encoding.
+fn is_shr_two(e: &Expr) -> bool {
+    match e {
+        Expr::Group(inner) => is_shr_two(inner),
+        Expr::Binary(_, BinaryOp::Shr, rhs) => {
+            matches!(rhs.as_ref(), Expr::IntLiteral(2, _, _))
+        }
+        _ => false,
     }
 }

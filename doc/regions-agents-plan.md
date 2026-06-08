@@ -13,8 +13,10 @@ Status 2026-06-08: design settled. Implemented: slice 0 (target physics:
 (`in <region>` placement: parser, IR section, mem-block-driven linker script,
 E600/E601/E602 checks, QEMU exec proof), and slice 2 (`owns` parsing, path
 resolution E603, cross-module exclusivity E604, handoff-ownership rule E605
-with an exhaustive write walker). The IKOS emission strategy is empirically
-validated (see "Verification strategy"). Remaining: slices 3-5.
+with an exhaustive write walker), and slice 3 (`word_addr` handoff encoding:
+compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof). The IKOS
+emission strategy is empirically validated (see "Verification strategy").
+Remaining: slices 4-5.
 
 ## Problem
 
@@ -515,12 +517,35 @@ which also act at handoff write sites. The derived `drives` relation (M drives
 A iff M owns one of A's handoff registers) is computable from these same maps;
 surfacing it in LSP hover is deferred to the LSP track.
 
-### Slice 3 -- Handoff encoding insertion
+### Slice 3 -- Handoff encoding insertion (done)
 
-`ir.rs:3325`: if the field is a `word_addr` handoff, insert `>> 2`; reject a
-source-level `>> 2` on a handoff (double shift) in `region.rs`. Static reach
-check where provenance is a known static. Demo: source drops the shift; QEMU
-exec fixture proves the heartbeat transmits byte-identical.
+The IR emitter carries the set of `word_addr` handoff field paths
+(`set_word_addr_handoffs`, built from the target in `bml build`). At the
+peripheral-field store (`ir.rs:3332`) it inserts `lshr i32 val, 2` for a
+`word_addr` handoff field, so source writes the *byte* address and the field's
+own bit-2 position re-aligns it: `(addr >> 2) << 2`. The hand-written `>> 2`
+(and its double-shift bug class) is gone.
+
+Only the field-write site is encoded (the real, unambiguous case: the SVD
+models the field at bit 2). A register-level `word_addr` handoff would have
+different semantics (whole register holds `addr >> 2`, no re-align), so it is
+left for a concrete need.
+
+`region.rs` adds the double-shift guard (E606): a source-level `>> 2` feeding a
+`word_addr` handoff field is rejected, since the compiler already encodes -- it
+shares the slice-2b write walk (now carrying the field name and an
+`rhs_is_shr2` flag).
+
+The encode is applied to the *widened* (i32) value, so a narrow RHS still emits
+valid IR. Only plain assignment is encoded/guarded; a compound assign to a
+handoff field (`PTR |= addr`) is neither -- OR-ing into a descriptor base
+address is nonsensical, so this is left as an intentional gap rather than
+given dubious semantics.
+
+Proof: `exec_handoff_encode` round-trips the byte address through a RAM-backed
+fake peripheral under QEMU at -O0/-O2 (the register reads back as the byte
+address only if the `>> 2` was inserted). Plus `test_handoff_double_shift_rejected`
+(E606). Verify-path encoding (so IKOS sees the same IR) is threaded in slice 4.
 
 ### Slice 4 -- Verify obligations
 

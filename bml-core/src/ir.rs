@@ -42,6 +42,11 @@ pub struct IrEmitter {
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
     pub(crate) startup_init: Vec<(u64, u64)>,
+    /// Full handoff field paths (`Peripheral.REGISTER.FIELD`) whose encoding is
+    /// `word_addr`: a write of a byte address gets a compiler-inserted `>> 2`,
+    /// so the programmer never hand-writes the shift. Built from the target's
+    /// agent handoff lists. See `doc/regions-agents-plan.md`.
+    word_addr_handoffs: std::collections::HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -214,6 +219,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
+            word_addr_handoffs: std::collections::HashSet::new(),
         }
     }
 
@@ -254,6 +260,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
+            word_addr_handoffs: std::collections::HashSet::new(),
         }
     }
 
@@ -269,6 +276,26 @@ impl IrEmitter {
     /// `Target::startup_init`.
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
         self.startup_init = writes;
+    }
+
+    /// Install the set of `word_addr` handoff field paths
+    /// (`Peripheral.REGISTER.FIELD`). A write to one of these fields gets a
+    /// compiler-inserted `>> 2`, so source writes the byte address directly.
+    pub fn set_word_addr_handoffs(&mut self, paths: std::collections::HashSet<String>) {
+        self.word_addr_handoffs = paths;
+    }
+
+    /// If `path` is a `word_addr` handoff field, emit `lshr i32 val, 2` and
+    /// return the encoded register; otherwise return `val_reg` unchanged. The
+    /// value is an address (i32/u32), so an unsigned shift is correct.
+    fn encode_word_addr_handoff(&mut self, val_reg: &str, path: &str) -> String {
+        if self.word_addr_handoffs.contains(path) {
+            let enc = self.new_reg();
+            self.line(&format!("{enc} = lshr i32 {val_reg}, 2"));
+            enc
+        } else {
+            val_reg.to_string()
+        }
     }
 
     #[must_use]
@@ -3337,7 +3364,10 @@ impl IrEmitter {
                     && let Some(field_def) = reg.fields.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
-                    // Bit-band: single-bit field within bit-band region
+                    let handoff_path = format!("{periph_name}.{}.{}", reg_field.0, field.0);
+                    // Bit-band: single-bit field within bit-band region. A
+                    // word_addr handoff field is 30 bits wide, so it never takes
+                    // this single-bit path -- the encoding lives in the RMW path.
                     if self.has_bitband
                         && let Some(alias) =
                             crate::arch::arm::bitband_alias(addr, &field_def.bit_spec)
@@ -3362,7 +3392,12 @@ impl IrEmitter {
                     let cleared = self.new_reg();
                     self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
                     // widen narrow value to i32 for RMW math
-                    let wide_val = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
+                    let widened = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
+                    // word_addr handoff: the field holds (byte address >> 2).
+                    // Encode the widened (i32) address so source writes the byte
+                    // address; the field's bit position (`shl`, below) re-aligns
+                    // it. This removes the hand-written `>> 2`.
+                    let wide_val = self.encode_word_addr_handoff(&widened, &handoff_path);
                     // shift new value into position
                     let shifted = self.new_reg();
                     if shift > 0 {
