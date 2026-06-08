@@ -1,0 +1,10 @@
+// Stores a DTCM address (outside dma_shared) into an `addr in dma_shared`
+// field: the in-memory handoff obligation is violated -> error.
+struct RxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    flags: u32,
+}
+var RX: [RxDesc; 2] @align(32) in dma_shared;
+fn main() @context(thread) {
+    RX[0].buf1 = 0x20000000;
+}

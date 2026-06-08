@@ -1,0 +1,9 @@
+// An `addr in R` field naming a region the target does not define -> E607.
+struct RxDesc @repr(packed) {
+    buf1: addr in scratch,
+    flags: u32,
+}
+var RX: [RxDesc; 2] @align(32) in dma_shared;
+fn main() @context(thread) {
+    RX[0].flags = 1;
+}

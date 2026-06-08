@@ -56,6 +56,10 @@ pub struct IrEmitter {
     /// agent's reachable mem blocks. In verify mode, a write to the field emits
     /// an `assert` that the byte address is in this range. Empty outside verify.
     handoff_reach_bounds: HashMap<String, (u64, u64)>,
+    /// Region name -> `[lo, hi)` byte range of its mem block. In verify mode, a
+    /// write to an `addr in R` struct field (an in-memory handoff) asserts the
+    /// stored address is in `R`'s range. Empty outside verify.
+    region_ranges: HashMap<String, (u64, u64)>,
 }
 
 #[derive(Clone)]
@@ -247,6 +251,7 @@ impl IrEmitter {
             word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
+            region_ranges: HashMap::new(),
         }
     }
 
@@ -290,6 +295,7 @@ impl IrEmitter {
             word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
+            region_ranges: HashMap::new(),
         }
     }
 
@@ -320,9 +326,11 @@ impl IrEmitter {
         &mut self,
         region_addr_ranges: HashMap<String, (u64, u64)>,
         handoff_reach_bounds: HashMap<String, (u64, u64)>,
+        region_ranges: HashMap<String, (u64, u64)>,
     ) {
         self.region_addr_ranges = region_addr_ranges;
         self.handoff_reach_bounds = handoff_reach_bounds;
+        self.region_ranges = region_ranges;
     }
 
     /// Emit `assume(lo <= value < hi)` as the branch-to-unreachable pattern IKOS
@@ -3392,7 +3400,33 @@ impl IrEmitter {
                 };
                 Some((ptr_reg, pointee_ty))
             }
-            LValue::Index(..) => None,
+            // `arr[i]` / `p[i]` as a store base (e.g. `RX[i].buf1 = ...`).
+            // Previously `None`, which silently dropped the enclosing
+            // field/index store. The element GEP mirrors the read side
+            // (`emit_lvalue_ptr` Index) so reads and writes hit the same slot.
+            LValue::Index(base, index) => {
+                let (base_ptr, base_ty) = self.lvalue_base_info(base, symbols, fn_name)?;
+                let (data_ptr, elem_ty) = match &base_ty {
+                    Type::Array(inner, _) => (base_ptr, inner.as_ref().clone()),
+                    // A pointer base addresses the pointer's storage; load the
+                    // data pointer before indexing.
+                    Type::Ptr(inner) | Type::ConstPtr(inner) => {
+                        let loaded = self.new_reg();
+                        self.line(&format!("{loaded} = load ptr, ptr {base_ptr}"));
+                        (loaded, inner.as_ref().clone())
+                    }
+                    _ => return None,
+                };
+                let idx_reg = self.emit_expr(index, symbols, fn_name);
+                let idx_ty = self.expr_type(index, symbols);
+                let ll_elem = llvm_type(&elem_ty);
+                let reg = self.new_reg();
+                self.line(&format!(
+                    "{reg} = getelementptr {ll_elem}, ptr {data_ptr}, {} {idx_reg}",
+                    llvm_type(&idx_ty)
+                ));
+                Some((reg, elem_ty))
+            }
         }
     }
 
@@ -3546,6 +3580,18 @@ impl IrEmitter {
                             "{gep} = getelementptr {struct_llvm_ty}, ptr {struct_addr}, i32 0, i32 {idx}"
                         ));
                         let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &field_ty);
+                        // In-memory handoff: a write to an `addr in R` field is
+                        // an address handed to an agent through memory it walks.
+                        // Verify mode asserts the stored address is in region R;
+                        // IKOS discharges it from the provenance assume at
+                        // `&BUFFER as u32` (slice 4), same machinery as register
+                        // handoffs. `addr` is a byte address -- no encoding.
+                        if self.verify_mode
+                            && let Type::Addr(region) = &field_ty
+                            && let Some(&(lo, hi)) = self.region_ranges.get(region)
+                        {
+                            self.emit_range_assert(&val_reg, lo, hi, &dbg);
+                        }
                         // Encode a `@be` field to its stored (byte-swapped) form.
                         let endian = Self::field_endian(struct_name, idx, symbols);
                         let val_reg = self.maybe_bswap(val_reg, &field_ty, endian);
@@ -4695,6 +4741,8 @@ fn llvm_type(ty: &Type) -> String {
         | Type::Dma(inner)
         | Type::External(inner) => llvm_type(inner),
         Type::Null => "ptr".into(),
+        // A byte-address slot is a plain i32 (it holds an address as an integer).
+        Type::Addr(_) => "i32".into(),
         // Post-resolver these shouldn't appear; if they do, emit a safe i32
         // so we still produce valid (if meaningless) IR for already-broken
         // input rather than panicking.
@@ -4722,7 +4770,8 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::U32
         | Type::U64
         | Type::B1
-        | Type::B8 => "0".to_string(),
+        | Type::B8
+        | Type::Addr(_) => "0".to_string(),
         Type::F16 | Type::F32 | Type::F64 => "0.0".to_string(),
         Type::Ptr(_) | Type::ConstPtr(_) | Type::Fn(..) => "null".to_string(),
         Type::Array(..)

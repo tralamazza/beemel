@@ -2642,3 +2642,62 @@ fn test_verify_handoff_unproven_warns() {
         "--fail-on warning should fail on the unproven assert"
     );
 }
+
+// ─── in-memory handoffs (addr-typed fields, slice 6) ───────────────────────
+
+// An `addr in R` struct field naming a region the target does not define is
+// rejected (E607) -- otherwise the in-memory handoff obligation is silently
+// skipped.
+#[test]
+fn test_addr_field_unknown_region() {
+    let (ok, stderr) =
+        bml_build_with_target("addr_unknown_region.bml", Some("verify_handoff.target"));
+    assert!(
+        !ok,
+        "addr field in an unknown region should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E607"), "expected E607; stderr:\n{stderr}");
+}
+
+// A buffer address (provably in the field's region) written into an `addr in R`
+// descriptor field through a helper discharges the in-memory handoff
+// obligation. Exercises the array-of-structs descriptor shape.
+#[test]
+fn test_addr_field_handoff_ok() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _o, stderr) = bml_verify_args("addr_handoff.bml", &["--target", &target]);
+    assert!(
+        !stderr.contains("ikos failed"),
+        "verify pipeline error:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("error[assert]"),
+        "a buffer in the field's region should discharge:\n{stderr}"
+    );
+    assert!(ok, "expected a clean verify exit; stderr:\n{stderr}");
+}
+
+// Storing an out-of-region address (DTCM, outside dma_shared) into an `addr in
+// dma_shared` field violates the in-memory handoff obligation: a definite
+// assert error.
+#[test]
+fn test_addr_field_handoff_out_of_region() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _o, stderr) = bml_verify_args("addr_handoff_bad.bml", &["--target", &target]);
+    assert!(
+        !ok,
+        "an out-of-region addr-field write should fail; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error[assert]"),
+        "expected a definite assert violation; stderr:\n{stderr}"
+    );
+}

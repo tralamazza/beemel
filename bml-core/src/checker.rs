@@ -328,6 +328,8 @@ fn extern_abi_value_error_inner(
         | Type::F32
         | Type::F64
         | Type::B8
+        // A byte-address slot is a u32 at the ABI; harmless to pass.
+        | Type::Addr(_)
         | Type::Enum(..) => Ok(()),
         Type::Void if allow_void => Ok(()),
         Type::Void => Err("use no parameter instead of `void`".to_string()),
@@ -379,6 +381,7 @@ fn extern_abi_pointee_error(
         | Type::F32
         | Type::F64
         | Type::B8
+        | Type::Addr(_)
         | Type::Enum(..) => Ok(()),
         Type::B1 => Err("pointers to `b1` are not C ABI-safe; use `*b8`".to_string()),
         Type::F16 => Err("pointers to `f16` are not C ABI-safe; use `*f32` or `*f64`".to_string()),
@@ -531,7 +534,10 @@ fn validate_type_ann(ty: &ast::TypeExpr, diags: &mut DiagnosticBag) {
                 validate_type_ann(ret, diags);
             }
         }
-        ast::TypeExpr::Named(_) | ast::TypeExpr::Bits(_) | ast::TypeExpr::Void(_) => {}
+        ast::TypeExpr::Named(_)
+        | ast::TypeExpr::Bits(_)
+        | ast::TypeExpr::Addr(_)
+        | ast::TypeExpr::Void(_) => {}
     }
 }
 

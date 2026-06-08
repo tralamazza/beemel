@@ -18,8 +18,11 @@ compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof), and slice
 4 (verify obligations: provenance assume at `&X as u32`, reachability assert at
 the handoff write, discharged by IKOS -- DTCM footgun caught at the value
 level). Slice 5 partial: `doc/language.md` corrected; full `@dma` retirement
-re-scoped (blocked on in-memory handoffs + a Move-typing replacement decision +
-hardware validation). Next unblocker: design in-memory handoffs.
+re-scoped. In-memory handoffs implemented (v1, struct-field `addr in R` with
+the verify obligation; fixed the `arr[i].field` store miscompile en route).
+Remaining: the example port + `@dma` retirement (now unblocked: in-memory
+handoffs exist; still wants a Move-typing replacement decision + hardware
+validation), and the deferred in-memory-handoff items.
 
 ## Problem
 
@@ -340,6 +343,33 @@ three things:
    compiler emits `assume(range)` at the address-of site of the source symbol
    and `assert(in-region && aligned)` before the handoff write. See next
    section for why the assume goes there.
+
+### In-memory handoffs (implemented, v1)
+
+Done as scoped: `addr in R` is a struct-**field**-only type (byte address, no
+encoding), with the verify obligation and the no-transitive-reach simplification
+chosen. `Type::Addr(String)` / `TypeExpr::Addr(Ident)` thread through
+resolver/checker/types/ir as a `u32`-layout, 4-byte, 4-aligned, Copy value;
+`types_compatible` interconverts `addr in R <-> u32` (a byte address writes in,
+reading yields `u32`). The region pass rejects an unknown field region (E607).
+At a write to an `addr in R` field, verify mode emits `assert(value in
+R.range)` (reusing `emit_range_assert`), discharged from the slice-4 provenance
+assume at `&BUFFER as u32` -- no new verify machinery, just a region-name range
+map.
+
+This surfaced and fixed a real silent miscompile: a store to a field of an
+indexed array element (`RX[i].buf1 = ...`, the descriptor shape) was *dropped*
+(`lvalue_base_info` returned `None` for an `Index` base). `Index` now returns
+the element pointer + type (mirroring the read side), so the store happens. An
+exec fixture (`field_of_index_store`) pins it under QEMU.
+
+Proof (real IKOS): a buffer address in the field's region, written through a
+helper into `RX[0].buf1`, discharges clean; a DTCM address (out of region) is a
+definite `error[assert]`; E607 on an unknown field region. The deferred items
+(transitive agent-reaches-R, `addr` as a general type, `word_addr in R`, read
+re-establishing the in-region fact) remain open.
+
+The original design follows.
 
 ### In-memory handoffs (design)
 

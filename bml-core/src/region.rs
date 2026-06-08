@@ -37,6 +37,27 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
                     resolve_owns_path(path, symbols, diags);
                 }
             }
+            // E607: an `addr in R` struct field must name a real region, else
+            // the in-memory handoff obligation would be silently skipped.
+            Item::StructDef(s) => {
+                for field in &s.fields {
+                    if let crate::ast::TypeExpr::Addr((region, span)) = &field.ty
+                        && !target.regions.iter().any(|r| &r.name == region)
+                    {
+                        diags.error(
+                            format!(
+                                "field `{}.{}` is `addr in {region}`, but the target defines no \
+                                 such region{}",
+                                s.name.0,
+                                field.name.0,
+                                known_regions(target)
+                            ),
+                            "E607",
+                            *span,
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }

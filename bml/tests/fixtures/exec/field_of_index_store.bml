@@ -1,0 +1,29 @@
+// Regression: a store to a struct field of an indexed array element
+// (`arr[i].field = x`) was silently dropped (lvalue_base_info returned None for
+// an Index base). It must actually write. Checked by reading the values back.
+import harness.semihost;
+
+struct Pair {
+    a: u32,
+    b: u32,
+}
+
+var ITEMS: [Pair; 3];
+
+fn main() @context(thread) {
+    var i: u32 = 1;
+    ITEMS[0].a = 10;
+    ITEMS[0].b = 11;
+    ITEMS[i].a = 20;        // dynamic index, field store
+    ITEMS[i].b = 21;
+    ITEMS[2].a = 30;
+
+    expect_u32(ITEMS[0].a, 10);
+    expect_u32(ITEMS[0].b, 11);
+    expect_u32(ITEMS[1].a, 20);
+    expect_u32(ITEMS[1].b, 21);
+    expect_u32(ITEMS[2].a, 30);
+    // The neighbor field not written stays zero (no clobber).
+    expect_u32(ITEMS[2].b, 0);
+    done();
+}

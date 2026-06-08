@@ -268,6 +268,12 @@ assert_exec!(exec_pointers, "pointers.bml");
 
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
+
+// Regression: a store to a struct field of an indexed array element
+// (`arr[i].field = x`) was silently dropped (lvalue_base_info returned None for
+// an Index base). Writes the fields via constant and dynamic indices and reads
+// them back, checking no store is lost and no neighbor is clobbered.
+assert_exec!(exec_field_of_index_store, "field_of_index_store.bml");
 assert_exec!(exec_struct_layout_repr, "struct_layout_repr.bml");
 assert_exec!(exec_struct_field_endian, "struct_field_endian.bml");
 

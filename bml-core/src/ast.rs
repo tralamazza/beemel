@@ -456,6 +456,11 @@ pub enum TypeExpr {
     Bits(bool),
     Array(Box<TypeExpr>, Box<Expr>),
     Fn(Vec<TypeExpr>, Option<Box<TypeExpr>>),
+    /// `addr in <region>` -- a byte-address slot constrained to a region (an
+    /// in-memory handoff field). Layout-identical to `u32`; not a typed pointer.
+    /// The `Ident` is the region name, resolved against the target. See
+    /// `doc/regions-agents-plan.md`.
+    Addr(Ident),
     Void(Span),
 }
 
@@ -471,6 +476,7 @@ impl TypeExpr {
             | TypeExpr::Ring(inner, _) => inner.span(),
             TypeExpr::Array(inner, _) => inner.span(),
             TypeExpr::Bits(_) | TypeExpr::Fn(_, _) => Span::empty(crate::source::FileId::new(), 0),
+            TypeExpr::Addr((_, s)) => *s,
             TypeExpr::Void(s) => *s,
         }
     }
@@ -498,6 +504,7 @@ impl fmt::Display for TypeExpr {
                     None => write!(f, "fn({})", p.join(", ")),
                 }
             }
+            TypeExpr::Addr((region, _)) => write!(f, "addr in {region}"),
             TypeExpr::Void(_) => write!(f, "void"),
         }
     }

@@ -57,6 +57,10 @@ pub enum Type {
     Mmio(Box<Type>),
     Dma(Box<Type>),
     External(Box<Type>),
+    /// `addr in <region>` -- a byte-address slot constrained to a region (an
+    /// in-memory handoff field). Layout-identical to `u32`; the `String` is the
+    /// region name. Not a typed pointer. See `doc/regions-agents-plan.md`.
+    Addr(String),
     // User-defined struct types: name + representation + ordered field list
     Struct(String, StructRepr, Vec<(String, Type)>),
     // User-defined enum types: name + underlying type + (variant_name, discriminant)
@@ -112,6 +116,7 @@ impl fmt::Display for Type {
             Type::Mmio(t) => write!(f, "@mmio({t})"),
             Type::Dma(t) => write!(f, "@dma({t})"),
             Type::External(t) => write!(f, "@external({t})"),
+            Type::Addr(region) => write!(f, "addr in {region}"),
             Type::Struct(name, _, _) => write!(f, "struct {name}"),
             Type::Enum(name, _, _) => write!(f, "enum {name}"),
             Type::Unresolved(name) => write!(f, "{name}"),
@@ -152,6 +157,8 @@ impl Type {
             | Type::Unresolved(_)
             | Type::Fn(..)
             | Type::Null
+            // An address slot is a plain value (like u32): Copy.
+            | Type::Addr(_)
             | Type::Error(_) => Semantics::Copy,
             // A readonly view is Copy; a mutable view is Move (so the move
             // checker forbids use-after-move and aliasing two mutable views).
@@ -332,6 +339,7 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
                 .map_or(Type::Void, |r| resolve_type_expr(r, structs, enums));
             Type::Fn(resolved_params, Box::new(resolved_ret))
         }
+        TypeExpr::Addr((region, _)) => Type::Addr(region.clone()),
         TypeExpr::Void(_) => Type::Void,
     }
 }
@@ -419,6 +427,16 @@ pub fn alias_type_defs<S: ::std::hash::BuildHasher>(
 #[must_use]
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if expected == actual {
+        return true;
+    }
+    // A byte-address slot (`addr in R`) interconverts with `u32`: a u32 byte
+    // address is written into the field, and reading the field yields a u32.
+    // The region constraint is enforced by the handoff obligation at the write
+    // site, not by the value type, so plain u32 flows both ways.
+    if matches!(
+        (expected, actual),
+        (Type::Addr(_), Type::U32) | (Type::U32, Type::Addr(_))
+    ) {
         return true;
     }
     // Allow storage-wrapped assignment to unwrapped
@@ -597,7 +615,9 @@ pub fn align_of(ty: &Type) -> u32 {
         | Type::LinearView(_, _)
         | Type::StridedView(_, _, _)
         | Type::RingView(_, _, _)
-        | Type::BitView(_) => 4,
+        | Type::BitView(_)
+        // A byte-address slot is 4 bytes, 4-aligned (like u32).
+        | Type::Addr(_) => 4,
         Type::I64 | Type::U64 | Type::F64 => 8,
         Type::Array(inner, _) => align_of(inner),
         Type::Struct(_, StructRepr::Packed, _) => 1,

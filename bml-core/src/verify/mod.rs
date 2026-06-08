@@ -136,6 +136,7 @@ pub fn verify(
     emitter.set_handoff_obligations(
         region_addr_ranges(program, target),
         handoff_reach_bounds(target),
+        region_ranges(target),
     );
     let llvm_ir = emitter.emit(program, symbols);
 
@@ -339,6 +340,19 @@ fn region_addr_ranges(
             && let Some(mem) = target.mem_blocks.iter().find(|m| m.name == region.mem)
         {
             map.insert(s.name.0.clone(), (mem.base, mem.end()));
+        }
+    }
+    map
+}
+
+/// Region name -> `[lo, hi)` byte range of its mem block. A write to an
+/// `addr in R` struct field (an in-memory handoff) asserts the stored address
+/// is in this range.
+fn region_ranges(target: &Target) -> HashMap<String, (u64, u64)> {
+    let mut map = HashMap::new();
+    for region in &target.regions {
+        if let Some(mem) = target.mem_blocks.iter().find(|m| m.name == region.mem) {
+            map.insert(region.name.clone(), (mem.base, mem.end()));
         }
     }
     map

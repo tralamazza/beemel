@@ -1044,6 +1044,15 @@ impl<'a> Parser<'a> {
                 };
                 Some(TypeExpr::Fn(params, ret))
             }
+            // `addr in <region>`: an in-memory handoff slot. `addr` is a
+            // contextual keyword (a plain identifier elsewhere), like `stride`.
+            TokenKind::Ident(s) if s == "addr" => {
+                self.advance();
+                self.expect(&TokenKind::In, "expected `in <region>` after `addr`")
+                    .ok()?;
+                let region = self.parse_ident()?;
+                Some(TypeExpr::Addr(region))
+            }
             _ => {
                 let name = self.parse_ident()?;
                 Some(TypeExpr::Named(name))

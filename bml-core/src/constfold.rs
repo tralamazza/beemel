@@ -153,7 +153,7 @@ fn fold_type(
                 fold_type(r, consts, array_lens);
             }
         }
-        TypeExpr::Named(_) | TypeExpr::Void(_) | TypeExpr::Bits(_) => {}
+        TypeExpr::Named(_) | TypeExpr::Void(_) | TypeExpr::Bits(_) | TypeExpr::Addr(_) => {}
     }
 }
 
