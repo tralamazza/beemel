@@ -3949,7 +3949,7 @@ impl IrEmitter {
                     self.debug_metadata,
                     "!{id} = !DICompositeType(tag: DW_TAG_structure_type, name: \"{name}\", file: !{}, line: 0, size: {total_bits}, elements: !{{{}}})",
                     self.cu_file_id.unwrap_or(0),
-                    if field_debug.is_empty() { String::new() } else { format!("{{{}}}", field_debug.join(", ")) }
+                    field_debug.join(", ")
                 )
                 .unwrap();
                 self.type_dbg_id.insert(key, id);

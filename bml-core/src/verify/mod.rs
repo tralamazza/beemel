@@ -403,8 +403,10 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
         kind: i64,
         status: i64,
         statement_id: i64,
+        // `default` alone does not cover an explicit `null`: unreachable
+        // entries carry `"operands": null`, so this must be Option.
         #[serde(default)]
-        operands: Vec<(i64, i64)>,
+        operands: Option<Vec<(i64, i64)>>,
         #[allow(dead_code)]
         info: Option<serde_json::Value>,
     }
@@ -475,6 +477,8 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
         // others are constants/internals we skip.
         let operand_names: Vec<&str> = entry
             .operands
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .filter_map(|(_, id)| operand_by_id.get(id).copied())
             .filter(|name| !name.is_empty())

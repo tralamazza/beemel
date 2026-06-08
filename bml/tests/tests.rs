@@ -2318,3 +2318,22 @@ fn test_verify_fail_on_never() {
         "--fail-on never should exit 0 even with an error finding"
     );
 }
+
+// Regression: (1) struct debug metadata was emitted with doubled braces in the
+// DICompositeType `elements:` list, so `opt` rejected the IR of any
+// struct-containing program; (2) IKOS reports `"operands": null` on
+// unreachable entries (the fixture's dead branch), which the JSON report
+// parser rejected. Either bug makes this run fail outright.
+#[test]
+fn test_verify_struct_debug_info() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, _stdout, stderr) = bml_verify_args("verify_struct_debug_info.bml", &[]);
+    assert!(
+        !stderr.contains("ikos failed"),
+        "verify pipeline error on a struct-containing program:\n{stderr}"
+    );
+    assert!(ok, "expected a finding-free exit, stderr:\n{stderr}");
+}
