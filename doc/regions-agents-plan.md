@@ -25,10 +25,13 @@ the agent the descriptor is delivered to). Derived-Move done: an array placed in
 a region a DMA/external agent mutates is wrapped in `Type::Dma` at resolution
 (`region.rs::apply_derived_move`), so the index-read protection (E326) is
 reproduced from placement with no new checks and no hand-written `@dma`.
-Remaining: the behavior-preserving example port + `@dma` deletion (needs hardware
-validation), and the lower-priority deferred items (`addr` as a general type,
-`word_addr in R`, read re-establishing the in-region fact -- each generalization
-without a current consumer).
+Example port done and hardware-validated: `eth_dma.bml`/`stm32h723zg.target`
+moved to `in dma_shared` + declared ETH agent/handoffs (auto-encoded `>> 2`),
+behavior-preserving (IR diff is section + identical re-encode), TX still works on
+the NUCLEO-H723ZG. Remaining: the descriptor-struct refactor + `Type::Dma`
+deletion (full `@dma` retirement), and the lower-priority deferred items (`addr`
+as a general type, `word_addr in R`, read re-establishing the in-region fact --
+each generalization without a current consumer).
 
 ## Problem
 
@@ -727,7 +730,21 @@ Blockers before retirement: (1) design in-memory handoffs -- DONE; (2) carry
 -- DONE (derived-Move, below); (3) port the example additively
 (`@dma ... in dma_shared`, ETH agent + handoffs in the target -- behavior-
 preserving since `(desc>>2)<<2 == (desc)>>2<<2` after auto-encode) with hardware
-validation; then delete `Type::Dma`. Only (3) remains, and it needs the board.
+validation; then delete `Type::Dma`.
+
+**Port (blocker 3), done and hardware-validated.** `stm32h723zg.target` now
+splits the 32K D2 SRAM into a working `sram` block and a `dma_pool` block, and
+declares the ETH DMA agent with the four word_addr descriptor handoffs;
+`eth_dma.bml` adds `owns Ethernet_DMA`, places the four buffers `in dma_shared`,
+and drops the six hand-written `>> 2` (the compiler reinserts them). Verified
+behavior-preserving before flashing: the controller IR diff is *only* the
+buffers gaining `.region.dma_shared` plus the identical `(desc>>2)<<2`
+re-encoding; the linked buffers land in `dma_pool` (0x30007000, D2 SRAM,
+32-aligned). On the NUCLEO-H723ZG, heartbeats still transmit -- captured frames
+(EtherType 0x88B5, monotonic seq) confirm TX. What remains for full `@dma`
+retirement: refactor `TX_DESC`/`RX_DESC` from `[u32;8]` to `[TxDesc;N]`/
+`[RxDesc;N]` with `addr in dma_shared` fields (the in-memory handoff + E608),
+then delete `Type::Dma` (derived-Move covers the protection).
 
 **Derived-Move (blocker 2), done.** Pinned the actual mechanism empirically:
 `@dma`'s load-bearing property is the *index-read restriction*, enforced as

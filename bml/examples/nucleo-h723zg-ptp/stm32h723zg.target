@@ -23,3 +23,34 @@ vector_table_offset = 0x08000000
 
 [interrupts]
 ETH = 61
+
+# Memory blocks for the regions model. The 32K D2 AHB SRAM is split: a working
+# RAM block (.data/.bss/.stack) and a dma_pool block the ETH DMA buffers are
+# placed in. Both are in D2 SRAM, which the ETH DMA reaches; ram_base above
+# matches the sram block so it stays the working RAM.
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x30000000
+size = 28K
+
+[mem.dma_pool]
+base = 0x30007000
+size = 4K
+
+# The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
+# descriptor base + tail-pointer registers are word_addr handoffs: the field is
+# at bit 2, so the compiler inserts the `>> 2` the source used to write by hand.
+[agent.eth]
+kind = dma
+reach = dma_pool
+handoff = Ethernet_DMA.DMACTxDLAR.TDESLA : word_addr
+handoff = Ethernet_DMA.DMACTxDTPR.TDT : word_addr
+handoff = Ethernet_DMA.DMACRxDLAR.RDESLA : word_addr
+handoff = Ethernet_DMA.DMACRxDTPR.RDT : word_addr
+
+[region.dma_shared]
+mem = dma_pool
+agents = eth

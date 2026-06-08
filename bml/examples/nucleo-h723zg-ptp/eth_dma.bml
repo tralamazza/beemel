@@ -20,10 +20,19 @@ const SRC_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x72, 0x3A];
 const BROADCAST: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 const MAGIC: [u8; 6] = [0x42, 0x4D, 0x4C, 0x50, 0x54, 0x50];
 
-var TX_BUFFER: [u8; 128] @dma @align(32);
-var TX_DESC: [u32; 8] @dma @align(32);
-var RX_BUFFER: [u8; 1024] @dma @align(32);
-var RX_DESC: [u32; 8] @dma @align(32);
+// This module owns the ETH DMA: its handoff registers (the descriptor base and
+// tail-pointer registers, declared in stm32h723zg.target) may only be written
+// by the owner.
+owns Ethernet_DMA;
+
+// The ETH DMA buffers live in the dma_shared region (the dma_pool block in D2
+// SRAM, which the ETH DMA reaches). `@dma` is kept for the index-read
+// protection; placement adds the region. Region memory is uninitialized at
+// startup, so these take no initializer and are written before the DMA starts.
+var TX_BUFFER: [u8; 128] @dma @align(32) in dma_shared;
+var TX_DESC: [u32; 8] @dma @align(32) in dma_shared;
+var RX_BUFFER: [u8; 1024] @dma @align(32) in dma_shared;
+var RX_DESC: [u32; 8] @dma @align(32) in dma_shared;
 var TX_DESC_INDEX: u32;
 var RX_DESC_INDEX: u32;
 var RX_PACKET_COUNT: u32;
@@ -171,8 +180,9 @@ fn eth_init_tx() {
 
     const desc0 = tx_desc_addr(0);
     Ethernet_DMA.DMACTxRLR.TDRL = TX_DESC_COUNT - 1;
-    Ethernet_DMA.DMACTxDLAR.TDESLA = desc0 >> 2;
-    Ethernet_DMA.DMACTxDTPR.TDT = desc0 >> 2;
+    // word_addr handoffs: the compiler inserts the `>> 2` (field at bit 2).
+    Ethernet_DMA.DMACTxDLAR.TDESLA = desc0;
+    Ethernet_DMA.DMACTxDTPR.TDT = desc0;
     Ethernet_DMA.DMACTxCR.ST = true;
 
     Ethernet_MAC.MACCR.FES = true;
@@ -202,8 +212,9 @@ fn eth_init_rx() {
 
     const desc0 = rx_desc_addr(0);
     Ethernet_DMA.DMACRxRLR.RDRL = RX_DESC_COUNT - 1;
-    Ethernet_DMA.DMACRxDLAR.RDESLA = desc0 >> 2;
-    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr((RX_DESC_COUNT - 1) * RX_DESC_WORDS) >> 2;
+    // word_addr handoffs: the compiler inserts the `>> 2` (field at bit 2).
+    Ethernet_DMA.DMACRxDLAR.RDESLA = desc0;
+    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr((RX_DESC_COUNT - 1) * RX_DESC_WORDS);
     Ethernet_DMA.DMACRxCR.RBSZ = RX_BUFFER_LEN;
 
     // Promiscuous receive keeps first RX bring-up independent from host-side MAC
@@ -284,7 +295,7 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     asm { dmb } : : : "memory";
 
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
-    Ethernet_DMA.DMACTxDTPR.TDT = next_desc_addr >> 2;
+    Ethernet_DMA.DMACTxDTPR.TDT = next_desc_addr;
 }
 
 fn rx_get8(index: u32) -> u32 {
@@ -306,7 +317,7 @@ fn rx_rearm(desc_word: u32) {
     RX_DESC[desc_word + 2] = 0;
     RX_DESC[desc_word + 3] = RX_DESC_OWN | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
-    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr(desc_word) >> 2;
+    Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr(desc_word);
 }
 
 fn eth_poll_rx() {
