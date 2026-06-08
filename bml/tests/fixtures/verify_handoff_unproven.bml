@@ -1,0 +1,16 @@
+// An address with no provable bound (read from a volatile register, which IKOS
+// havocs) handed to the handoff: the reachability assert can be neither proven
+// nor refuted, so IKOS reports it as a *warning* (unproven), not an error. This
+// pins the three-way severity: proven (silent), violated (error), unproven
+// (warning). See doc/regions-agents-plan.md slice 4.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 { field PTR: u32 bit[2..31] }
+    reg SCRATCH offset 0x04 { field VAL: u32 bit[0..31] }
+}
+
+owns MyDma.DESCADDR;
+
+fn main() @context(thread) {
+    var v: u32 = MyDma.SCRATCH; // volatile read -> unconstrained value
+    MyDma.DESCADDR.PTR = v;
+}

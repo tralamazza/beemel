@@ -1,0 +1,29 @@
+# Region + agent for the handoff provenance verify test. The DMA agent reaches
+# only sram1, where the descriptor region lives.
+arch = armv7em
+cpu = cortex-m7
+flash_base = 0x08000000
+flash_size = 1M
+ram_base = 0x20000000
+ram_size = 128K
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.dtcm]
+base = 0x20000000
+size = 128K
+
+[mem.sram1]
+base = 0x30000000
+size = 16K
+
+[agent.mydma]
+kind = dma
+reach = sram1
+handoff = MyDma.DESCADDR.PTR : word_addr align 4
+
+[region.dma_shared]
+mem = sram1
+agents = mydma

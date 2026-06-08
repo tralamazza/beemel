@@ -130,6 +130,13 @@ pub fn verify(
         Some(source_map.clone()),
     );
     emitter.set_preempt(preempt::analyze(program, symbols));
+    // Region/agent obligations: encode handoff addresses (so the verify IR
+    // matches build) and emit the provenance assume + reachability assert.
+    emitter.set_word_addr_handoffs(word_addr_handoffs(target));
+    emitter.set_handoff_obligations(
+        region_addr_ranges(program, target),
+        handoff_reach_bounds(target),
+    );
     let llvm_ir = emitter.emit(program, symbols);
 
     let ll_path = stem.with_extension("verify.ll");
@@ -303,6 +310,69 @@ const CHECK_KINDS: &[(i64, &str)] = &[
     (37, "function-call"),
     (39, "free"),
 ];
+
+/// `Peripheral.REGISTER.FIELD` paths of every `word_addr` handoff -- the verify
+/// IR must encode them the same as `bml build` so IKOS sees realistic code.
+fn word_addr_handoffs(target: &Target) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for agent in &target.agents {
+        for h in &agent.handoffs {
+            if h.encoding == crate::target::HandoffEncoding::WordAddr {
+                set.insert(h.register.clone());
+            }
+        }
+    }
+    set
+}
+
+/// Region-placed static name -> `[lo, hi)` byte range of its region's mem block.
+/// The provenance assume at `&X as u32` uses this.
+fn region_addr_ranges(
+    program: &crate::ast::Program,
+    target: &Target,
+) -> HashMap<String, (u64, u64)> {
+    let mut map = HashMap::new();
+    for item in &program.items {
+        if let crate::ast::Item::StaticDef(s) = item
+            && let Some((rname, _)) = &s.region
+            && let Some(region) = target.regions.iter().find(|r| &r.name == rname)
+            && let Some(mem) = target.mem_blocks.iter().find(|m| m.name == region.mem)
+        {
+            map.insert(s.name.0.clone(), (mem.base, mem.end()));
+        }
+    }
+    map
+}
+
+/// Handoff field path (`P.R.F`) -> `[lo, hi)` bounding range of the owning
+/// agent's reachable mem blocks. The reachability assert uses this. Agents that
+/// reach everything (`reach = *`) or nothing impose no bound and are skipped --
+/// the bound is the min base / max end across reachable blocks, a sound
+/// over-approximation (it catches addresses below or above all reachable
+/// memory; an address in a gap between disjoint blocks is not caught).
+fn handoff_reach_bounds(target: &Target) -> HashMap<String, (u64, u64)> {
+    let mut map = HashMap::new();
+    for agent in &target.agents {
+        if agent.reach_all || agent.reach.is_empty() {
+            continue;
+        }
+        let blocks: Vec<_> = agent
+            .reach
+            .iter()
+            .filter_map(|name| target.mem_blocks.iter().find(|m| &m.name == name))
+            .collect();
+        let (Some(lo), Some(hi)) = (
+            blocks.iter().map(|m| m.base).min(),
+            blocks.iter().map(|m| m.end()).max(),
+        ) else {
+            continue;
+        };
+        for h in &agent.handoffs {
+            map.insert(h.register.clone(), (lo, hi));
+        }
+    }
+    map
+}
 
 fn check_name(kind: i64) -> &'static str {
     for &(k, name) in CHECK_KINDS {

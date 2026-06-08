@@ -2553,3 +2553,92 @@ fn test_handoff_double_shift_rejected() {
     );
     assert!(stderr.contains("E606"), "expected E606; stderr:\n{stderr}");
 }
+
+// ─── handoff provenance obligations (verify, slice 4) ──────────────────────
+
+/// Absolute path to a fixtures target file, for verify tests that need one.
+fn fixture_target(name: &str) -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+// A descriptor placed in the region the agent reaches, whose address flows
+// through a helper into the handoff register, discharges the reachability
+// obligation: verify mode emits assume(addr in region) at `&DESC as u32` and
+// assert(addr in reach) at the write, and IKOS proves it. Clean exit.
+#[test]
+fn test_verify_handoff_provenance_ok() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) = bml_verify_args("verify_handoff.bml", &["--target", &target]);
+    assert!(
+        !stderr.contains("ikos failed"),
+        "verify pipeline error:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("error[assert]"),
+        "a properly-placed descriptor should discharge the obligation:\n{stderr}"
+    );
+    assert!(ok, "expected a clean verify exit; stderr:\n{stderr}");
+}
+
+// Handing an address outside the agent's reach (a DTCM address, below the
+// sram1-only reach) violates the reachability assert: IKOS reports a definite
+// assert violation and verify fails. This is the DTCM footgun caught at the
+// value level, complementing the placement-level checks (slices 0-1).
+#[test]
+fn test_verify_handoff_unreachable_addr() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) = bml_verify_args("verify_handoff_bad.bml", &["--target", &target]);
+    assert!(
+        !ok,
+        "an out-of-reach handoff address should fail; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error[assert]"),
+        "expected a definite assert violation; stderr:\n{stderr}"
+    );
+}
+
+// An address with no provable bound (a havoced volatile read) is reported as a
+// warning, not an error or a silent pass -- the "unproven = warning" rung of
+// the severity mapping. Default `--fail-on error` lets it pass; raising the bar
+// to `warning` makes the same finding fail.
+#[test]
+fn test_verify_handoff_unproven_warns() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok_default, _o, stderr) =
+        bml_verify_args("verify_handoff_unproven.bml", &["--target", &target]);
+    assert!(
+        stderr.contains("warning[assert]") && !stderr.contains("error[assert]"),
+        "an unbounded handoff value should warn, not error:\n{stderr}"
+    );
+    assert!(
+        ok_default,
+        "a warning should not fail the default --fail-on error"
+    );
+
+    let (ok_strict, _o2, _e2) = bml_verify_args(
+        "verify_handoff_unproven.bml",
+        &["--target", &target, "--fail-on", "warning"],
+    );
+    assert!(
+        !ok_strict,
+        "--fail-on warning should fail on the unproven assert"
+    );
+}

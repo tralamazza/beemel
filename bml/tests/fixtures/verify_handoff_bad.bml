@@ -1,0 +1,9 @@
+// Hands a DTCM address (0x20000000) to the handoff. DTCM is outside the DMA
+// agent's reach (sram1 only), so the reachability assert is violated -> error.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 { field PTR: u32 bit[2..31] }
+}
+owns MyDma.DESCADDR;
+fn main() @context(thread) {
+    MyDma.DESCADDR.PTR = 0x20000000;
+}

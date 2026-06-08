@@ -47,6 +47,15 @@ pub struct IrEmitter {
     /// so the programmer never hand-writes the shift. Built from the target's
     /// agent handoff lists. See `doc/regions-agents-plan.md`.
     word_addr_handoffs: std::collections::HashSet<String>,
+    /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
+    /// block. In verify mode, taking `&X as u32` of such a static emits an
+    /// `assume` that the address is in this range -- the load-bearing provenance
+    /// fact IKOS propagates to the handoff obligation. Empty outside verify.
+    region_addr_ranges: HashMap<String, (u64, u64)>,
+    /// Handoff field path (`P.R.F`) -> `[lo, hi)` bounding range of the owning
+    /// agent's reachable mem blocks. In verify mode, a write to the field emits
+    /// an `assert` that the byte address is in this range. Empty outside verify.
+    handoff_reach_bounds: HashMap<String, (u64, u64)>,
 }
 
 #[derive(Clone)]
@@ -61,6 +70,22 @@ struct MatchDispatch {
     ll_ty: String,
     arm_labels: Vec<String>,
     default_lbl: String,
+}
+
+/// If `expr` is `&NAME` / `&mut NAME` (possibly wrapped in groups), return
+/// `NAME`. Used to recognize `&X as u32` of a region-placed static so the
+/// provenance assume lands at the address-of site.
+fn addr_of_static_name(expr: &ast::Expr) -> Option<&str> {
+    match expr {
+        ast::Expr::Group(inner) => addr_of_static_name(inner),
+        ast::Expr::Unary(ast::UnaryOp::AddrOf | ast::UnaryOp::AddrOfMut, inner) => {
+            match inner.as_ref() {
+                ast::Expr::Ident((name, _)) => Some(name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Walk an expression tree looking for function calls.
@@ -220,6 +245,8 @@ impl IrEmitter {
             preempt: None,
             startup_init: Vec::new(),
             word_addr_handoffs: std::collections::HashSet::new(),
+            region_addr_ranges: HashMap::new(),
+            handoff_reach_bounds: HashMap::new(),
         }
     }
 
@@ -261,6 +288,8 @@ impl IrEmitter {
             preempt: None,
             startup_init: Vec::new(),
             word_addr_handoffs: std::collections::HashSet::new(),
+            region_addr_ranges: HashMap::new(),
+            handoff_reach_bounds: HashMap::new(),
         }
     }
 
@@ -283,6 +312,56 @@ impl IrEmitter {
     /// compiler-inserted `>> 2`, so source writes the byte address directly.
     pub fn set_word_addr_handoffs(&mut self, paths: std::collections::HashSet<String>) {
         self.word_addr_handoffs = paths;
+    }
+
+    /// Install the verify-mode region/handoff obligation maps (see the fields).
+    /// Only meaningful in verify mode; the build path leaves them empty.
+    pub fn set_handoff_obligations(
+        &mut self,
+        region_addr_ranges: HashMap<String, (u64, u64)>,
+        handoff_reach_bounds: HashMap<String, (u64, u64)>,
+    ) {
+        self.region_addr_ranges = region_addr_ranges;
+        self.handoff_reach_bounds = handoff_reach_bounds;
+    }
+
+    /// Emit `assume(lo <= value < hi)` as the branch-to-unreachable pattern IKOS
+    /// reads as a fact. `value_reg` is an i32 address; comparisons are unsigned.
+    fn emit_range_assume(&mut self, value_reg: &str, lo: u64, hi: u64) {
+        let lo_ok = self.new_reg();
+        let hi_ok = self.new_reg();
+        let both = self.new_reg();
+        self.line(&format!("{lo_ok} = icmp uge i32 {value_reg}, {lo}"));
+        self.line(&format!("{hi_ok} = icmp ult i32 {value_reg}, {hi}"));
+        self.line(&format!("{both} = and i1 {lo_ok}, {hi_ok}"));
+        let ok_lbl = self.new_label("assume_ok");
+        let unreach_lbl = self.new_label("assume_unreach");
+        self.line(&format!(
+            "br i1 {both}, label %{ok_lbl}, label %{unreach_lbl}"
+        ));
+        self.line("");
+        self.indent -= 1;
+        self.line(&format!("{unreach_lbl}:"));
+        self.indent += 1;
+        self.line("unreachable");
+        self.line("");
+        self.indent -= 1;
+        self.line(&format!("{ok_lbl}:"));
+        self.indent += 1;
+    }
+
+    /// Emit `assert(lo <= value < hi)` via `__ikos_assert`. IKOS reports it as
+    /// proven (silent), unproven (warning), or violated (error).
+    fn emit_range_assert(&mut self, value_reg: &str, lo: u64, hi: u64, dbg: &str) {
+        let lo_ok = self.new_reg();
+        let hi_ok = self.new_reg();
+        let both = self.new_reg();
+        let zext = self.new_reg();
+        self.line(&format!("{lo_ok} = icmp uge i32 {value_reg}, {lo}"));
+        self.line(&format!("{hi_ok} = icmp ult i32 {value_reg}, {hi}"));
+        self.line(&format!("{both} = and i1 {lo_ok}, {hi_ok}"));
+        self.line(&format!("{zext} = zext i1 {both} to i32"));
+        self.line(&format!("call void @__ikos_assert(i32 {zext}){dbg}"));
     }
 
     /// If `path` is a `word_addr` handoff field, emit `lshr i32 val, 2` and
@@ -2497,6 +2576,19 @@ impl IrEmitter {
                     self.line(&format!(
                         "{reg} = ptrtoint ptr {inner_reg} to {llvm_target}"
                     ));
+                    // Verify mode: if this is `&X as u32` for a region-placed
+                    // static, assume the address is within its region's mem
+                    // block. The assume MUST sit here (at the address-of site):
+                    // the probe showed ptrtoints of the same global do not
+                    // unify across functions, so a fact attached elsewhere does
+                    // not reach the handoff. From here the range propagates
+                    // through calls/returns/arithmetic to the obligation.
+                    if self.verify_mode
+                        && let Some(name) = addr_of_static_name(inner)
+                        && let Some(&(lo, hi)) = self.region_addr_ranges.get(name)
+                    {
+                        self.emit_range_assume(&reg, lo, hi);
+                    }
                 } else if crate::types::is_int(&inner_ty) && crate::types::is_ptr(&target_ty) {
                     // int → pointer
                     self.line(&format!("{reg} = inttoptr {inner_llvm} {inner_reg} to ptr"));
@@ -3393,6 +3485,14 @@ impl IrEmitter {
                     self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
                     // widen narrow value to i32 for RMW math
                     let widened = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
+                    // Verify mode: assert the byte address (pre-encoding) lies
+                    // within the agent's reachable memory. IKOS discharges this
+                    // from the provenance assume emitted at `&X as u32`.
+                    if self.verify_mode
+                        && let Some(&(lo, hi)) = self.handoff_reach_bounds.get(&handoff_path)
+                    {
+                        self.emit_range_assert(&widened, lo, hi, &dbg);
+                    }
                     // word_addr handoff: the field holds (byte address >> 2).
                     // Encode the widened (i32) address so source writes the byte
                     // address; the field's bit position (`shl`, below) re-aligns

@@ -1,0 +1,21 @@
+// Handoff provenance: the descriptor is placed in dma_shared (sram1), the only
+// region the DMA agent reaches. Its address flows through a helper into the
+// handoff register. Verify mode emits assume(addr in sram1) at `&DESC as u32`
+// and assert(addr in reach) at the write; IKOS discharges it.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+}
+
+owns MyDma.DESCADDR;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn desc_addr() -> u32 {
+    return &DESC as u32;
+}
+
+fn main() @context(thread) {
+    MyDma.DESCADDR.PTR = desc_addr();
+}

@@ -13,10 +13,11 @@ Status 2026-06-08: design settled. Implemented: slice 0 (target physics:
 (`in <region>` placement: parser, IR section, mem-block-driven linker script,
 E600/E601/E602 checks, QEMU exec proof), and slice 2 (`owns` parsing, path
 resolution E603, cross-module exclusivity E604, handoff-ownership rule E605
-with an exhaustive write walker), and slice 3 (`word_addr` handoff encoding:
-compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof). The IKOS
-emission strategy is empirically validated (see "Verification strategy").
-Remaining: slices 4-5.
+with an exhaustive write walker), slice 3 (`word_addr` handoff encoding:
+compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof), and slice
+4 (verify obligations: provenance assume at `&X as u32`, reachability assert at
+the handoff write, discharged by IKOS -- DTCM footgun caught at the value
+level). Remaining: slice 5 (retire `@dma`, port the example).
 
 ## Problem
 
@@ -547,14 +548,47 @@ fake peripheral under QEMU at -O0/-O2 (the register reads back as the byte
 address only if the `>> 2` was inserted). Plus `test_handoff_double_shift_rejected`
 (E606). Verify-path encoding (so IKOS sees the same IR) is threaded in slice 4.
 
-### Slice 4 -- Verify obligations
+### Slice 4 -- Verify obligations (done)
 
-`ir.rs` under `verify_mode`: `assume(range)` at the address-of site
-(`:3128-3180`), `assert(in-region && aligned)` before each handoff store,
-reusing the `__ikos_assert` path. Replaces the hand-written probe assumes;
-strategy already proved (6/6, 0.56s). Demo: `bml verify` on the ported
-example proves membership; an injected DTCM contradiction reports at the right
-line.
+Verify mode now auto-emits the probe's hand-written instrumentation. The verify
+emitter is threaded (in `verify::verify`, which has program + target) with three
+maps: `word_addr_handoffs` (closing the slice-3 deferral so verify IR matches
+build), `region_addr_ranges` (placed static -> its region's mem block range),
+and `handoff_reach_bounds` (handoff field path -> the owning agent's reach
+bounding range).
+
+- **Assume at the address-of site.** At the `ptr -> int` cast, if the operand is
+  `&X` / `&mut X` for a region-placed static, emit `assume(region.lo <= addr <
+  region.hi)` on the ptrtoint result. This is where the probe proved it has to
+  go (ptrtoints of one global do not unify across functions), so the fact
+  propagates through `desc_addr()` calls/returns/arithmetic to the obligation.
+- **Assert at the handoff write.** On the widened byte address (before the
+  word_addr encode), emit `assert(reach.lo <= value < reach.hi)` via
+  `__ikos_assert`. The assert range is the **bounding box** of the agent's reach
+  mem blocks -- sound for addresses below or above all reachable memory (catches
+  the DTCM footgun), an over-approximation for a gap between disjoint blocks.
+  `reach = *` / empty reach imposes no bound.
+
+Both are `verify_mode`-only; the maps are empty for targets without
+regions/handoffs, so non-region programs get byte-identical verify IR (existing
+verify tests unaffected).
+
+Proof (real IKOS, local llvm18 fork): `test_verify_handoff_provenance_ok` -- a
+descriptor placed in the agent's reachable region, its address flowing through
+a helper into the handoff, discharges clean (exit 0). `test_verify_handoff_unreachable_addr`
+-- a DTCM address (`0x20000000`, below the sram1-only reach) handed to the
+handoff is a definite `error[assert]` (V200), exit 1. The DTCM footgun is now
+caught at the *value* level, complementing the placement-level checks of slices
+0-1.
+
+Known limits: the assume only attaches to the direct `&X as u32` form (a
+pointer stored then later cast would not carry it); the bounding-box assert
+does not catch an address in a gap between disjoint reach blocks; alignment is
+not asserted (IKOS has no backward congruence narrowing -- the probe's finding,
+to be revisited with compiler-owned exact addresses). IKOS emits an info-level
+`V170` on each assume's unreachable branch (expected: the address fact is an
+assumption IKOS adopts, not one it can independently derive); info does not
+fail the default `--fail-on error`.
 
 ### Slice 5 -- Retire `@dma`
 
