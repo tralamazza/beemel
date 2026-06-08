@@ -30,11 +30,13 @@ moved to `in dma_shared` + declared ETH agent/handoffs (auto-encoded `>> 2`),
 behavior-preserving (IR diff is section + identical re-encode), TX still works on
 the NUCLEO-H723ZG. The `@dma` annotation is then retired from the example
 (dropping it is byte-identical IR -- derived-Move covers it); `Type::Dma` stays
-(derived-Move's carrier, still a valid explicit annotation off-region). Remaining
-(optional): the descriptor-struct refactor (typed in-memory handoff buffer
-pointers), and the lower-priority deferred items (`addr` as a general type,
-`word_addr in R`, read re-establishing the in-region fact -- each generalization
-without a current consumer).
+(derived-Move's carrier, still a valid explicit annotation off-region). The
+descriptor-struct refactor is also done and hardware-validated (TX_DESC/RX_DESC
+are `[TxDesc;2]`/`[RxDesc;2]` with `addr in dma_shared` buffer pointers; TX+RX
+confirmed on the board) -- the ETH driver is fully regions-native. Remaining are
+only the lower-priority deferred items (`addr` as a general type, `word_addr in
+R`, read re-establishing the in-region fact -- each generalization without a
+current consumer).
 
 ## Problem
 
@@ -756,10 +758,17 @@ valid explicit annotation for cases derived-Move does not cover (non-region
 statics, scalars), still exercised by the borrow/index-read fixtures. "Retiring
 `@dma`" means retiring the *annotation from region code*, which is done.
 
-Optional remaining enhancement (not a blocker): refactor `TX_DESC`/`RX_DESC` from
-`[u32;8]` to `[TxDesc;N]`/`[RxDesc;N]` with `addr in dma_shared` buffer-pointer
-fields, so the descriptor buffer pointers become typed in-memory handoffs
-(verify obligation + E608). Needs its own flash.
+**Descriptor-struct refactor done and hardware-validated.** `TX_DESC`/`RX_DESC`
+are now `[TxDesc;2]`/`[RxDesc;2]` (@repr(packed), 16 bytes each, pinned by
+`comptime_assert(sizeof == 16)`); DES0 is an `addr in dma_shared` buffer-pointer
+field (a typed in-memory handoff -- the verify obligation + E608 now apply to the
+real descriptors). Layout is byte-identical (same 32-byte ring, same field
+offsets, same linked addresses), and the IR confirms the field stores land at
+the same offsets with the same values; the RX write-back read path keeps the raw
+`*u32` (`rx_desc_get32`). Re-flashed: TX heartbeats stream (monotonic seq), and a
+debug readback shows RX working too (`RX_PACKET_COUNT` advancing,
+`RX_LAST_ETHERTYPE = 0x0800` parsed). The ETH driver is now fully regions-native:
+typed descriptors, checked handoffs, no `@dma`.
 
 **Derived-Move (blocker 2), done.** Pinned the actual mechanism empirically:
 `@dma`'s load-bearing property is the *index-read restriction*, enforced as

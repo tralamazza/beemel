@@ -31,10 +31,31 @@ owns Ethernet_DMA;
 // index-read protection (the old `@dma`) from the region. Region memory is
 // uninitialized at startup, so these take no initializer and are written before
 // the DMA starts.
+// The H7 normal descriptor is four words. DES0 is the buffer byte address the
+// DMA dereferences, so it is typed `addr in dma_shared` -- an in-memory handoff
+// the compiler checks (the written address must lie in the region). The other
+// words are plain control/status. The RX write-back read path reinterprets the
+// same 16 bytes as status, and goes through a raw `*u32` (rx_desc_get32).
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,   // DES0: TX buffer byte address
+    buf2: u32,                  // DES1: second buffer (unused)
+    control: u32,               // DES2: buffer lengths
+    status: u32,                // DES3: OWN | FD | LD | length
+}
+comptime_assert(sizeof(TxDesc) == 16);
+
+struct RxDesc @repr(packed) {
+    buf1: addr in dma_shared,   // DES0: RX buffer byte address (read format)
+    _res1: u32,                 // DES1: reserved
+    buf2: u32,                  // DES2: second buffer (unused)
+    status: u32,                // DES3: OWN | BUF1V
+}
+comptime_assert(sizeof(RxDesc) == 16);
+
 var TX_BUFFER: [u8; 128] @align(32) in dma_shared;
-var TX_DESC: [u32; 8] @align(32) in dma_shared;
+var TX_DESC: [TxDesc; 2] @align(32) in dma_shared;
 var RX_BUFFER: [u8; 1024] @align(32) in dma_shared;
-var RX_DESC: [u32; 8] @align(32) in dma_shared;
+var RX_DESC: [RxDesc; 2] @align(32) in dma_shared;
 var TX_DESC_INDEX: u32;
 var RX_DESC_INDEX: u32;
 var RX_PACKET_COUNT: u32;
@@ -170,14 +191,8 @@ fn eth_init_tx() {
     Ethernet_DMA.DMACCR.PBLX8 = true;
     Ethernet_DMA.DMACTxCR.TXPBL = 32;
 
-    TX_DESC[0] = 0;
-    TX_DESC[1] = 0;
-    TX_DESC[2] = 0;
-    TX_DESC[3] = 0;
-    TX_DESC[4] = 0;
-    TX_DESC[5] = 0;
-    TX_DESC[6] = 0;
-    TX_DESC[7] = 0;
+    TX_DESC[0] = TxDesc { buf1: 0, buf2: 0, control: 0, status: 0 };
+    TX_DESC[1] = TxDesc { buf1: 0, buf2: 0, control: 0, status: 0 };
     TX_DESC_INDEX = 0;
 
     const desc0 = tx_desc_addr(0);
@@ -193,14 +208,14 @@ fn eth_init_tx() {
 }
 
 fn eth_init_rx() {
-    RX_DESC[0] = rx_buffer_addr(0);
-    RX_DESC[1] = 0;
-    RX_DESC[2] = 0;
-    RX_DESC[3] = RX_DESC_OWN | RX_DESC_BUF1V;
-    RX_DESC[4] = rx_buffer_addr(1);
-    RX_DESC[5] = 0;
-    RX_DESC[6] = 0;
-    RX_DESC[7] = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[0].buf1 = rx_buffer_addr(0);
+    RX_DESC[0]._res1 = 0;
+    RX_DESC[0].buf2 = 0;
+    RX_DESC[0].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[1].buf1 = rx_buffer_addr(1);
+    RX_DESC[1]._res1 = 0;
+    RX_DESC[1].buf2 = 0;
+    RX_DESC[1].status = RX_DESC_OWN | RX_DESC_BUF1V;
     RX_DESC_INDEX = 0;
     RX_PACKET_COUNT = 0;
     RX_LAST_LEN = 0;
@@ -282,12 +297,15 @@ fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u3
 
 fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     const len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
-    const desc_word = TX_DESC_INDEX * TX_DESC_WORDS;
+    const di = TX_DESC_INDEX;
 
-    TX_DESC[desc_word] = tx_buffer_addr();
-    TX_DESC[desc_word + 1] = 0;
-    TX_DESC[desc_word + 2] = len & TX_DESC_LEN_MASK;
-    TX_DESC[desc_word + 3] = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
+    // buf1 is the in-memory handoff: the buffer byte address the DMA reads.
+    TX_DESC[di].buf1 = tx_buffer_addr();
+    TX_DESC[di].buf2 = 0;
+    TX_DESC[di].control = len & TX_DESC_LEN_MASK;
+    // status carries OWN and must be written last (before the barrier), so the
+    // DMA does not see the descriptor as owned until the rest is in place.
+    TX_DESC[di].status = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
 
     TX_DESC_INDEX = TX_DESC_INDEX + 1;
     if TX_DESC_INDEX == TX_DESC_COUNT {
@@ -315,10 +333,10 @@ fn rx_desc_get32(word_index: u32) -> u32 {
 
 fn rx_rearm(desc_word: u32) {
     const desc_index = desc_word / RX_DESC_WORDS;
-    RX_DESC[desc_word] = rx_buffer_addr(desc_index);
-    RX_DESC[desc_word + 1] = 0;
-    RX_DESC[desc_word + 2] = 0;
-    RX_DESC[desc_word + 3] = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[desc_index].buf1 = rx_buffer_addr(desc_index);
+    RX_DESC[desc_index]._res1 = 0;
+    RX_DESC[desc_index].buf2 = 0;
+    RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
     Ethernet_DMA.DMACRxDTPR.RDT = rx_desc_addr(desc_word);
 }
