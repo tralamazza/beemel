@@ -28,10 +28,13 @@ reproduced from placement with no new checks and no hand-written `@dma`.
 Example port done and hardware-validated: `eth_dma.bml`/`stm32h723zg.target`
 moved to `in dma_shared` + declared ETH agent/handoffs (auto-encoded `>> 2`),
 behavior-preserving (IR diff is section + identical re-encode), TX still works on
-the NUCLEO-H723ZG. Remaining: the descriptor-struct refactor + `Type::Dma`
-deletion (full `@dma` retirement), and the lower-priority deferred items (`addr`
-as a general type, `word_addr in R`, read re-establishing the in-region fact --
-each generalization without a current consumer).
+the NUCLEO-H723ZG. The `@dma` annotation is then retired from the example
+(dropping it is byte-identical IR -- derived-Move covers it); `Type::Dma` stays
+(derived-Move's carrier, still a valid explicit annotation off-region). Remaining
+(optional): the descriptor-struct refactor (typed in-memory handoff buffer
+pointers), and the lower-priority deferred items (`addr` as a general type,
+`word_addr in R`, read re-establishing the in-region fact -- each generalization
+without a current consumer).
 
 ## Problem
 
@@ -741,10 +744,22 @@ behavior-preserving before flashing: the controller IR diff is *only* the
 buffers gaining `.region.dma_shared` plus the identical `(desc>>2)<<2`
 re-encoding; the linked buffers land in `dma_pool` (0x30007000, D2 SRAM,
 32-aligned). On the NUCLEO-H723ZG, heartbeats still transmit -- captured frames
-(EtherType 0x88B5, monotonic seq) confirm TX. What remains for full `@dma`
-retirement: refactor `TX_DESC`/`RX_DESC` from `[u32;8]` to `[TxDesc;N]`/
-`[RxDesc;N]` with `addr in dma_shared` fields (the in-memory handoff + E608),
-then delete `Type::Dma` (derived-Move covers the protection).
+(EtherType 0x88B5, monotonic seq) confirm TX.
+
+**`@dma` annotation retired from the example.** Dropping `@dma` from the four
+buffers (they are placed `in dma_shared`, which derived-Move covers) produces
+*byte-identical IR* -- the example is now regions-native with no `@dma` adjective.
+
+Correction to the original plan: `Type::Dma` is NOT deleted. It is derived-Move's
+internal carrier (`apply_derived_move` wraps in `Type::Dma`), and `@dma` stays a
+valid explicit annotation for cases derived-Move does not cover (non-region
+statics, scalars), still exercised by the borrow/index-read fixtures. "Retiring
+`@dma`" means retiring the *annotation from region code*, which is done.
+
+Optional remaining enhancement (not a blocker): refactor `TX_DESC`/`RX_DESC` from
+`[u32;8]` to `[TxDesc;N]`/`[RxDesc;N]` with `addr in dma_shared` buffer-pointer
+fields, so the descriptor buffer pointers become typed in-memory handoffs
+(verify obligation + E608). Needs its own flash.
 
 **Derived-Move (blocker 2), done.** Pinned the actual mechanism empirically:
 `@dma`'s load-bearing property is the *index-read restriction*, enforced as

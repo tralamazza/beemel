@@ -26,13 +26,15 @@ const MAGIC: [u8; 6] = [0x42, 0x4D, 0x4C, 0x50, 0x54, 0x50];
 owns Ethernet_DMA;
 
 // The ETH DMA buffers live in the dma_shared region (the dma_pool block in D2
-// SRAM, which the ETH DMA reaches). `@dma` is kept for the index-read
-// protection; placement adds the region. Region memory is uninitialized at
-// startup, so these take no initializer and are written before the DMA starts.
-var TX_BUFFER: [u8; 128] @dma @align(32) in dma_shared;
-var TX_DESC: [u32; 8] @dma @align(32) in dma_shared;
-var RX_BUFFER: [u8; 1024] @dma @align(32) in dma_shared;
-var RX_DESC: [u32; 8] @dma @align(32) in dma_shared;
+// SRAM, which the ETH DMA reaches). Placement is the only declaration needed:
+// because dma_shared is mutated by the `eth` DMA agent, the compiler derives the
+// index-read protection (the old `@dma`) from the region. Region memory is
+// uninitialized at startup, so these take no initializer and are written before
+// the DMA starts.
+var TX_BUFFER: [u8; 128] @align(32) in dma_shared;
+var TX_DESC: [u32; 8] @align(32) in dma_shared;
+var RX_BUFFER: [u8; 1024] @align(32) in dma_shared;
+var RX_DESC: [u32; 8] @align(32) in dma_shared;
 var TX_DESC_INDEX: u32;
 var RX_DESC_INDEX: u32;
 var RX_PACKET_COUNT: u32;
@@ -303,8 +305,9 @@ fn rx_get8(index: u32) -> u32 {
     return buffer[index] as u32;
 }
 
-// A `@dma` static can be index-assigned but not index-read as an rvalue, so the
-// descriptor read goes through a `*u32` taken from the static's base address.
+// An agent-shared static (placed in a DMA-mutated region) can be index-assigned
+// but not index-read as an rvalue, so the descriptor read goes through a `*u32`
+// taken from the static's base address.
 fn rx_desc_get32(word_index: u32) -> u32 {
     const desc = &RX_DESC as *u32;
     return desc[word_index];
