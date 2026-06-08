@@ -21,11 +21,14 @@ level). Slice 5 partial: `doc/language.md` corrected; full `@dma` retirement
 re-scoped. In-memory handoffs implemented (v1, struct-field `addr in R` with
 the verify obligation; fixed the `arr[i].field` store miscompile en route).
 Transitive reach done (E608: a descriptor field's region must be reachable by
-the agent the descriptor is delivered to). Remaining: the example port + `@dma`
-retirement (now unblocked: in-memory handoffs exist; still wants a Move-typing
-replacement decision + hardware validation), and the lower-priority deferred
-items (`addr` as a general type, `word_addr in R`, read re-establishing the
-in-region fact -- each generalization without a current consumer).
+the agent the descriptor is delivered to). The `@dma` Move-typing decision is
+settled: derive the existing `Type::Dma` carrier from agent-shared placement so
+the index-read protection (E326) is reproduced with no new checks -- pinned by a
+running red test (`region_index_read.bml`). Remaining: implement derived-Move,
+then the behavior-preserving example port + `@dma` deletion (needs hardware
+validation), and the lower-priority deferred items (`addr` as a general type,
+`word_addr in R`, read re-establishing the in-region fact -- each generalization
+without a current consumer).
 
 ## Problem
 
@@ -461,9 +464,10 @@ packed layout.
 - *Reading.* Reading an `addr in R` field yields `u32`. Whether a read should
   re-establish the `in R` fact (so a value loaded back from a descriptor is
   known in-region) is open; not needed for the write-obligation use case.
-- *Move/aliasing.* This is also the natural home for whatever replaces `@dma`'s
-  Move-typing once placement moves to `in <region>` (see slice 5) -- the
-  descriptor struct, not a storage-class wrapper, would carry it.
+- *Move/aliasing.* SETTLED (see slice 5). `@dma`'s real content is the
+  index-read protection (E326), and the replacement derives the existing
+  `Type::Dma` carrier from agent-shared placement rather than a storage-class
+  wrapper or the descriptor struct. Pinned by `region_index_read.bml`.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the
@@ -717,12 +721,35 @@ which are not designed yet. Plus the example is live on hardware (TX works), so
 its port wants on-board validation, and the H723 target is not exec-testable
 under the QEMU harness.
 
-Blockers before retirement: (1) design in-memory handoffs; (2) decide what
-carries `@dma`'s Move-typing / index-read safety once placement moves to
-`in <region>` (perhaps the region, perhaps a separate marker); (3) port the
-example additively (`@dma ... in dma_shared`, ETH agent + handoffs in the
-target -- behavior-preserving since `(desc>>2)<<2 == (desc)>>2<<2` after
-auto-encode) with hardware validation; then delete `Type::Dma`.
+Blockers before retirement: (1) design in-memory handoffs -- DONE; (2) decide
+what carries `@dma`'s Move-typing / index-read safety once placement moves to
+`in <region>` -- RESOLVED in shape (below); (3) port the example additively
+(`@dma ... in dma_shared`, ETH agent + handoffs in the target -- behavior-
+preserving since `(desc>>2)<<2 == (desc)>>2<<2` after auto-encode) with hardware
+validation; then delete `Type::Dma`.
+
+**The Move-typing decision (blocker 2), settled.** Pinned the actual mechanism
+empirically: `@dma`'s load-bearing property is the *index-read restriction*,
+enforced as `E326` in `checker.rs::index_element_type` -- the read path accepts
+only `Array`/`Ptr`/views, so a `Dma(Array(..))` falls through to "cannot index".
+The write path unwraps the `Dma` first, so `BUF[i] = x` is legal while
+`let v = BUF[i]` is not. That asymmetry is the protection (software must not
+alias memory it has handed to an agent). It is *not* a borrow-checker Move, as
+first assumed.
+
+Placement is orthogonal to type today, so `[u32;N] in dma_shared` is a bare
+`Array` and the read protection vanishes -- a naive retirement would silently
+regress it. The fix, following *usage dictates declaration*: at resolution, wrap
+an agent-shared `in R` static's type in the existing `Type::Dma` carrier, keyed
+on "`R`'s mem has a non-CPU agent". The existing `E326` machinery then
+reproduces the protection with no new checks; `@dma` becomes derived, not
+hand-written. CPU-only regions stay plain `Array` (Copy).
+
+Pinned by two tests (`dma_index_read.bml`, `region_index_read.bml`): the first
+asserts `@dma` rejects the rvalue read (E326); the second is a running red
+target asserting the region port currently *accepts* it -- flip it to expect
+E326 when derived-Move lands. That test is the spec; its green flip is the
+done-condition.
 
 ### Deferred
 

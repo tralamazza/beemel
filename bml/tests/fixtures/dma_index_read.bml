@@ -1,0 +1,11 @@
+// Pins @dma's read protection (the load-bearing half of @dma): a @dma array may
+// be index-*assigned* but not index-*read* as an rvalue. The Dma wrapper makes
+// the read path un-indexable -> E326, while the write path unwraps it. This is
+// the safety property the @dma-retirement port must preserve: software must not
+// alias memory it has handed to an agent. See doc/regions-agents-plan.md.
+var BUF: [u32; 4] @dma @align(4);
+fn main() @context(thread) {
+    BUF[0] = 1;          // index-assign: allowed (hand a value to the agent)
+    var x: u32 = BUF[0]; // rvalue index-read: rejected (would alias agent memory)
+    BUF[1] = x;
+}

@@ -2734,3 +2734,42 @@ fn test_descriptor_field_reachable_region() {
         "no E608 expected for a reachable field; stderr:\n{stderr}"
     );
 }
+
+// ─── @dma read protection + region-port gap (pre-@dma-retirement spec) ──────
+
+// @dma's load-bearing property: a @dma array may be index-assigned but its
+// rvalue index-read is rejected (E326), so software cannot alias memory it has
+// handed to an agent. The @dma-retirement port must preserve this. This test
+// pins the property that the region model has to reproduce.
+#[test]
+fn test_dma_array_rvalue_index_read_rejected() {
+    let (ok, stderr) = bml_build_with_target("dma_index_read.bml", None);
+    assert!(
+        !ok,
+        "a @dma rvalue index-read should be rejected; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E326"), "expected E326; stderr:\n{stderr}");
+}
+
+// CHARACTERIZATION of the gap (red target). The same array placed in an
+// agent-shared region currently compiles -- placement does not yet confer
+// @dma's Move/read protection, so the rvalue index-read that E326 rejects above
+// goes through. When derived-Move lands (Move inferred from "the region has a
+// non-CPU agent"), flip this to expect failure with E326. Keeping it as a
+// running test means the day behavior changes, this fails loudly and forces the
+// revisit. See doc/regions-agents-plan.md (@dma retirement).
+#[test]
+fn test_region_agent_shared_index_read_currently_unprotected() {
+    let (ok, stderr) =
+        bml_build_with_target("region_index_read.bml", Some("verify_handoff.target"));
+    assert!(
+        ok,
+        "documents the current gap: an agent-shared rvalue index-read still \
+         compiles. If this now fails, derived-Move may have landed -- flip the \
+         assertion to expect E326. stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E326"),
+        "the region port does not yet confer @dma's read protection; stderr:\n{stderr}"
+    );
+}
