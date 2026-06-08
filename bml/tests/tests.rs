@@ -2434,6 +2434,7 @@ fn bml_build_with_target(fixture: &str, target: Option<&str>) -> (bool, String) 
     // Clean up any emitted artifacts from a successful build.
     let _ = std::fs::remove_file(path.with_extension("o"));
     let _ = std::fs::remove_file(path.with_extension("ld"));
+    let _ = std::fs::remove_file(path.with_extension("ll"));
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.success(), stderr)
 }
@@ -2699,5 +2700,37 @@ fn test_addr_field_handoff_out_of_region() {
     assert!(
         stderr.contains("error[assert]"),
         "expected a definite assert violation; stderr:\n{stderr}"
+    );
+}
+
+// ─── transitive reach (E608) ───────────────────────────────────────────────
+
+// Delivering a descriptor to an agent (`agent_handoff = &RX`) whose field is
+// `addr in R` for a region the agent cannot reach is rejected (E608). This is
+// the step past E607 (field names a real region) and validate_regions (the
+// descriptor's own region is reachable): the field points into a *different*
+// region outside the walking agent's reach.
+#[test]
+fn test_descriptor_field_unreachable_region() {
+    let (ok, stderr) = bml_build_with_target("reach_handoff_bad.bml", Some("reach_handoff.target"));
+    assert!(
+        !ok,
+        "a descriptor field in an unreachable region should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E608"), "expected E608; stderr:\n{stderr}");
+}
+
+// The same delivery is sound when the descriptor's `addr in R` field names a
+// region the agent reaches: no E608, clean build.
+#[test]
+fn test_descriptor_field_reachable_region() {
+    let (ok, stderr) = bml_build_with_target("reach_handoff_ok.bml", Some("reach_handoff.target"));
+    assert!(
+        ok,
+        "a reachable descriptor field should build; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("E608"),
+        "no E608 expected for a reachable field; stderr:\n{stderr}"
     );
 }

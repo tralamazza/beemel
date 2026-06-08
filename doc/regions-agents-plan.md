@@ -20,9 +20,12 @@ the handoff write, discharged by IKOS -- DTCM footgun caught at the value
 level). Slice 5 partial: `doc/language.md` corrected; full `@dma` retirement
 re-scoped. In-memory handoffs implemented (v1, struct-field `addr in R` with
 the verify obligation; fixed the `arr[i].field` store miscompile en route).
-Remaining: the example port + `@dma` retirement (now unblocked: in-memory
-handoffs exist; still wants a Move-typing replacement decision + hardware
-validation), and the deferred in-memory-handoff items.
+Transitive reach done (E608: a descriptor field's region must be reachable by
+the agent the descriptor is delivered to). Remaining: the example port + `@dma`
+retirement (now unblocked: in-memory handoffs exist; still wants a Move-typing
+replacement decision + hardware validation), and the lower-priority deferred
+items (`addr` as a general type, `word_addr in R`, read re-establishing the
+in-region fact -- each generalization without a current consumer).
 
 ## Problem
 
@@ -365,9 +368,13 @@ exec fixture (`field_of_index_store`) pins it under QEMU.
 
 Proof (real IKOS): a buffer address in the field's region, written through a
 helper into `RX[0].buf1`, discharges clean; a DTCM address (out of region) is a
-definite `error[assert]`; E607 on an unknown field region. The deferred items
-(transitive agent-reaches-R, `addr` as a general type, `word_addr in R`, read
-re-establishing the in-region fact) remain open.
+definite `error[assert]`; E607 on an unknown field region.
+
+Transitive reach (E608) is now done: when a descriptor is delivered to an agent
+(`agent_handoff = &RX`), every `addr in R` field inside it must name a region
+the agent can reach, else `error[E608]`. The remaining deferred items (`addr` as
+a general type, `word_addr in R`, read re-establishing the in-region fact) are
+generalization without a current consumer and stay open.
 
 The original design follows.
 
@@ -439,14 +446,14 @@ packed layout.
 
 **Open questions.**
 
-- *Transitive reach.* `addr in R` constrains the value to `R`, but does not yet
-  check that the agent which walks this descriptor can reach `R`. The link is
-  the register handoff that delivers the descriptor base (`DMACRxDLAR =
-  &RX_DESC`): the agent owning that handoff walks `RX_DESC`, so every `addr in
-  R` field inside `RX_DESC` should satisfy `R.mem in agent.reach`. A
-  target+type-level check can add this once descriptors are tied to agents
-  through the delivering handoff; v1 constrains the value to `R` and leaves the
-  agent-reaches-`R` check as a refinement.
+- *Transitive reach.* DONE (E608). `addr in R` constrains the value to `R`; the
+  transitive check ties the descriptor to the agent through the delivering
+  handoff (`agent_handoff = &RX_DESC`) and requires `R.mem in agent.reach` for
+  every `addr in R` field inside the delivered struct (descending through arrays
+  and nested structs). It only fires when the delivery is a literal address-of a
+  static (`&RX` / `&RX[0]`); an indirect base (a helper returning `u32`) is not
+  tied to a descriptor type and is conservatively skipped. Implemented in
+  `region.rs::check_descriptor_reach`.
 - *`addr` as a general type.* v1 scopes it to struct fields (the descriptor
   case). Whether locals/params/returns may be `addr in R` (an address proven
   in-region flowing around) is deferrable; the helpers (`rx_buffer_addr`)

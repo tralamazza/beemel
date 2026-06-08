@@ -15,16 +15,22 @@
 //! - Slice 2b/3: handoff write checks -- ownership-required (E605) and the
 //!   double-shift guard on auto-encoded `word_addr` handoffs (E606), both off a
 //!   single exhaustive write walk.
+//! - In-memory handoffs: an `addr in R` struct field must name a real region
+//!   (E607), and a descriptor delivered to an agent (`handoff = &RX`) must not
+//!   contain an `addr in R` field for a region that agent cannot reach (E608) --
+//!   the transitive-reach step, off the same write walk.
 //!
 //! The handoff provenance checks (slice 4) extend this module.
 
 use crate::ast::{
     BinaryOp, Block, Expr, Item, LValue, OwnsPath, Program, StaticDef, Stmt, StorageAnnotation,
+    UnaryOp,
 };
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{HandoffEncoding, Target};
+use crate::target::{Agent, HandoffEncoding, Target};
+use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
 /// Run the region/agent checks.
@@ -258,14 +264,17 @@ fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Cla
 /// One peripheral register/field write, with the source `FileId` (via `span`)
 /// and whether its right-hand side is a literal `>> 2`. `field` is `None` for a
 /// whole-register write (`P.R = x`) and `Some(F)` for a field write
-/// (`P.R.F = x`). Produced by one exhaustive walk and consumed by both the
-/// ownership rule (E605) and the double-shift guard (E606).
+/// (`P.R.F = x`). Produced by one exhaustive walk and consumed by the ownership
+/// rule (E605), the double-shift guard (E606), and the descriptor-reach check
+/// (E608). `rhs_static` is the name of the static whose address is delivered
+/// (`= &RX_DESC`), used by E608 to find the descriptor handed to an agent.
 struct PeriphWrite {
     periph: String,
     reg: String,
     field: Option<String>,
     span: Span,
     rhs_is_shr2: bool,
+    rhs_static: Option<String>,
 }
 
 /// Handoff write checks. Both rules act at peripheral-register write sites, so
@@ -326,7 +335,7 @@ fn check_handoff_writes(
         let key = (w.periph.clone(), w.reg.clone());
 
         // E605: handoff register written without ownership.
-        if let Some(agent) = handoff_regs.get(&key) {
+        if let Some(agent_name) = handoff_regs.get(&key) {
             let owned = periph_owners
                 .get(&w.periph)
                 .is_some_and(|s| s.contains(&w.span.file))
@@ -336,7 +345,7 @@ fn check_handoff_writes(
             if !owned {
                 diags.error(
                     format!(
-                        "`{}.{}` is a handoff register of agent `{agent}` and may only be \
+                        "`{}.{}` is a handoff register of agent `{agent_name}` and may only be \
                          written by the module that owns it. Add `owns {}.{};` (or \
                          `owns {};`) to this module.",
                         w.periph, w.reg, w.periph, w.reg, w.periph
@@ -344,6 +353,19 @@ fn check_handoff_writes(
                     "E605",
                     w.span,
                 );
+            }
+
+            // E608: the write delivers a descriptor base to the agent
+            // (`handoff = &RX_DESC`). The agent walks that descriptor and
+            // dereferences any `addr in R` field inside it, so it must be able
+            // to reach every such region. This is the transitive step past the
+            // field-level E607 (field names a real region) and validate_regions
+            // (the region's own mem is reachable): the field may point into a
+            // *different* region the walking agent cannot reach.
+            if let Some(static_name) = &w.rhs_static
+                && let Some(agent) = target.agents.iter().find(|a| &a.name == agent_name)
+            {
+                check_descriptor_reach(static_name, agent, symbols, target, w.span, diags);
             }
         }
 
@@ -561,6 +583,7 @@ fn record_write(
     out: &mut Vec<PeriphWrite>,
 ) {
     let shr2 = rhs.is_some_and(is_shr_two);
+    let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
@@ -571,6 +594,7 @@ fn record_write(
                     field: None,
                     span: field.1,
                     rhs_is_shr2: shr2,
+                    rhs_static: rhs_static.clone(),
                 });
             }
             // P.R.F = ...  (reg is the register, field is the field)
@@ -584,6 +608,7 @@ fn record_write(
                         field: Some(field.0.clone()),
                         span: field.1,
                         rhs_is_shr2: shr2,
+                        rhs_static: rhs_static.clone(),
                     });
                 }
             }
@@ -603,5 +628,88 @@ fn is_shr_two(e: &Expr) -> bool {
             matches!(rhs.as_ref(), Expr::IntLiteral(2, _, _))
         }
         _ => false,
+    }
+}
+
+/// If `e` is the address of a static (`&S`, `&mut S`, or `&S[..]`, possibly
+/// through parentheses or a cast like `&RX_DESC as u32`), return the static's
+/// name. This is the descriptor-base delivery form for an in-memory handoff:
+/// `Agent.HANDOFF = &RX_DESC` hands the agent the base of `RX_DESC`.
+fn addr_of_static(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Group(inner) | Expr::Cast(inner, _) => addr_of_static(inner),
+        Expr::Unary(UnaryOp::AddrOf | UnaryOp::AddrOfMut, inner) => match inner.as_ref() {
+            Expr::Ident((name, _)) => Some(name.as_str()),
+            // `&RX_DESC[0]` -- the base element of an array still delivers the
+            // whole descriptor block to the agent.
+            Expr::Index(base, _) => match base.as_ref() {
+                Expr::Ident((name, _)) => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// E608: the agent walks the delivered descriptor and dereferences every
+/// `addr in R` field inside it, so it must reach each such region's mem block.
+/// `validate_regions` already ensures the descriptor's *own* region is
+/// reachable; this catches a field that points into a *different* region the
+/// walking agent cannot reach (the DTCM footgun one level deeper).
+fn check_descriptor_reach(
+    static_name: &str,
+    agent: &Agent,
+    symbols: &SymbolTable,
+    target: &Target,
+    span: Span,
+    diags: &mut DiagnosticBag,
+) {
+    let Some(sym) = symbols.statics.get(static_name) else {
+        return;
+    };
+    let mut fields = Vec::new();
+    collect_addr_fields(&sym.ty, String::new(), &mut fields);
+    for (field_path, region_name) in fields {
+        // An unknown region is already reported as E607 at the struct def; skip
+        // it here rather than double-reporting against the delivery site.
+        let Some(region) = target.regions.iter().find(|r| r.name == region_name) else {
+            continue;
+        };
+        if !agent.reaches(&region.mem) {
+            diags.error(
+                format!(
+                    "`{static_name}` is handed to agent `{}`, but its field `{field_path}` is \
+                     `addr in {region_name}` (mem `{}`), which `{}` cannot reach. The agent \
+                     would dereference an address outside its reach.",
+                    agent.name, region.mem, agent.name
+                ),
+                "E608",
+                span,
+            );
+        }
+    }
+}
+
+/// Collect every `addr in R` field reachable in `ty` as (dotted-field-path,
+/// region-name), descending through structs and arrays so a descriptor that
+/// nests another descriptor (or an array of slots) is not a silent gap. The
+/// catch-all covers scalar/view/pointer types, none of which carry an `addr`
+/// slot (`addr` is field-only today; see `doc/regions-agents-plan.md`).
+fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)>) {
+    match ty {
+        Type::Addr(region) => out.push((prefix, region.clone())),
+        Type::Struct(_, _, struct_fields) => {
+            for (fname, fty) in struct_fields {
+                let path = if prefix.is_empty() {
+                    fname.clone()
+                } else {
+                    format!("{prefix}.{fname}")
+                };
+                collect_addr_fields(fty, path, out);
+            }
+        }
+        Type::Array(inner, _) => collect_addr_fields(inner, prefix, out),
+        _ => {}
     }
 }

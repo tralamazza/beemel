@@ -1,0 +1,21 @@
+// Transitive reach (E608) OK case: the descriptor's `buf1` field is `addr in
+// desc_region` (sram1), the same region mydma reaches. Delivering `&RX` to
+// mydma's handoff is sound -- every address the agent dereferences is in reach.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[0..31]
+    }
+}
+
+struct RxDesc @repr(packed) {
+    buf1: addr in desc_region,
+    flags: u32,
+}
+
+var RX: [RxDesc; 2] @align(32) in desc_region;
+
+owns MyDma;
+
+fn main() @context(thread) {
+    MyDma.DESCADDR.PTR = &RX as u32;
+}
