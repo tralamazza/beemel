@@ -12,6 +12,7 @@ pub mod imports;
 pub mod ir;
 pub mod lexer;
 pub mod parser;
+pub mod region;
 pub mod resolver;
 pub mod source;
 pub mod stack;

@@ -1,0 +1,8 @@
+// `in <region>` and `@section(...)` both set the output section, so combining
+// them is rejected (E602). `dma_shared` is a valid region in
+// region_unknown.target.
+var BUF: [u32; 4] @section(".custom") in dma_shared;
+
+fn main() @context(thread) {
+    BUF[0] = 1;
+}

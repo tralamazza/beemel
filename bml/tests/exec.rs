@@ -52,9 +52,15 @@ fn fixtures_dir() -> PathBuf {
 
 /// Compile, link, and run `fixture` under QEMU; return the semihosting output.
 fn bml_run(fixture: &str, opt: &str) -> String {
+    bml_run_with_target(fixture, opt, "qemu.target")
+}
+
+/// As `bml_run`, but with an explicit target file -- lets region/placement
+/// fixtures use a mem-block layout instead of the flat default target.
+fn bml_run_with_target(fixture: &str, opt: &str, target_file: &str) -> String {
     let dir = fixtures_dir();
     let src = dir.join(fixture);
-    let target = dir.join("qemu.target");
+    let target = dir.join(target_file);
 
     // 1. Compile to an object file (and linker script) next to the fixture.
     let build = Command::new(env!("CARGO_BIN_EXE_bml"))
@@ -318,6 +324,29 @@ assert_exec!(exec_loop_break_continue, "loop_break_continue.bml");
 // `@align(N)` over-aligns a static; the linker script must honor it so the
 // runtime address is actually aligned (DMA buffers etc.).
 assert_exec!(exec_align_static, "align_static.bml");
+
+// `in <region>` places a static at its region's mem block address. Uses a
+// dedicated mem-block target (qemu_regions.target) so the placement is at a
+// distinct address from ordinary statics, checked at runtime. See
+// doc/regions-agents-plan.md slice 1.
+#[test]
+fn exec_region_placement() {
+    if !tools_available() {
+        eprintln!("skipping region_placement.bml: qemu-system-arm / arm-none-eabi-ld not found");
+        return;
+    }
+    for opt in OPT_LEVELS {
+        let out = bml_run_with_target("region_placement.bml", opt, "qemu_regions.target");
+        assert!(
+            out.contains("OK"),
+            "expected OK from region_placement at -O{opt}; captured output:\n{out}"
+        );
+        assert!(
+            !out.contains("FAIL"),
+            "region_placement reported a FAIL at -O{opt}; captured output:\n{out}"
+        );
+    }
+}
 
 // ─── const evaluation (language.md §1) ───────────────────────────────────────
 assert_exec!(exec_const_eval, "const_eval.bml");

@@ -495,6 +495,15 @@ impl<'a> Parser<'a> {
             storage.push(self.parse_storage_annotation()?);
         }
 
+        // Optional `in <region>` placement clause, after the @-annotations and
+        // before the initializer. The region name is resolved against the
+        // target file by the region pass, not here.
+        let region = if self.eat(&TokenKind::In) {
+            Some(self.parse_ident()?)
+        } else {
+            None
+        };
+
         let init = if self.eat(&TokenKind::Eq) {
             let expr = self.parse_expr()?;
             Some(expr)
@@ -508,6 +517,7 @@ impl<'a> Parser<'a> {
             name,
             ty,
             storage,
+            region,
             init,
         })
     }

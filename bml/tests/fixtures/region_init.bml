@@ -1,0 +1,9 @@
+// A region-placed static with an initializer must be rejected (E601): region
+// memory is NOBITS at link time and is neither copied (.data) nor cleared
+// (.bss) at startup, so the initializer would be silently lost. `dma_shared` is
+// a valid region in region_unknown.target.
+var BUF: [u32; 4] in dma_shared = [1u32, 2u32, 3u32, 4u32];
+
+fn main() @context(thread) {
+    BUF[0] = 0;
+}

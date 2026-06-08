@@ -353,17 +353,24 @@ impl IrEmitter {
                     } else {
                         "zeroinitializer".to_string()
                     };
-                    let section_attr = s
-                        .storage
-                        .iter()
-                        .find_map(|a| {
-                            if let ast::StorageAnnotation::Section(name) = a {
-                                Some(format!(", section \"{name}\""))
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
+                    // `in <region>` places the static in `.region.<name>`; the
+                    // linker script maps that section to the region's mem block.
+                    // An explicit `@section(...)` otherwise wins. The two are
+                    // mutually exclusive in practice (placement vs raw section).
+                    let section_attr = if let Some((name, _)) = &s.region {
+                        format!(", section \".region.{name}\"")
+                    } else {
+                        s.storage
+                            .iter()
+                            .find_map(|a| {
+                                if let ast::StorageAnnotation::Section(name) = a {
+                                    Some(format!(", section \"{name}\""))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default()
+                    };
                     // `@align(N)` overrides the default 4-byte alignment.
                     let align = s
                         .storage

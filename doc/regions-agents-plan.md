@@ -1,0 +1,528 @@
+# Regions and Agents Plan
+
+## Goal
+
+Make whole-system memory correctness on MCUs a checked property. The compiler
+learns which hardware actors ("agents") touch memory, what each can reach, and
+where software hands addresses to them ("handoffs"). Placement, reachability,
+and address-encoding bugs become compile errors or discharged verification
+obligations instead of silent board lockups.
+
+Status 2026-06-08: design settled. Slices 0 (target physics: `[mem.*]`/
+`[agent.*]`/`[region.*]` parsing + reach validation) and 1 (`in <region>`
+placement: parser, IR section, mem-block-driven linker script, E600 check,
+QEMU exec proof) are implemented. The IKOS emission strategy is empirically
+validated (see "Verification strategy"). Slices 2-5 are design.
+
+## Problem
+
+All failure modes below are real, taken from
+`bml/examples/nucleo-h723zg-ptp/eth_dma.bml` (the board currently on the
+bench):
+
+1. **Unreachable placement.** ETH DMA on the H723 cannot reach DTCM. Moving
+   `TX_DESC` from D2 SRAM to DTCM compiles, links, and produces a board that
+   never transmits. Nothing in the language knows about bus topology.
+2. **Hand-written address encoding.** `Ethernet_DMA.DMACTxDLAR.TDESLA =
+   desc0 >> 2` -- the SVD field starts at bit 2, so the value is a word
+   address. Forgetting the shift, or shifting twice, is undetectable.
+3. **Unchecked cache discipline.** The `dmb`-only synchronization in
+   `eth_send_heartbeat` is sound only because D-cache is off for these
+   buffers. Nothing checks that; enabling the cache later breaks RX silently.
+4. **`@dma` over-promises.** `doc/language.md` claims no elision/caching, but
+   codegen does not make `@dma` volatile. It is a placement hint pretending to
+   be a contract.
+5. **Address juggling.** The `tx_desc_addr(word_index)` arithmetic and
+   `TX_DESC_INDEX` wraparound are exactly what IKOS flags today (V130, V101,
+   V113 warnings on the example).
+
+The common shape: memory correctness on an MCU is a property of the *system*
+(CPU + DMA engines + caches + bus matrix), but the compiler only models the
+CPU.
+
+## The agent model
+
+**Definition (plain English):** an agent is anything that touches memory on
+its own initiative. Three-question test, all must hold:
+
+1. Does it initiate memory accesses itself (not just decode them)?
+2. Does it act concurrently, on its own clock, once set up?
+3. Does it have its own view of memory -- reach, caching, permissions?
+
+Every pair of agents is a potential disagreement about memory: visibility
+(cache vs no cache), ordering (write buffers vs bus order), staleness (who
+wrote last), permission (who may write at all). The compiler's job is to
+referee these disagreements at compile time where possible and emit
+verification obligations where not.
+
+### Kinds
+
+Kind is a treatment class -- it decides which machinery applies, not what the
+silicon is called.
+
+| kind       | example                | binding to software       | who answers for its accesses                |
+|------------|------------------------|---------------------------|---------------------------------------------|
+| `cpu`      | cm7                    | all modules (implicit)    | the compiler: it emits every load/store     |
+| `dma`      | ETH DMA, MDMA, BDMA    | module owning handoffs    | that module, at handoff write sites         |
+| `debug`    | SWD probe (AHB-AP)     | none (built-in)           | host-side test harness, via manifest        |
+| `external` | other-vendor firmware  | none                      | nobody -- channels only                      |
+
+The asymmetry that justifies handoffs: a `cpu` agent's accesses are fully
+visible in the IR, so region rules are ordinary per-access checks. A `dma`
+agent's accesses are invisible at compile time -- the compiler only sees the
+address flowing into a register. Handoffs recover, for opaque agents, the
+visibility the compiler gets for free on `cpu` agents.
+
+### Non-agents
+
+- **Contexts** (thread/ISR) are scheduling identities *within* a cpu agent,
+  not agents: same reach, same cache, same view. Agent checks ask "can it see
+  this memory correctly"; context checks ask "can these preempt each other
+  mid-update". Orthogonal axes, existing `@context` machinery unchanged.
+- **RP2350 PIO** executes code but has zero memory reach (DMA moves its FIFO
+  data) -- fails question 3, not an agent. PIO stresses a different axis:
+  compile-time resource allocation (state machines, instruction memory, DMA
+  channels, pins). Out of scope here.
+- **TrustZone security states** are attribute pairs on a cpu agent
+  (cm33 secure / cm33 non-secure), not separate kinds.
+
+### Reality check (counts)
+
+STM32H723: ~12 agents. cm7, probe, and one per DMA controller (not per
+stream/channel -- streams share the controller's reach and cache behavior):
+MDMA (only DMA reaching TCM, via the CM7 AHBS port), DMA1, DMA2, BDMA (reach
+limited to D3 SRAM4/backup SRAM), ETH DMA, SDMMC1, SDMMC2, OTG_HS, DMA2D,
+LTDC (read-only master: `access = read`).
+
+RP2350: ~5 agents, and the dominant checks invert -- no D-cache and a uniform
+crossbar mean staleness mostly disappears; security attribution and resource
+allocation dominate. The model has to fit both.
+
+## Design principle: usage dictates declaration
+
+Stated by the project owner and applied throughout: **only require a
+declaration for what usage cannot express.** Two things qualify:
+
+1. **Physics** -- the compiler cannot see the bus matrix; the target file
+   declares it.
+2. **Exclusivity** -- `owns` is a claim about *other* modules' code (an
+   absence), which no amount of local usage can establish.
+
+Everything else is derived from usage: who drives an agent (from handoff
+register ownership), what a module uses (from its accesses), cache discipline
+(from which agents share a region), eventually placement (from where
+addresses flow). Optional clauses act as pins/assertions, never as the source
+of truth. A consequence already settled: there is no `drives` clause and no
+`uses` clause.
+
+## Layer 1: physics (target file)
+
+Extends the existing INI format of `stm32h723zg.target` with `[mem.*]` and
+`[agent.*]` sections. `[mem.*]` generalizes today's `ram_base`/`ram_size`
+pair (which the H723 file already bends -- it points `ram_base` at D2 SRAM as
+a workaround for exactly the reachability problem this plan solves).
+
+```ini
+arch = armv7em
+cpu = cortex-m7
+caches = i, d            # makes the implicit cpu agent's cache behavior explicit
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.itcm]
+base = 0x00000000
+size = 64K
+
+[mem.dtcm]
+base = 0x20000000
+size = 128K
+
+[mem.axi_sram]
+base = 0x24000000
+size = 320K
+
+[mem.sram1]
+base = 0x30000000
+size = 16K
+
+[mem.sram2]
+base = 0x30004000
+size = 16K
+
+[mem.sram4]
+base = 0x38000000
+size = 16K
+
+[agent.eth_dma]
+kind = dma
+reach = axi_sram, sram1, sram2       # NOT dtcm/itcm: ETH DMA cannot cross the CM7 core
+cached = false
+handoff = Ethernet_DMA.DMACTxDLAR.TDESLA : word_addr align 4
+handoff = Ethernet_DMA.DMACRxDLAR.RDESLA : word_addr align 4
+handoff = Ethernet_DMA.DMACTxDTPR.TDT : word_addr
+handoff = Ethernet_DMA.DMACRxDTPR.RDT : word_addr
+enabled_by = RCC.C1_AHB1ENR.ETH1MACEN, RCC.C1_AHB1ENR.ETH1TXEN, RCC.C1_AHB1ENR.ETH1RXEN
+
+[agent.mdma]
+kind = dma
+reach = itcm, dtcm, axi_sram, sram1, sram2, sram4   # only DMA that reaches TCM
+cached = false
+
+[agent.bdma]
+kind = dma
+reach = sram4                        # the D3 prison
+cached = false
+
+[agent.ltdc]
+kind = dma
+reach = axi_sram, sram1, sram2
+access = read                        # read-only bus master
+cached = false
+
+[agent.probe]
+kind = debug
+reach = *                            # AHB-AP sees everything
+cached = false                       # bypasses D-cache -- matters for HIL
+```
+
+Rules:
+
+- The cpu agent is implicit, derived from `cpu =` / `caches =`. Multi-core
+  parts will need explicit `[core.*]` sections later; not designed here.
+- Register paths (`handoff`, `enabled_by`) are resolved against the SVD
+  modules imported by the program being compiled. Unresolvable path = error
+  at build time. Raw addresses in the target file were rejected as unreadable
+  and unreviewable.
+- `handoff` encoding is a closed set: `byte_addr`, `word_addr` (value =
+  address >> 2, because the SVD field starts at bit 2), `align N`. New
+  encodings require a compiler change -- deliberately, since each one is a
+  codegen rule.
+- These sections are per-chip facts. They belong in the vendored target file
+  and are written once per chip, ideally generated/audited from the reference
+  manual's bus-matrix table.
+
+## Layer 2: policy (regions)
+
+A region names a slice of a `mem` block and lists the agents that share it.
+
+```ini
+[region.dma_shared]
+mem = sram1
+agents = eth_dma                     # cpu agent is always implicitly included
+```
+
+Checks and derivations:
+
+- **Reach check:** the region's memory must lie within the reach of every
+  listed agent. `[region.x] mem = dtcm, agents = eth_dma` is a target-file
+  error -- the DTCM footgun dies here, before any source is compiled.
+- **Cache discipline is derived, not declared** (usage dictates declaration):
+  if a cached cpu agent shares a region with a non-snooping agent, the region
+  must be non-cacheable. On the current bring-up (D-cache never enabled) this
+  is vacuously satisfied; the check exists so that *enabling* D-cache later
+  forces an MPU story instead of silently corrupting RX. MPU config
+  generation from regions is future work, but the error fires from slice 1.
+- `access = read` agents (LTDC) relax the rules: sharing with them constrains
+  CPU-side ordering but cannot produce write-write races.
+
+Open: whether regions live in the target file or a per-board file. Slice 1
+puts them in the target file next to the agents they reference.
+
+## Layer 3: software binding (source)
+
+The module is the file, as today -- `import`/`export` already work that way.
+Two additions, shown on the real example:
+
+```bml
+// eth_dma.bml
+import svd.rcc;
+import svd.ethernet_mac;
+import svd.ethernet_dma;
+import svd.ethernet_mtl;
+
+owns Ethernet_DMA, Ethernet_MTL;                  // exclusive register access
+owns Ethernet_MAC.MACCR, Ethernet_MAC.MACPFR,     // register granularity:
+     Ethernet_MAC.MACA0LR, Ethernet_MAC.MACA0HR;  // MACMDIOAR belongs to phy_lan8742,
+                                                  // the timestamp regs to ptp_clock
+
+export fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx;
+
+var TX_BUFFER: [u8; 128] @align(32) in dma_shared;
+var TX_DESC:   [u32; 8]  @align(32) in dma_shared;
+var RX_BUFFER: [u8; 1024] @align(32) in dma_shared;
+var RX_DESC:   [u32; 8]  @align(32) in dma_shared;
+
+var TX_DESC_INDEX: u32;     // no clause: default region, cpu-only
+```
+
+### `owns`
+
+The only claim clause. Grants exclusive access to the listed registers;
+another module touching them is an error. Granularity is register paths, with
+the peripheral name as shorthand for all of it. Peripheral granularity alone
+is a lie on real chips: in this example three modules legitimately share
+`Ethernet_MAC` (this file: MACCR/MACA0*/MACPFR; `phy_lan8742.bml`:
+MACMDIOAR/MACMDIODR; `ptp_clock.bml`: the timestamp registers).
+
+Unowned registers stay free-for-all (RCC, GPIO), with one exception:
+
+**Rule: handoff registers are ownership-required.** Writing a register that
+appears in any agent's `handoff` list requires owning it. Without this rule
+the exclusivity guarantee evaporates for exactly the registers that matter.
+
+**Derived relation:** module M *drives* agent A iff M owns at least one of
+A's handoff registers. "Drives" appears in diagnostics and tooling (LSP hover
+on the `owns` line: "drives agent eth_dma, 4 handoff registers"), never as
+syntax. An earlier draft had a `drives` clause; it was collapsed because the
+target file's handoff map makes it derivable -- usage dictates declaration.
+Consequence accepted: two modules may own disjoint handoff subsets of one
+agent (TX-path / RX-path split); obligations are per-register, so this is
+sound.
+
+### `in <region>`
+
+Placement as a checked claim. Replaces `@dma` for placement (see "`@dma`
+fate"). The generated linker script places the symbol in the region's memory;
+the symbol's region membership becomes a fact for handoff checking. `in` on a
+region whose agents cannot all reach it is impossible by construction (the
+region itself would have been rejected).
+
+Slice 1 requires explicit `in` for anything whose address reaches a handoff.
+Full inference (compiler derives placement constraints from address flows and
+auto-places, `in` only pins) is the principled endpoint per
+usage-dictates-declaration, but it changes link-time layout when code changes
+and needs careful diagnostics; staged for later.
+
+**Region memory is uninitialized at startup.** The `.region.*` output section
+links as NOBITS (verified: the ELF has no PROGBITS for it) and is in neither
+the `.data` copy nor the `.bss` clear that `reset_handler` runs -- so a static
+placed `in <region>` is not zeroed and not loaded at boot. An initializer
+would be silently dropped, so it is rejected (E601); the static must be written
+at runtime before the agent uses it, which is how every agent-shared buffer is
+set up anyway (descriptors and buffers are filled before the DMA engine is
+enabled). Loadable/zeroed regions (e.g. a mailbox with an initial value) would
+need region sections added to the startup copy/clear loops -- deferred until a
+use case appears. A region placement also rejects a co-present `@section(...)`
+(E602): both set the output section.
+
+Syntax note: `in dma_shared` after the annotations. If the parser grows
+ambiguities, fall back to `@region(dma_shared)`; `in` is preferred for
+readability.
+
+## Handoffs
+
+**Definition:** a handoff is the place where a number stops being data and
+becomes an address -- a register whose written value an agent will
+dereference on its own initiative.
+
+At every write to a handoff register, in the owning module, the compiler does
+three things:
+
+1. **Encoding.** The register knows its encoding, the programmer writes an
+   address. `eth_dma.bml:174` changes from
+   `Ethernet_DMA.DMACTxDLAR.TDESLA = desc0 >> 2;` to
+   `Ethernet_DMA.DMACTxDLAR.TDESLA = tx_desc_addr(0);` -- the compiler
+   inserts the `>> 2` for `word_addr`. The shift bug class is gone.
+   (Lowering change: needs a QEMU exec fixture, not just IR-substring tests.)
+2. **Static reach check.** If the value's provenance is statically known and
+   the target is outside every region the agent can reach, `bml check`
+   rejects it.
+3. **Verification obligation.** Otherwise `bml verify` discharges it: the
+   compiler emits `assume(range)` at the address-of site of the source symbol
+   and `assert(in-region && aligned)` before the handoff write. See next
+   section for why the assume goes there.
+
+### In-memory handoffs (open design, required)
+
+Register handoffs do not cover `eth_dma.bml:184`:
+
+```bml
+RX_DESC[0] = rx_buffer_addr(0);    // buffer pointer inside a descriptor
+```
+
+The address is handed to the agent through memory the agent walks -- ETH
+descriptors here, MDMA linked lists, RP2350 DMA control blocks. Needed on
+every chip examined, so this is not optional. Sketch: address-typed struct
+fields on a descriptor struct replacing the raw `[u32; 8]`:
+
+```bml
+struct RxDesc @repr(packed) {
+    buf1: addr in dma_shared,    // a byte address constrained to a region
+    _r1: u32,
+    _r2: u32,
+    flags: u32,
+}
+```
+
+A write to `buf1` carries the same three actions as a register handoff.
+Dovetails with the parked descriptor-struct refactor of the example. Not
+designed beyond this sketch; explicitly out of slice 1.
+
+## Verification strategy (empirically validated)
+
+Probed 2026-06-08 against the local IKOS fork (interval-congruence domain) on
+instrumented copies of the real example; 6/6 boundary asserts at the
+DMACTxDLAR/DMACRxDLAR writes proved in 0.56s wall. The rules below are
+measured behavior, not assumptions:
+
+- **Assume at the address-of site, not the call site.** Two `ptrtoint`s of
+  the same global do not unify across functions; a range assumed on the
+  caller's `&TX_DESC` does not constrain the callee's recomputation. Facts
+  attached where the address is taken propagate through calls, returns, and
+  arithmetic.
+- **No backward congruence narrowing.** Even `assume(x % 32 == 0);
+  assert(x % 32 == 0);` fails (separate urem SSA values). Alignment is
+  unprovable symbolically. Exact-address assumes (`base == 0x30004000`) prove
+  everything including modulo -- and the compiler generates the linker
+  script, so it *has* exact addresses. Compiler-owned layout is therefore the
+  alignment story; patching the IKOS fork with backward urem refinement is
+  the fallback.
+- **Severity:** definite contradiction = error (reject), unproven = warning
+  (require annotation or restructure). Maps directly onto check/verify:
+  statically decidable violations die in `check`; the rest become obligations
+  with this severity split.
+
+## What this fixes, on the bench
+
+The five problems from the top, revisited:
+
+1. DTCM placement of `TX_DESC`: target-file/region error, before compiling.
+2. `>> 2`: compiler-inserted from the `word_addr` encoding.
+3. dmb-only sync: cache-discipline derivation makes enabling D-cache without
+   an MPU story an error instead of a latent RX corruption.
+4. `@dma`: replaced by `in <region>` (below).
+5. Address juggling: handoff obligations put IKOS exactly where the juggling
+   happens; the descriptor-struct refactor (in-memory handoffs) removes most
+   of the arithmetic.
+
+## `@dma` fate
+
+`@dma` shrinks to nothing: placement moves to `in <region>`, cache discipline
+moves to the region derivation, and it never delivered volatility anyway.
+Plan: port the example off it, then remove the storage class and correct
+`doc/language.md` (which currently promises "no elision/caching" that codegen
+does not implement). The index-read asymmetry workaround (`rx_desc_get32`
+going through `*u32`) disappears with it.
+
+## HIL hook (pointer, not designed here)
+
+The probe is `kind = debug`: an AHB-AP bus master that bypasses the D-cache.
+Two consequences land in this design: testbed-visible regions must be
+non-cacheable (same derivation as DMA sharing), and the typed layout manifest
+(`bml build --manifest`: name/address/type incl. `@be`) is how the host-side
+harness addresses board state. The harness itself (mailbox transport,
+`bml test --hil`) is a separate track.
+
+## Open questions
+
+- **In-memory handoff design**: `addr in <region>` field types; interaction
+  with move semantics and views; what `&RX_BUFFER + desc_index * LEN`
+  provenance looks like to IKOS through a struct store.
+- **`owns` verbosity**: register-granularity lists get long. Possible
+  `owns Ethernet_MAC except ...` or SVD-cluster granularity if real files
+  hurt. Do nothing until they do.
+- **Shared-peripheral hole**: RCC/GPIO stay unclaimed free-for-all.
+  Field-level `owns` (RCC.C1_AHB1ENR.ETH1MACEN) would close it; deferred
+  until the hole bites.
+- **Placement inference**: when to flip `in` from required to pin
+  (usage-dictates-declaration endpoint).
+- **Regions in target vs board file**; multi-core `[core.*]`; TrustZone
+  attribute pairs -- all deferred until a second target forces them.
+- **`enabled_by` checking**: clock-gate-before-touch is a real bug class
+  (the `[startup]` SRAM ungating exists for exactly this reason); whether to
+  check handoff writes against `enabled_by` state is unresolved.
+
+## Implementation plan
+
+Code-grounded against the current tree. Each slice lands and is testable on
+its own; ordering is by dependency, not by size.
+
+### Anchors in the existing code
+
+- **Placement already exists.** `@section "name"` lowers to LLVM
+  `section "..."` at `ir.rs:356-379`; the linker script places sections.
+  `in <region>` reuses this path -- a section-name convention plus
+  MEMORY/SECTIONS entries in `target.rs::generate_linker_script` (`:242`). No
+  new codegen concept.
+- **The checker does not see `Target` today.**
+  `Checker::check(&program, &symbols, &mut diags)` (`main.rs:391`, `:537`,
+  `:751`) takes no target. Region/ownership checks need both, so they live in
+  a new pass `bml-core/src/region.rs` taking `&Target`, threaded in at those
+  three call sites.
+- **Module-header clauses parse like `import`/`export`** -- a new arm in
+  `parse_item` (`parser.rs:200`) and a new `Item` variant.
+- **Register paths resolve against `symbols.peripherals`** -- the same
+  address/bit-offset data codegen uses for field writes
+  (`ir.rs:3325-3374`).
+- **Handoff write hook = the peripheral-field store** at `ir.rs:3325`;
+  encoding insertion and the assert go there. The assume goes at the
+  address-of site (`ir.rs:3128-3180`).
+
+### Slice 0 -- Target physics (no language change)
+
+`target.rs` only. Extend the section-dispatch loop (`:78-127`, template:
+`[startup]`/`[interrupts]`) with `[mem.*]`, `[agent.*]`, `[region.*]`. New
+structs `MemBlock{base,size}`, `Agent{kind,reach,cached,access,handoffs,
+enabled_by}`, `Region{mem,agents}`. Closed-set handoff-encoding parse
+(`byte_addr`/`word_addr`/`align N`). Self-consistency at parse time (fail
+loudly): region `mem` within reach of every listed agent; mem blocks
+non-overlapping; register paths kept as strings (resolved later -- `target.rs`
+cannot see the SVD). Tests: `target.rs` units, `parses_startup_section` style.
+Value: the DTCM footgun fires at target load, before any source.
+
+### Slice 1 -- `in <region>` placement
+
+`ast.rs` (extend `StorageAnnotation` / `StaticDef`), `parser.rs`
+(`parse_static_def`), `ir.rs` (emit `section ".region.<n>"`), `target.rs`
+(`generate_linker_script`: one MEMORY entry per mem block, one output section
+per region `> MEMBLOCK`), new `region.rs` (the `in` name must be a real
+region). Demo: `TX_DESC ... in dma_shared` lands in sram1; a dtcm-backed
+region is rejected (slice 0). Replaces `@dma` placement. Risk: section
+ordering/alignment needs a **QEMU exec fixture**, not IR-substring alone.
+
+### Slice 2 -- `owns` + handoff-ownership rule
+
+`ast.rs` (`Item::Owns`), `parser.rs` (`parse_item` arm + path parse
+`Periph` / `Periph.REG` / `Periph.REG.FIELD`), `region.rs` (cross-module
+exclusivity; handoff registers require ownership; derived `drives` relation
+for diagnostics/LSP hover). Demo: `ptp_clock.bml` writing `DMACTxDTPR` =
+error. **Confirm first:** compile unit is whole-program so all modules' `owns`
+are visible in one resolve (`main.rs:383`/`:529` import path -- verify, do not
+assume).
+
+### Slice 3 -- Handoff encoding insertion
+
+`ir.rs:3325`: if the field is a `word_addr` handoff, insert `>> 2`; reject a
+source-level `>> 2` on a handoff (double shift) in `region.rs`. Static reach
+check where provenance is a known static. Demo: source drops the shift; QEMU
+exec fixture proves the heartbeat transmits byte-identical.
+
+### Slice 4 -- Verify obligations
+
+`ir.rs` under `verify_mode`: `assume(range)` at the address-of site
+(`:3128-3180`), `assert(in-region && aligned)` before each handoff store,
+reusing the `__ikos_assert` path. Replaces the hand-written probe assumes;
+strategy already proved (6/6, 0.56s). Demo: `bml verify` on the ported
+example proves membership; an injected DTCM contradiction reports at the right
+line.
+
+### Slice 5 -- Retire `@dma`
+
+Port the example fully, delete the `Dma` storage class, correct
+`doc/language.md`'s false "no elision/caching" claim, drop the
+`rx_desc_get32` `*u32` index-read workaround.
+
+### Deferred
+
+In-memory handoffs (`addr in <region>` fields) -- separate design doc first,
+absorbs the descriptor-struct refactor. HIL manifest track -- separate.
+
+### Ordering rationale
+
+0 and 1 are independent of source semantics and useful immediately (placement
++ reach errors on the live board). 2 gates 3 and 4. 3 (codegen, proved by
+exec) and 4 (verify, proved by IKOS) are separable -- a bug in one does not
+block the other. 5 is cleanup once 1-4 subsume `@dma`. Biggest open risk: the
+cross-module visibility confirmation in slice 2.

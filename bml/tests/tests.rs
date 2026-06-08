@@ -2337,3 +2337,76 @@ fn test_verify_struct_debug_info() {
     );
     assert!(ok, "expected a finding-free exit, stderr:\n{stderr}");
 }
+
+// `in <region>` naming a region the target does not define is rejected (E600).
+// Region placement is validated against the target, so this runs in `build`.
+#[test]
+fn test_region_unknown_placement() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--target")
+        .arg(dir.join("region_unknown.target"))
+        .arg(dir.join("region_unknown.bml"))
+        .output()
+        .expect("failed to run bml build");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "build should fail on placement into an unknown region; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E600"), "expected E600; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("dma_shared"),
+        "diagnostic should list the known regions; stderr:\n{stderr}"
+    );
+}
+
+// A region-placed static with an initializer is rejected (E601): region memory
+// is not initialized at startup, so the initializer would be silently dropped.
+#[test]
+fn test_region_init_rejected() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--target")
+        .arg(dir.join("region_unknown.target"))
+        .arg(dir.join("region_init.bml"))
+        .output()
+        .expect("failed to run bml build");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "build should fail on an initialized region static; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E601"), "expected E601; stderr:\n{stderr}");
+}
+
+// `in <region>` together with `@section(...)` is rejected (E602): both set the
+// output section and would silently fight.
+#[test]
+fn test_region_section_conflict() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--target")
+        .arg(dir.join("region_unknown.target"))
+        .arg(dir.join("region_section_conflict.bml"))
+        .output()
+        .expect("failed to run bml build");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "build should fail on in+@section; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E602"), "expected E602; stderr:\n{stderr}");
+}

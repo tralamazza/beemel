@@ -500,6 +500,11 @@ pub struct StaticDef {
     pub name: Ident,
     pub ty: TypeExpr,
     pub storage: Vec<StorageAnnotation>,
+    /// `in <region>` placement: the name of a `[region.*]` from the target
+    /// file. The static is emitted into the `.region.<name>` section, which the
+    /// generated linker script places in that region's mem block. Validated by
+    /// the region pass against the target.
+    pub region: Option<Ident>,
     pub init: Option<Expr>,
 }
 

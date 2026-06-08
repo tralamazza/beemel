@@ -1,0 +1,7 @@
+// Placement into a region the target does not define must be rejected (E600).
+// The target (region_unknown.target) defines `dma_shared`, not `scratch`.
+var BUF: [u32; 4] in scratch;
+
+fn main() @context(thread) {
+    BUF[0] = 1;
+}

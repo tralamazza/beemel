@@ -19,6 +19,7 @@ use bml_core::errors::DiagnosticBag;
 use bml_core::imports::ImportResolver;
 use bml_core::ir::IrEmitter;
 use bml_core::parser::Parser;
+use bml_core::region;
 use bml_core::resolver::Resolver;
 use bml_core::source::SourceMap;
 use bml_core::stack;
@@ -546,6 +547,15 @@ fn build_file(
         process::exit(1);
     }
 
+    // Region/agent placement checks. These need the target file (regions and
+    // agents are declared there), so they run in build/verify, not in the
+    // targetless `bml check`.
+    region::check(&program, target, &mut diags);
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
     if !diags.is_empty() {
         diags.emit(&source_map);
     }
@@ -755,6 +765,15 @@ fn verify_file(
     }
 
     BorrowChecker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
+
+    // Region/agent placement checks. These need the target file (regions and
+    // agents are declared there), so they run in build/verify, not in the
+    // targetless `bml check`.
+    region::check(&program, target, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
