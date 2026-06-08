@@ -17,7 +17,9 @@ with an exhaustive write walker), slice 3 (`word_addr` handoff encoding:
 compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof), and slice
 4 (verify obligations: provenance assume at `&X as u32`, reachability assert at
 the handoff write, discharged by IKOS -- DTCM footgun caught at the value
-level). Remaining: slice 5 (retire `@dma`, port the example).
+level). Slice 5 partial: `doc/language.md` corrected; full `@dma` retirement
+re-scoped (blocked on in-memory handoffs + a Move-typing replacement decision +
+hardware validation). Next unblocker: design in-memory handoffs.
 
 ## Problem
 
@@ -590,11 +592,34 @@ to be revisited with compiler-owned exact addresses). IKOS emits an info-level
 assumption IKOS adopts, not one it can independently derive); info does not
 fail the default `--fail-on error`.
 
-### Slice 5 -- Retire `@dma`
+### Slice 5 -- Retire `@dma` (partial; full retirement re-scoped)
 
-Port the example fully, delete the `Dma` storage class, correct
-`doc/language.md`'s false "no elision/caching" claim, drop the
-`rx_desc_get32` `*u32` index-read workaround.
+Done: corrected `doc/language.md`'s false claim. The memory-model table said
+`@dma`/`@external` give "no elision/caching across accesses" (implying
+volatile); verified against the IR that a `@dma` static is a plain global and
+its index write lowers to a non-volatile `store i32` -- the optimizer may
+elide/reorder/cache it. The table now states `@dma` is plain RAM with
+Move-typing only, and ordering/visibility toward an agent is the programmer's
+job (barriers + non-cacheable placement), which the regions/agents model makes
+checkable.
+
+**Full retirement is re-scoped, not a quick deletion.** Investigating
+`@dma` showed it is `Type::Dma(Box<Type>)` woven through resolver/checker/
+borrow/types/ir, and it carries *Move-typing* (aliasing safety) and the
+index-read restriction -- semantics the regions/agents model (placement +
+ownership + handoff provenance) does **not** replace. Deleting `@dma` now would
+regress aliasing safety. And a real example port is blocked on in-memory
+handoffs (the descriptor buffer pointers `RX_DESC[0] = rx_buffer_addr(0)`),
+which are not designed yet. Plus the example is live on hardware (TX works), so
+its port wants on-board validation, and the H723 target is not exec-testable
+under the QEMU harness.
+
+Blockers before retirement: (1) design in-memory handoffs; (2) decide what
+carries `@dma`'s Move-typing / index-read safety once placement moves to
+`in <region>` (perhaps the region, perhaps a separate marker); (3) port the
+example additively (`@dma ... in dma_shared`, ETH agent + handoffs in the
+target -- behavior-preserving since `(desc>>2)<<2 == (desc)>>2<<2` after
+auto-encode) with hardware validation; then delete `Type::Dma`.
 
 ### Deferred
 

@@ -94,14 +94,21 @@ Four distinct address spaces, each with different compiler semantics:
 | Declaration                      | Semantics                                  |
 |----------------------------------|--------------------------------------------|
 | `peripheral X at 0x... { ... }`  | MMIO -- volatile per-access, no reordering  |
-| `@dma` / `@external`            | RAM -- no elision/caching across accesses   |
+| `@dma` / `@external`            | RAM -- Move-typed; accesses are *not* volatile |
 | `@shared(ceiling = N)`          | RAM -- auto critical section on access      |
 | `@exclusive(owner)`             | RAM -- single-context ownership             |
 | (no annotation)                 | RAM -- full optimization (thread-only)      |
 
-The compiler never exposes a `volatile` keyword. These semantics are
-inferred from the declaration type -- the compiler knows where data lives
-and applies the correct access pattern automatically.
+The compiler never exposes a `volatile` keyword. Most of these semantics are
+inferred from the declaration type. Note `@dma`/`@external` do **not** make
+accesses volatile: the static is plain RAM (a normal global; loads/stores can
+be elided, reordered, and cached by the optimizer), and the storage class only
+carries Move-typing (aliasing safety, see section 3). Ordering and visibility
+toward an external agent (a DMA engine, another core) are the programmer's
+responsibility -- memory barriers (`asm { dmb }`) for ordering, non-cacheable
+placement for visibility. The regions/agents model
+(`doc/regions-agents-plan.md`) is what makes those obligations checkable;
+`@dma` itself is only a placement/aliasing marker.
 
 ## 3. Move / Copy semantics
 
