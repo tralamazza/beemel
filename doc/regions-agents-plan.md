@@ -8,11 +8,13 @@ where software hands addresses to them ("handoffs"). Placement, reachability,
 and address-encoding bugs become compile errors or discharged verification
 obligations instead of silent board lockups.
 
-Status 2026-06-08: design settled. Slices 0 (target physics: `[mem.*]`/
-`[agent.*]`/`[region.*]` parsing + reach validation) and 1 (`in <region>`
-placement: parser, IR section, mem-block-driven linker script, E600 check,
-QEMU exec proof) are implemented. The IKOS emission strategy is empirically
-validated (see "Verification strategy"). Slices 2-5 are design.
+Status 2026-06-08: design settled. Implemented: slice 0 (target physics:
+`[mem.*]`/`[agent.*]`/`[region.*]` parsing + reach validation), slice 1
+(`in <region>` placement: parser, IR section, mem-block-driven linker script,
+E600/E601/E602 checks, QEMU exec proof), and slice 2 (`owns` parsing, path
+resolution E603, cross-module exclusivity E604, handoff-ownership rule E605
+with an exhaustive write walker). The IKOS emission strategy is empirically
+validated (see "Verification strategy"). Remaining: slices 3-5.
 
 ## Problem
 
@@ -484,13 +486,34 @@ ordering/alignment needs a **QEMU exec fixture**, not IR-substring alone.
 
 ### Slice 2 -- `owns` + handoff-ownership rule
 
-`ast.rs` (`Item::Owns`), `parser.rs` (`parse_item` arm + path parse
-`Periph` / `Periph.REG` / `Periph.REG.FIELD`), `region.rs` (cross-module
-exclusivity; handoff registers require ownership; derived `drives` relation
-for diagnostics/LSP hover). Demo: `ptp_clock.bml` writing `DMACTxDTPR` =
-error. **Confirm first:** compile unit is whole-program so all modules' `owns`
-are visible in one resolve (`main.rs:383`/`:529` import path -- verify, do not
-assume).
+Whole-program visibility **confirmed**: `imports.rs::resolve_imports` flattens
+every item from non-aliased imported modules into one `Program` via
+`push_unique_def` (span-keyed dedup for diamonds). The peripheral-owning
+modules are imported without an alias, so all `owns` clauses reach one pass.
+Aliased imports keep their items in the `AliasMap` instead -- a known gap, not
+hit by the realistic import style.
+
+Done (2a): `owns` keyword + `Item::Owns`/`OwnsPath` (peripheral or
+`Periph.REG`; field-level `Periph.REG.FIELD` rejected with E603 -- field
+granularity is the deferred RCC-sharing story). `region.rs` resolves paths
+against the peripheral table (E603) and flags a register owned by two
+different files (E604, cross-module exclusivity). Field/peripheral overlap is
+handled (owning a whole peripheral conflicts with owning one of its
+registers). Tests: owns_ok / owns_conflict (two modules, one peripheral) /
+owns_unknown / owns_field.
+
+Done (2b): the handoff-ownership-required rule. `region.rs` builds the handoff
+register set from the target (agent handoff strings -> (peripheral, register)),
+the ownership maps from `owns` (whole-peripheral and per-register), and walks
+every function body exhaustively (`walk_stmt`/`walk_expr`, including statements
+embedded in block/if/match expressions, no catch-all) collecting peripheral
+register/field writes. A write to a handoff register from a file that does not
+own it is E605. Tests: handoff_unowned (E605) / handoff_owned (register) /
+handoff_owned_peripheral (whole peripheral) / handoff_nonhandoff_write (an
+ordinary register needs no ownership). The walker is reused by slices 3-4,
+which also act at handoff write sites. The derived `drives` relation (M drives
+A iff M owns one of A's handoff registers) is computable from these same maps;
+surfacing it in LSP hover is deferred to the LSP track.
 
 ### Slice 3 -- Handoff encoding insertion
 

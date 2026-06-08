@@ -383,6 +383,10 @@ fn item_def_span(item: &Item) -> Option<Span> {
         Item::PeripheralDef(p) => Some(p.name.1),
         Item::StructDef(s) => Some(s.name.1),
         Item::EnumDef(e) => Some(e.name.1),
+        // An `owns` clause has no name; key dedup on its first path's span so a
+        // diamond-imported module's claim is not duplicated, while two distinct
+        // claims in one file (different spans) are both kept.
+        Item::Owns(o) => o.paths.first().map(|p| p.span),
         Item::Import(_) | Item::Export(_) | Item::ComptimeAssert(_) => None,
     }
 }

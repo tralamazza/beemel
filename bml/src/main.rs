@@ -481,6 +481,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
                     e.variants.len()
                 );
             }
+            ast::Item::Owns(o) => println!("  owns ({} registers)", o.paths.len()),
             ast::Item::ComptimeAssert(_) => {}
         }
     }
@@ -547,10 +548,10 @@ fn build_file(
         process::exit(1);
     }
 
-    // Region/agent placement checks. These need the target file (regions and
-    // agents are declared there), so they run in build/verify, not in the
-    // targetless `bml check`.
-    region::check(&program, target, &mut diags);
+    // Region/agent placement and ownership checks. These need the target file
+    // (regions and agents are declared there), so they run in build/verify, not
+    // in the targetless `bml check`.
+    region::check(&program, &symbols, target, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
@@ -770,10 +771,10 @@ fn verify_file(
         process::exit(1);
     }
 
-    // Region/agent placement checks. These need the target file (regions and
-    // agents are declared there), so they run in build/verify, not in the
-    // targetless `bml check`.
-    region::check(&program, target, &mut diags);
+    // Region/agent placement and ownership checks. These need the target file
+    // (regions and agents are declared there), so they run in build/verify, not
+    // in the targetless `bml check`.
+    region::check(&program, &symbols, target, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);

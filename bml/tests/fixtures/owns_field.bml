@@ -1,0 +1,7 @@
+// Field-level ownership is not yet supported -> E603 (in the parser).
+import owns_periph;
+owns GPIOZ.ODR.ODR0;
+
+fn main() @context(thread) {
+    GPIOZ.ODR.ODR0 = true;
+}

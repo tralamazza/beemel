@@ -2410,3 +2410,131 @@ fn test_region_section_conflict() {
     );
     assert!(stderr.contains("E602"), "expected E602; stderr:\n{stderr}");
 }
+
+// ─── ownership (`owns`, slice 2a) ─────────────────────────────────────────
+
+/// Build a fixture with the default target; return (success, stderr). Used by
+/// the ownership tests, which need no target (they check source-level claims).
+fn bml_build_default(fixture: &str) -> (bool, String) {
+    bml_build_with_target(fixture, None)
+}
+
+/// Build a fixture, optionally with a target file; return (success, stderr).
+fn bml_build_with_target(fixture: &str, target: Option<&str>) -> (bool, String) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let path = dir.join(fixture);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bml"));
+    cmd.arg("build");
+    if let Some(t) = target {
+        cmd.arg("--target").arg(dir.join(t));
+    }
+    let output = cmd.arg(&path).output().expect("failed to run bml build");
+    // Clean up any emitted artifacts from a successful build.
+    let _ = std::fs::remove_file(path.with_extension("o"));
+    let _ = std::fs::remove_file(path.with_extension("ld"));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status.success(), stderr)
+}
+
+// A module owning a peripheral it uses builds cleanly.
+#[test]
+fn test_owns_ok() {
+    let (ok, stderr) = bml_build_default("owns_ok.bml");
+    assert!(ok, "owns_ok should build; stderr:\n{stderr}");
+}
+
+// Two imported modules owning the same peripheral is a cross-module conflict
+// (E604). Exercises whole-program flattening: both `owns` clauses reach one
+// program through separate imports.
+#[test]
+fn test_owns_conflict_across_modules() {
+    let (ok, stderr) = bml_build_default("owns_conflict.bml");
+    assert!(!ok, "owns_conflict should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E604"), "expected E604; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("GPIOZ"),
+        "should name the register; stderr:\n{stderr}"
+    );
+}
+
+// Owning a whole peripheral in one module and one of its registers in another
+// also overlaps (E604) -- the conflict is not only same-path-vs-same-path.
+#[test]
+fn test_owns_conflict_peripheral_vs_register() {
+    let (ok, stderr) = bml_build_default("owns_conflict_reg.bml");
+    assert!(!ok, "owns_conflict_reg should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E604"), "expected E604; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("GPIOZ.ODR"),
+        "should name the overlapping register; stderr:\n{stderr}"
+    );
+}
+
+// Owning a peripheral the program does not define is rejected (E603).
+#[test]
+fn test_owns_unknown_peripheral() {
+    let (ok, stderr) = bml_build_default("owns_unknown.bml");
+    assert!(!ok, "owns_unknown should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E603"), "expected E603; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("Ghost"),
+        "should name the bad path; stderr:\n{stderr}"
+    );
+}
+
+// Field-level ownership is not yet supported and is rejected in the parser
+// (E603) rather than silently narrowing to the register.
+#[test]
+fn test_owns_field_level_rejected() {
+    let (ok, stderr) = bml_build_default("owns_field.bml");
+    assert!(!ok, "owns_field should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E603"), "expected E603; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("field-level"),
+        "should explain field-level is unsupported; stderr:\n{stderr}"
+    );
+}
+
+// ─── handoff-ownership rule (`owns` + handoff, slice 2b) ───────────────────
+
+// Writing a handoff register without owning it is rejected (E605).
+#[test]
+fn test_handoff_write_requires_ownership() {
+    let (ok, stderr) = bml_build_with_target("handoff_unowned.bml", Some("handoff.target"));
+    assert!(!ok, "unowned handoff write should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E605"), "expected E605; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("MyDma.CTRL") && stderr.contains("mydma"),
+        "should name the handoff register and its agent; stderr:\n{stderr}"
+    );
+}
+
+// Owning the handoff register (or its whole peripheral) licenses the write.
+#[test]
+fn test_handoff_write_with_ownership_ok() {
+    let (ok, stderr) = bml_build_with_target("handoff_owned.bml", Some("handoff.target"));
+    assert!(
+        ok,
+        "owning the register should allow the write; stderr:\n{stderr}"
+    );
+    let (ok2, stderr2) =
+        bml_build_with_target("handoff_owned_peripheral.bml", Some("handoff.target"));
+    assert!(
+        ok2,
+        "owning the peripheral should allow the write; stderr:\n{stderr2}"
+    );
+}
+
+// The rule applies only to handoff registers: writing an ordinary register of
+// the same peripheral without owning anything is fine.
+#[test]
+fn test_non_handoff_write_needs_no_ownership() {
+    let (ok, stderr) =
+        bml_build_with_target("handoff_nonhandoff_write.bml", Some("handoff.target"));
+    assert!(
+        ok,
+        "non-handoff write should not require ownership; stderr:\n{stderr}"
+    );
+}

@@ -1,0 +1,8 @@
+import owns_periph;
+owns GPIOZ;
+
+fn touch_a() {
+    GPIOZ.ODR.ODR0 = true;
+}
+
+export fn touch_a;

@@ -164,6 +164,7 @@ fn validate_type_annotations(program: &Program, symbols: &SymbolTable, diags: &m
             ast::Item::EnumDef(_)
             | ast::Item::Import(_)
             | ast::Item::Export(_)
+            | ast::Item::Owns(_)
             | ast::Item::ComptimeAssert(_) => {}
         }
     }

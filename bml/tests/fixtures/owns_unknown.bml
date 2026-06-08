@@ -1,0 +1,7 @@
+// owns a peripheral that does not exist -> E603.
+import owns_periph;
+owns GPIOZ, Ghost;
+
+fn main() @context(thread) {
+    GPIOZ.ODR.ODR0 = true;
+}

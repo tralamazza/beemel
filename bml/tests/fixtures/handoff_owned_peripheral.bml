@@ -1,0 +1,7 @@
+// Owns the whole peripheral (covers the handoff register) -> OK.
+import handoff_periph;
+owns MyDma;
+fn main() @context(thread) {
+    MyDma.CTRL.PTR = 0x20000000;
+    MyDma.STATUS.BUSY = false;
+}

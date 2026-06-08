@@ -1,0 +1,6 @@
+// Owns the handoff register and writes it -> OK.
+import handoff_periph;
+owns MyDma.CTRL;
+fn main() @context(thread) {
+    MyDma.CTRL.PTR = 0x20000000;
+}

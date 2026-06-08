@@ -1,0 +1,8 @@
+// owns_a owns the whole GPIOZ; owns_c owns GPIOZ.ODR -> overlap -> E604.
+import owns_a;
+import owns_c;
+
+fn main() @context(thread) {
+    touch_a();
+    touch_c();
+}

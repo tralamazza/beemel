@@ -1,0 +1,7 @@
+// A single module owning a peripheral it uses -- no conflict.
+import owns_periph;
+owns GPIOZ;
+
+fn main() @context(thread) {
+    GPIOZ.ODR.ODR0 = true;
+}

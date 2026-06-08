@@ -1,0 +1,20 @@
+# Target with one DMA agent whose handoff register is MyDma.CTRL.PTR.
+arch = armv7em
+cpu = cortex-m7
+flash_base = 0x08000000
+flash_size = 1M
+ram_base = 0x20000000
+ram_size = 128K
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x20000000
+size = 128K
+
+[agent.mydma]
+kind = dma
+reach = sram
+handoff = MyDma.CTRL.PTR : word_addr

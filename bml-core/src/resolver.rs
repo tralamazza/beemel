@@ -132,8 +132,9 @@ impl Resolver {
                 ast::Item::Export(_) => {
                     // Export statements are consumed by import resolver
                 }
-                // Defines no symbol; checked separately during type checking.
-                ast::Item::ComptimeAssert(_) => {}
+                // Defines no symbol; checked separately (owns by the region
+                // pass, comptime_assert during type checking).
+                ast::Item::Owns(_) | ast::Item::ComptimeAssert(_) => {}
             }
         }
 

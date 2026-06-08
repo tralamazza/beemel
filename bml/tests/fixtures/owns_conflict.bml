@@ -1,0 +1,8 @@
+// Two imported modules (owns_a, owns_b) both `owns GPIOZ` -> E604.
+import owns_a;
+import owns_b;
+
+fn main() @context(thread) {
+    touch_a();
+    touch_b();
+}

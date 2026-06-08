@@ -1,0 +1,10 @@
+// Peripheral matching the agent's handoff register in handoff.target.
+peripheral MyDma at 0x40030000 {
+    reg CTRL offset 0x00 {
+        field PTR: u32 bit[0..31]
+    }
+    reg STATUS offset 0x04 {
+        field BUSY: b1 bit[0]
+    }
+}
+export peripheral MyDma;

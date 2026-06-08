@@ -23,6 +23,27 @@ pub enum Item {
     /// `comptime_assert(cond);` -- a compile-time assertion on a const
     /// condition (e.g. `sizeof(GPIO) == 0x28`). Produces no runtime code.
     ComptimeAssert(ComptimeAssert),
+    /// `owns P, P.R, ...;` -- this module's exclusive claim over peripheral
+    /// registers. Checked by the region pass against the peripheral table and
+    /// across modules. See `doc/regions-agents-plan.md`.
+    Owns(OwnsStmt),
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnsStmt {
+    pub paths: Vec<OwnsPath>,
+}
+
+/// One ownership claim: a whole peripheral (`register` is `None`) or a single
+/// register (`register` is `Some`). Field-level ownership is not yet supported.
+/// `span` covers the path and carries the source `FileId`, which is how the
+/// region pass attributes the claim to a module (two files owning the same
+/// register is the cross-module conflict).
+#[derive(Debug, Clone)]
+pub struct OwnsPath {
+    pub peripheral: Ident,
+    pub register: Option<Ident>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

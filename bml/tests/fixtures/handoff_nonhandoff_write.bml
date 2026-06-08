@@ -1,0 +1,6 @@
+// Writes a NON-handoff register (STATUS) without owning anything -> OK: the
+// ownership rule applies only to handoff registers.
+import handoff_periph;
+fn main() @context(thread) {
+    MyDma.STATUS.BUSY = false;
+}

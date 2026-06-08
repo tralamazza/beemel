@@ -168,6 +168,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Peripheral
                 | TokenKind::Import
                 | TokenKind::Export
+                | TokenKind::Owns
                 | TokenKind::Struct
                 | TokenKind::Enum => return,
                 TokenKind::RBrace => return,
@@ -206,6 +207,7 @@ impl<'a> Parser<'a> {
             TokenKind::Peripheral => self.parse_peripheral_def().map(Item::PeripheralDef),
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Export => self.parse_export().map(Item::Export),
+            TokenKind::Owns => self.parse_owns().map(Item::Owns),
             TokenKind::Struct => self.parse_struct_def().map(Item::StructDef),
             TokenKind::Enum => self.parse_enum_def().map(Item::EnumDef),
             TokenKind::ComptimeAssert => {
@@ -874,6 +876,51 @@ impl<'a> Parser<'a> {
             imports,
             alias,
         })
+    }
+
+    /// `owns P, P.R, ...;` -- a module's exclusive register-ownership claims.
+    /// Each path is a peripheral name, optionally `.register`. Field-level
+    /// paths (`P.R.F`) are rejected: field-granularity ownership is not yet
+    /// supported (see doc/regions-agents-plan.md).
+    fn parse_owns(&mut self) -> Option<OwnsStmt> {
+        self.advance(); // owns
+        let mut paths = Vec::new();
+        loop {
+            let peripheral = self.parse_ident()?;
+            let mut span = peripheral.1;
+            let register = if self.eat(&TokenKind::Dot) {
+                let reg = self.parse_ident()?;
+                span = span.merge(reg.1);
+                // Reject a field-level third component loudly rather than
+                // silently ignoring it.
+                if self.eat(&TokenKind::Dot) {
+                    let field = self.parse_ident()?;
+                    self.diags.error(
+                        format!(
+                            "field-level ownership (`{}.{}.{}`) is not yet supported; \
+                             own the whole register `{}.{}`",
+                            peripheral.0, reg.0, field.0, peripheral.0, reg.0
+                        ),
+                        "E603",
+                        span.merge(field.1),
+                    );
+                    return None;
+                }
+                Some(reg)
+            } else {
+                None
+            };
+            paths.push(OwnsPath {
+                peripheral,
+                register,
+                span,
+            });
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
+        Some(OwnsStmt { paths })
     }
 
     fn parse_export(&mut self) -> Option<ExportStmt> {
