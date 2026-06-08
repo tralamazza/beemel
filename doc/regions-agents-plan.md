@@ -341,31 +341,97 @@ three things:
    and `assert(in-region && aligned)` before the handoff write. See next
    section for why the assume goes there.
 
-### In-memory handoffs (open design, required)
+### In-memory handoffs (design)
 
-Register handoffs do not cover `eth_dma.bml:184`:
+Register handoffs do not cover the addresses an agent reads out of memory it
+walks. In `eth_dma.bml`, the descriptors are `[u32; 8]` (two descriptors x four
+words) and word 0 of each holds a buffer **byte address** the ETH DMA
+dereferences:
 
 ```bml
-RX_DESC[0] = rx_buffer_addr(0);    // buffer pointer inside a descriptor
+RX_DESC[0] = rx_buffer_addr(0);   // RX descriptor 0, word 0 = buffer pointer
+RX_DESC[4] = rx_buffer_addr(1);   // RX descriptor 1, word 0
+TX_DESC[desc_word] = tx_buffer_addr();
 ```
 
-The address is handed to the agent through memory the agent walks -- ETH
-descriptors here, MDMA linked lists, RP2350 DMA control blocks. Needed on
-every chip examined, so this is not optional. Sketch: address-typed struct
-fields on a descriptor struct replacing the raw `[u32; 8]`:
+Same shape on MDMA linked lists and RP2350 DMA control blocks -- needed on
+every chip examined, so it is not optional. Today these are raw `u32` writes
+the compiler cannot tell from control-word writes; the goal is to mark word 0
+as an address slot and apply the handoff obligations to it.
+
+**Surface: address-typed struct fields.** Replace the raw `[u32; 8]` with a
+typed descriptor whose buffer-pointer field carries a region:
 
 ```bml
 struct RxDesc @repr(packed) {
-    buf1: addr in dma_shared,    // a byte address constrained to a region
+    buf1: addr in dma_shared,   // a byte address constrained to dma_shared
     _r1: u32,
     _r2: u32,
     flags: u32,
 }
+var RX_DESC: [RxDesc; 2] @align(32) in dma_shared;
+
+// the in-memory handoff write:
+RX_DESC[0].buf1 = rx_buffer_addr(0);
 ```
 
-A write to `buf1` carries the same three actions as a register handoff.
-Dovetails with the parked descriptor-struct refactor of the example. Not
-designed beyond this sketch; explicitly out of slice 1.
+`addr in R` is a 4-byte field (layout-identical to `u32`, `@repr(packed)`-safe)
+that means "a byte address that must lie in region `R`." It is *not* a typed
+pointer: no pointee type, no deref; reading it yields a `u32`. A `word_addr in
+R` variant (value = address >> 2) covers descriptor slots that store a word
+address, mirroring the register handoff encodings; ETH buffer pointers are
+byte addresses, so `addr` (no shift) is the common case.
+
+**The write to an `addr in R` field carries the register-handoff actions**, and
+reuses the slice-3/4 machinery:
+
+1. *Encoding* -- `word_addr in R` inserts `>> 2` at the field store (the same
+   `encode_word_addr_handoff` path); `addr in R` is verbatim.
+2. *Static reach check* -- if the written value's provenance is a static placed
+   in a region not contained in `R`, reject in `check`.
+3. *Verify obligation* -- emit `assert(value in R.range)` at the field store.
+   The provenance `assume` is already emitted by slice 4 at `&BUFFER as u32`
+   (the buffer's region range), so this reuses `region_addr_ranges` and
+   `emit_range_assert` unchanged. The same index juggling slice 4 catches on
+   register handoffs (`base + i*512` with unbounded `i`) is caught here.
+
+So in-memory handoffs are, mechanically, register handoffs whose "register" is
+a struct field and whose target range is the field's own `in R` (rather than an
+agent's reach). They are in one way *simpler*: the constraint region is
+explicit on the field, no agent-reach lookup.
+
+**Detection / lowering.** The struct-field store path in `ir.rs` already GEPs to
+the field and stores; when the field type is `addr in R` / `word_addr in R`,
+add the encode (build + verify) and the assert (verify). The checker needs the
+new field type (`Type::Addr { region, word }` or similar) threaded through
+`types.rs`/resolver/checker like other field types, with `sizeof == 4` and
+packed layout.
+
+**Open questions.**
+
+- *Transitive reach.* `addr in R` constrains the value to `R`, but does not yet
+  check that the agent which walks this descriptor can reach `R`. The link is
+  the register handoff that delivers the descriptor base (`DMACRxDLAR =
+  &RX_DESC`): the agent owning that handoff walks `RX_DESC`, so every `addr in
+  R` field inside `RX_DESC` should satisfy `R.mem in agent.reach`. A
+  target+type-level check can add this once descriptors are tied to agents
+  through the delivering handoff; v1 constrains the value to `R` and leaves the
+  agent-reaches-`R` check as a refinement.
+- *`addr` as a general type.* v1 scopes it to struct fields (the descriptor
+  case). Whether locals/params/returns may be `addr in R` (an address proven
+  in-region flowing around) is deferrable; the helpers (`rx_buffer_addr`)
+  currently return `u32` and the provenance flows through that fine.
+- *Reading.* Reading an `addr in R` field yields `u32`. Whether a read should
+  re-establish the `in R` fact (so a value loaded back from a descriptor is
+  known in-region) is open; not needed for the write-obligation use case.
+- *Move/aliasing.* This is also the natural home for whatever replaces `@dma`'s
+  Move-typing once placement moves to `in <region>` (see slice 5) -- the
+  descriptor struct, not a storage-class wrapper, would carry it.
+
+**Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
+refactor (direct typed indexing, no `*u32` index-read workaround), it is the
+prerequisite for retiring `@dma`, and it closes the last place an unchecked
+address reaches an agent.
 
 ## Verification strategy (empirically validated)
 
