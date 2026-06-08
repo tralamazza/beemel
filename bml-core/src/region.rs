@@ -29,9 +29,66 @@ use crate::ast::{
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, HandoffEncoding, Target};
+use crate::target::{Agent, AgentKind, HandoffEncoding, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
+
+/// Derive `@dma`-style protection from placement (usage dictates declaration).
+///
+/// `@dma`'s load-bearing property is the index-read restriction: a `Dma`-wrapped
+/// value cannot be indexed as an rvalue (the type checker's `index_element_type`
+/// accepts only `Array`/`Ptr`/views, so `Dma(Array(..))` is rejected with E326),
+/// while the store path unwraps the `Dma` first -- so `BUF[i] = x` is legal but
+/// `let v = BUF[i]` is not. That stops software aliasing memory it has handed to
+/// an agent.
+///
+/// Placement is otherwise orthogonal to type, so a `[u32;N] in R` would lose
+/// that protection. Here we re-establish it without the hand-written `@dma`: an
+/// array static placed `in R`, where `R`'s memory is operated on by a
+/// concurrently-mutating agent (a DMA engine or external bus master, the agents
+/// `@dma`/`@external` modeled), is wrapped in `Type::Dma`. The existing E326
+/// machinery then applies unchanged.
+///
+/// Runs after resolution and before the type checker, only when a target is
+/// present (`bml check` has no target and skips it, like the other region
+/// checks). Scoped to array types: E326 is an indexing restriction, and
+/// agent-shared memory holds buffers/descriptors (`[u8;N]`/`[RxDesc;N]`).
+pub fn apply_derived_move(program: &Program, target: &Target, symbols: &mut SymbolTable) {
+    for item in &program.items {
+        let Item::StaticDef(s) = item else {
+            continue;
+        };
+        let Some((region_name, _)) = &s.region else {
+            continue;
+        };
+        let Some(region) = target.regions.iter().find(|r| &r.name == region_name) else {
+            continue;
+        };
+        if !region_concurrently_mutated(region, target) {
+            continue;
+        }
+        let Some(sym) = symbols.statics.get_mut(&s.name.0) else {
+            continue;
+        };
+        // Only arrays, and never double-wrap a hand-written `@dma`/`@external`
+        // static (whose type is already a Move carrier, not a bare `Array`).
+        if matches!(sym.ty, Type::Array(..)) {
+            let inner = sym.ty.clone();
+            sym.ty = Type::Dma(Box::new(inner));
+        }
+    }
+}
+
+/// Whether `region`'s memory is operated on by a concurrently-mutating agent (a
+/// DMA engine or external bus master). A CPU- or debug-probe-only region is
+/// normal memory and gets no derived protection.
+fn region_concurrently_mutated(region: &Region, target: &Target) -> bool {
+    region.agents.iter().any(|agent_name| {
+        target.agents.iter().any(|a| {
+            &a.name == agent_name && matches!(a.kind, AgentKind::Dma | AgentKind::External)
+        })
+    })
+}
 
 /// Run the region/agent checks.
 pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &mut DiagnosticBag) {
@@ -710,6 +767,14 @@ fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)
             }
         }
         Type::Array(inner, _) => collect_addr_fields(inner, prefix, out),
+        // Storage wrappers are layout-transparent; descend so a Dma-wrapped
+        // descriptor (a region static gets `Type::Dma` from derived-Move before
+        // this check runs) still exposes its `addr in R` fields.
+        Type::Exclusive(inner)
+        | Type::Mmio(inner)
+        | Type::Dma(inner)
+        | Type::External(inner)
+        | Type::Shared(inner, _) => collect_addr_fields(inner, prefix, out),
         _ => {}
     }
 }

@@ -1,0 +1,9 @@
+// Control for derived-Move: a CPU-only region is normal memory. The array is
+// NOT wrapped in `Type::Dma` (cpu_region has no DMA/external agent), so the
+// rvalue index-read is allowed -- no E326. See region.rs::apply_derived_move.
+var BUF: [u32; 4] @align(4) in cpu_region;
+fn main() @context(thread) {
+    BUF[0] = 1;
+    var x: u32 = BUF[0];
+    BUF[1] = x;
+}

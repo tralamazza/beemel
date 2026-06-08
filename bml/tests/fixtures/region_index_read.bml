@@ -1,13 +1,9 @@
-// The @dma-retirement gap. The same array placed in an agent-shared region
-// (dma_shared has a DMA agent) is plain `[u32;4]` -- placement is orthogonal to
-// type today -- so the rvalue index-read that @dma rejects (see
-// dma_index_read.bml) currently COMPILES. Retiring @dma naively would silently
-// drop the read protection.
-//
-// The principled fix: derive Move/Dma from "placed in a region with a non-CPU
-// agent" so this regains E326 without a hand-written adjective (usage dictates
-// declaration). CHARACTERIZATION TEST -- when that lands, flip the assertion in
-// test_region_agent_shared_index_read_currently_unprotected to expect E326.
+// Derived-Move in action. This array is placed in an agent-shared region
+// (dma_shared has a DMA agent) with no `@dma` adjective. `apply_derived_move`
+// wraps it in `Type::Dma` at resolution because the region is concurrently
+// mutated, so the rvalue index-read below is rejected with E326 -- the same
+// protection a hand-written `@dma` gives, now derived from placement (usage
+// dictates declaration). See region.rs::apply_derived_move.
 var BUF: [u32; 4] @align(4) in dma_shared;
 fn main() @context(thread) {
     BUF[0] = 1;

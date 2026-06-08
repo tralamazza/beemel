@@ -12,7 +12,10 @@ var POOL_BUF: [u32; 4] in pool;
 var NORMAL_BUF: [u32; 4] = [0u32, 0u32, 0u32, 0u32];
 
 fn main() @context(thread) {
-    const pool_addr = (&POOL_BUF[0]) as u32;
+    // pool is an agent-shared region (the dma agent reaches dma_pool), so
+    // POOL_BUF is index-read-protected (derived-Move wraps it in Type::Dma).
+    // Take the array base address (== &element 0), not `&POOL_BUF[0]`.
+    const pool_addr = &POOL_BUF as u32;
     const normal_addr = (&NORMAL_BUF[0]) as u32;
 
     // The placed buffer sits in the dma_pool block [0x20004000, 0x20005000).
@@ -23,8 +26,11 @@ fn main() @context(thread) {
     expect_b1(normal_addr < 0x20004000, true);
 
     // Placement does not disturb usability: the buffer still reads back writes.
+    // The write goes directly; the read-back goes through a raw `*u32` view, the
+    // same idiom the ETH descriptor code uses for agent-shared memory.
     POOL_BUF[1] = 0xCAFE;
-    expect_u32(POOL_BUF[1], 0xCAFE);
+    const pool_ptr = &POOL_BUF as *u32;
+    expect_u32(pool_ptr[1], 0xCAFE);
 
     done();
 }

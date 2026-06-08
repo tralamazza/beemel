@@ -1,0 +1,25 @@
+# Control target for derived-Move: a region whose only agent is the CPU. No
+# concurrently-mutating (DMA/external) agent, so an array placed here stays plain
+# `Array` -- normal, freely-indexable memory.
+arch = armv7em
+cpu = cortex-m7
+flash_base = 0x08000000
+flash_size = 1M
+ram_base = 0x20000000
+ram_size = 128K
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram1]
+base = 0x20000000
+size = 128K
+
+[agent.cpu]
+kind = cpu
+reach = *
+
+[region.cpu_region]
+mem = sram1
+agents = cpu

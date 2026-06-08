@@ -2735,12 +2735,11 @@ fn test_descriptor_field_reachable_region() {
     );
 }
 
-// ─── @dma read protection + region-port gap (pre-@dma-retirement spec) ──────
+// ─── @dma read protection, derived from agent-shared placement ─────────────
 
 // @dma's load-bearing property: a @dma array may be index-assigned but its
 // rvalue index-read is rejected (E326), so software cannot alias memory it has
-// handed to an agent. The @dma-retirement port must preserve this. This test
-// pins the property that the region model has to reproduce.
+// handed to an agent. Derived-Move must reproduce this from placement alone.
 #[test]
 fn test_dma_array_rvalue_index_read_rejected() {
     let (ok, stderr) = bml_build_with_target("dma_index_read.bml", None);
@@ -2751,25 +2750,35 @@ fn test_dma_array_rvalue_index_read_rejected() {
     assert!(stderr.contains("E326"), "expected E326; stderr:\n{stderr}");
 }
 
-// CHARACTERIZATION of the gap (red target). The same array placed in an
-// agent-shared region currently compiles -- placement does not yet confer
-// @dma's Move/read protection, so the rvalue index-read that E326 rejects above
-// goes through. When derived-Move lands (Move inferred from "the region has a
-// non-CPU agent"), flip this to expect failure with E326. Keeping it as a
-// running test means the day behavior changes, this fails loudly and forces the
-// revisit. See doc/regions-agents-plan.md (@dma retirement).
+// Derived-Move: the same array placed in an agent-shared region (no `@dma`
+// adjective) is wrapped in `Type::Dma` at resolution because the region has a
+// DMA agent, so the rvalue index-read is rejected with the same E326. The
+// protection comes from placement -- usage dictates declaration. See
+// region.rs::apply_derived_move.
 #[test]
-fn test_region_agent_shared_index_read_currently_unprotected() {
+fn test_region_agent_shared_index_read_rejected() {
     let (ok, stderr) =
         bml_build_with_target("region_index_read.bml", Some("verify_handoff.target"));
     assert!(
+        !ok,
+        "an agent-shared rvalue index-read should be rejected (derived-Move); stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E326"), "expected E326; stderr:\n{stderr}");
+}
+
+// Control: derived-Move must NOT fire for a CPU-only region -- normal memory,
+// freely indexable. The same array placed in `cpu_region` (no DMA/external
+// agent) builds and reads fine.
+#[test]
+fn test_cpu_region_index_read_allowed() {
+    let (ok, stderr) =
+        bml_build_with_target("cpu_region_index_read.bml", Some("cpu_region.target"));
+    assert!(
         ok,
-        "documents the current gap: an agent-shared rvalue index-read still \
-         compiles. If this now fails, derived-Move may have landed -- flip the \
-         assertion to expect E326. stderr:\n{stderr}"
+        "a CPU-only region must stay freely indexable; stderr:\n{stderr}"
     );
     assert!(
         !stderr.contains("E326"),
-        "the region port does not yet confer @dma's read protection; stderr:\n{stderr}"
+        "no E326 expected for a CPU-only region; stderr:\n{stderr}"
     );
 }

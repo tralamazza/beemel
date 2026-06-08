@@ -551,6 +551,11 @@ fn build_file(
         process::exit(1);
     }
 
+    // Derive `@dma`-style index-read protection from agent-shared placement: an
+    // array placed in a region a DMA/external agent mutates becomes `Type::Dma`,
+    // so the E326 read restriction applies without a hand-written `@dma`. Runs on
+    // clean resolution, right before the checker that enforces it.
+    region::apply_derived_move(&program, target, &mut symbols);
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
@@ -775,6 +780,11 @@ fn verify_file(
         process::exit(1);
     }
 
+    // Derive `@dma`-style index-read protection from agent-shared placement: an
+    // array placed in a region a DMA/external agent mutates becomes `Type::Dma`,
+    // so the E326 read restriction applies without a hand-written `@dma`. Runs on
+    // clean resolution, right before the checker that enforces it.
+    region::apply_derived_move(&program, target, &mut symbols);
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
