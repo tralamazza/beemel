@@ -2824,6 +2824,22 @@ fn test_dma_array_rvalue_index_read_rejected() {
     assert!(stderr.contains("E326"), "expected E326; stderr:\n{stderr}");
 }
 
+// The index-read protection extends to views: a plain `view(x)` over agent-shared
+// memory is rejected (E335), closing the silent bypass of E326. `reclaim(x)` is
+// the explicit, handshake-acknowledged escape.
+assert_error!(
+    test_view_over_agent_shared_rejected,
+    "view_agent_shared.bml",
+    "E335"
+);
+
+// `reclaim(x)` requires agent-shared memory; reclaiming a plain array is E335.
+assert_error!(
+    test_reclaim_requires_agent_shared,
+    "reclaim_plain_array.bml",
+    "E335"
+);
+
 // Derived-Move: the same array placed in an agent-shared region (no `@dma`
 // adjective) is wrapped in `Type::AgentShared` at resolution because the region
 // has a DMA agent, so the rvalue index-read is rejected with the same E326. The

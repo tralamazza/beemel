@@ -310,6 +310,10 @@ pub enum Expr {
         base: Box<Expr>,
         len: Option<Box<Expr>>,
         stride: Option<Box<Expr>>,
+        /// `reclaim(arr)` (the explicit, handshake-acknowledged view over
+        /// agent-shared memory) vs `view(arr)`. Only the contiguous form sets
+        /// this; it requires an `AgentShared` base, which `view` rejects.
+        reclaim: bool,
         span: Span,
     },
     /// Ring view constructor. Two forms:

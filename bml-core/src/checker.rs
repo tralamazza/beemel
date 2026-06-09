@@ -2071,6 +2071,7 @@ fn check_expr(
             base,
             len,
             stride,
+            reclaim,
             span,
         } => {
             let base_ty = check_expr(base, symbols, scope, fn_name, expected_ret, diags);
@@ -2141,7 +2142,50 @@ fn check_expr(
                 // view over a storage-class array is allowed; the storage stays
                 // out of the view's type identity.
                 let mutable = is_mutable_place(base, scope, symbols);
-                if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
+                if *reclaim {
+                    // `reclaim(arr)`: the explicit, handshake-acknowledged view
+                    // over agent-shared memory. Requires an `AgentShared` base
+                    // (a plain array needs no reclaiming); bypasses the
+                    // agent-shared rejection that `view` now applies.
+                    if !matches!(base_ty, Type::AgentShared(..)) {
+                        let guard = diags.error(
+                            format!(
+                                "`reclaim(x)` applies only to agent-shared memory (an array in a \
+                                 region a DMA/external agent touches); `{base_ty}` is not \
+                                 agent-shared -- use `view(x)`"
+                            ),
+                            "E335",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    } else if let Type::Array(inner, _) = base_ty.inner() {
+                        Type::LinearView(Box::new((**inner).clone()), mutable)
+                    } else {
+                        let guard = diags.error(
+                            format!("`reclaim(x)` argument must be an agent-shared array, got `{base_ty}`"),
+                            "E335",
+                            *span,
+                        );
+                        Type::Error(guard)
+                    }
+                } else if matches!(base_ty, Type::AgentShared(..)) {
+                    // Tighten the contiguous `view(arr)`: viewing agent-shared
+                    // memory directly is the same aliasing the index-read
+                    // protection (E326) blocks -- the agent may still own it. The
+                    // explicit `reclaim(x)` is the handshake-acknowledged escape.
+                    // (ring/strided/bits over agent-shared are not yet tightened;
+                    // they have no reclaim form -- a follow-up.)
+                    let guard = diags.error(
+                        "cannot build a view over agent-shared memory directly: the agent may \
+                         still own it (that is what the index-read protection guards). Use \
+                         `reclaim(x)` once the agent's transfer has completed -- same \
+                         bounds-checked view, but it marks that the ownership handshake happened."
+                            .to_string(),
+                        "E335",
+                        *span,
+                    );
+                    Type::Error(guard)
+                } else if let Some(guard) = reject_shared_view_backing(&base_ty, *span, diags) {
                     Type::Error(guard)
                 } else if let Type::Array(inner, _) = base_ty.inner() {
                     Type::LinearView(Box::new((**inner).clone()), mutable)

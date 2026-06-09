@@ -1,0 +1,9 @@
+// A plain `view(x)` over agent-shared (@dma) memory is rejected (E335): the
+// agent may still own it (the same aliasing the index-read protection guards).
+// Use `reclaim(x)` after the transfer completes.
+var DBUF: [u32; 4] @dma = [0u32, 0u32, 0u32, 0u32];
+
+fn main() @context(thread) {
+    const v: view u32 = view(DBUF);
+    var a: u32 = v[0u32];
+}

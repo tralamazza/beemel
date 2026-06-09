@@ -1624,6 +1624,25 @@ impl<'a> Parser<'a> {
                     base: Box::new(base),
                     len,
                     stride,
+                    reclaim: false,
+                    span,
+                })
+            }
+            TokenKind::Reclaim => {
+                // `reclaim(arr)`: the explicit, handshake-acknowledged view over
+                // agent-shared memory. Contiguous form only -- no len/stride.
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `reclaim`")
+                    .ok()?;
+                let base = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)` to close `reclaim(...)`")
+                    .ok()?;
+                Some(Expr::ViewNew {
+                    base: Box::new(base),
+                    len: None,
+                    stride: None,
+                    reclaim: true,
                     span,
                 })
             }

@@ -514,6 +514,17 @@ access to a scalar `@shared` global gets the critical section automatically;
 bounds-checked indexed access to a `@shared` *array* is not available yet (a
 protected-view-access mechanism is future work).
 
+**`reclaim(arr)` over agent-shared memory.** An array placed in a region a
+DMA/external agent touches is `AgentShared`: its rvalue index-read is blocked
+(E326) so software cannot alias memory it has handed to an agent. A plain
+`view(arr)` over such an array is rejected too (E335) -- the agent may still own
+it. `reclaim(arr)` is the explicit, handshake-acknowledged escape: once the
+agent's transfer has completed, it yields the same bounds-checked `view` to
+consume the result. It is the *reclaim* counterpart to the handoff write (the
+*release*). Trusted in v1 (the reclaim asserts the handshake happened); a future
+step verifies it is dominated by the agent's completion-flag poll. Only the
+contiguous `view` form is tightened; `ring`/`bits` over agent-shared are not yet.
+
 **Limitations (v1).** Strided linear views exist with a *compile-time* stride;
 runtime-valued strides, strided bit views, and segmented (scatter/gather) views
 are not built yet. `bits`

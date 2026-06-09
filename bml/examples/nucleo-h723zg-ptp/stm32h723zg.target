@@ -12,4 +12,8 @@ include = stm32h723.target
 
 [region.dma_shared]
 mem = dma_pool
-agents = eth
+agents = eth, mdma
+
+[region.scratch]
+mem = dtcm
+agents = mdma

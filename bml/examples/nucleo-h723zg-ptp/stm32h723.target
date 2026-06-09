@@ -47,6 +47,12 @@ size = 28K
 base = 0x30007000
 size = 4K
 
+# DTCM: tightly-coupled to the CPU. MDMA reaches it; the ETH DMA does NOT (it is
+# behind the CPU bus). This asymmetry is the Stage-3 reach probe.
+[mem.dtcm]
+base = 0x20000000
+size = 128K
+
 # The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
 # descriptor base + tail-pointer registers are handoffs: source writes the full
 # descriptor byte address to each register; the reserved low 2 bits are
@@ -62,3 +68,12 @@ handoff = Ethernet_DMA.DMACTxDLAR
 handoff = Ethernet_DMA.DMACTxDTPR
 handoff = Ethernet_DMA.DMACRxDLAR
 handoff = Ethernet_DMA.DMACRxDTPR
+
+# Stage 2: a general-purpose mem-to-mem agent. Two handoffs -- C0SAR is the
+# address it reads from, C0DAR the address it writes to. Reaches dma_pool (where
+# it reads ETH RX data); a later stage adds an AXI/TCM scratch it writes to.
+[agent.mdma]
+kind = dma
+reach = dma_pool, dtcm
+handoff = MDMA.MDMA_C0SAR
+handoff = MDMA.MDMA_C0DAR

@@ -1,0 +1,31 @@
+// Stage 2 dogfood: a SECOND DMA agent (MDMA) with two handoffs -- a source
+// address register (C0SAR, what it reads) and a destination (C0DAR, what it
+// writes). Confirmed the handoff machinery generalizes to a non-ETH agent
+// (E605 fired on both until this module declared ownership).
+import svd.mdma;
+
+export fn copy_setup, fn scratch_byte;
+
+owns MDMA;
+
+// MDMA's destination buffer, in DTCM (the scratch region). Placed in a region a
+// DMA agent writes, so derived-Move wraps it AgentShared: direct index-reads are
+// blocked (E326), and viewing it is blocked too (E335) -- the agent may still
+// own it. The model has the *release* (the handoff write hands MDMA the address)
+// and now the *reclaim*: once the transfer completes, `reclaim(SCRATCH)` yields a
+// bounds-checked view to consume the result. (Trusted for now: the reclaim
+// asserts the handshake happened; verifying it follows the completion poll is
+// the future "B" soundness step.)
+var SCRATCH: [u8; 64] in scratch;
+
+fn copy_setup() {
+    MDMA.MDMA_C0SAR = 0x30007000;       // source in dma_pool (ETH RX data)
+    MDMA.MDMA_C0DAR = &SCRATCH as u32;  // dest: the DTCM scratch buffer
+}
+
+// Consume MDMA's output after the transfer completes. `reclaim` hands the buffer
+// back to the CPU as a bounds-checked view.
+fn scratch_byte(i: u32) -> u32 {
+    const v = reclaim(SCRATCH);
+    return v[i] as u32;
+}

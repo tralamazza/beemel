@@ -528,6 +528,21 @@ packed layout.
   `Type::AgentShared` carrier from agent-shared placement rather than a storage-class
   wrapper or the descriptor struct. Pinned by `region_index_read.bml` /
   `cpu_region_index_read.bml`.
+- *Reclaim (runtime ownership, Stage-3 dogfood).* DONE (direction "C", trusted).
+  The model is spatial: `AgentShared` blocks index-reads forever, with no notion
+  of the OWN/transfer handshake that makes a post-transfer CPU read safe. The
+  handoff write *is* the release; `reclaim(x)` is the missing **reclaim** -- it
+  yields a bounds-checked `view` over agent-shared memory, the explicit
+  handshake-acknowledged escape. Dogfooding also found that a plain `view(x)`
+  silently bypassed E326 over agent-shared memory; the contiguous `view` is now
+  tightened to reject it (E335, points to `reclaim`). Trusted for now (the
+  reclaim asserts the handshake happened). **Future "B" (planned):** make it
+  sound by requiring the reclaim be dominated by the agent's completion-flag poll
+  -- the same control-flow-domination analysis, turning the assertion into a
+  checked fact. Not yet tightened: ring/strided/bits over agent-shared (no
+  reclaim form yet). `reclaim` is `Expr::ViewNew { reclaim: true }`; checker only,
+  zero IR change (lowers like `view`). Pinned by `view_agent_shared.bml` (E335),
+  `reclaim_plain_array.bml` (E335), `view_over_dma.bml` (reclaim ok).
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the
