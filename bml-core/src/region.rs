@@ -24,6 +24,11 @@
 //!   written) must have its `enabled_by` clock-gate registers set somewhere
 //!   (E609) -- clock-gate-before-touch, a whole-program presence check off the
 //!   same write walk.
+//! - Clock-stomp guard: a *disabling* write (`= false`/`0`) to an agent's
+//!   `enabled_by` clock gate, from a module that does not own the agent, is
+//!   rejected (E610). Clock enables are shared/idempotent, so only the disabling
+//!   direction is guarded -- a stranger gating an agent's clock off silently
+//!   stops it; the owning module may still manage its own clock.
 //!
 //! The handoff provenance checks (slice 4) extend this module.
 
@@ -346,6 +351,7 @@ struct PeriphWrite {
 /// - E608: a descriptor delivered to an agent whose `addr in R` field names a
 ///   region the agent cannot reach.
 /// - E609: an agent programmed without its `enabled_by` clock gates set.
+/// - E610: an agent's `enabled_by` clock gate disabled by a non-owning module.
 fn check_handoff_writes(
     program: &Program,
     symbols: &SymbolTable,
@@ -384,6 +390,20 @@ fn check_handoff_writes(
                     None => {}
                 }
             }
+        }
+    }
+
+    // Owner files per agent: the files that own the agent's handoff peripheral
+    // or registers. The clock-stomp guard (E610) uses this to tell the module
+    // managing an agent from a stranger gating its clock.
+    let mut agent_owners: HashMap<String, HashSet<FileId>> = HashMap::new();
+    for ((p, r), agent_name) in &handoff_regs {
+        let entry = agent_owners.entry(agent_name.clone()).or_default();
+        if let Some(s) = periph_owners.get(p) {
+            entry.extend(s);
+        }
+        if let Some(s) = reg_owners.get(&(p.clone(), r.clone())) {
+            entry.extend(s);
         }
     }
 
@@ -435,6 +455,10 @@ fn check_handoff_writes(
     // and are silently dropped. Whole-program presence check (the enable may
     // live in any module); ordering is not yet checked.
     check_agent_enables(target, &handoff_regs, &writes, symbols, diags);
+
+    // E610: clock-stomp guard. A disabling write to an agent's `enabled_by`
+    // clock gate, from a module that does not own the agent, silently stops it.
+    check_agent_clock_stomp(target, &agent_owners, &writes, symbols, diags);
 }
 
 /// E609 enable-presence check. See the call site in `check_handoff_writes`.
@@ -494,6 +518,50 @@ fn check_agent_enables(
     }
 }
 
+/// E610 clock-stomp guard. See the call site in `check_handoff_writes`. A
+/// disabling write to one of an agent's `enabled_by` clock gates, from a file
+/// that does not own the agent, silently stops the agent and is rejected. Only
+/// fires when the agent has a declared owner (otherwise there is no baseline for
+/// "stranger").
+fn check_agent_clock_stomp(
+    target: &Target,
+    agent_owners: &HashMap<String, HashSet<FileId>>,
+    writes: &[PeriphWrite],
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+) {
+    for agent in &target.agents {
+        if agent.enabled_by.is_empty() {
+            continue;
+        }
+        let Some(owners) = agent_owners.get(&agent.name) else {
+            continue;
+        };
+        if owners.is_empty() {
+            continue;
+        }
+        for enable_path in &agent.enabled_by {
+            let Some((ep, er, ef)) = resolve_enable(enable_path, symbols) else {
+                continue; // a bad path is already reported by E609
+            };
+            for w in writes {
+                if disables_field(w, &ep, &er, ef.as_deref()) && !owners.contains(&w.span.file) {
+                    diags.error(
+                        format!(
+                            "`{enable_path}` is a clock gate of agent `{}`; disabling it from a \
+                             module that does not own the agent can silently stop it. Only the \
+                             module that owns the agent may gate its clock.",
+                            agent.name
+                        ),
+                        "E610",
+                        w.span,
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Resolve an `enabled_by` path (`P.R` or `P.R.F`) against the peripheral table.
 /// Returns `(peripheral, register, field?)` when it resolves, `None` otherwise.
 fn resolve_enable(path: &str, symbols: &SymbolTable) -> Option<(String, String, Option<String>)> {
@@ -526,6 +594,20 @@ fn enable_write_matches(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -
     match ef {
         Some(f) => w.field.is_none() || w.field.as_deref() == Some(f),
         None => true,
+    }
+}
+
+/// Whether write `w` is a disabling write (`= false`/`0`) that clears the enable
+/// register/field `(ep, er, ef)` -- either a direct disable of the field or a
+/// whole-register clear that takes it down with everything else. The mirror of
+/// `enable_write_matches`, used by the clock-stomp guard (E610).
+fn disables_field(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -> bool {
+    if w.periph != ep || w.reg != er || !w.rhs_disabling {
+        return false;
+    }
+    match ef {
+        Some(f) => w.field.is_none() || w.field.as_deref() == Some(f),
+        None => w.field.is_none(),
     }
 }
 

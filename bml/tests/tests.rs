@@ -2761,6 +2761,32 @@ fn test_agent_enable_unknown_register() {
     assert!(stderr.contains("E609"), "expected E609; stderr:\n{stderr}");
 }
 
+// ─── agent clock-stomp guard (E610) ────────────────────────────────────────
+
+// A module that does not own the agent disables one of its `enabled_by` clock
+// gates -> E610: a stranger gating an agent's clock off would silently stop it.
+#[test]
+fn test_agent_clock_stomp_rejected() {
+    let (ok, stderr) = bml_build_with_target("clock_stomp.bml", Some("enable.target"));
+    assert!(
+        !ok,
+        "disabling an agent's clock from a non-owner should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E610"), "expected E610; stderr:\n{stderr}");
+}
+
+// The module that owns the agent may gate its own clock (deinit/reset) -> no
+// E610. Falsification guard: the check must not fire on the legitimate owner.
+#[test]
+fn test_agent_clock_owner_may_disable() {
+    let (ok, stderr) = bml_build_with_target("clock_stomp_owner_ok.bml", Some("enable.target"));
+    assert!(ok, "the owner may gate its own clock; stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("E610"),
+        "no E610 expected for the owning module; stderr:\n{stderr}"
+    );
+}
+
 // ─── alignment-as-derived-physics ──────────────────────────────────────────
 
 // A static placed in a cacheable region shared with a non-coherent DMA agent

@@ -614,6 +614,19 @@ harness addresses board state. The harness itself (mailbox transport,
   *ordering* refinement (enabled *before* the handoff on every path) needs the
   inter-procedural call-graph analysis `stack::analyze` already builds -- a
   follow-up, deferred until presence proves insufficient.
+- **Clock-stomp guard**: DONE (E610, `region.rs::check_agent_clock_stomp`). A
+  *disabling* write (`= false`/`0`) to one of an agent's `enabled_by` clock gates
+  from a module that does not own the agent is rejected -- a stranger gating an
+  agent's clock off silently stops it. This came out of dogfooding the modules
+  layer (a second clock-touching module): `owns` is an *exclusivity* primitive,
+  but clock enables are a *shared, idempotent set-to-1* resource, so the wrong
+  tool. The bug class is the disabling direction, and the model already had the
+  pieces -- `enabled_by` (the agent->clock-bit map) and `is_disabling` (the `=0`
+  detector) plus the per-agent owner set from `owns`. Only fires when the agent
+  has a declared owner (the baseline for "stranger"); the owner may still gate
+  its own clock (deinit). Scoped to agent clocks for now; a general
+  peripheral->clock map (and the enabling-direction "touch a clock you don't
+  use" lint) are the generalizations, deferred. See the Stage-1 dogfood notes.
 
 ## Implementation plan
 

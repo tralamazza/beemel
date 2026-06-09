@@ -1,0 +1,38 @@
+// TIM2 periodic tick -- Stage 1 dogfood for the modules / RCC-ownership model.
+//
+// This is a SECOND module (besides eth_dma) that must enable its own clock in
+// the shared RCC register. The finding Stage 1 is meant to surface: neither
+// module can `owns RCC` (that would lock the other out of its own clock enable),
+// and field-level `owns RCC.C1_APB1LENR.TIM2EN` is rejected (E603) -- so RCC, the
+// most-shared register on the chip, currently has no ownership protection. A
+// module can toggle any other peripheral's clock bit with no diagnostic.
+
+import svd.rcc;
+import svd.tim2;
+
+export fn timer_init, fn timer_expired;
+
+// This module owns the TIM2 peripheral. It cannot own its RCC enable bit.
+owns TIM2;
+
+fn timer_init() {
+    // Enable the TIM2 clock in the shared RCC register.
+    RCC.C1_APB1LENR.TIM2EN = true;
+
+    // Free-running periodic counter. PSC/ARR are not clock-tree-calibrated
+    // (Stage 1 is about the module model, not timer accuracy); this just yields
+    // a periodic update event for the main loop to poll.
+    TIM2.PSC = 47999;
+    TIM2.ARR = 1000;
+    TIM2.SR.UIF = false;
+    TIM2.CR1.CEN = true;
+}
+
+// Poll, clear, and report the periodic update flag.
+fn timer_expired() -> b1 {
+    if TIM2.SR.UIF {
+        TIM2.SR.UIF = false;
+        return true;
+    }
+    return false;
+}

@@ -1,0 +1,9 @@
+// Stranger module: gates off an agent's clock it does not own -> E610. The
+// owner (clock_stomp_agent) enables and programs the agent; this module then
+// disables the clock, which would silently stop the agent.
+import clock_stomp_agent;
+
+fn main() @context(thread) {
+    agent_setup();
+    Clk.CR.MYDMAEN = false;
+}

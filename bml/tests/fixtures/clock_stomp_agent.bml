@@ -1,0 +1,22 @@
+// Owner module for the E610 clock-stomp test: defines and owns the agent,
+// enables its clock, and programs its handoff register.
+peripheral Clk at 0x40021000 {
+    reg CR offset 0x00 {
+        field MYDMAEN: b1 bit[0]
+    }
+}
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+}
+export peripheral Clk;
+export peripheral MyDma;
+export fn agent_setup;
+
+owns MyDma;
+
+fn agent_setup() {
+    Clk.CR.MYDMAEN = true;
+    MyDma.DESCADDR = 0x20001000;
+}

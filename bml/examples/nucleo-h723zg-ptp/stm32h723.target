@@ -54,6 +54,10 @@ size = 4K
 [agent.eth]
 kind = dma
 reach = dma_pool
+# The RCC clock gates ETH depends on. Drives the enable-before-touch check (E609)
+# and the clock-stomp guard (E610): a non-owning module disabling any of these
+# silently stops the ETH DMA.
+enabled_by = RCC.C1_AHB1ENR.ETH1MACEN, RCC.C1_AHB1ENR.ETH1TXEN, RCC.C1_AHB1ENR.ETH1RXEN
 handoff = Ethernet_DMA.DMACTxDLAR
 handoff = Ethernet_DMA.DMACTxDTPR
 handoff = Ethernet_DMA.DMACRxDLAR
