@@ -4081,8 +4081,7 @@ impl IrEmitter {
             | Type::Exclusive(inner)
             | Type::Shared(inner, _)
             | Type::Mmio(inner)
-            | Type::Dma(inner)
-            | Type::External(inner) => {
+            | Type::AgentShared(inner) => {
                 let inner_id = self.dbg_type(inner);
                 let id = self.new_dbg_id();
                 writeln!(
@@ -4738,8 +4737,7 @@ fn llvm_type(ty: &Type) -> String {
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
-        | Type::Dma(inner)
-        | Type::External(inner) => llvm_type(inner),
+        | Type::AgentShared(inner) => llvm_type(inner),
         Type::Null => "ptr".into(),
         // A byte-address slot is a plain i32 (it holds an address as an integer).
         Type::Addr(_) => "i32".into(),
@@ -4784,8 +4782,7 @@ fn default_value_literal(ty: &Type) -> String {
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
-        | Type::Dma(inner)
-        | Type::External(inner) => default_value_literal(inner),
+        | Type::AgentShared(inner) => default_value_literal(inner),
         Type::Null => "null".to_string(),
         Type::Void | Type::Unresolved(_) | Type::Error(_) => "0".to_string(),
     }

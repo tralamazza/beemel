@@ -661,11 +661,11 @@ fn wrap_with_storage(
             StorageAnnotation::Shared(ceiling) => {
                 ty = Type::Shared(Box::new(ty), *ceiling);
             }
-            StorageAnnotation::Dma => {
-                ty = Type::Dma(Box::new(ty));
-            }
-            StorageAnnotation::External => {
-                ty = Type::External(Box::new(ty));
+            // `@dma` and `@external` are distinct keywords (different intent)
+            // but the same type: memory an autonomous agent concurrently
+            // accesses. The agent kind is not part of type identity.
+            StorageAnnotation::Dma | StorageAnnotation::External => {
+                ty = Type::AgentShared(Box::new(ty));
             }
             StorageAnnotation::Section(_) | StorageAnnotation::Align(_) => {
                 // Section/align don't change the type, only placement/layout

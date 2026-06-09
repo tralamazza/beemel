@@ -2751,8 +2751,8 @@ fn test_dma_array_rvalue_index_read_rejected() {
 }
 
 // Derived-Move: the same array placed in an agent-shared region (no `@dma`
-// adjective) is wrapped in `Type::Dma` at resolution because the region has a
-// DMA agent, so the rvalue index-read is rejected with the same E326. The
+// adjective) is wrapped in `Type::AgentShared` at resolution because the region
+// has a DMA agent, so the rvalue index-read is rejected with the same E326. The
 // protection comes from placement -- usage dictates declaration. See
 // region.rs::apply_derived_move.
 #[test]

@@ -46,8 +46,8 @@ use std::collections::{HashMap, HashSet};
 /// that protection. Here we re-establish it without the hand-written `@dma`: an
 /// array static placed `in R`, where `R`'s memory is operated on by a
 /// concurrently-mutating agent (a DMA engine or external bus master, the agents
-/// `@dma`/`@external` modeled), is wrapped in `Type::Dma`. The existing E326
-/// machinery then applies unchanged.
+/// `@dma`/`@external` modeled), is wrapped in `Type::AgentShared`. The existing
+/// E326 machinery then applies unchanged.
 ///
 /// Runs after resolution and before the type checker, only when a target is
 /// present (`bml check` has no target and skips it, like the other region
@@ -74,7 +74,7 @@ pub fn apply_derived_move(program: &Program, target: &Target, symbols: &mut Symb
         // static (whose type is already a Move carrier, not a bare `Array`).
         if matches!(sym.ty, Type::Array(..)) {
             let inner = sym.ty.clone();
-            sym.ty = Type::Dma(Box::new(inner));
+            sym.ty = Type::AgentShared(Box::new(inner));
         }
     }
 }
@@ -767,13 +767,12 @@ fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)
             }
         }
         Type::Array(inner, _) => collect_addr_fields(inner, prefix, out),
-        // Storage wrappers are layout-transparent; descend so a Dma-wrapped
-        // descriptor (a region static gets `Type::Dma` from derived-Move before
-        // this check runs) still exposes its `addr in R` fields.
+        // Storage wrappers are layout-transparent; descend so an agent-shared
+        // descriptor (a region static gets `Type::AgentShared` from derived-Move
+        // before this check runs) still exposes its `addr in R` fields.
         Type::Exclusive(inner)
         | Type::Mmio(inner)
-        | Type::Dma(inner)
-        | Type::External(inner)
+        | Type::AgentShared(inner)
         | Type::Shared(inner, _) => collect_addr_fields(inner, prefix, out),
         _ => {}
     }

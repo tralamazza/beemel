@@ -55,8 +55,14 @@ pub enum Type {
     Exclusive(Box<Type>),
     Shared(Box<Type>, u8),
     Mmio(Box<Type>),
-    Dma(Box<Type>),
-    External(Box<Type>),
+    /// Memory an autonomous agent (a DMA engine or an external bus master)
+    /// concurrently accesses: the CPU gets affine (Move) access and cannot
+    /// rvalue-index-read its elements (E326), so it never aliases memory handed
+    /// to the agent. Produced by the `@dma` and `@external` annotations and by
+    /// derived-Move on agent-shared region placement (`region::apply_derived_move`).
+    /// The agent kind is not part of type identity -- `@dma` and `@external`
+    /// were formerly two identical types, now unified here.
+    AgentShared(Box<Type>),
     /// `addr in <region>` -- a byte-address slot constrained to a region (an
     /// in-memory handoff field). Layout-identical to `u32`; the `String` is the
     /// region name. Not a typed pointer. See `doc/regions-agents-plan.md`.
@@ -114,8 +120,7 @@ impl fmt::Display for Type {
             Type::Exclusive(t) => write!(f, "@exclusive({t})"),
             Type::Shared(t, c) => write!(f, "@shared({t}, ceiling={c})"),
             Type::Mmio(t) => write!(f, "@mmio({t})"),
-            Type::Dma(t) => write!(f, "@dma({t})"),
-            Type::External(t) => write!(f, "@external({t})"),
+            Type::AgentShared(t) => write!(f, "agent-shared({t})"),
             Type::Addr(region) => write!(f, "addr in {region}"),
             Type::Struct(name, _, _) => write!(f, "struct {name}"),
             Type::Enum(name, _, _) => write!(f, "enum {name}"),
@@ -184,8 +189,7 @@ impl Type {
             Type::Exclusive(_)
             | Type::Shared(_, _)
             | Type::Mmio(_)
-            | Type::Dma(_)
-            | Type::External(_) => Semantics::Move,
+            | Type::AgentShared(_) => Semantics::Move,
         }
     }
 
@@ -196,8 +200,7 @@ impl Type {
             Type::Exclusive(inner)
             | Type::Shared(inner, _)
             | Type::Mmio(inner)
-            | Type::Dma(inner)
-            | Type::External(inner) => inner,
+            | Type::AgentShared(inner) => inner,
             other => other,
         }
     }
@@ -626,8 +629,7 @@ pub fn align_of(ty: &Type) -> u32 {
         Type::Exclusive(inner)
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
-        | Type::Dma(inner)
-        | Type::External(inner) => align_of(inner),
+        | Type::AgentShared(inner) => align_of(inner),
         Type::Unresolved(_) | Type::Null | Type::Error(_) => 4,
     }
 }

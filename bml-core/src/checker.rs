@@ -357,8 +357,7 @@ fn extern_abi_value_error_inner(
         Type::Exclusive(_)
         | Type::Shared(_, _)
         | Type::Mmio(_)
-        | Type::Dma(_)
-        | Type::External(_) => Err("storage-qualified types cannot cross extern boundaries".to_string()),
+        | Type::AgentShared(_) => Err("storage-qualified types cannot cross extern boundaries".to_string()),
         Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
     }
 }
@@ -410,11 +409,7 @@ fn extern_abi_pointee_error(
         Type::LinearView(..) | Type::StridedView(..) | Type::RingView(..) | Type::BitView(..) => {
             Err("pointers to bml view/ring/bits descriptors are not C ABI-safe".to_string())
         }
-        Type::Exclusive(_)
-        | Type::Shared(_, _)
-        | Type::Mmio(_)
-        | Type::Dma(_)
-        | Type::External(_) => {
+        Type::Exclusive(_) | Type::Shared(_, _) | Type::Mmio(_) | Type::AgentShared(_) => {
             Err("pointers to storage-qualified types cannot cross extern boundaries".to_string())
         }
         Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),

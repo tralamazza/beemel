@@ -22,15 +22,16 @@ re-scoped. In-memory handoffs implemented (v1, struct-field `addr in R` with
 the verify obligation; fixed the `arr[i].field` store miscompile en route).
 Transitive reach done (E608: a descriptor field's region must be reachable by
 the agent the descriptor is delivered to). Derived-Move done: an array placed in
-a region a DMA/external agent mutates is wrapped in `Type::Dma` at resolution
-(`region.rs::apply_derived_move`), so the index-read protection (E326) is
-reproduced from placement with no new checks and no hand-written `@dma`.
+a region a DMA/external agent mutates is wrapped in `Type::AgentShared` at
+resolution (`region.rs::apply_derived_move`), so the index-read protection (E326)
+is reproduced from placement with no new checks and no hand-written `@dma`.
 Example port done and hardware-validated: `eth_dma.bml`/`stm32h723zg.target`
 moved to `in dma_shared` + declared ETH agent/handoffs (auto-encoded `>> 2`),
 behavior-preserving (IR diff is section + identical re-encode), TX still works on
 the NUCLEO-H723ZG. The `@dma` annotation is then retired from the example
-(dropping it is byte-identical IR -- derived-Move covers it); `Type::Dma` stays
-(derived-Move's carrier, still a valid explicit annotation off-region). The
+(dropping it is byte-identical IR -- derived-Move covers it); the carrier type
+stays (renamed `Type::Dma` -> `Type::AgentShared`, unified with the identical
+`Type::External`; `@dma`/`@external` remain distinct keywords mapping to it). The
 descriptor-struct refactor is also done and hardware-validated (TX_DESC/RX_DESC
 are `[TxDesc;2]`/`[RxDesc;2]` with `addr in dma_shared` buffer pointers; TX+RX
 confirmed on the board) -- the ETH driver is fully regions-native. Remaining are
@@ -474,7 +475,7 @@ packed layout.
   known in-region) is open; not needed for the write-obligation use case.
 - *Move/aliasing.* DONE (see slice 5). `@dma`'s real content is the index-read
   protection (E326); `region.rs::apply_derived_move` derives the existing
-  `Type::Dma` carrier from agent-shared placement rather than a storage-class
+  `Type::AgentShared` carrier from agent-shared placement rather than a storage-class
   wrapper or the descriptor struct. Pinned by `region_index_read.bml` /
   `cpu_region_index_read.bml`.
 
@@ -752,11 +753,23 @@ re-encoding; the linked buffers land in `dma_pool` (0x30007000, D2 SRAM,
 buffers (they are placed `in dma_shared`, which derived-Move covers) produces
 *byte-identical IR* -- the example is now regions-native with no `@dma` adjective.
 
-Correction to the original plan: `Type::Dma` is NOT deleted. It is derived-Move's
-internal carrier (`apply_derived_move` wraps in `Type::Dma`), and `@dma` stays a
-valid explicit annotation for cases derived-Move does not cover (non-region
-statics, scalars), still exercised by the borrow/index-read fixtures. "Retiring
-`@dma`" means retiring the *annotation from region code*, which is done.
+Correction to the original plan: the carrier type is NOT deleted. It is
+derived-Move's internal carrier, and `@dma` stays a valid explicit annotation
+for cases derived-Move does not cover (non-region statics, scalars), still
+exercised by the borrow/index-read fixtures. "Retiring `@dma`" means retiring the
+*annotation from region code*, which is done.
+
+Follow-up (naming): the carrier was renamed `Type::Dma` -> `Type::AgentShared`
+and unified with `Type::External`, which was an identical type (same Move
+semantics, same E326 index-read block -- they differed only by name and which
+keyword produced them). The agent kind is not part of type identity, so one
+carrier suffices; `@dma` and `@external` stay as distinct keywords (different
+intent) both resolving to `Type::AgentShared`. This also fixes a misleading
+diagnostic: a region static that never wrote `@dma` now reads as
+`agent-shared(...)` in E326, not `Dma(...)`. The tradeoff: a type error can no
+longer show whether `@dma` or `@external` was written -- acceptable unless the
+two ever need to diverge (e.g. external masters getting different cache
+treatment), which would re-split the type.
 
 **Descriptor-struct refactor done and hardware-validated.** `TX_DESC`/`RX_DESC`
 are now `[TxDesc;2]`/`[RxDesc;2]` (@repr(packed), 16 bytes each, pinned by
@@ -782,7 +795,7 @@ protection (software must not alias memory it has handed to an agent). It is
 Placement is orthogonal to type, so `[u32;N] in dma_shared` would be a bare
 `Array` and the read protection would vanish. `region.rs::apply_derived_move`
 re-establishes it (usage dictates declaration): after resolution, before the
-checker, it wraps an *array* static placed `in R` in `Type::Dma` when `R`'s mem
+checker, it wraps an *array* static placed `in R` in `Type::AgentShared` when `R`'s mem
 is operated on by a concurrently-mutating agent (`AgentKind::Dma`/`External`;
 CPU/Debug regions stay plain `Array`). The existing `E326` machinery then
 applies unchanged -- no new checks, no hand-written `@dma`. Scoped to arrays
