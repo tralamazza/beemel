@@ -2735,6 +2735,47 @@ fn test_descriptor_field_reachable_region() {
     );
 }
 
+// ─── agent enable presence (E609) ──────────────────────────────────────────
+
+// Clock-gate-before-touch: programming an agent (writing its handoff register)
+// without ever setting the agent's `enabled_by` clock gate is rejected (E609) --
+// the writes would hit a gated peripheral and vanish.
+#[test]
+fn test_agent_enable_missing() {
+    let (ok, stderr) = bml_build_with_target("enable_missing.bml", Some("enable.target"));
+    assert!(
+        !ok,
+        "programming an agent without enabling it should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E609"), "expected E609; stderr:\n{stderr}");
+}
+
+// Setting the enable register before programming the agent satisfies the check:
+// no E609, clean build.
+#[test]
+fn test_agent_enable_present() {
+    let (ok, stderr) = bml_build_with_target("enable_ok.bml", Some("enable.target"));
+    assert!(ok, "an enabled agent should build; stderr:\n{stderr}");
+    assert!(
+        !stderr.contains("E609"),
+        "no E609 expected when the enable is set; stderr:\n{stderr}"
+    );
+}
+
+// An `enabled_by` path that names no real register/field is itself an E609 --
+// otherwise the presence check would be silently vacuous.
+#[test]
+fn test_agent_enable_unknown_register() {
+    // Distinct source from enable_ok.bml: two tests building the same fixture
+    // would race on its .o/.ll/.ld artifacts under parallel `cargo test`.
+    let (ok, stderr) = bml_build_with_target("enable_badref.bml", Some("enable_badref.target"));
+    assert!(
+        !ok,
+        "an unresolved enabled_by should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E609"), "expected E609; stderr:\n{stderr}");
+}
+
 // ─── @dma read protection, derived from agent-shared placement ─────────────
 
 // @dma's load-bearing property: a @dma array may be index-assigned but its

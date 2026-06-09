@@ -554,9 +554,15 @@ harness addresses board state. The harness itself (mailbox transport,
   (usage-dictates-declaration endpoint).
 - **Regions in target vs board file**; multi-core `[core.*]`; TrustZone
   attribute pairs -- all deferred until a second target forces them.
-- **`enabled_by` checking**: clock-gate-before-touch is a real bug class
-  (the `[startup]` SRAM ungating exists for exactly this reason); whether to
-  check handoff writes against `enabled_by` state is unresolved.
+- **`enabled_by` checking**: DONE (E609, presence). An agent that is programmed
+  (a handoff register written) must have its `enabled_by` clock-gate registers
+  set somewhere in the program, else the writes hit a gated peripheral and are
+  dropped. Whole-program presence check (`region.rs::check_agent_enables`), sound
+  with no false positives; a `= false`/`0` write does not count as enabling, and
+  an `enabled_by` path that resolves to no real register is itself E609. The
+  *ordering* refinement (enabled *before* the handoff on every path) needs the
+  inter-procedural call-graph analysis `stack::analyze` already builds -- a
+  follow-up, deferred until presence proves insufficient.
 
 ## Implementation plan
 

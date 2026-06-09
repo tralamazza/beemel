@@ -19,6 +19,10 @@
 //!   (E607), and a descriptor delivered to an agent (`handoff = &RX`) must not
 //!   contain an `addr in R` field for a region that agent cannot reach (E608) --
 //!   the transitive-reach step, off the same write walk.
+//! - Agent enablement: an agent that is programmed (one of its handoff registers
+//!   written) must have its `enabled_by` clock-gate registers set somewhere
+//!   (E609) -- clock-gate-before-touch, a whole-program presence check off the
+//!   same write walk.
 //!
 //! The handoff provenance checks (slice 4) extend this module.
 
@@ -325,6 +329,9 @@ fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Cla
 /// rule (E605), the double-shift guard (E606), and the descriptor-reach check
 /// (E608). `rhs_static` is the name of the static whose address is delivered
 /// (`= &RX_DESC`), used by E608 to find the descriptor handed to an agent.
+/// `rhs_disabling` is true when the right-hand side is a provably-disabling
+/// literal (`false`/`0`), used by the enable-presence check (E609) so a
+/// `= false` write does not count as enabling a clock gate.
 struct PeriphWrite {
     periph: String,
     reg: String,
@@ -332,6 +339,7 @@ struct PeriphWrite {
     span: Span,
     rhs_is_shr2: bool,
     rhs_static: Option<String>,
+    rhs_disabling: bool,
 }
 
 /// Handoff write checks. Both rules act at peripheral-register write sites, so
@@ -442,6 +450,105 @@ fn check_handoff_writes(
                 w.span,
             );
         }
+    }
+
+    // E609: clock-gate-before-touch. An agent that is programmed (one of its
+    // handoff registers written) must have its `enabled_by` clock/enable
+    // registers set somewhere, else the handoff writes hit a gated peripheral
+    // and are silently dropped. Whole-program presence check (the enable may
+    // live in any module); ordering is not yet checked.
+    check_agent_enables(target, &handoff_regs, &writes, symbols, diags);
+}
+
+/// E609 enable-presence check. See the call site in `check_handoff_writes`.
+fn check_agent_enables(
+    target: &Target,
+    handoff_regs: &HashMap<(String, String), String>,
+    writes: &[PeriphWrite],
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+) {
+    for agent in &target.agents {
+        if agent.enabled_by.is_empty() {
+            continue;
+        }
+        // Is the agent programmed? Use the first write to one of its handoff
+        // registers as the report site ("programmed here but not enabled").
+        let Some(site) = writes.iter().find(|w| {
+            handoff_regs
+                .get(&(w.periph.clone(), w.reg.clone()))
+                .is_some_and(|a| a == &agent.name)
+        }) else {
+            continue;
+        };
+        for enable_path in &agent.enabled_by {
+            match resolve_enable(enable_path, symbols) {
+                None => {
+                    diags.error(
+                        format!(
+                            "agent `{}` has `enabled_by = {enable_path}`, but that does not name \
+                             a known peripheral register/field.",
+                            agent.name
+                        ),
+                        "E609",
+                        site.span,
+                    );
+                }
+                Some((ep, er, ef)) => {
+                    let enabled = writes
+                        .iter()
+                        .any(|w| enable_write_matches(w, &ep, &er, ef.as_deref()));
+                    if !enabled {
+                        diags.error(
+                            format!(
+                                "agent `{}` is programmed here (handoff `{}.{}` written) but its \
+                                 enable `{enable_path}` is never set; writes to a clock-gated \
+                                 peripheral are silently dropped. Set it before programming the \
+                                 agent.",
+                                agent.name, site.periph, site.reg
+                            ),
+                            "E609",
+                            site.span,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Resolve an `enabled_by` path (`P.R` or `P.R.F`) against the peripheral table.
+/// Returns `(peripheral, register, field?)` when it resolves, `None` otherwise.
+fn resolve_enable(path: &str, symbols: &SymbolTable) -> Option<(String, String, Option<String>)> {
+    let mut parts = path.split('.');
+    let p = parts.next()?;
+    let r = parts.next()?;
+    let f = parts.next().map(str::to_string);
+    if parts.next().is_some() {
+        return None; // more than three segments: not a register/field path
+    }
+    let periph = symbols.peripherals.get(p)?;
+    let reg = periph.regs.get(r)?;
+    if let Some(fname) = &f
+        && !reg.fields.contains_key(fname)
+    {
+        return None;
+    }
+    Some((p.to_string(), r.to_string(), f))
+}
+
+/// Whether write `w` sets the enable register/field `(ep, er, ef)`. A
+/// provably-disabling write (`= false`/`0`) does not count. A whole-register
+/// write to the enable's register is counted as possibly setting the field
+/// (we do not evaluate the mask), keeping the presence check free of false
+/// positives.
+fn enable_write_matches(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -> bool {
+    if w.periph != ep || w.reg != er || w.rhs_disabling {
+        return false;
+    }
+    match ef {
+        Some(f) => w.field.is_none() || w.field.as_deref() == Some(f),
+        None => true,
     }
 }
 
@@ -641,6 +748,7 @@ fn record_write(
 ) {
     let shr2 = rhs.is_some_and(is_shr_two);
     let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
+    let rhs_disabling = rhs.is_some_and(is_disabling);
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
@@ -652,6 +760,7 @@ fn record_write(
                     span: field.1,
                     rhs_is_shr2: shr2,
                     rhs_static: rhs_static.clone(),
+                    rhs_disabling,
                 });
             }
             // P.R.F = ...  (reg is the register, field is the field)
@@ -666,6 +775,7 @@ fn record_write(
                         span: field.1,
                         rhs_is_shr2: shr2,
                         rhs_static: rhs_static.clone(),
+                        rhs_disabling,
                     });
                 }
             }
@@ -684,6 +794,21 @@ fn is_shr_two(e: &Expr) -> bool {
         Expr::Binary(_, BinaryOp::Shr, rhs) => {
             matches!(rhs.as_ref(), Expr::IntLiteral(2, _, _))
         }
+        _ => false,
+    }
+}
+
+/// Whether `e` is a provably-disabling literal (`false` or `0`), possibly
+/// parenthesized. Used by the enable-presence check (E609): a `= false` / `= 0`
+/// write to a clock-gate register does not count as enabling the agent. Any
+/// other RHS (a non-zero literal, `true`, or a non-literal we cannot evaluate)
+/// is treated as possibly-enabling, so the check never false-flags an agent
+/// that is in fact enabled.
+fn is_disabling(e: &Expr) -> bool {
+    match e {
+        Expr::Group(inner) => is_disabling(inner),
+        Expr::BoolLiteral(b, _) => !b,
+        Expr::IntLiteral(0, _, _) => true,
         _ => false,
     }
 }
