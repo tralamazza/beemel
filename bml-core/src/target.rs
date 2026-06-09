@@ -190,9 +190,36 @@ impl Target {
     ///
     /// Returns an error if the file cannot be read or contains invalid content.
     pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
-        let content =
-            fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        Self::parse(&content)
+        let mut target = Target::default();
+        let mut loaded = std::collections::HashSet::new();
+        target.load_file(path, &mut loaded)?;
+        target.finalize()?;
+        Ok(target)
+    }
+
+    /// Load `path` and the targets it `include`s onto `self`. Each `include` is
+    /// resolved relative to the including file and applied *first*, so a project
+    /// target that includes a base inherits its definitions and may then
+    /// override or extend them (later wins). Each file is applied at most once
+    /// (`loaded` dedups diamonds and terminates cycles). Validation happens once
+    /// on the merged result, in `from_file`.
+    fn load_file(
+        &mut self,
+        path: &std::path::Path,
+        loaded: &mut std::collections::HashSet<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if !loaded.insert(canon) {
+            return Ok(());
+        }
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("cannot read target {}: {e}", path.display()))?;
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        for inc in scan_includes(&content) {
+            self.load_file(&dir.join(inc), loaded)?;
+        }
+        self.apply(&content)
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Parse target configuration from a string.
@@ -202,6 +229,19 @@ impl Target {
     /// Returns an error if the input is malformed or contains unknown keys.
     pub fn parse(input: &str) -> Result<Self, String> {
         let mut target = Target::default();
+        target.apply(input)?;
+        target.finalize()?;
+        Ok(target)
+    }
+
+    /// Apply one target file's directives on top of `self`. `parse` runs it on a
+    /// default target; `from_file` runs it on top of any `include`d bases, so a
+    /// later definition overrides or extends an earlier one (re-opening a named
+    /// `[mem/agent/region.NAME]` resumes editing that entity -- single
+    /// assignments overwrite, accumulator lines like `handoff` append).
+    /// `include = ...` directives are resolved by `from_file` and skipped here.
+    fn apply(&mut self, input: &str) -> Result<(), String> {
+        let target = self;
         let mut section = Section::Top;
 
         for (line_num, line) in input.lines().enumerate() {
@@ -213,36 +253,59 @@ impl Target {
             // Section header
             if line.starts_with('[') && line.ends_with(']') {
                 let header = &line[1..line.len() - 1];
+                // Find-or-add by name: re-opening a section (e.g. from an
+                // including file) resumes editing the existing entity rather
+                // than creating a duplicate, which is what makes `include`
+                // override/extend work.
                 section = match header.split_once('.') {
                     Some(("mem", name)) => {
-                        target.mem_blocks.push(MemBlock {
-                            name: name.to_string(),
-                            base: 0,
-                            size: 0,
-                            cacheable: true,
-                        });
-                        Section::Mem(target.mem_blocks.len() - 1)
+                        let idx = if let Some(i) =
+                            target.mem_blocks.iter().position(|m| m.name == name)
+                        {
+                            i
+                        } else {
+                            target.mem_blocks.push(MemBlock {
+                                name: name.to_string(),
+                                base: 0,
+                                size: 0,
+                                cacheable: true,
+                            });
+                            target.mem_blocks.len() - 1
+                        };
+                        Section::Mem(idx)
                     }
                     Some(("agent", name)) => {
-                        target.agents.push(Agent {
-                            name: name.to_string(),
-                            kind: AgentKind::Dma,
-                            reach: Vec::new(),
-                            reach_all: false,
-                            cached: false,
-                            access: AgentAccess::ReadWrite,
-                            handoffs: Vec::new(),
-                            enabled_by: Vec::new(),
-                        });
-                        Section::Agent(target.agents.len() - 1)
+                        let idx = if let Some(i) = target.agents.iter().position(|a| a.name == name)
+                        {
+                            i
+                        } else {
+                            target.agents.push(Agent {
+                                name: name.to_string(),
+                                kind: AgentKind::Dma,
+                                reach: Vec::new(),
+                                reach_all: false,
+                                cached: false,
+                                access: AgentAccess::ReadWrite,
+                                handoffs: Vec::new(),
+                                enabled_by: Vec::new(),
+                            });
+                            target.agents.len() - 1
+                        };
+                        Section::Agent(idx)
                     }
                     Some(("region", name)) => {
-                        target.regions.push(Region {
-                            name: name.to_string(),
-                            mem: String::new(),
-                            agents: Vec::new(),
-                        });
-                        Section::Region(target.regions.len() - 1)
+                        let idx =
+                            if let Some(i) = target.regions.iter().position(|r| r.name == name) {
+                                i
+                            } else {
+                                target.regions.push(Region {
+                                    name: name.to_string(),
+                                    mem: String::new(),
+                                    agents: Vec::new(),
+                                });
+                                target.regions.len() - 1
+                            };
+                        Section::Region(idx)
                     }
                     _ => match header {
                         "interrupts" => Section::Interrupts,
@@ -396,20 +459,26 @@ impl Target {
                         format!("line {}: invalid vector_table_offset: {val}", line_num + 1)
                     })?;
                 }
+                // Resolved by `from_file` (relative to the including file) before
+                // this file's directives are applied; a no-op here.
+                "include" => {}
                 _ => return Err(format!("line {}: unknown key `{key}`", line_num + 1)),
             }
         }
+        Ok(())
+    }
+
+    /// Final post-processing and self-consistency checks, run once after all
+    /// `include`s are merged so the checks see the fully composed target.
+    fn finalize(&mut self) -> Result<(), String> {
         // ARMv6-M (Cortex-M0/M0+) does not support bit-banding
-        if target.has_bitband && target.arch == "armv6m" {
+        if self.has_bitband && self.arch == "armv6m" {
             eprintln!(
                 "warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`"
             );
-            target.has_bitband = false;
+            self.has_bitband = false;
         }
-
-        target.validate_regions()?;
-
-        Ok(target)
+        self.validate_regions()
     }
 
     /// Self-consistency checks on `[mem.*]`/`[agent.*]`/`[region.*]` that need
@@ -823,6 +892,28 @@ SECTIONS
 
 fn is_supported_arch(arch: &str) -> bool {
     matches!(arch, "armv6m" | "armv7m" | "armv7em")
+}
+
+/// Collect the values of top-level `include = <path>` directives -- those before
+/// the first `[section]` header (top-level keys must precede any section). Paths
+/// are resolved relative to the including file by `load_file`.
+fn scan_includes(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+        if line.starts_with('[') {
+            break;
+        }
+        if let Some((key, val)) = line.split_once('=')
+            && key.trim() == "include"
+        {
+            out.push(val.trim().to_string());
+        }
+    }
+    out
 }
 
 /// Split a `key = value` line, trimming both sides. Shared by the subsectioned
@@ -1280,6 +1371,79 @@ handoff = P.R align 3
     fn unknown_section_is_error() {
         let err = Target::parse("arch = armv7em\n[bogus]\nx = 1\n").unwrap_err();
         assert!(err.contains("unknown section"), "got: {err}");
+    }
+
+    // A project target `include`s a base (chip physics) and inherits all of it,
+    // then overrides a property (cacheable, key-level merge keeps base/size) and
+    // adds a region. The whole point of moving regions (policy) out of the
+    // per-chip physics file.
+    #[test]
+    fn include_inherits_overrides_and_extends() {
+        let dir = std::env::temp_dir().join(format!("bml_tgt_inc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base.target");
+        let proj = dir.join("proj.target");
+        fs::write(
+            &base,
+            "arch = armv7em\n\
+             cpu = cortex-m7\n\
+             flash_base = 0x08000000\n\
+             ram_base = 0x20000000\n\
+             [mem.flash]\n\
+             base = 0x08000000\n\
+             size = 64K\n\
+             [mem.sram]\n\
+             base = 0x20000000\n\
+             size = 128K\n\
+             [mem.dma_pool]\n\
+             base = 0x30000000\n\
+             size = 16K\n\
+             cacheable = true\n\
+             [agent.eth]\n\
+             kind = dma\n\
+             reach = dma_pool\n\
+             handoff = Ethernet_DMA.DMACTxDLAR\n",
+        )
+        .unwrap();
+        fs::write(
+            &proj,
+            "include = base.target\n\
+             [mem.dma_pool]\n\
+             cacheable = false\n\
+             [region.dma_shared]\n\
+             mem = dma_pool\n\
+             agents = eth\n",
+        )
+        .unwrap();
+
+        let t = Target::from_file(&proj).expect("include should resolve and merge");
+        // Inherited from base verbatim.
+        assert_eq!(t.cpu.as_deref(), Some("cortex-m7"));
+        assert_eq!(t.agents.len(), 1);
+        assert_eq!(t.agents[0].name, "eth");
+        assert_eq!(t.agents[0].handoffs[0].register, "Ethernet_DMA.DMACTxDLAR");
+        // Key-level override: cacheable flipped, base/size kept from the base.
+        let m = t.mem_blocks.iter().find(|m| m.name == "dma_pool").unwrap();
+        assert_eq!(m.base, 0x3000_0000);
+        assert_eq!(m.size, 16 * 1024);
+        assert!(!m.cacheable);
+        // Region added by the project (would fail the cache check if still cacheable).
+        assert_eq!(t.regions.len(), 1);
+        assert_eq!(t.regions[0].name, "dma_shared");
+        assert_eq!(t.regions[0].mem, "dma_pool");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn include_missing_file_errors() {
+        let dir = std::env::temp_dir().join(format!("bml_tgt_incmiss_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proj = dir.join("proj.target");
+        fs::write(&proj, "include = nope.target\narch = armv7em\n").unwrap();
+        let err = Target::from_file(&proj).unwrap_err();
+        assert!(err.contains("cannot read target"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

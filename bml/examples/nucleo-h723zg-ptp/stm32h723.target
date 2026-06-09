@@ -1,0 +1,60 @@
+# STM32H723 chip physics (base target).
+#
+# This file is pure hardware: the memory map, the bus masters (agents), and the
+# reset/clock bring-up. It carries NO regions -- a region is project policy (how
+# *this* program carves and shares the substrate), and lives in the project
+# target that `include`s this file. A second project on the same chip includes
+# this verbatim and declares its own regions.
+#
+# Cortex-M7, 1 MB flash. RAM is deliberately D2 AHB SRAM for ETH DMA bring-up.
+arch = armv7em
+cpu = cortex-m7
+priority_bits = 4
+has_fpu = true
+has_bitband = false
+has_mpu = true
+flash_base = 0x08000000
+flash_size = 1M
+ram_base = 0x30000000
+ram_size = 32K
+vector_table_offset = 0x08000000
+
+# Applied at the very start of reset_handler, before .data/.bss init (the CMSIS
+# SystemInit ordering). Format: address = or_mask  ->  *(volatile u32*)address |= or_mask
+[startup]
+# RCC C1_AHB2ENR |= SRAM1EN | SRAM2EN: ungate the D2 AHB SRAM clock. The stack,
+# .data, .bss, and ETH DMA buffers all live in D2 SRAM (0x30000000), which is
+# clock-gated off at reset; without this every RAM access (incl. stack) is
+# silently dropped and the first function return faults.
+0x5802453C = 0x60000000
+
+[interrupts]
+ETH = 61
+
+# Memory blocks. The 32K D2 AHB SRAM is split: a working RAM block
+# (.data/.bss/.stack) and a dma_pool block the ETH DMA buffers are placed in.
+# Both are in D2 SRAM, which the ETH DMA reaches; ram_base above matches the
+# sram block so it stays the working RAM.
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x30000000
+size = 28K
+
+[mem.dma_pool]
+base = 0x30007000
+size = 4K
+
+# The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
+# descriptor base + tail-pointer registers are handoffs: source writes the full
+# descriptor byte address to each register; the reserved low 2 bits are
+# hardware-ignored, so no shift is applied.
+[agent.eth]
+kind = dma
+reach = dma_pool
+handoff = Ethernet_DMA.DMACTxDLAR
+handoff = Ethernet_DMA.DMACTxDTPR
+handoff = Ethernet_DMA.DMACRxDLAR
+handoff = Ethernet_DMA.DMACRxDTPR

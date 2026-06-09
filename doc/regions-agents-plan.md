@@ -238,9 +238,28 @@ Rules:
   (minimum alignment of the handed-off address). The full byte address is
   written verbatim -- these are dedicated address registers whose reserved low
   bits the hardware ignores, so there is no encoding/shift.
-- These sections are per-chip facts. They belong in the vendored target file
-  and are written once per chip, ideally generated/audited from the reference
-  manual's bus-matrix table.
+- These sections are per-chip facts. They belong in a vendored base target,
+  written once per chip (ideally generated/audited from the reference manual's
+  bus-matrix table). A project target `include`s that base and adds its own
+  policy on top -- see "Target composition" below.
+
+## Target composition (`include`)
+
+`bml` takes a single `--target`. A target file may `include = <path>` other
+targets (resolved relative to the including file); includes load first and the
+including file applies on top, so later definitions override or extend earlier
+ones. This is what keeps physics and policy in separate files: a vendored
+`stm32h723.target` carries only scalars + `[mem.*]` + `[agent.*]` (the chip),
+and a project target does `include = stm32h723.target` then declares its
+`[region.*]`. Re-opening a named section resumes editing that entity --
+`[mem.dma_pool]` + `cacheable = false` flips one field and keeps the inherited
+base/size (key-level merge), a bare scalar overwrites, an accumulator line like
+`handoff` appends. Everything is overridable (so a project can also patch a base
+bug); each file is applied at most once (diamonds dedup, cycles terminate);
+validation runs once on the merged target. Implemented in `target.rs`
+(`from_file` -> `load_file` -> `apply`/`finalize`); the
+`nucleo-h723zg-ptp` example is split this way (`stm32h723.target` base +
+`stm32h723zg.target` project).
 
 ## Layer 2: policy (regions)
 
