@@ -71,6 +71,11 @@ pub enum AgentKind {
     /// Peripheral-driven bus master; addresses are handed to it via registers.
     Dma,
     /// Debug probe (SWD AHB-AP); built-in, drives nothing in source.
+    /// Deliberately inert to the concurrency checks (cache discipline,
+    /// derived-Move): it touches memory while the CPU is halted, so it is not a
+    /// runtime concurrent mutator -- skipping it is correct, not an oversight.
+    /// Its only plausible future job is security (`TrustZone`: "the debugger can
+    /// reach this secure region"), a deferred track.
     Debug,
     /// Foreign code; channels only.
     External,
