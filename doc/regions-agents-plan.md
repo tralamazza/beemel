@@ -255,6 +255,18 @@ Checks and derivations:
   it forces the `cacheable = false` declaration but does not yet *generate* or
   *verify* the MPU config that makes the memory non-cacheable -- that (and an
   implicit cpu agent from the `cpu` field) is the follow-up.
+- **Alignment-as-derived-physics** (same physics, second consequence): DONE.
+  RM0468 confirms the ETH DMA imposes *no* buffer-address alignment ("There is
+  no limitation to the buffer address alignment", Table 579) and only word
+  alignment on the descriptor list -- so the `@align(32)` on the ETH buffers is
+  purely the Cortex-M7 cache line, the same fact the cache check uses.
+  `Target::region_alignments` derives it: a static placed `in R` is emitted with
+  at least `cache_line_size(cpu)` alignment (32 for M7) when `R`'s mem is
+  cacheable and shared with a non-coherent agent; the emitter floors the global's
+  `align` (`ir.rs`, `region_alignments` map), and an explicit `@align` can still
+  raise it. Dropping the four `@align(32)` from `eth_dma.bml` is byte-identical
+  IR. The number is now correct-by-construction for the cache state instead of a
+  hand-written literal.
 - `access = read` agents (LTDC) relax the rules: sharing with them constrains
   CPU-side ordering but cannot produce write-write races.
 

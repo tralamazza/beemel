@@ -536,6 +536,51 @@ impl Target {
         }
     }
 
+    /// L1 D-cache line size in bytes, from the CPU. Cortex-M7 has a 32-byte
+    /// line; the cacheless cores (M0/M0+/M3/M4) return 0 (no cache-line physics).
+    #[must_use]
+    pub fn cache_line_size(&self) -> u32 {
+        match self.cpu.as_deref() {
+            Some("cortex-m7") => 32,
+            _ => 0,
+        }
+    }
+
+    /// Derived alignment floor per region (bytes). A region whose memory is
+    /// cacheable and that is shared with a non-coherent agent (a DMA/external
+    /// master that does not snoop the cache, `cached = false`) must be
+    /// cache-line aligned, so per-buffer cache maintenance stays line-granular
+    /// and does not corrupt line-neighbors. The line size comes from the CPU.
+    /// This is the physics that replaces hand-written `@align` on agent-shared
+    /// statics; regions without it have no floor. See `doc/regions-agents-plan.md`.
+    #[must_use]
+    pub fn region_alignments(&self) -> HashMap<String, u32> {
+        let line = self.cache_line_size();
+        let mut out = HashMap::new();
+        if line == 0 {
+            return out;
+        }
+        for region in &self.regions {
+            let Some(mem) = self.mem_blocks.iter().find(|m| m.name == region.mem) else {
+                continue;
+            };
+            if !mem.cacheable {
+                continue;
+            }
+            let non_coherent = region.agents.iter().any(|a| {
+                self.agents.iter().any(|ag| {
+                    &ag.name == a
+                        && matches!(ag.kind, AgentKind::Dma | AgentKind::External)
+                        && !ag.cached
+                })
+            });
+            if non_coherent {
+                out.insert(region.name.clone(), line);
+            }
+        }
+        out
+    }
+
     #[must_use]
     pub fn to_llvm_target_triple(&self) -> &'static str {
         self.to_arch().llvm_target_triple()
@@ -1148,6 +1193,31 @@ agents = eth_dma
         let src =
             format!("{H723_REGIONS}{H723_CACHED_CPU}").replace("cached = true", "cached = false");
         Target::parse(&src).expect("a non-cached cpu must not trip the cache check");
+    }
+
+    #[test]
+    fn region_alignment_derived_from_cache_line() {
+        // dma_shared is cacheable (default) and shared with the non-coherent
+        // eth_dma; on a cortex-m7 (32-byte line) the derived alignment is 32.
+        let aligns = t(H723_REGIONS).region_alignments();
+        assert_eq!(aligns.get("dma_shared"), Some(&32), "got: {aligns:?}");
+    }
+
+    #[test]
+    fn region_alignment_none_when_noncacheable() {
+        // Non-cacheable memory needs no line alignment -> no derived floor.
+        let src = H723_REGIONS.replace(
+            "[mem.sram1]\nbase = 0x30000000\nsize = 16K",
+            "[mem.sram1]\nbase = 0x30000000\nsize = 16K\ncacheable = false",
+        );
+        assert!(!t(&src).region_alignments().contains_key("dma_shared"));
+    }
+
+    #[test]
+    fn region_alignment_none_on_cacheless_core() {
+        // A cacheless core (cortex-m4) has no cache line -> no derived floor.
+        let src = H723_REGIONS.replace("cpu = cortex-m7", "cpu = cortex-m4");
+        assert!(!t(&src).region_alignments().contains_key("dma_shared"));
     }
 
     #[test]

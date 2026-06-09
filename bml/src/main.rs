@@ -597,6 +597,7 @@ fn build_file(
     );
     emitter.set_startup_init(target.startup_init.clone());
     emitter.set_word_addr_handoffs(word_addr_handoffs(target));
+    emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
 
     let ll_path = path.with_extension("ll");

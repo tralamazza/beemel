@@ -2776,6 +2776,28 @@ fn test_agent_enable_unknown_register() {
     assert!(stderr.contains("E609"), "expected E609; stderr:\n{stderr}");
 }
 
+// ─── alignment-as-derived-physics ──────────────────────────────────────────
+
+// A static placed in a cacheable region shared with a non-coherent DMA agent
+// (cortex-m7) is emitted with the 32-byte cache-line alignment, with no @align
+// in source; a non-region static keeps the default. The number is physics
+// derived from the target, not a per-static literal. See
+// target.rs::region_alignments.
+#[test]
+fn test_region_alignment_derived_in_ir() {
+    let ir = bml_ir_with_target("align_derive.bml", Some("verify_handoff.target"));
+    assert!(
+        ir.contains(
+            "@DBUF = global [64 x i8] zeroinitializer, section \".region.dma_shared\", align 32"
+        ),
+        "DBUF should derive align 32 from the region; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("@NORMAL = global [64 x i8] zeroinitializer, align 4"),
+        "NORMAL (no region) should keep the default align 4; ir:\n{ir}"
+    );
+}
+
 // ─── @dma read protection, derived from agent-shared placement ─────────────
 
 // @dma's load-bearing property: a @dma array may be index-assigned but its

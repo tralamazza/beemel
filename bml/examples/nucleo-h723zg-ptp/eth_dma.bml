@@ -27,8 +27,10 @@ owns Ethernet_DMA;
 
 // The ETH DMA buffers live in the dma_shared region (the dma_pool block in D2
 // SRAM, which the ETH DMA reaches). Placement is the only declaration needed:
-// because dma_shared is mutated by the `eth` DMA agent, the compiler derives the
-// index-read protection (the old `@dma`) from the region. Region memory is
+// because dma_shared is mutated by the `eth` DMA agent, the compiler derives
+// both the index-read protection (the old `@dma`) and the alignment (the old
+// `@align(32)` -- the Cortex-M7 cache line, since the region is cacheable and
+// shared with a non-coherent agent) from the region. Region memory is
 // uninitialized at startup, so these take no initializer and are written before
 // the DMA starts.
 // The H7 normal descriptor is four words. DES0 is the buffer byte address the
@@ -52,10 +54,10 @@ struct RxDesc @repr(packed) {
 }
 comptime_assert(sizeof(RxDesc) == 16);
 
-var TX_BUFFER: [u8; 128] @align(32) in dma_shared;
-var TX_DESC: [TxDesc; 2] @align(32) in dma_shared;
-var RX_BUFFER: [u8; 1024] @align(32) in dma_shared;
-var RX_DESC: [RxDesc; 2] @align(32) in dma_shared;
+var TX_BUFFER: [u8; 128] in dma_shared;
+var TX_DESC: [TxDesc; 2] in dma_shared;
+var RX_BUFFER: [u8; 1024] in dma_shared;
+var RX_DESC: [RxDesc; 2] in dma_shared;
 var TX_DESC_INDEX: u32;
 var RX_DESC_INDEX: u32;
 var RX_PACKET_COUNT: u32;

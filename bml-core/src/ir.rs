@@ -60,6 +60,12 @@ pub struct IrEmitter {
     /// write to an `addr in R` struct field (an in-memory handoff) asserts the
     /// stored address is in `R`'s range. Empty outside verify.
     region_ranges: HashMap<String, (u64, u64)>,
+    /// Region name -> derived alignment floor (bytes). A static placed `in R`
+    /// gets at least this alignment, so the source need not hand-write
+    /// `@align(N)`: alignment is physics (cache line of cacheable memory shared
+    /// with a non-coherent agent), derived from the target. See
+    /// `doc/regions-agents-plan.md`.
+    region_alignments: HashMap<String, u32>,
 }
 
 #[derive(Clone)]
@@ -250,6 +256,7 @@ impl IrEmitter {
             startup_init: Vec::new(),
             word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
+            region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             region_ranges: HashMap::new(),
         }
@@ -294,6 +301,7 @@ impl IrEmitter {
             startup_init: Vec::new(),
             word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
+            region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             region_ranges: HashMap::new(),
         }
@@ -318,6 +326,14 @@ impl IrEmitter {
     /// compiler-inserted `>> 2`, so source writes the byte address directly.
     pub fn set_word_addr_handoffs(&mut self, paths: std::collections::HashSet<String>) {
         self.word_addr_handoffs = paths;
+    }
+
+    /// Install the per-region alignment floors (region name -> bytes). A static
+    /// placed `in R` is emitted with at least `floor` alignment, replacing a
+    /// hand-written `@align(N)`. Built from the target (see `region_alignments`
+    /// in `bml/src/main.rs`).
+    pub fn set_region_alignments(&mut self, aligns: HashMap<String, u32>) {
+        self.region_alignments = aligns;
     }
 
     /// Install the verify-mode region/handoff obligation maps (see the fields).
@@ -485,15 +501,22 @@ impl IrEmitter {
                             })
                             .unwrap_or_default()
                     };
-                    // `@align(N)` overrides the default 4-byte alignment.
-                    let align = s
-                        .storage
-                        .iter()
-                        .find_map(|a| match a {
-                            ast::StorageAnnotation::Align(n) => Some(*n),
-                            _ => None,
-                        })
-                        .unwrap_or(4);
+                    // `@align(N)` overrides the default 4-byte alignment; a
+                    // static placed `in R` is floored at the region's derived
+                    // alignment (cache-line physics), so the source need not
+                    // hand-write the `@align`. An explicit `@align` can still
+                    // raise it above the floor.
+                    let explicit = s.storage.iter().find_map(|a| match a {
+                        ast::StorageAnnotation::Align(n) => Some(*n),
+                        _ => None,
+                    });
+                    let region_floor = s
+                        .region
+                        .as_ref()
+                        .and_then(|(r, _)| self.region_alignments.get(r))
+                        .copied()
+                        .unwrap_or(0);
+                    let align = explicit.unwrap_or(4).max(region_floor);
                     self.line(&format!(
                         "@{} = global {} {}{section_attr}, align {align}",
                         s.name.0, llvm_ty, init_val

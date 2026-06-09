@@ -133,6 +133,7 @@ pub fn verify(
     // Region/agent obligations: encode handoff addresses (so the verify IR
     // matches build) and emit the provenance assume + reachability assert.
     emitter.set_word_addr_handoffs(word_addr_handoffs(target));
+    emitter.set_region_alignments(target.region_alignments());
     emitter.set_handoff_obligations(
         region_addr_ranges(program, target),
         handoff_reach_bounds(target),

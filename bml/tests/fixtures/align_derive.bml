@@ -1,0 +1,9 @@
+// Alignment derived from the region: DBUF is placed in dma_shared (cacheable +
+// a DMA agent, cortex-m7), so it gets the 32-byte cache-line alignment with no
+// @align in source. NORMAL is an ordinary static (no region) at the default.
+var DBUF: [u8; 64] in dma_shared;
+var NORMAL: [u8; 64];
+fn main() @context(thread) {
+    DBUF[0] = 1;
+    NORMAL[0] = 2;
+}
