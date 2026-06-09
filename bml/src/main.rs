@@ -487,21 +487,6 @@ fn check_file(path: &Path, stack_analysis: bool) {
     }
 }
 
-/// Collect the `Peripheral.REGISTER.FIELD` paths of every `word_addr` handoff
-/// across the target's agents. The IR emitter inserts a `>> 2` at writes to
-/// these fields so source writes the byte address directly.
-fn word_addr_handoffs(target: &Target) -> std::collections::HashSet<String> {
-    let mut set = std::collections::HashSet::new();
-    for agent in &target.agents {
-        for h in &agent.handoffs {
-            if h.encoding == bml_core::target::HandoffEncoding::WordAddr {
-                set.insert(h.register.clone());
-            }
-        }
-    }
-    set
-}
-
 fn build_file(
     path: &Path,
     target: &Target,
@@ -596,7 +581,6 @@ fn build_file(
         Some(source_map),
     );
     emitter.set_startup_init(target.startup_init.clone());
-    emitter.set_word_addr_handoffs(word_addr_handoffs(target));
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
 

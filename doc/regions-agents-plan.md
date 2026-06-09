@@ -13,8 +13,8 @@ Status 2026-06-08: design settled. Implemented: slice 0 (target physics:
 (`in <region>` placement: parser, IR section, mem-block-driven linker script,
 E600/E601/E602 checks, QEMU exec proof), and slice 2 (`owns` parsing, path
 resolution E603, cross-module exclusivity E604, handoff-ownership rule E605
-with an exhaustive write walker), slice 3 (`word_addr` handoff encoding:
-compiler-inserted `>> 2`, double-shift guard E606, QEMU exec proof), and slice
+with an exhaustive write walker), slice 3 (handoff address writes -- originally a
+`word_addr` encoding; superseded, see the 2026-06-09 note below), and slice
 4 (verify obligations: provenance assume at `&X as u32`, reachability assert at
 the handoff write, discharged by IKOS -- DTCM footgun caught at the value
 level). Slice 5 partial: `doc/language.md` corrected; full `@dma` retirement
@@ -35,9 +35,23 @@ stays (renamed `Type::Dma` -> `Type::AgentShared`, unified with the identical
 descriptor-struct refactor is also done and hardware-validated (TX_DESC/RX_DESC
 are `[TxDesc;2]`/`[RxDesc;2]` with `addr in dma_shared` buffer pointers; TX+RX
 confirmed on the board) -- the ETH driver is fully regions-native. Remaining are
-only the lower-priority deferred items (`addr` as a general type, `word_addr in
-R`, read re-establishing the in-region fact -- each generalization without a
-current consumer).
+only the lower-priority deferred items (`addr` as a general type, read
+re-establishing the in-region fact -- each generalization without a current
+consumer).
+
+**Update 2026-06-09 -- handoffs are register-level, no encoding.** The
+`byte_addr`/`word_addr` handoff encoding and its double-shift guard (E606) are
+removed. A handoff now names a *register* (`Peripheral.REGISTER`, not a field)
+and source writes the full byte address to it verbatim. The descriptor-list and
+tail-pointer registers reserve their low 2 bits read-only, so the hardware
+ignores them and no shift is needed. The earlier `word_addr` `>> 2` only
+cancelled the `<< 2` the SVD field's bit-2 offset applies -- writing the register
+instead of the `[31:2]` field makes both vanish, collapsing the handoff write to
+a single `store`. This deletes slice 3 entirely (the encoding axis,
+`encode_word_addr_handoff`, `set_word_addr_handoffs`, E606) and changes the
+handoff lowering from a read-modify-write to a plain store (not byte-identical
+IR; `exec_handoff_full_addr` re-proves it under QEMU). Sections below that
+describe `word_addr` are historical.
 
 ## Problem
 
@@ -184,10 +198,10 @@ size = 16K
 kind = dma
 reach = axi_sram, sram1, sram2       # NOT dtcm/itcm: ETH DMA cannot cross the CM7 core
 cached = false
-handoff = Ethernet_DMA.DMACTxDLAR.TDESLA : word_addr align 4
-handoff = Ethernet_DMA.DMACRxDLAR.RDESLA : word_addr align 4
-handoff = Ethernet_DMA.DMACTxDTPR.TDT : word_addr
-handoff = Ethernet_DMA.DMACRxDTPR.RDT : word_addr
+handoff = Ethernet_DMA.DMACTxDLAR align 4
+handoff = Ethernet_DMA.DMACRxDLAR align 4
+handoff = Ethernet_DMA.DMACTxDTPR
+handoff = Ethernet_DMA.DMACRxDTPR
 enabled_by = RCC.C1_AHB1ENR.ETH1MACEN, RCC.C1_AHB1ENR.ETH1TXEN, RCC.C1_AHB1ENR.ETH1RXEN
 
 [agent.mdma]
@@ -220,10 +234,10 @@ Rules:
   modules imported by the program being compiled. Unresolvable path = error
   at build time. Raw addresses in the target file were rejected as unreadable
   and unreviewable.
-- `handoff` encoding is a closed set: `byte_addr`, `word_addr` (value =
-  address >> 2, because the SVD field starts at bit 2), `align N`. New
-  encodings require a compiler change -- deliberately, since each one is a
-  codegen rule.
+- `handoff` names a register (`Peripheral.REGISTER`) with an optional `align N`
+  (minimum alignment of the handed-off address). The full byte address is
+  written verbatim -- these are dedicated address registers whose reserved low
+  bits the hardware ignores, so there is no encoding/shift.
 - These sections are per-chip facts. They belong in the vendored target file
   and are written once per chip, ideally generated/audited from the reference
   manual's bus-matrix table.
@@ -361,21 +375,15 @@ becomes an address -- a register whose written value an agent will
 dereference on its own initiative.
 
 At every write to a handoff register, in the owning module, the compiler does
-three things:
+two things (the full byte address is stored verbatim -- no encoding):
 
-1. **Encoding.** The register knows its encoding, the programmer writes an
-   address. `eth_dma.bml:174` changes from
-   `Ethernet_DMA.DMACTxDLAR.TDESLA = desc0 >> 2;` to
-   `Ethernet_DMA.DMACTxDLAR.TDESLA = tx_desc_addr(0);` -- the compiler
-   inserts the `>> 2` for `word_addr`. The shift bug class is gone.
-   (Lowering change: needs a QEMU exec fixture, not just IR-substring tests.)
-2. **Static reach check.** If the value's provenance is statically known and
+1. **Static reach check.** If the value's provenance is statically known and
    the target is outside every region the agent can reach, `bml check`
    rejects it.
-3. **Verification obligation.** Otherwise `bml verify` discharges it: the
+2. **Verification obligation.** Otherwise `bml verify` discharges it: the
    compiler emits `assume(range)` at the address-of site of the source symbol
-   and `assert(in-region && aligned)` before the handoff write. See next
-   section for why the assume goes there.
+   and `assert(in-region)` before the handoff write. See next section for why
+   the assume goes there.
 
 ### In-memory handoffs (implemented, v1)
 
@@ -403,8 +411,8 @@ definite `error[assert]`; E607 on an unknown field region.
 Transitive reach (E608) is now done: when a descriptor is delivered to an agent
 (`agent_handoff = &RX`), every `addr in R` field inside it must name a region
 the agent can reach, else `error[E608]`. The remaining deferred items (`addr` as
-a general type, `word_addr in R`, read re-establishing the in-region fact) are
-generalization without a current consumer and stay open.
+a general type, read re-establishing the in-region fact) are generalization
+without a current consumer and stay open.
 
 The original design follows.
 
@@ -444,19 +452,15 @@ RX_DESC[0].buf1 = rx_buffer_addr(0);
 
 `addr in R` is a 4-byte field (layout-identical to `u32`, `@repr(packed)`-safe)
 that means "a byte address that must lie in region `R`." It is *not* a typed
-pointer: no pointee type, no deref; reading it yields a `u32`. A `word_addr in
-R` variant (value = address >> 2) covers descriptor slots that store a word
-address, mirroring the register handoff encodings; ETH buffer pointers are
-byte addresses, so `addr` (no shift) is the common case.
+pointer: no pointee type, no deref; reading it yields a `u32`. ETH buffer
+pointers are byte addresses, so the value is stored verbatim (no shift).
 
 **The write to an `addr in R` field carries the register-handoff actions**, and
-reuses the slice-3/4 machinery:
+reuses the slice-4 machinery:
 
-1. *Encoding* -- `word_addr in R` inserts `>> 2` at the field store (the same
-   `encode_word_addr_handoff` path); `addr in R` is verbatim.
-2. *Static reach check* -- if the written value's provenance is a static placed
+1. *Static reach check* -- if the written value's provenance is a static placed
    in a region not contained in `R`, reject in `check`.
-3. *Verify obligation* -- emit `assert(value in R.range)` at the field store.
+2. *Verify obligation* -- emit `assert(value in R.range)` at the field store.
    The provenance `assume` is already emitted by slice 4 at `&BUFFER as u32`
    (the buffer's region range), so this reuses `region_addr_ranges` and
    `emit_range_assert` unchanged. The same index juggling slice 4 catches on
@@ -468,9 +472,8 @@ agent's reach). They are in one way *simpler*: the constraint region is
 explicit on the field, no agent-reach lookup.
 
 **Detection / lowering.** The struct-field store path in `ir.rs` already GEPs to
-the field and stores; when the field type is `addr in R` / `word_addr in R`,
-add the encode (build + verify) and the assert (verify). The checker needs the
-new field type (`Type::Addr { region, word }` or similar) threaded through
+the field and stores; when the field type is `addr in R`, add the assert
+(verify). The checker needs the new field type (`Type::Addr`) threaded through
 `types.rs`/resolver/checker like other field types, with `sizeof == 4` and
 packed layout.
 
@@ -531,7 +534,8 @@ measured behavior, not assumptions:
 The five problems from the top, revisited:
 
 1. DTCM placement of `TX_DESC`: target-file/region error, before compiling.
-2. `>> 2`: compiler-inserted from the `word_addr` encoding.
+2. `>> 2`: gone -- handoffs write the full byte address to the register, whose
+   reserved low bits the hardware ignores (no shift to get wrong).
 3. dmb-only sync: cache-discipline derivation makes enabling D-cache without
    an MPU story an error instead of a latent RX corruption.
 4. `@dma`: replaced by `in <region>` (below).
@@ -604,17 +608,16 @@ its own; ordering is by dependency, not by size.
 - **Register paths resolve against `symbols.peripherals`** -- the same
   address/bit-offset data codegen uses for field writes
   (`ir.rs:3325-3374`).
-- **Handoff write hook = the peripheral-field store** at `ir.rs:3325`;
-  encoding insertion and the assert go there. The assume goes at the
-  address-of site (`ir.rs:3128-3180`).
+- **Handoff write hook = the peripheral-register store**; the reachability
+  assert goes there (verify mode). The assume goes at the address-of site.
 
 ### Slice 0 -- Target physics (no language change)
 
 `target.rs` only. Extend the section-dispatch loop (`:78-127`, template:
 `[startup]`/`[interrupts]`) with `[mem.*]`, `[agent.*]`, `[region.*]`. New
 structs `MemBlock{base,size}`, `Agent{kind,reach,cached,access,handoffs,
-enabled_by}`, `Region{mem,agents}`. Closed-set handoff-encoding parse
-(`byte_addr`/`word_addr`/`align N`). Self-consistency at parse time (fail
+enabled_by}`, `Region{mem,agents}`. Handoff parse is `Peripheral.REGISTER` plus
+optional `align N` (no encoding). Self-consistency at parse time (fail
 loudly): region `mem` within reach of every listed agent; mem blocks
 non-overlapping; register paths kept as strings (resolved later -- `target.rs`
 cannot see the SVD). Tests: `target.rs` units, `parses_startup_section` style.
@@ -661,43 +664,29 @@ which also act at handoff write sites. The derived `drives` relation (M drives
 A iff M owns one of A's handoff registers) is computable from these same maps;
 surfacing it in LSP hover is deferred to the LSP track.
 
-### Slice 3 -- Handoff encoding insertion (done)
+### Slice 3 -- Handoff encoding (removed 2026-06-09)
 
-The IR emitter carries the set of `word_addr` handoff field paths
-(`set_word_addr_handoffs`, built from the target in `bml build`). At the
-peripheral-field store (`ir.rs:3332`) it inserts `lshr i32 val, 2` for a
-`word_addr` handoff field, so source writes the *byte* address and the field's
-own bit-2 position re-aligns it: `(addr >> 2) << 2`. The hand-written `>> 2`
-(and its double-shift bug class) is gone.
+Originally the IR emitter shifted handoff *field* writes: for a `word_addr`
+handoff, source wrote a byte address, the compiler inserted `lshr val, 2`, and
+the SVD field's bit-2 position re-aligned it via `(addr >> 2) << 2`, with E606
+rejecting a hand-written `>> 2`. This is gone. Handoffs are now register-level
+writes of the full byte address (see the 2026-06-09 note at the top): writing
+the whole register instead of the `[31:2]` field drops both the `>> 2` and the
+field's `<< 2`, so the encoding axis (`encode_word_addr_handoff`,
+`set_word_addr_handoffs`), E606, and the `HandoffEncoding` enum were all deleted.
+The handoff write is now a single `store`.
 
-Only the field-write site is encoded (the real, unambiguous case: the SVD
-models the field at bit 2). A register-level `word_addr` handoff would have
-different semantics (whole register holds `addr >> 2`, no re-align), so it is
-left for a concrete need.
-
-`region.rs` adds the double-shift guard (E606): a source-level `>> 2` feeding a
-`word_addr` handoff field is rejected, since the compiler already encodes -- it
-shares the slice-2b write walk (now carrying the field name and an
-`rhs_is_shr2` flag).
-
-The encode is applied to the *widened* (i32) value, so a narrow RHS still emits
-valid IR. Only plain assignment is encoded/guarded; a compound assign to a
-handoff field (`PTR |= addr`) is neither -- OR-ing into a descriptor base
-address is nonsensical, so this is left as an intentional gap rather than
-given dubious semantics.
-
-Proof: `exec_handoff_encode` round-trips the byte address through a RAM-backed
-fake peripheral under QEMU at -O0/-O2 (the register reads back as the byte
-address only if the `>> 2` was inserted). Plus `test_handoff_double_shift_rejected`
-(E606). Verify-path encoding (so IKOS sees the same IR) is threaded in slice 4.
+Proof: `exec_handoff_full_addr` round-trips a 4-aligned address through a
+RAM-backed fake peripheral under QEMU at -O0/-O2 (a stray `>> 2` or `<< 2` would
+corrupt the value). The verify path stores the same address, so IKOS sees the
+same IR (slice 4).
 
 ### Slice 4 -- Verify obligations (done)
 
 Verify mode now auto-emits the probe's hand-written instrumentation. The verify
 emitter is threaded (in `verify::verify`, which has program + target) with three
-maps: `word_addr_handoffs` (closing the slice-3 deferral so verify IR matches
-build), `region_addr_ranges` (placed static -> its region's mem block range),
-and `handoff_reach_bounds` (handoff field path -> the owning agent's reach
+maps: `region_addr_ranges` (placed static -> its region's mem block range) and
+`handoff_reach_bounds` (handoff register path -> the owning agent's reach
 bounding range).
 
 - **Assume at the address-of site.** At the `ptr -> int` cast, if the operand is
@@ -705,8 +694,8 @@ bounding range).
   region.hi)` on the ptrtoint result. This is where the probe proved it has to
   go (ptrtoints of one global do not unify across functions), so the fact
   propagates through `desc_addr()` calls/returns/arithmetic to the obligation.
-- **Assert at the handoff write.** On the widened byte address (before the
-  word_addr encode), emit `assert(reach.lo <= value < reach.hi)` via
+- **Assert at the handoff write.** On the stored byte address, emit
+  `assert(reach.lo <= value < reach.hi)` via
   `__ikos_assert`. The assert range is the **bounding box** of the agent's reach
   mem blocks -- sound for addresses below or above all reachable memory (catches
   the DTCM footgun), an over-approximation for a gap between disjoint blocks.
@@ -764,9 +753,10 @@ validation; then delete `Type::Dma`.
 
 **Port (blocker 3), done and hardware-validated.** `stm32h723zg.target` now
 splits the 32K D2 SRAM into a working `sram` block and a `dma_pool` block, and
-declares the ETH DMA agent with the four word_addr descriptor handoffs;
-`eth_dma.bml` adds `owns Ethernet_DMA`, places the four buffers `in dma_shared`,
-and drops the six hand-written `>> 2` (the compiler reinserts them). Verified
+declares the ETH DMA agent with the four descriptor handoffs (then `word_addr`,
+since superseded); `eth_dma.bml` adds `owns Ethernet_DMA`, places the four
+buffers `in dma_shared`, and drops the six hand-written `>> 2` (at the time the
+compiler reinserted them). Verified
 behavior-preserving before flashing: the controller IR diff is *only* the
 buffers gaining `.region.dma_shared` plus the identical `(desc>>2)<<2`
 re-encoding; the linked buffers land in `dma_pool` (0x30007000, D2 SRAM,

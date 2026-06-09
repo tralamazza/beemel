@@ -41,15 +41,16 @@ base = 0x30007000
 size = 4K
 
 # The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
-# descriptor base + tail-pointer registers are word_addr handoffs: the field is
-# at bit 2, so the compiler inserts the `>> 2` the source used to write by hand.
+# descriptor base + tail-pointer registers are handoffs: source writes the full
+# descriptor byte address to each register; the reserved low 2 bits are
+# hardware-ignored, so no shift is applied.
 [agent.eth]
 kind = dma
 reach = dma_pool
-handoff = Ethernet_DMA.DMACTxDLAR.TDESLA : word_addr
-handoff = Ethernet_DMA.DMACTxDTPR.TDT : word_addr
-handoff = Ethernet_DMA.DMACRxDLAR.RDESLA : word_addr
-handoff = Ethernet_DMA.DMACRxDTPR.RDT : word_addr
+handoff = Ethernet_DMA.DMACTxDLAR
+handoff = Ethernet_DMA.DMACTxDTPR
+handoff = Ethernet_DMA.DMACRxDLAR
+handoff = Ethernet_DMA.DMACRxDTPR
 
 [region.dma_shared]
 mem = dma_pool

@@ -354,26 +354,26 @@ fn exec_region_placement() {
     }
 }
 
-// word_addr handoff encoding: source writes the byte address into a field at
-// bit 2; the compiler inserts `>> 2` so the register reads back as the byte
-// address. Without the insertion the register would hold the wrong value, so a
-// passing run proves the encoding (not just that some IR was emitted). See
-// doc/regions-agents-plan.md slice 3.
+// Handoff register write: source writes the full byte address to the handoff
+// register and it reads back unchanged. The register's reserved low 2 bits are
+// hardware-ignored, so the compiler stores the address verbatim (no shift); a
+// stray >> 2 or << 2 would corrupt the 4-aligned value, so a passing run proves
+// the no-shift lowering. See doc/regions-agents-plan.md.
 #[test]
-fn exec_handoff_encode() {
+fn exec_handoff_full_addr() {
     if !tools_available() {
-        eprintln!("skipping handoff_encode.bml: qemu-system-arm / arm-none-eabi-ld not found");
+        eprintln!("skipping handoff_full_addr.bml: qemu-system-arm / arm-none-eabi-ld not found");
         return;
     }
     for opt in OPT_LEVELS {
-        let out = bml_run_with_target("handoff_encode.bml", opt, "handoff_encode.target");
+        let out = bml_run_with_target("handoff_full_addr.bml", opt, "handoff_full_addr.target");
         assert!(
             out.contains("OK"),
-            "expected OK from handoff_encode at -O{opt}; captured output:\n{out}"
+            "expected OK from handoff_full_addr at -O{opt}; captured output:\n{out}"
         );
         assert!(
             !out.contains("FAIL"),
-            "handoff_encode reported a FAIL at -O{opt}; captured output:\n{out}"
+            "handoff_full_addr reported a FAIL at -O{opt}; captured output:\n{out}"
         );
     }
 }

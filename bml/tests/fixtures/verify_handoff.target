@@ -22,7 +22,7 @@ size = 16K
 [agent.mydma]
 kind = dma
 reach = sram1
-handoff = MyDma.DESCADDR.PTR : word_addr align 4
+handoff = MyDma.DESCADDR align 4
 
 [region.dma_shared]
 mem = sram1

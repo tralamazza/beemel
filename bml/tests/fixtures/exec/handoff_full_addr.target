@@ -1,5 +1,5 @@
-# Encoding exec test. Peripheral lives at 0x20001000 -- in the low 8K SRAM
-# above the 4K the linker uses for .data/.bss/.stack, so volatile MMIO
+# Handoff register write exec test. Peripheral lives at 0x20001000 -- in the low
+# 8K SRAM above the 4K the linker uses for .data/.bss/.stack, so volatile MMIO
 # writes round-trip through RAM and can be read back.
 arch = armv7m
 cpu = cortex-m3
@@ -13,4 +13,4 @@ vector_table_offset = 0x08000000
 
 [agent.fakedma]
 kind = dma
-handoff = FakeDma.PTRREG.ADDR : word_addr
+handoff = FakeDma.PTRREG

@@ -1,0 +1,22 @@
+// Handoff register write: source writes the full byte address to the handoff
+// register; the register's reserved low 2 bits are hardware-ignored, so the
+// compiler applies no shift. Proven by round-tripping through a RAM-backed fake
+// peripheral: a 4-aligned address reads back unchanged (a stray >> 2 or << 2
+// would corrupt it). FakeDma.PTRREG models an SVD field at bit[2..31], yet the
+// whole register receives the address.
+import harness.semihost;
+
+peripheral FakeDma at 0x20001000 {
+    reg PTRREG offset 0x00 {
+        field ADDR: u32 bit[2..31]
+    }
+}
+
+owns FakeDma.PTRREG;
+
+fn main() @context(thread) {
+    FakeDma.PTRREG = 0x20008004; // full byte address, written verbatim
+    var readback: u32 = FakeDma.PTRREG;
+    expect_u32(readback, 0x20008004);
+    done();
+}

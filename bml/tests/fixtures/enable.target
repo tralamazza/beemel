@@ -17,5 +17,5 @@ size = 128K
 [agent.mydma]
 kind = dma
 reach = sram
-handoff = MyDma.DESCADDR.PTR : word_addr
+handoff = MyDma.DESCADDR
 enabled_by = Clk.CR.MYDMAEN

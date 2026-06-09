@@ -12,5 +12,5 @@ owns MyDma.DESCADDR;
 
 fn main() @context(thread) {
     var v: u32 = MyDma.SCRATCH; // volatile read -> unconstrained value
-    MyDma.DESCADDR.PTR = v;
+    MyDma.DESCADDR = v;
 }

@@ -17,4 +17,4 @@ size = 128K
 [agent.mydma]
 kind = dma
 reach = sram
-handoff = MyDma.CTRL.PTR : word_addr
+handoff = MyDma.CTRL

@@ -1,8 +1,0 @@
-// A pre-shifted value into a word_addr handoff field double-shifts (the
-// compiler already inserts >>2) -> E606. Owns the register so E605 does not
-// also fire.
-import handoff_periph;
-owns MyDma.CTRL;
-fn main() @context(thread) {
-    MyDma.CTRL.PTR = 0x20000000 >> 2;
-}

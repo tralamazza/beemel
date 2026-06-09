@@ -99,24 +99,16 @@ pub enum AgentAccess {
     Read,
 }
 
-/// How a handoff register encodes the address written to it. Closed set: each
-/// encoding is a codegen rule, so adding one is a deliberate compiler change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandoffEncoding {
-    /// Register holds the byte address verbatim.
-    ByteAddr,
-    /// Register field holds `address >> 2` (the SVD field starts at bit 2).
-    WordAddr,
-}
-
-/// A handoff register: the place where a written number becomes an address the
-/// agent will dereference. `register` is an unresolved SVD path string
-/// (`Peripheral.REGISTER.FIELD`); resolution against the peripheral table
-/// happens later, where the SVD is visible.
+/// A handoff register: the place where a written address is handed to the agent,
+/// which then dereferences it. `register` is an unresolved SVD path string
+/// (`Peripheral.REGISTER`); resolution against the peripheral table happens
+/// later, where the SVD is visible. The full byte address is written to the
+/// register verbatim -- these are dedicated address registers whose reserved low
+/// bits the hardware ignores, so the compiler applies no encoding or shift (see
+/// doc/regions-agents-plan.md).
 #[derive(Debug, Clone)]
 pub struct Handoff {
     pub register: String,
-    pub encoding: HandoffEncoding,
     /// Optional minimum byte alignment of the handed-off address (power of two).
     pub align: Option<u32>,
 }
@@ -901,30 +893,15 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
     Ok(())
 }
 
-/// Parse a handoff spec: `Peripheral.REG.FIELD : <encoding> [align N]`.
+/// Parse a handoff spec: `Peripheral.REGISTER [align N]`. The full byte address
+/// is written to the register verbatim; `align` is its optional minimum
+/// alignment.
 fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
-    let (reg, spec) = val.split_once(':').ok_or_else(|| {
-        format!(
-            "line {}: handoff needs `register : encoding`, got `{val}`",
-            line_num + 1
-        )
-    })?;
-    let register = reg.trim().to_string();
-    if register.is_empty() {
-        return Err(format!("line {}: handoff has empty register", line_num + 1));
-    }
-    let mut tokens = spec.split_whitespace();
-    let encoding = match tokens.next() {
-        Some("byte_addr") => HandoffEncoding::ByteAddr,
-        Some("word_addr") => HandoffEncoding::WordAddr,
-        other => {
-            return Err(format!(
-                "line {}: handoff `{register}` has unknown encoding `{}` (expected byte_addr or word_addr)",
-                line_num + 1,
-                other.unwrap_or("")
-            ));
-        }
-    };
+    let mut tokens = val.split_whitespace();
+    let register = tokens
+        .next()
+        .ok_or_else(|| format!("line {}: handoff has empty register", line_num + 1))?
+        .to_string();
     let mut align = None;
     while let Some(tok) = tokens.next() {
         match tok {
@@ -951,11 +928,7 @@ fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
             }
         }
     }
-    Ok(Handoff {
-        register,
-        encoding,
-        align,
-    })
+    Ok(Handoff { register, align })
 }
 
 fn parse_bool(val: &str, key: &str, line: usize) -> Result<bool, String> {
@@ -1115,8 +1088,8 @@ size = 16K
 kind = dma
 reach = sram1, sram2
 cached = false
-handoff = Ethernet_DMA.DMACTxDLAR.TDESLA : word_addr align 4
-handoff = Ethernet_DMA.DMACTxDTPR.TDT : word_addr
+handoff = Ethernet_DMA.DMACTxDLAR align 4
+handoff = Ethernet_DMA.DMACTxDTPR
 enabled_by = RCC.C1_AHB1ENR.ETH1MACEN, RCC.C1_AHB1ENR.ETH1TXEN
 
 [region.dma_shared]
@@ -1149,8 +1122,7 @@ agents = eth_dma
         assert_eq!(eth.enabled_by.len(), 2);
 
         assert_eq!(eth.handoffs.len(), 2);
-        assert_eq!(eth.handoffs[0].register, "Ethernet_DMA.DMACTxDLAR.TDESLA");
-        assert_eq!(eth.handoffs[0].encoding, HandoffEncoding::WordAddr);
+        assert_eq!(eth.handoffs[0].register, "Ethernet_DMA.DMACTxDLAR");
         assert_eq!(eth.handoffs[0].align, Some(4));
         assert_eq!(eth.handoffs[1].align, None);
 
@@ -1298,7 +1270,7 @@ size = 16K
 [agent.d]
 kind = dma
 reach = sram1
-handoff = P.R.F : word_addr align 3
+handoff = P.R align 3
 ";
         let err = Target::parse(src).unwrap_err();
         assert!(err.contains("power of two"), "got: {err}");

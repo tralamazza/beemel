@@ -13,5 +13,5 @@ peripheral MyDma at 0x40030000 {
 owns MyDma;
 fn main() @context(thread) {
     Clk.CR.MYDMAEN = true;
-    MyDma.DESCADDR.PTR = 0x20001000;
+    MyDma.DESCADDR = 0x20001000;
 }

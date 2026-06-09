@@ -17,5 +17,5 @@ var RX: [RxDesc; 2] @align(32) in desc_region;
 owns MyDma;
 
 fn main() @context(thread) {
-    MyDma.DESCADDR.PTR = &RX as u32;
+    MyDma.DESCADDR = &RX as u32;
 }

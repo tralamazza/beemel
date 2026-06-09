@@ -130,9 +130,8 @@ pub fn verify(
         Some(source_map.clone()),
     );
     emitter.set_preempt(preempt::analyze(program, symbols));
-    // Region/agent obligations: encode handoff addresses (so the verify IR
-    // matches build) and emit the provenance assume + reachability assert.
-    emitter.set_word_addr_handoffs(word_addr_handoffs(target));
+    // Region/agent obligations: emit the provenance assume + reachability
+    // assert at handoff register writes.
     emitter.set_region_alignments(target.region_alignments());
     emitter.set_handoff_obligations(
         region_addr_ranges(program, target),
@@ -313,20 +312,6 @@ const CHECK_KINDS: &[(i64, &str)] = &[
     (39, "free"),
 ];
 
-/// `Peripheral.REGISTER.FIELD` paths of every `word_addr` handoff -- the verify
-/// IR must encode them the same as `bml build` so IKOS sees realistic code.
-fn word_addr_handoffs(target: &Target) -> std::collections::HashSet<String> {
-    let mut set = std::collections::HashSet::new();
-    for agent in &target.agents {
-        for h in &agent.handoffs {
-            if h.encoding == crate::target::HandoffEncoding::WordAddr {
-                set.insert(h.register.clone());
-            }
-        }
-    }
-    set
-}
-
 /// Region-placed static name -> `[lo, hi)` byte range of its region's mem block.
 /// The provenance assume at `&X as u32` uses this.
 fn region_addr_ranges(
@@ -359,7 +344,7 @@ fn region_ranges(target: &Target) -> HashMap<String, (u64, u64)> {
     map
 }
 
-/// Handoff field path (`P.R.F`) -> `[lo, hi)` bounding range of the owning
+/// Handoff register path (`P.R`) -> `[lo, hi)` bounding range of the owning
 /// agent's reachable mem blocks. The reachability assert uses this. Agents that
 /// reach everything (`reach = *`) or nothing impose no bound and are skipped --
 /// the bound is the min base / max end across reachable blocks, a sound

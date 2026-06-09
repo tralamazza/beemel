@@ -2,6 +2,6 @@
 import handoff_periph;
 owns MyDma;
 fn main() @context(thread) {
-    MyDma.CTRL.PTR = 0x20000000;
+    MyDma.CTRL = 0x20000000;
     MyDma.STATUS.BUSY = false;
 }

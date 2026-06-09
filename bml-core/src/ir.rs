@@ -42,19 +42,15 @@ pub struct IrEmitter {
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
     pub(crate) startup_init: Vec<(u64, u64)>,
-    /// Full handoff field paths (`Peripheral.REGISTER.FIELD`) whose encoding is
-    /// `word_addr`: a write of a byte address gets a compiler-inserted `>> 2`,
-    /// so the programmer never hand-writes the shift. Built from the target's
-    /// agent handoff lists. See `doc/regions-agents-plan.md`.
-    word_addr_handoffs: std::collections::HashSet<String>,
     /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
     /// block. In verify mode, taking `&X as u32` of such a static emits an
     /// `assume` that the address is in this range -- the load-bearing provenance
     /// fact IKOS propagates to the handoff obligation. Empty outside verify.
     region_addr_ranges: HashMap<String, (u64, u64)>,
-    /// Handoff field path (`P.R.F`) -> `[lo, hi)` bounding range of the owning
-    /// agent's reachable mem blocks. In verify mode, a write to the field emits
-    /// an `assert` that the byte address is in this range. Empty outside verify.
+    /// Handoff register path (`P.R`) -> `[lo, hi)` bounding range of the owning
+    /// agent's reachable mem blocks. In verify mode, a write to the register
+    /// emits an `assert` that the byte address is in this range. Empty outside
+    /// verify.
     handoff_reach_bounds: HashMap<String, (u64, u64)>,
     /// Region name -> `[lo, hi)` byte range of its mem block. In verify mode, a
     /// write to an `addr in R` struct field (an in-memory handoff) asserts the
@@ -254,7 +250,6 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
-            word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -299,7 +294,6 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
-            word_addr_handoffs: std::collections::HashSet::new(),
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -319,13 +313,6 @@ impl IrEmitter {
     /// `Target::startup_init`.
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
         self.startup_init = writes;
-    }
-
-    /// Install the set of `word_addr` handoff field paths
-    /// (`Peripheral.REGISTER.FIELD`). A write to one of these fields gets a
-    /// compiler-inserted `>> 2`, so source writes the byte address directly.
-    pub fn set_word_addr_handoffs(&mut self, paths: std::collections::HashSet<String>) {
-        self.word_addr_handoffs = paths;
     }
 
     /// Install the per-region alignment floors (region name -> bytes). A static
@@ -386,19 +373,6 @@ impl IrEmitter {
         self.line(&format!("{both} = and i1 {lo_ok}, {hi_ok}"));
         self.line(&format!("{zext} = zext i1 {both} to i32"));
         self.line(&format!("call void @__ikos_assert(i32 {zext}){dbg}"));
-    }
-
-    /// If `path` is a `word_addr` handoff field, emit `lshr i32 val, 2` and
-    /// return the encoded register; otherwise return `val_reg` unchanged. The
-    /// value is an address (i32/u32), so an unsigned shift is correct.
-    fn encode_word_addr_handoff(&mut self, val_reg: &str, path: &str) -> String {
-        if self.word_addr_handoffs.contains(path) {
-            let enc = self.new_reg();
-            self.line(&format!("{enc} = lshr i32 {val_reg}, 2"));
-            enc
-        } else {
-            val_reg.to_string()
-        }
     }
 
     #[must_use]
@@ -3499,6 +3473,19 @@ impl IrEmitter {
                     && let Some(reg) = p.regs.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
+                    // Verify mode: a write to a handoff register asserts the
+                    // stored byte address lies within the owning agent's
+                    // reachable memory. IKOS discharges it from the provenance
+                    // assume at `&X as u32`. The full address is stored verbatim
+                    // -- the register's reserved low bits are ignored by
+                    // hardware, so no encoding/shift is applied.
+                    if self.verify_mode
+                        && let Some(&(lo, hi)) = self
+                            .handoff_reach_bounds
+                            .get(&format!("{periph_name}.{}", field.0))
+                    {
+                        self.emit_range_assert(val_reg, lo, hi, &dbg);
+                    }
                     self.line(&format!(
                         "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
@@ -3513,10 +3500,7 @@ impl IrEmitter {
                     && let Some(field_def) = reg.fields.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
-                    let handoff_path = format!("{periph_name}.{}.{}", reg_field.0, field.0);
-                    // Bit-band: single-bit field within bit-band region. A
-                    // word_addr handoff field is 30 bits wide, so it never takes
-                    // this single-bit path -- the encoding lives in the RMW path.
+                    // Bit-band: single-bit field within bit-band region.
                     if self.has_bitband
                         && let Some(alias) =
                             crate::arch::arm::bitband_alias(addr, &field_def.bit_spec)
@@ -3542,25 +3526,12 @@ impl IrEmitter {
                     self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
                     // widen narrow value to i32 for RMW math
                     let widened = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
-                    // Verify mode: assert the byte address (pre-encoding) lies
-                    // within the agent's reachable memory. IKOS discharges this
-                    // from the provenance assume emitted at `&X as u32`.
-                    if self.verify_mode
-                        && let Some(&(lo, hi)) = self.handoff_reach_bounds.get(&handoff_path)
-                    {
-                        self.emit_range_assert(&widened, lo, hi, &dbg);
-                    }
-                    // word_addr handoff: the field holds (byte address >> 2).
-                    // Encode the widened (i32) address so source writes the byte
-                    // address; the field's bit position (`shl`, below) re-aligns
-                    // it. This removes the hand-written `>> 2`.
-                    let wide_val = self.encode_word_addr_handoff(&widened, &handoff_path);
-                    // shift new value into position
+                    // shift new value into the field's bit position
                     let shifted = self.new_reg();
                     if shift > 0 {
-                        self.line(&format!("{shifted} = shl i32 {wide_val}, {shift}"));
+                        self.line(&format!("{shifted} = shl i32 {widened}, {shift}"));
                     } else {
-                        self.line(&format!("{shifted} = add i32 {wide_val}, 0"));
+                        self.line(&format!("{shifted} = add i32 {widened}, 0"));
                     }
                     // mask shifted value to field width
                     let masked_val = self.new_reg();

@@ -30,7 +30,7 @@ reach = *
 [agent.mydma]
 kind = dma
 reach = sram1
-handoff = MyDma.DESCADDR.PTR : word_addr align 4
+handoff = MyDma.DESCADDR align 4
 
 [region.desc_region]
 mem = sram1

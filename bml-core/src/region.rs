@@ -12,9 +12,10 @@
 //!   `in`/`@section` conflict.
 //! - Slice 2a: `owns` path resolution against the peripheral table, and
 //!   cross-module exclusivity (two modules cannot own the same register).
-//! - Slice 2b/3: handoff write checks -- ownership-required (E605) and the
-//!   double-shift guard on auto-encoded `word_addr` handoffs (E606), both off a
-//!   single exhaustive write walk.
+//! - Slice 2b: handoff write check -- a handoff register may only be written by
+//!   the module that owns it (E605), off a single exhaustive write walk. The
+//!   full byte address is written verbatim (no encoding), so there is no shift
+//!   guard.
 //! - In-memory handoffs: an `addr in R` struct field must name a real region
 //!   (E607), and a descriptor delivered to an agent (`handoff = &RX`) must not
 //!   contain an `addr in R` field for a region that agent cannot reach (E608) --
@@ -27,13 +28,12 @@
 //! The handoff provenance checks (slice 4) extend this module.
 
 use crate::ast::{
-    BinaryOp, Block, Expr, Item, LValue, OwnsPath, Program, StaticDef, Stmt, StorageAnnotation,
-    UnaryOp,
+    Block, Expr, Item, LValue, OwnsPath, Program, StaticDef, Stmt, StorageAnnotation, UnaryOp,
 };
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, AgentKind, HandoffEncoding, Region, Target};
+use crate::target::{Agent, AgentKind, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -322,41 +322,38 @@ fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Cla
 
 // ---- slices 2b + 3: handoff write checks ------------------------------------
 
-/// One peripheral register/field write, with the source `FileId` (via `span`)
-/// and whether its right-hand side is a literal `>> 2`. `field` is `None` for a
-/// whole-register write (`P.R = x`) and `Some(F)` for a field write
-/// (`P.R.F = x`). Produced by one exhaustive walk and consumed by the ownership
-/// rule (E605), the double-shift guard (E606), and the descriptor-reach check
-/// (E608). `rhs_static` is the name of the static whose address is delivered
-/// (`= &RX_DESC`), used by E608 to find the descriptor handed to an agent.
-/// `rhs_disabling` is true when the right-hand side is a provably-disabling
-/// literal (`false`/`0`), used by the enable-presence check (E609) so a
-/// `= false` write does not count as enabling a clock gate.
+/// One peripheral register/field write, with the source `FileId` (via `span`).
+/// `field` is `None` for a whole-register write (`P.R = x`) and `Some(F)` for a
+/// field write (`P.R.F = x`). Produced by one exhaustive walk and consumed by
+/// the ownership rule (E605) and the descriptor-reach check (E608). `rhs_static`
+/// is the name of the static whose address is delivered (`= &RX_DESC`), used by
+/// E608 to find the descriptor handed to an agent. `rhs_disabling` is true when
+/// the right-hand side is a provably-disabling literal (`false`/`0`), used by the
+/// enable-presence check (E609) so a `= false` write does not count as enabling
+/// a clock gate.
 struct PeriphWrite {
     periph: String,
     reg: String,
     field: Option<String>,
     span: Span,
-    rhs_is_shr2: bool,
     rhs_static: Option<String>,
     rhs_disabling: bool,
 }
 
-/// Handoff write checks. Both rules act at peripheral-register write sites, so
-/// they share a single walk:
+/// Handoff write checks, acting at peripheral-register write sites off a single
+/// walk:
 /// - E605: a write to a handoff register from a file that does not own it.
-/// - E606: a source-level `>> 2` feeding a `word_addr` handoff field, which the
-///   compiler already encodes (slice 3) -- a hand-written shift double-shifts.
+/// - E608: a descriptor delivered to an agent whose `addr in R` field names a
+///   region the agent cannot reach.
+/// - E609: an agent programmed without its `enabled_by` clock gates set.
 fn check_handoff_writes(
     program: &Program,
     symbols: &SymbolTable,
     target: &Target,
     diags: &mut DiagnosticBag,
 ) {
-    // (peripheral, register) -> agent name, and the set of word_addr handoff
-    // field paths "P.R.F", from every agent's handoff list.
+    // (peripheral, register) -> agent name, from every agent's handoff list.
     let mut handoff_regs: HashMap<(String, String), String> = HashMap::new();
-    let mut word_addr_fields: HashSet<String> = HashSet::new();
     for agent in &target.agents {
         for h in &agent.handoffs {
             if let Some((p, r)) = handoff_register_path(&h.register) {
@@ -364,12 +361,9 @@ fn check_handoff_writes(
                     .entry((p, r))
                     .or_insert_with(|| agent.name.clone());
             }
-            if h.encoding == HandoffEncoding::WordAddr {
-                word_addr_fields.insert(h.register.clone());
-            }
         }
     }
-    if handoff_regs.is_empty() && word_addr_fields.is_empty() {
+    if handoff_regs.is_empty() {
         return;
     }
 
@@ -432,23 +426,6 @@ fn check_handoff_writes(
             {
                 check_descriptor_reach(static_name, agent, symbols, target, w.span, diags);
             }
-        }
-
-        // E606: pre-shifted value into an auto-encoded word_addr handoff field.
-        if w.rhs_is_shr2
-            && let Some(field) = &w.field
-            && word_addr_fields.contains(&format!("{}.{}.{}", w.periph, w.reg, field))
-        {
-            diags.error(
-                format!(
-                    "`{}.{}.{}` is a word_addr handoff: the compiler inserts the `>> 2`. \
-                     Writing a pre-shifted value double-shifts the address; write the byte \
-                     address directly (drop the `>> 2`).",
-                    w.periph, w.reg, field
-                ),
-                "E606",
-                w.span,
-            );
         }
     }
 
@@ -591,8 +568,8 @@ fn walk_stmt(stmt: &Stmt, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
         }
         Stmt::CompoundAssign(ca) => {
             // The RHS of a compound assign is not the stored value (it is one
-            // operand of `target OP= value`), so it is not a "pre-shifted
-            // address" for the E606 sense; pass None.
+            // operand of `target OP= value`), so it does not carry the
+            // delivered-static or disabling-literal facts; pass None.
             record_write(&ca.target, None, symbols, out);
             walk_expr(&ca.value, symbols, out);
         }
@@ -738,15 +715,14 @@ fn walk_expr(expr: &Expr, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
 
 /// If `lv` is a write to a peripheral register or one of its fields, record it.
 /// `P.R = x` is `Field(Name(P), R)` (field `None`); `P.R.F = x` is
-/// `Field(Field(Name(P), R), F)` (field `Some(F)`). `rhs`, when present, lets
-/// the double-shift guard see a literal `>> 2`.
+/// `Field(Field(Name(P), R), F)` (field `Some(F)`). `rhs`, when present, supplies
+/// the delivered-static (`= &X`) and disabling-literal (`= false`/`0`) facts.
 fn record_write(
     lv: &LValue,
     rhs: Option<&Expr>,
     symbols: &SymbolTable,
     out: &mut Vec<PeriphWrite>,
 ) {
-    let shr2 = rhs.is_some_and(is_shr_two);
     let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
     let rhs_disabling = rhs.is_some_and(is_disabling);
     if let LValue::Field(base, field) = lv {
@@ -758,7 +734,6 @@ fn record_write(
                     reg: field.0.clone(),
                     field: None,
                     span: field.1,
-                    rhs_is_shr2: shr2,
                     rhs_static: rhs_static.clone(),
                     rhs_disabling,
                 });
@@ -773,7 +748,6 @@ fn record_write(
                         reg: reg.0.clone(),
                         field: Some(field.0.clone()),
                         span: field.1,
-                        rhs_is_shr2: shr2,
                         rhs_static: rhs_static.clone(),
                         rhs_disabling,
                     });
@@ -783,18 +757,6 @@ fn record_write(
             // pointer deref: not a peripheral-register write path.
             LValue::Name(_) | LValue::Index(..) | LValue::Deref(_) => {}
         }
-    }
-}
-
-/// Whether `e` is, at top level, a right shift by the literal 2 (`x >> 2`),
-/// possibly wrapped in parentheses -- the hand-written word-address encoding.
-fn is_shr_two(e: &Expr) -> bool {
-    match e {
-        Expr::Group(inner) => is_shr_two(inner),
-        Expr::Binary(_, BinaryOp::Shr, rhs) => {
-            matches!(rhs.as_ref(), Expr::IntLiteral(2, _, _))
-        }
-        _ => false,
     }
 }
 

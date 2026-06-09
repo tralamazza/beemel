@@ -5,5 +5,5 @@ peripheral MyDma at 0x40030000 {
 }
 owns MyDma.DESCADDR;
 fn main() @context(thread) {
-    MyDma.DESCADDR.PTR = 0x20000000;
+    MyDma.DESCADDR = 0x20000000;
 }

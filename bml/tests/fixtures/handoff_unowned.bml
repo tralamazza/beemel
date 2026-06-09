@@ -1,5 +1,5 @@
 // Writes the handoff register MyDma.CTRL without owning it -> E605.
 import handoff_periph;
 fn main() @context(thread) {
-    MyDma.CTRL.PTR = 0x20000000;
+    MyDma.CTRL = 0x20000000;
 }

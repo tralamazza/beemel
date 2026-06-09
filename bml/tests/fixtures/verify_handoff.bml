@@ -17,5 +17,5 @@ fn desc_addr() -> u32 {
 }
 
 fn main() @context(thread) {
-    MyDma.DESCADDR.PTR = desc_addr();
+    MyDma.DESCADDR = desc_addr();
 }
