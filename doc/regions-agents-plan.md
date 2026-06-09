@@ -161,6 +161,16 @@ Extends the existing INI format of `stm32h723zg.target` with `[mem.*]` and
 pair (which the H723 file already bends -- it points `ram_base` at D2 SRAM as
 a workaround for exactly the reachability problem this plan solves).
 
+With `[mem.*]` blocks the linker derives every extent from the blocks, so the
+flat `flash_*`/`ram_*` keys are unneeded: the code/flash block is inferred from
+`vector_table_offset` (it is in flash by definition), and `data_block = <name>`
+names the working-RAM block for `.data`/`.bss`/`.stack`. The flat keys remain
+only for legacy targets with no mem blocks (`generate_linker_script` branches on
+`mem_blocks.is_empty()`). A block's role -- code sink, data sink -- is a single
+1-of-N selection, so `data_block` is one key naming one block, not a per-block
+flag that could be duplicated; `flash_block()`/`ram_block()` fall back to
+`flash_base`/`ram_base` for older targets.
+
 ```ini
 arch = armv7em
 cpu = cortex-m7

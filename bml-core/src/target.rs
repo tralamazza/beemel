@@ -17,6 +17,11 @@ pub struct Target {
     pub ram_base: u64,
     pub ram_size: u64,
     pub vector_table_offset: u64,
+    /// Name of the mem block that holds `.data`/`.bss`/`.stack` (the working
+    /// RAM) for mem-block targets. The code/flash block is inferred from
+    /// `vector_table_offset`, so with mem blocks the flat `flash_*`/`ram_*` keys
+    /// are unneeded. `None` falls back to the block containing `ram_base`.
+    pub data_block: Option<String>,
     pub interrupts: HashMap<String, u16>,
     /// MMIO read-modify-write OR writes applied at the very start of
     /// `reset_handler`, before `.data`/`.bss` init -- the equivalent of CMSIS
@@ -174,6 +179,7 @@ impl Default for Target {
             ram_base: 0x2000_0000,
             ram_size: 64 * 1024,
             vector_table_offset: 0x0800_0000,
+            data_block: None,
             interrupts: HashMap::new(),
             startup_init: Vec::new(),
             mem_blocks: Vec::new(),
@@ -459,6 +465,7 @@ impl Target {
                         format!("line {}: invalid vector_table_offset: {val}", line_num + 1)
                     })?;
                 }
+                "data_block" => target.data_block = Some(val.to_string()),
                 // Resolved by `from_file` (relative to the including file) before
                 // this file's directives are applied; a no-op here.
                 "include" => {}
@@ -527,23 +534,27 @@ impl Target {
                 }
             }
         }
-        // The mem-block-driven linker script needs a flash block (for .text)
-        // and a ram block (for .data/.bss/.stack). Required only when regions
-        // are present, since that is what switches generation to mem blocks.
-        if !self.regions.is_empty() {
+        // The mem-block-driven linker script needs a code block (for .text) and
+        // a working-RAM block (for .data/.bss/.stack). Required whenever mem
+        // blocks are present, since that switches generation to the mem-block
+        // layout.
+        if !self.mem_blocks.is_empty() {
             if self.flash_block().is_none() {
                 return Err(format!(
-                    "regions are defined but no mem block contains flash_base (0x{:08X}); \
-                     add a [mem.*] covering it",
-                    self.flash_base
+                    "mem blocks are defined but none holds the vector table \
+                     (vector_table_offset 0x{:08X}); add a [mem.*] covering it",
+                    self.vector_table_offset
                 ));
             }
+            if let Some(name) = &self.data_block
+                && !self.mem_blocks.iter().any(|m| &m.name == name)
+            {
+                return Err(format!("data_block = `{name}` names no [mem.*]"));
+            }
             if self.ram_block().is_none() {
-                return Err(format!(
-                    "regions are defined but no mem block contains ram_base (0x{:08X}); \
-                     add a [mem.*] covering it",
-                    self.ram_base
-                ));
+                return Err("mem blocks are defined but no working-RAM block; set \
+                     `data_block = <name>` (or point ram_base into a [mem.*])"
+                    .to_string());
             }
         }
         // Regions must name a real mem block and real agents, and the region's
@@ -695,18 +706,27 @@ impl Target {
         Ok(flags)
     }
 
-    /// The mem block that contains `flash_base` (holds `.text`/`.rodata` and is
-    /// the load region for `.data`). Only meaningful when `[mem.*]` is used.
+    /// The code/flash block: the mem block holding the vector table (`.text`/
+    /// `.rodata` link here, and it is the load region for `.data`). Inferred
+    /// from `vector_table_offset`, which is in flash by definition; falls back to
+    /// the block containing `flash_base` for targets predating the inference.
     #[must_use]
     pub fn flash_block(&self) -> Option<&MemBlock> {
-        self.mem_blocks
-            .iter()
-            .find(|m| self.flash_base >= m.base && self.flash_base < m.end())
+        let contains = |addr: u64| {
+            self.mem_blocks
+                .iter()
+                .find(move |m| addr >= m.base && addr < m.end())
+        };
+        contains(self.vector_table_offset).or_else(|| contains(self.flash_base))
     }
 
-    /// The mem block that contains `ram_base` (holds `.data`/`.bss`/`.stack`).
+    /// The working-RAM block (holds `.data`/`.bss`/`.stack`): the block named by
+    /// `data_block`, else the block containing `ram_base` (back-compat).
     #[must_use]
     pub fn ram_block(&self) -> Option<&MemBlock> {
+        if let Some(name) = &self.data_block {
+            return self.mem_blocks.iter().find(|m| &m.name == name);
+        }
         self.mem_blocks
             .iter()
             .find(|m| self.ram_base >= m.base && self.ram_base < m.end())
@@ -714,15 +734,15 @@ impl Target {
 
     #[must_use]
     pub fn generate_linker_script(&self) -> String {
-        if self.regions.is_empty() {
+        if self.mem_blocks.is_empty() {
             self.generate_flat_linker_script()
         } else {
             self.generate_region_linker_script()
         }
     }
 
-    /// The legacy single-FLASH/single-RAM layout, used when no `[region.*]`
-    /// sections are present. Unchanged behavior for existing targets.
+    /// The legacy single-FLASH/single-RAM layout, used when no `[mem.*]` blocks
+    /// are present. Driven by the flat `flash_*`/`ram_*` keys.
     fn generate_flat_linker_script(&self) -> String {
         let flash_base = format!("0x{:08X}", self.flash_base);
         let flash_size = format_size(self.flash_size);
@@ -1446,6 +1466,50 @@ handoff = P.R align 3
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // With mem blocks, the code block is inferred from vector_table_offset and
+    // the working RAM is chosen by `data_block` -- no flat flash_*/ram_* keys.
+    #[test]
+    fn data_block_selects_working_ram() {
+        let t = t("arch = armv7em\n\
+                   vector_table_offset = 0x08000000\n\
+                   data_block = sram2\n\
+                   [mem.flash]\n\
+                   base = 0x08000000\n\
+                   size = 256K\n\
+                   [mem.sram1]\n\
+                   base = 0x20000000\n\
+                   size = 64K\n\
+                   [mem.sram2]\n\
+                   base = 0x30000000\n\
+                   size = 32K\n");
+        assert_eq!(t.flash_block().unwrap().name, "flash");
+        assert_eq!(t.ram_block().unwrap().name, "sram2");
+        let ld = t.generate_linker_script();
+        assert!(ld.contains("flash (rx) : ORIGIN = 0x08000000"), "ld:\n{ld}");
+        // .data/.bss/.stack go to the selected working RAM, not the other SRAM.
+        assert!(ld.contains("} > sram2"), "ld:\n{ld}");
+        assert!(!ld.contains("} > sram1"), "ld:\n{ld}");
+    }
+
+    #[test]
+    fn data_block_unknown_is_error() {
+        let err = Target::parse(
+            "arch = armv7em\n\
+             data_block = nope\n\
+             [mem.flash]\n\
+             base = 0x08000000\n\
+             size = 256K\n\
+             [mem.sram]\n\
+             base = 0x20000000\n\
+             size = 64K\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("data_block") && err.contains("no [mem"),
+            "got: {err}"
+        );
+    }
+
     #[test]
     fn region_linker_script_places_section_in_mem_block() {
         // sram1 (0x30000000) holds a region; dtcm (0x20000000) is the working
@@ -1483,7 +1547,7 @@ handoff = P.R align 3
 
     #[test]
     fn regions_without_flash_block_is_error() {
-        // sram1 backs the region but nothing covers flash_base -> rejected.
+        // sram1 backs the region but nothing covers the vector table -> rejected.
         let src = "\
 arch = armv7em
 ram_base = 0x30000000
@@ -1498,7 +1562,7 @@ mem = sram1
 agents = d
 ";
         let err = Target::parse(src).unwrap_err();
-        assert!(err.contains("flash_base"), "got: {err}");
+        assert!(err.contains("vector table"), "got: {err}");
     }
 
     #[test]

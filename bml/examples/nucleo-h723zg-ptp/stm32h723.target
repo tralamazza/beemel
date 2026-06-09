@@ -13,11 +13,12 @@ priority_bits = 4
 has_fpu = true
 has_bitband = false
 has_mpu = true
-flash_base = 0x08000000
-flash_size = 1M
-ram_base = 0x30000000
-ram_size = 32K
 vector_table_offset = 0x08000000
+# With [mem.*] blocks the linker derives extents from the blocks: the code block
+# is the one holding the vector table (flash), and data_block names the working
+# RAM (.data/.bss/.stack). The flat flash_*/ram_* keys are only for targets
+# without mem blocks, so they are omitted here.
+data_block = sram
 
 # Applied at the very start of reset_handler, before .data/.bss init (the CMSIS
 # SystemInit ordering). Format: address = or_mask  ->  *(volatile u32*)address |= or_mask
@@ -31,10 +32,9 @@ vector_table_offset = 0x08000000
 [interrupts]
 ETH = 61
 
-# Memory blocks. The 32K D2 AHB SRAM is split: a working RAM block
-# (.data/.bss/.stack) and a dma_pool block the ETH DMA buffers are placed in.
-# Both are in D2 SRAM, which the ETH DMA reaches; ram_base above matches the
-# sram block so it stays the working RAM.
+# Memory blocks. The 32K D2 AHB SRAM is split: the `sram` working RAM block
+# (.data/.bss/.stack, selected by data_block above) and a dma_pool block the ETH
+# DMA buffers are placed in. Both are in D2 SRAM, which the ETH DMA reaches.
 [mem.flash]
 base = 0x08000000
 size = 1M
