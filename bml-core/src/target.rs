@@ -76,8 +76,18 @@ pub enum AgentKind {
     External,
 }
 
-/// Whether a bus-master agent can write memory or only read it (e.g. LTDC is a
-/// read-only master: it cannot produce a write-write race).
+/// Whether a bus-master agent can write memory or only read it.
+///
+/// DORMANT (parsed from `access = read | rw`, default `ReadWrite`, but no check
+/// consumes it yet -- a deliberate placeholder, not an oversight). Its one real
+/// consumer in this silicon family is the LCD-TFT controller (LTDC), the *only*
+/// intrinsically read-only bus master on the STM32H7 (RM0468 Table 2: every
+/// other master -- the DMAs, SDMMC, ETH, USB, and even DMA2D/Chrom-Art -- reads
+/// *and* writes). When an LTDC-style agent appears, `access = read` should relax
+/// derived-Move for its region: the CPU *produces* the framebuffer, so the
+/// index-read protection is both unnecessary and counterproductive (you read
+/// pixels back). Cache discipline still applies (CPU writes cached, LTDC reads
+/// stale). Until such an agent exists, building that check would be premature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentAccess {
     ReadWrite,
