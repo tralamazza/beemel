@@ -46,6 +46,12 @@ pub struct MemBlock {
     pub name: String,
     pub base: u64,
     pub size: u64,
+    /// Whether this memory is mapped cacheable (write-back/write-through). The
+    /// cache-discipline check (failure mode #3) uses it: a cacheable block
+    /// shared by a cached CPU and a non-snooping agent has diverging views.
+    /// Defaults to `true` (assume cacheable -- the dangerous case -- so a region
+    /// shared with a non-coherent agent must be declared `cacheable = false`).
+    pub cacheable: bool,
 }
 
 impl MemBlock {
@@ -206,6 +212,7 @@ impl Target {
                             name: name.to_string(),
                             base: 0,
                             size: 0,
+                            cacheable: true,
                         });
                         Section::Mem(target.mem_blocks.len() - 1)
                     }
@@ -257,6 +264,9 @@ impl Target {
                         block.size = parse_int(val).map_err(|_| {
                             format!("line {}: invalid mem size `{val}`", line_num + 1)
                         })?;
+                    }
+                    "cacheable" => {
+                        block.cacheable = parse_bool(val, "cacheable", line_num)?;
                     }
                     _ => {
                         return Err(format!("line {}: unknown mem key `{key}`", line_num + 1));
@@ -478,6 +488,37 @@ impl Target {
                     return Err(format!(
                         "region `{}` is in mem `{}`, which agent `{a}` cannot reach",
                         region.name, region.mem
+                    ));
+                }
+            }
+
+            // Cache discipline (failure mode #3): if the region's memory is
+            // cacheable and it is accessed by both a cached CPU (D-cache on) and
+            // a non-snooping agent (a DMA/external master that does not see the
+            // cache), their views diverge -- the CPU reads/writes the cache, the
+            // agent physical memory. Require the memory to be non-cacheable. The
+            // CPU is implicit via `reaches` (software touches the region); the
+            // non-snooping agent is one the region explicitly lists.
+            if let Some(mem) = self.mem_blocks.iter().find(|m| m.name == region.mem)
+                && mem.cacheable
+            {
+                let non_snooping = region.agents.iter().find_map(|a| {
+                    self.agents.iter().find(|ag| {
+                        &ag.name == a
+                            && matches!(ag.kind, AgentKind::Dma | AgentKind::External)
+                            && !ag.cached
+                    })
+                });
+                let cached_cpu = self.agents.iter().find(|ag| {
+                    matches!(ag.kind, AgentKind::Cpu) && ag.cached && ag.reaches(&region.mem)
+                });
+                if let (Some(dma), Some(cpu)) = (non_snooping, cached_cpu) {
+                    return Err(format!(
+                        "region `{}` is in cacheable mem `{}`, accessed by the cached CPU `{}` \
+                         and the non-snooping agent `{}`; their cache views diverge. Mark mem \
+                         `{}` `cacheable = false` (and configure it non-cacheable), or make the \
+                         agent cache-coherent.",
+                        region.name, region.mem, cpu.name, dma.name, region.mem
                     ));
                 }
             }
@@ -1073,6 +1114,40 @@ agents = eth_dma
         let src = H723_REGIONS.replace("mem = sram1", "mem = nope");
         let err = Target::parse(&src).unwrap_err();
         assert!(err.contains("unknown mem"), "got: {err}");
+    }
+
+    // A cached CPU and the (default) cacheable sram1, shared with the
+    // non-snooping eth_dma -- this is the appended cpu agent below.
+    const H723_CACHED_CPU: &str = "\n[agent.cpu]\nkind = cpu\ncached = true\nreach = *\n";
+
+    #[test]
+    fn cacheable_region_shared_with_noncoherent_agent_is_error() {
+        // Failure mode #3: enabling the D-cache (cached cpu) while a non-snooping
+        // DMA shares a cacheable region makes their views diverge. Rejected at
+        // target load.
+        let src = format!("{H723_REGIONS}{H723_CACHED_CPU}");
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("cache views diverge"), "got: {err}");
+        assert!(err.contains("dma_shared"), "got: {err}");
+    }
+
+    #[test]
+    fn noncacheable_region_with_noncoherent_agent_is_ok() {
+        // Same hazard, resolved by declaring the region's mem non-cacheable.
+        let src = format!("{H723_REGIONS}{H723_CACHED_CPU}").replace(
+            "[mem.sram1]\nbase = 0x30000000\nsize = 16K",
+            "[mem.sram1]\nbase = 0x30000000\nsize = 16K\ncacheable = false",
+        );
+        Target::parse(&src).expect("a non-cacheable shared region must be accepted");
+    }
+
+    #[test]
+    fn cacheable_region_with_dcache_off_is_ok() {
+        // The current bring-up: D-cache never enabled (cpu cached=false), so the
+        // CPU also sees physical memory -- no divergence even though cacheable.
+        let src =
+            format!("{H723_REGIONS}{H723_CACHED_CPU}").replace("cached = true", "cached = false");
+        Target::parse(&src).expect("a non-cached cpu must not trip the cache check");
     }
 
     #[test]

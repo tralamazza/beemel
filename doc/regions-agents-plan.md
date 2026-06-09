@@ -243,12 +243,18 @@ Checks and derivations:
 - **Reach check:** the region's memory must lie within the reach of every
   listed agent. `[region.x] mem = dtcm, agents = eth_dma` is a target-file
   error -- the DTCM footgun dies here, before any source is compiled.
-- **Cache discipline is derived, not declared** (usage dictates declaration):
-  if a cached cpu agent shares a region with a non-snooping agent, the region
-  must be non-cacheable. On the current bring-up (D-cache never enabled) this
-  is vacuously satisfied; the check exists so that *enabling* D-cache later
-  forces an MPU story instead of silently corrupting RX. MPU config
-  generation from regions is future work, but the error fires from slice 1.
+- **Cache discipline** (failure mode #3): DONE (detection). `validate_regions`
+  rejects a region whose mem is cacheable (the `cacheable` mem-block attribute,
+  default `true`) when it is shared by a cached CPU (a `kind = cpu`, `cached =
+  true` agent that reaches the mem) and a non-snooping agent (a `dma`/`external`
+  agent, `cached = false`, the region lists). Fix: declare the mem `cacheable =
+  false`. On the current bring-up (D-cache never enabled, no `cached = true` cpu)
+  it is dormant; declaring `[agent.cpu] cached = true` later -- i.e. *enabling*
+  D-cache -- makes every non-coherent DMA region a target error instead of
+  silently corrupting RX (exactly failure mode #3). The check is detection only:
+  it forces the `cacheable = false` declaration but does not yet *generate* or
+  *verify* the MPU config that makes the memory non-cacheable -- that (and an
+  implicit cpu agent from the `cpu` field) is the follow-up.
 - `access = read` agents (LTDC) relax the rules: sharing with them constrains
   CPU-side ordering but cannot produce write-write races.
 
