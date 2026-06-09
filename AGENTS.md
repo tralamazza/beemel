@@ -29,6 +29,16 @@
 - Stick to ASCII characters.
 
 
+## Thinking
+
+Apply the Inversion Thinking Framework:
+- Inversion — Success through avoiding errors.
+- Falsification — Actively seeking evidence to disprove your own hypotheses.
+- Hanlon’s Razor — Not attributing to malice what can be explained by stupidity.
+- Occam’s Razor — The principle of simplicity; choosing the simplest solution.
+- First Principles — Returning to fundamental principles to guide decisions.
+
+
 ## Workflow
 
 Before committing, always run:
