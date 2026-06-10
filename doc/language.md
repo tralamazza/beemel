@@ -523,8 +523,8 @@ agent's transfer has completed, it yields the same bounds-checked `view` to
 consume the result. It is the *reclaim* counterpart to the handoff write (the
 *release*). If the agent declares a `completes_by` flag in the target, the
 reclaim must be guarded by observing it -- it must sit in the then-block of an
-`if <flag>` (E611), so the CPU cannot read mid-transfer; without `completes_by`
-the reclaim stays trusted. Only the contiguous `view` form is tightened;
+`if <flag>` (or `if done()`, where `done` returns the flag) so the CPU cannot
+read mid-transfer (E611); without `completes_by` the reclaim stays trusted. Only the contiguous `view` form is tightened;
 `ring`/`bits` over agent-shared are not yet.
 
 **Limitations (v1).** Strided linear views exist with a *compile-time* stride;

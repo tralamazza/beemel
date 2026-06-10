@@ -2859,6 +2859,34 @@ fn test_reclaim_unguarded_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// B broadening: a reclaim guarded by a completion-predicate helper
+// (`if done() { reclaim }`, where `done` returns the flag) is accepted
+// inter-procedurally.
+#[test]
+fn test_reclaim_guarded_helper_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_guarded_helper.bml", Some("reclaim_guard.target"));
+    assert!(
+        ok,
+        "a helper-guarded reclaim should build; stderr:\n{stderr}"
+    );
+}
+
+// Soundness of the broadening: a guard calling a function that does NOT return
+// the flag is not a completion predicate -> still E611.
+#[test]
+fn test_reclaim_nonpredicate_guard_rejected() {
+    let (ok, stderr) = bml_build_with_target(
+        "reclaim_guard_nonpredicate.bml",
+        Some("reclaim_guard.target"),
+    );
+    assert!(
+        !ok,
+        "a non-predicate guard should not satisfy E611; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
 // Derived-Move: the same array placed in an agent-shared region (no `@dma`
 // adjective) is wrapped in `Type::AgentShared` at resolution because the region
 // has a DMA agent, so the rvalue index-read is rejected with the same E326. The

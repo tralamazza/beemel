@@ -52,11 +52,18 @@ fn copy_setup() {
     MDMA.MDMA_C0CR.SWRQ = true;           // trigger the transfer
 }
 
+// A completion predicate: returns the channel transfer-complete flag. The
+// sound-reclaim guard recognizes it, so `if mdma_done() { reclaim }` is accepted
+// (the idiomatic form, resolved inter-procedurally).
+fn mdma_done() -> b1 {
+    return MDMA.MDMA_C0ISR.CTCIF0;
+}
+
 // Consume MDMA's output once it signals complete. The reclaim is gated on the
-// transfer-complete flag (the agent's `completes_by`), so the bounds-checked read
-// only runs after MDMA is done -- the sound-reclaim guard (E611).
+// transfer-complete predicate (the agent's `completes_by`), so the bounds-checked
+// read only runs after MDMA is done -- the sound-reclaim guard (E611).
 fn copy_poll() {
-    if MDMA.MDMA_C0ISR.CTCIF0 {
+    if mdma_done() {
         const v = reclaim(SCRATCH);
         SCRATCH_CHECK = v[0] as u32;
         SCRATCH_DONE = 1;

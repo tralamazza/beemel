@@ -651,6 +651,19 @@ fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut Diagnost
     }
 
     let mut scan = GuardScan::default();
+    // Completion predicates: a fn whose result is a *direct* flag read (empty
+    // `preds` -> no predicate-through-predicate) maps to that flag, so
+    // `if mdma_done() { reclaim }` counts as a guard -- same soundness as the
+    // inline read, since the predicate returns the flag's current value.
+    let no_preds = HashMap::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item
+            && let Some(result) = fn_result_expr(&f.body)
+            && let Some(flag) = cond_flag(result, &no_preds)
+        {
+            scan.preds.insert(f.name.0.clone(), flag);
+        }
+    }
     for item in &program.items {
         if let Item::FnDef(f) = item {
             gscan_block(&f.body, &flags_of, &mut scan);
@@ -684,19 +697,43 @@ struct GuardScan {
     guards: Vec<(String, Span)>,
     /// `(reclaim span, the buffer's acceptable completion flags)`.
     reclaims: Vec<(Span, Vec<String>)>,
+    /// Completion predicates: a fn name -> the flag it returns, so an
+    /// `if mdma_done()` guard resolves to the underlying flag.
+    preds: HashMap<String, String>,
 }
 
-/// If `e` is a bare read of a peripheral field (`P.R.F`, possibly parenthesized),
-/// return its `"P.R.F"` path -- the only `if` condition v0 treats as establishing
-/// "the flag is set" in the then-branch.
-fn cond_flag(e: &Expr) -> Option<String> {
+/// The single expression a function evaluates to -- its trailing expression, or
+/// the value of a lone `return e`. Used to recognize completion predicates.
+fn fn_result_expr(body: &Block) -> Option<&Expr> {
+    if let Some(t) = &body.trailing {
+        Some(t)
+    } else if let [Stmt::Return(r)] = body.stmts.as_slice() {
+        r.value.as_ref()
+    } else {
+        None
+    }
+}
+
+/// The flag an `if` condition establishes in its then-branch: a bare field read
+/// (`P.R.F`, possibly parenthesized), or a no-argument call to a completion
+/// predicate (`mdma_done()` whose body returns the flag). `preds` resolves the
+/// latter; pass an empty map to recognize only direct reads (used to *build* the
+/// predicate set without recursing through predicates).
+fn cond_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
     match e {
-        Expr::Group(inner) => cond_flag(inner),
+        Expr::Group(inner) => cond_flag(inner, preds),
         Expr::FieldAccess(mid, (field, _)) => {
             if let Expr::FieldAccess(inner, (reg, _)) = mid.as_ref()
                 && let Expr::Ident((periph, _)) = inner.as_ref()
             {
                 Some(format!("{periph}.{reg}.{field}"))
+            } else {
+                None
+            }
+        }
+        Expr::Call(callee, args) if args.is_empty() => {
+            if let Expr::Ident((name, _)) = callee.as_ref() {
+                preds.get(name).cloned()
             } else {
                 None
             }
@@ -720,7 +757,7 @@ fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
     match stmt {
         Stmt::If(i) => {
             gscan_expr(&i.cond, flags_of, scan);
-            if let Some(flag) = cond_flag(&i.cond) {
+            if let Some(flag) = cond_flag(&i.cond, &scan.preds) {
                 scan.guards.push((flag, i.then_block.span));
             }
             gscan_block(&i.then_block, flags_of, scan);
@@ -862,7 +899,7 @@ fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
         Expr::Block(b) => gscan_block(&b.block, flags_of, scan),
         Expr::If(i) => {
             gscan_expr(&i.cond, flags_of, scan);
-            if let Some(flag) = cond_flag(&i.cond) {
+            if let Some(flag) = cond_flag(&i.cond, &scan.preds) {
                 scan.guards.push((flag, i.then_block.span));
             }
             gscan_block(&i.then_block, flags_of, scan);

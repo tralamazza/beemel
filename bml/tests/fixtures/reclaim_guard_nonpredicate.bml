@@ -1,0 +1,26 @@
+// A guard calling a function that does NOT return the completion flag is not
+// recognized -> still E611. The helper-predicate broadening stays sound: only a
+// fn whose result is the flag counts, not any b1-returning function.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn always() -> b1 {
+    return true;
+}
+
+fn read_always(i: u32) -> u32 {
+    if always() {
+        const v = reclaim(BUF);
+        return v[i] as u32;
+    }
+    return 0;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_always(0);
+}

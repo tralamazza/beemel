@@ -546,12 +546,16 @@ packed layout.
   `reclaim(BUF)` of that agent's buffer to be control-dependent on observing the
   flag. v0 is sound but conservative via **span containment**: the reclaim must
   lie lexically in the then-block of an `if <flag>` (proven by span, no
-  flow-sensitive walk). NOT yet recognized (so conservatively rejected): helper
-  predicates (`if mdma_done()` -- needs inter-procedural), `while !flag {}`
-  busy-waits, negated/compared conditions, and per-buffer association (v0 assumes
-  one async agent per region). The full B (control-flow domination across those
-  forms) is the follow-up. Pinned by `reclaim_guarded.bml`/`reclaim_unguarded.bml`
-  (E611); dogfooded on `copy_dma.bml` (guarded on `MDMA.MDMA_C0ISR.CTCIF0`).
+  flow-sensitive walk). **Helper predicates now recognized** (broadened): a fn
+  whose result is the flag read (`fn mdma_done() -> b1 { return F; }`) maps to its
+  flag, so `if mdma_done() { reclaim }` -- the idiomatic form -- counts; only a fn
+  that actually returns the flag qualifies (a non-predicate guard stays E611).
+  Still NOT recognized (conservatively rejected): `while !flag {}` busy-waits,
+  negated/compared conditions, and per-buffer association (v0 assumes one async
+  agent per region). The full B (control-flow domination across those forms) is
+  the follow-up. Pinned by `reclaim_guarded{,_helper}.bml`,
+  `reclaim_unguarded.bml`/`reclaim_guard_nonpredicate.bml` (E611); dogfooded on
+  `copy_dma.bml` (`if mdma_done()`).
 - *Toward unifying with the ceiling protocol.* The two concurrency disciplines
   (ceiling = mutual exclusion for CPU contexts; release/reclaim = ownership
   transfer for async agents) are one concept -- region ownership -- with the
