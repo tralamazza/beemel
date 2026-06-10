@@ -1,0 +1,20 @@
+// Per-core partitioned statics: each core touches only its own counter --
+// accepted. Taking the entry's address (the launch handshake needs it) does
+// not put the entry on the launcher's core. NOTE the entry is UNANNOTATED
+// (context Any): E408 forbids taking a @context fn's address, so v0 entries
+// must be Any (a carve-out for target-declared entries is recorded).
+var COUNT0: u32;
+var COUNT1: u32;
+
+fn core1_main() {
+    loop {
+        var c: u32 = COUNT1;
+        COUNT1 = c + 1;
+    }
+}
+
+fn main() @context(thread) {
+    var e: u32 = &core1_main as u32;
+    var c: u32 = COUNT0;
+    COUNT0 = c + e;
+}

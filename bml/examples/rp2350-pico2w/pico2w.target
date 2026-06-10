@@ -21,3 +21,9 @@ reach = sram8, flash
 [region.dma_buf]
 mem = sram8
 agents = dma
+
+# Bind core1 to its entry: everything core1_main transitively mentions runs
+# on core1, and the cross-core sharing check (E615) keeps the two cores'
+# mutable statics partitioned.
+[agent.core1]
+entry = core1_main

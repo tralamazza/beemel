@@ -188,6 +188,13 @@ pub struct Agent {
     /// be control-dependent on observing one of these. Empty = `reclaim` stays
     /// trusted (unchecked).
     pub completes_by: Vec<String>,
+    /// Entry function for a `cpu`-kind agent (`entry = <fn>`): the function
+    /// this core starts executing (launched by another core, e.g. the RP2350
+    /// FIFO handshake). Project policy, not chip physics -- it binds CODE to
+    /// the core, and core-reachability is derived from it (everything the
+    /// entry transitively mentions runs on this core). Drives the cross-core
+    /// sharing check (E615).
+    pub entry: Option<String>,
     /// Bus-matrix windows (`bus = start..end, ...`): the address ranges this
     /// agent's master ports can physically address. Empty = no transcription
     /// available, `reach` stays trusted. Non-empty = every reached block must
@@ -364,6 +371,7 @@ impl Target {
                                 handoffs: Vec::new(),
                                 enabled_by: Vec::new(),
                                 completes_by: Vec::new(),
+                                entry: None,
                                 bus: Vec::new(),
                             });
                             target.agents.len() - 1
@@ -639,6 +647,13 @@ impl Target {
                 if !self.mem_blocks.iter().any(|m| &m.name == r) {
                     return Err(format!("agent `{}` reaches unknown mem `{r}`", agent.name));
                 }
+            }
+            // `entry` binds code to a core: only meaningful for cpu agents.
+            if agent.entry.is_some() && agent.kind != AgentKind::Cpu {
+                return Err(format!(
+                    "agent `{}` declares `entry`, but only `kind = cpu` agents execute code",
+                    agent.name
+                ));
             }
             // Bus-matrix cross-check: if the agent declares bus windows (a
             // transcription of the vendor interconnect table), every block it
@@ -1205,6 +1220,7 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
         "enabled_by" => agent.enabled_by = parse_list(val),
         "completes_by" => agent.completes_by = parse_list(val),
         "bus" => agent.bus = parse_bus_windows(val, line_num)?,
+        "entry" => agent.entry = Some(val.to_string()),
         _ => {
             return Err(format!("line {}: unknown agent key `{key}`", line_num + 1));
         }

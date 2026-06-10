@@ -46,3 +46,34 @@ peripheral RESETS at 0x40020000 {
         field DMA: b1 bit[2]          // read-only: high when out of reset
     }
 }
+
+// Single-cycle IO block, per-core banked at one address: each core sees its
+// OWN copy of these registers (CPUID, the inter-core FIFO pair). The FIFOs
+// are the sanctioned cross-core channel (E615 rejects shared statics).
+peripheral SIO at 0xD0000000 {
+    reg CPUID offset 0x000 {
+        field CORE: u32 bit[0..31]    // reads 0 on core0, 1 on core1
+    }
+    reg FIFO_ST offset 0x050 {
+        field VLD: b1 bit[0]          // this core's RX FIFO has data
+        field RDY: b1 bit[1]          // this core's TX FIFO has space
+    }
+    reg FIFO_WR offset 0x054 {
+        field DATA: u32 bit[0..31]
+    }
+    reg FIFO_RD offset 0x058 {
+        field DATA: u32 bit[0..31]
+    }
+}
+
+// Power-on state machine: per-subsystem reset forcing. Used to put core1
+// back into the bootrom holding pen before launching it (the pen only
+// listens from a fresh core1 reset; launching into a stale core1 is flaky).
+peripheral PSM at 0x40018000 {
+    reg FRCE_OFF offset 0x4 {
+        field PROC1: b1 bit[24]
+    }
+    reg DONE offset 0xc {
+        field PROC1: b1 bit[24]
+    }
+}

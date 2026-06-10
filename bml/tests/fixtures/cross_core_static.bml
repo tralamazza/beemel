@@ -1,0 +1,15 @@
+// COUNT is written by core0 (main) and core1 (core1_main): no per-core
+// protection can exclude across cores -- rejected (E615).
+var COUNT: u32;
+
+fn core1_main() {
+    loop {
+        var c: u32 = COUNT;
+        COUNT = c + 1;
+    }
+}
+
+fn main() @context(thread) {
+    var c: u32 = COUNT;
+    COUNT = c + 1;
+}

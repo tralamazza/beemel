@@ -744,10 +744,40 @@ packed layout.
     it through an Any helper). Pinned by `shared_in_region.bml` (composed,
     accepted) and `shared_in_region_noclaim.bml` (reclaim without claim
     rejected, message points at claim).
-  - *Remaining (smaller):* scoped view lifetimes (the trust gap claim and
-    reclaim share); pointer-call context edges; compared guard conditions;
-    per-buffer flag association; multi-core (core1) consumption; ETH
-    link-up recovery in the H723 example driver.
+  - *Multi-core slice 1: core identity + cross-core sharing (E615).* DONE
+    (compiler side; hardware launch demonstrated with an open finding). A
+    cpu-kind agent binds its code via `entry = <fn>` (project policy;
+    pico2w.target binds core1 to core1_main). Core-reachability propagates
+    from roots (main + ISRs -> implicit core0; declared entries -> their
+    core, PINNED so the launch site taking `&entry` does not poison the
+    entry's tree -- consequence: directly calling another core's entry is
+    undetected, documented) over the same mention edges as context
+    propagation (`ceiling::fn_mentions`, shared). A mutable static reachable
+    from multiple cores is E615 -- including `@shared` ones (the ceiling's
+    cpsid masks ONE core; claim likewise). Module consts are freely shared.
+    ISRs are assumed core0 (per-core NVIC modeling deferred). E615's FIRST
+    REAL CATCH was our own bring-up: the relaunch watchdog read core1's
+    counter from core0; the fix demonstrates the sanctioned pattern
+    (cross-core observation via the SIO FIFO MMIO channel). Interplay
+    finding: E408 forbids `&fn` of @context fns, so v0 entries must be
+    unannotated (Any); an E408 carve-out for declared entries is recorded.
+    Pinned by cross_core_{static,partitioned,shared}.bml + cross_core.target.
+    HARDWARE: core1 launch via the bootrom FIFO handshake (datasheet 5.3,
+    PSM reset + {0,0,1,vtor,sp,entry|1} + echo verify + bounded-ack retry,
+    all in bml) ran bml code on core1 repeatedly (counter at ~1.9M/s for
+    many seconds, CPUID read back, FIFO ack + heartbeats). OPEN FINDING:
+    the launch is BIMODAL on this board -- same binary either comes up fully
+    functional or with core1's SRAM stores silently dying while its SIO
+    MMIO writes work (FIFO-heartbeat discriminator experiment); suspects:
+    ACCESSCTRL/security state vs the pen, debug-reset vs power-on state.
+    Also: openocd cm1 `reg pc` is unreliable with this config (read 0xda
+    while core1 was demonstrably counting) -- calibrate instruments first.
+    Recorded in probe.bml; fresh-session investigation.
+  - *Remaining (smaller):* the RP2350 bimodal-launch investigation; scoped
+    view lifetimes (the trust gap claim and reclaim share); pointer-call
+    context edges; compared guard conditions; per-buffer flag association;
+    cross-core claim (hardware-spinlock-backed) once the launch is solid;
+    ETH link-up recovery in the H723 example driver.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

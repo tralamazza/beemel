@@ -63,14 +63,7 @@ pub fn propagate_contexts(
     functions: &HashMap<String, FnSymbol>,
 ) -> HashMap<String, Vec<Context>> {
     let fn_names: HashSet<&str> = functions.keys().map(String::as_str).collect();
-    let mut edges: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for item in &program.items {
-        if let Item::FnDef(f) = item {
-            let mut mentioned = HashSet::new();
-            scan_block(&f.body, &fn_names, &mut mentioned);
-            edges.insert(f.name.0.as_str(), mentioned);
-        }
-    }
+    let edges = fn_mentions(program, &fn_names);
 
     let mut possible: HashMap<String, HashSet<Context>> = functions
         .iter()
@@ -117,6 +110,27 @@ pub fn propagate_contexts(
             (name, v)
         })
         .collect()
+}
+
+/// Per-function mention sets over `names`: for each defined function, every
+/// identifier in its body that is in `names` (exhaustive scan, the same one
+/// the ceiling derivation uses). With function names this is the
+/// (over-approximated) call graph -- `&f` counts as an edge; with static
+/// names it is the access map. Shared by context propagation (above) and the
+/// cross-core sharing check (`region.rs::check_core_sharing`).
+pub(crate) fn fn_mentions<'p>(
+    program: &'p Program,
+    names: &HashSet<&str>,
+) -> HashMap<&'p str, HashSet<&'p str>> {
+    let mut out = HashMap::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item {
+            let mut mentioned = HashSet::new();
+            scan_block(&f.body, names, &mut mentioned);
+            out.insert(f.name.0.as_str(), mentioned);
+        }
+    }
+    out
 }
 
 /// Compute the derived ceiling for every `@shared` static (bare or pinned).

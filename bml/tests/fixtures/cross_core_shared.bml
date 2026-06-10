@@ -1,0 +1,15 @@
+// @shared does NOT help across cores: the ceiling critical section masks
+// interrupts on one core only. Still E615.
+var COUNT: u32 @shared;
+
+fn core1_main() {
+    loop {
+        var c: u32 = COUNT;
+        COUNT = c + 1;
+    }
+}
+
+fn main() @context(thread) {
+    var c: u32 = COUNT;
+    COUNT = c + 1;
+}

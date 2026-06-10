@@ -2913,6 +2913,37 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// Cross-core sharing (E615): a second cpu agent with a declared entry runs
+// our code on another core; a mutable static reachable from both cores is
+// rejected (per-core masks provide no cross-core exclusion), partitioned
+// data is fine, and @shared does not exempt.
+#[test]
+fn test_cross_core_static_rejected() {
+    let (ok, stderr) = bml_build_with_target("cross_core_static.bml", Some("cross_core.target"));
+    assert!(!ok, "a cross-core static must fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E615"), "expected E615; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_cross_core_partitioned_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("cross_core_partitioned.bml", Some("cross_core.target"));
+    assert!(
+        ok,
+        "partitioned per-core statics should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_cross_core_shared_rejected() {
+    let (ok, stderr) = bml_build_with_target("cross_core_shared.bml", Some("cross_core.target"));
+    assert!(
+        !ok,
+        "@shared cannot exclude across cores and must be E615; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E615"), "expected E615; stderr:\n{stderr}");
+}
+
 // PMSAv8 MPU emission (cortex-m33): MAIR0 = 0x44 at 0xE000EDC0, RBAR =
 // base|SH=00|AP=01|XN=1, RLAR = limit|EN -- and a non-power-of-two region
 // size is legal (32-byte granularity).

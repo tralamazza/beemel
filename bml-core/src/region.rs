@@ -156,6 +156,154 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
     check_ownership_exclusivity(program, symbols, diags);
     check_handoff_writes(program, symbols, target, diags);
     check_reclaim_guards(program, target, diags);
+    check_core_sharing(program, symbols, target, diags);
+}
+
+/// E615: cross-core sharing. A second `cpu`-kind agent with a declared
+/// `entry` runs OUR code on another core; everything its entry transitively
+/// mentions runs there (mention edges, same over-approximation as context
+/// propagation). The per-core protections (`@shared` ceilings, `claim`)
+/// mask interrupts on ONE core only -- they provide no exclusion across
+/// cores -- so a mutable static reachable from two cores is rejected until a
+/// cross-core mechanism (e.g. a hardware-spinlock-backed claim) exists.
+/// Cross-core communication goes through MMIO channels (the SIO FIFOs) for
+/// now. Module `const`s are immutable and freely shared.
+///
+/// The declared entry's core comes from the target and is PINNED: the
+/// launcher necessarily takes the entry's address for the handshake, and
+/// that mention must not put the entry (and its whole call tree) on the
+/// launcher's core. Consequence, documented: directly CALLING another
+/// core's entry is not detected. ISRs are assumed core0 in v0 (per-core
+/// NVIC modeling is deferred).
+fn check_core_sharing(
+    program: &Program,
+    symbols: &SymbolTable,
+    target: &Target,
+    diags: &mut DiagnosticBag,
+) {
+    let entries: Vec<(&Agent, &str)> = target
+        .agents
+        .iter()
+        .filter_map(|a| a.entry.as_deref().map(|e| (a, e)))
+        .collect();
+    if entries.is_empty() {
+        return; // single-core program: nothing to check
+    }
+
+    // Report-anchor span for definition-level errors (no natural write site).
+    let anchor = program.items.iter().find_map(|i| {
+        if let Item::FnDef(f) = i {
+            Some(f.name.1)
+        } else {
+            None
+        }
+    });
+
+    // Core index 0 = the implicit core (main + ISRs); declared entries get
+    // 1.. in order. Bitmask per fn.
+    let mut core_names: Vec<String> = vec!["core0 (implicit)".to_string()];
+    let mut pinned: HashMap<&str, u32> = HashMap::new();
+    for (agent, entry) in &entries {
+        if !symbols.functions.contains_key(*entry) {
+            if let Some(span) = anchor {
+                diags.error(
+                    format!(
+                        "agent `{}` declares `entry = {entry}`, but no such function is defined",
+                        agent.name
+                    ),
+                    "E615",
+                    span,
+                );
+            }
+            continue;
+        }
+        let bit = 1u32 << core_names.len();
+        core_names.push(agent.name.clone());
+        pinned.insert(*entry, bit);
+    }
+
+    let fn_names: HashSet<&str> = symbols.functions.keys().map(String::as_str).collect();
+    let edges = crate::ceiling::fn_mentions(program, &fn_names);
+
+    // Roots: main + every ISR on the implicit core; each entry on its own.
+    let mut cores: HashMap<&str, u32> = HashMap::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item
+            && (f.isr.is_some() || f.name.0 == "main")
+        {
+            *cores.entry(f.name.0.as_str()).or_default() |= 1;
+        }
+    }
+    for (entry, bit) in &pinned {
+        *cores.entry(entry).or_default() |= bit;
+    }
+
+    loop {
+        let mut changed = false;
+        for (caller, callees) in &edges {
+            let Some(&caller_cores) = cores.get(*caller) else {
+                continue;
+            };
+            for callee in callees {
+                if pinned.contains_key(*callee) {
+                    continue; // the entry's core is the target's, not the launcher's
+                }
+                let c = cores.entry(callee).or_default();
+                let merged = *c | caller_cores;
+                changed |= merged != *c;
+                *c = merged;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Mutable statics mentioned from more than one core.
+    let static_names: HashSet<&str> = program
+        .items
+        .iter()
+        .filter_map(|i| {
+            if let Item::StaticDef(sd) = i {
+                Some(sd.name.0.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let accesses = crate::ceiling::fn_mentions(program, &static_names);
+    let mut static_cores: HashMap<&str, u32> = HashMap::new();
+    for (f, statics) in &accesses {
+        let Some(&fc) = cores.get(*f) else { continue };
+        for st in statics {
+            *static_cores.entry(st).or_default() |= fc;
+        }
+    }
+    for item in &program.items {
+        if let Item::StaticDef(sd) = item {
+            let c = static_cores.get(sd.name.0.as_str()).copied().unwrap_or(0);
+            if c.count_ones() > 1 {
+                let names: Vec<&str> = core_names
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| c & (1 << i) != 0)
+                    .map(|(_, n)| n.as_str())
+                    .collect();
+                diags.error(
+                    format!(
+                        "`{}` is reachable from multiple cores ({}). Per-core protections \
+                         (`@shared` ceilings, `claim`) mask interrupts on one core only and \
+                         provide no cross-core exclusion. Partition the data per core, or \
+                         communicate through an MMIO channel (e.g. the SIO FIFOs).",
+                        sd.name.0,
+                        names.join(", ")
+                    ),
+                    "E615",
+                    sd.name.1,
+                );
+            }
+        }
+    }
 }
 
 // ---- slice 1: placement -----------------------------------------------------
