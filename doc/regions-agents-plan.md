@@ -920,6 +920,13 @@ packed layout.
     extent_unit_{ok,missing,wrong}.bml + extent_unit.target. Still
     element-agnostic and arm-then-deliver-ordered (recorded); the RX
     write-back path stays unannotated (lengths written by hardware).
+    HARDWARE-VALIDATED (NUCLEO reflash after the modulo-wrap + direct
+    buf1-delivery example changes): LOG_SUM = 4*TICKS - 10 EXACT at two
+    samples (130@35, 370@95), SCRATCH chain a0/1/a1/a2 intact, RX
+    advancing (60 -> 69 packets), TX_DESC_INDEX in [0,1], and both TX
+    descriptors read back buf1 = 0x30007000 (TX_BUFFER), control = 60
+    (the proven extent) with DES3 OWN CLEARED by the DMA -- silicon
+    write-back proof the frames were consumed and transmitted.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag
