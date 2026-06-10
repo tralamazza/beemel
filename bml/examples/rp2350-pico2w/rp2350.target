@@ -8,7 +8,7 @@
 # target (pico2w.target) includes this file and adds it -- a three-layer
 # chip/board/project split the include chain supports unchanged.
 #
-# FINDINGS from this transcription (recorded in doc/regions-agents-plan.md).
+# FINDINGS from this transcription (recorded in doc/regions-agents.md).
 # Two of the three vocabulary gaps are now CLOSED by the `!` polarity marker:
 # - CLOSED: `enabled_by = !RESETS.RESET.DMA` expresses CLEAR-to-enable
 #   gating (reset value 1 = held in reset); E609 requires the clearing

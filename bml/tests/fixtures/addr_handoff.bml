@@ -1,7 +1,7 @@
 // In-memory handoff: a buffer pointer written into an `addr in R` descriptor
 // field. The buffer is in dma_shared (the region the field constrains to), the
 // address flows through a helper, and IKOS discharges the obligation. Models
-// the ETH descriptor word-0 buffer pointer. See doc/regions-agents-plan.md.
+// the ETH descriptor word-0 buffer pointer. See doc/regions-agents.md.
 struct RxDesc @repr(packed) {
     buf1: addr in dma_shared,
     flags: u32,

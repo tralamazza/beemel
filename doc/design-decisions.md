@@ -11,7 +11,7 @@ C's `volatile` keyword conflates four distinct concerns:
 |---------|-----------|-------------|
 | Hardware register access | `volatile uint32_t *` | `peripheral` declarations -- compiler knows it's MMIO |
 | Shared ISR data | `volatile int` + manual `__disable_irq()` | `@shared(ceiling=N)` -- auto critical section |
-| Atomic operations | `volatile` + `std::atomic` | `@shared(...)` → LDREX/STREX on M3+ |
+| Atomic operations | `volatile` + `std::atomic` | `@shared(...)` → masked critical sections (`cpsid`/`cpsie`); `claim` for multi-access windows |
 | Optimizer barrier | `volatile` to prevent elision | Declaration-driven -- compiler infers from address space |
 
 C headers create include-path hell, forward declarations, and ordering

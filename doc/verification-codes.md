@@ -24,7 +24,7 @@ broader check.
 | V140 | shc       | Shift count exceeds bit width                    |
 | V150 | upa       | Unaligned pointer access                         |
 | V160 | uva       | Undefined value access (opt-in; see verify.md)   |
-| V170 | dca       | Dead code (unreachable after assert/assume)      |
+| V170 | dca       | Dead code (unreachable after assert/assume). Kind-0 "unreachable" entries are filtered from reports: bml encodes every obligation as a branch-to-unreachable, producing one per obligation by construction |
 | V180 | dfa       | Dangling function pointer call                   |
 | V190 | fca       | Function call argument mismatch                  |
 | V191 | —         | Recursive function call                          |

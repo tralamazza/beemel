@@ -87,6 +87,15 @@ IKOS analyzes functions marked as entry points. BML collects them automatically:
 
 If no annotated functions exist, all functions are used as a fallback.
 
+### Hardware addresses
+
+Peripheral registers (from the program's `peripheral` declarations) are
+whitelisted as MMIO via a generated hardware-addresses file, one 4-byte
+range per register. On bit-band targets each register's 32-word alias
+image (0x22/0x42 regions) is whitelisted too -- the emitter writes
+single-bit fields through the alias, and an unlisted alias store would be
+a definite V100.
+
 ## What Doesn't Get Checked
 
 - Integer refinement ranges (`u32 in 0..=N`) -- deferred.
@@ -109,7 +118,20 @@ is conservative and may reduce precision for shared-state-heavy code.
 
 The preempt shim is only emitted when a strictly higher-priority writer
 actually exists for the static being read. Functions that read a `@shared`
-static no other preemptable writer touches are not invalidated.
+static no other preemptable writer touches are not invalidated. A function
+is never treated as preempting itself, but being a writer does not exempt
+its reads from OTHER higher-priority writers.
+
+Inside a `claim X { }` window, reads of the CLAIMED static are not
+invalidated: the window's interrupt mask (and, cross-core, its hardware
+spinlock) provides exactly that stability -- so an in-window
+write-then-read-back is provable while the same sequence outside a window
+correctly is not. Other statics read inside the window keep their havoc.
+
+The regions/agents model adds its own obligations on top of these checks
+(handoff provenance/reach, `addr in R` stores, transfer extents); see
+`regions-agents.md` ("Verify integration") for the table and the empirical
+IKOS facts the encodings are built on.
 
 ### Per-line suppression
 

@@ -1,5 +1,5 @@
 //! Derived `@shared` ceilings -- the ceiling half of the ownership
-//! unification (see doc/regions-agents-plan.md, "Toward unifying with the
+//! unification (see doc/regions-agents.md, "Toward unifying with the
 //! ceiling protocol").
 //!
 //! `@shared(ceiling=N)` declares a number the compiler can already compute:

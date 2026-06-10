@@ -6,7 +6,7 @@
 //! while placement (`in <region>`) and ownership (`owns`) live in source. This
 //! is the seam where the two meet.
 //!
-//! Implemented so far (`doc/regions-agents-plan.md`):
+//! Implemented so far (`doc/regions-agents.md`):
 //! - Slice 1: placement-name check (`in <region>` names a real region), the
 //!   no-initializer rule (region memory is NOBITS at startup), and the
 //!   `in`/`@section` conflict.
@@ -99,7 +99,7 @@ pub fn apply_derived_move(program: &Program, target: &Target, symbols: &mut Symb
             // masked window is REQUIRED by construction; inside `claim` the
             // patched table strips the outer Shared and the static is the
             // plain agent-shared world -- reclaim, the E611 guards, and E326
-            // compose unchanged. See doc/regions-agents-plan.md (the fold).
+            // compose unchanged. See doc/regions-agents.md (the fold).
             sym.ty = Type::Shared(
                 Box::new(Type::AgentShared(Box::new((**inner).clone()))),
                 *ceiling,
@@ -2612,7 +2612,7 @@ fn check_descriptor_reach(
 /// region-name), descending through structs and arrays so a descriptor that
 /// nests another descriptor (or an array of slots) is not a silent gap. The
 /// catch-all covers scalar/view/pointer types, none of which carry an `addr`
-/// slot (`addr` is field-only today; see `doc/regions-agents-plan.md`).
+/// slot (`addr` is field-only today; see `doc/regions-agents.md`).
 fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)>) {
     match ty {
         Type::Addr(region) => out.push((prefix, region.clone())),

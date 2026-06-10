@@ -107,7 +107,7 @@ carries Move-typing (aliasing safety, see section 3). Ordering and visibility
 toward an external agent (a DMA engine, another core) are the programmer's
 responsibility -- memory barriers (`asm { dmb }`) for ordering, non-cacheable
 placement for visibility. The regions/agents model
-(`doc/regions-agents-plan.md`) is what makes those obligations checkable;
+(`doc/regions-agents.md`) is what makes those obligations checkable;
 `@dma` itself is only a placement/aliasing marker.
 
 ### The agent contract (target files)

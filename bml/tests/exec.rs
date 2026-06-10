@@ -341,7 +341,7 @@ assert_exec!(exec_align_static, "align_static.bml");
 // `in <region>` places a static at its region's mem block address. Uses a
 // dedicated mem-block target (qemu_regions.target) so the placement is at a
 // distinct address from ordinary statics, checked at runtime. See
-// doc/regions-agents-plan.md slice 1.
+// doc/regions-agents.md slice 1.
 #[test]
 fn exec_region_placement() {
     if !tools_available() {
@@ -365,7 +365,7 @@ fn exec_region_placement() {
 // register and it reads back unchanged. The register's reserved low 2 bits are
 // hardware-ignored, so the compiler stores the address verbatim (no shift); a
 // stray >> 2 or << 2 would corrupt the 4-aligned value, so a passing run proves
-// the no-shift lowering. See doc/regions-agents-plan.md.
+// the no-shift lowering. See doc/regions-agents.md.
 #[test]
 fn exec_handoff_full_addr() {
     if !tools_available() {

@@ -25,7 +25,7 @@ pub enum Item {
     ComptimeAssert(ComptimeAssert),
     /// `owns P, P.R, ...;` -- this module's exclusive claim over peripheral
     /// registers. Checked by the region pass against the peripheral table and
-    /// across modules. See `doc/regions-agents-plan.md`.
+    /// across modules. See `doc/regions-agents.md`.
     Owns(OwnsStmt),
 }
 
@@ -119,7 +119,7 @@ pub enum Stmt {
     /// `claim X { ... }`: a masked ownership window over the `@shared` static
     /// `X` -- the CPU-side counterpart of `reclaim`. The block runs inside one
     /// `cpsid i`/`cpsie i` pair, and within it `X` is its inner type (views
-    /// and index-reads allowed). See `doc/regions-agents-plan.md`.
+    /// and index-reads allowed). See `doc/regions-agents.md`.
     Claim(ClaimStmt),
 }
 
@@ -476,7 +476,7 @@ pub enum TypeExpr {
     /// `addr in <region>` -- a byte-address slot constrained to a region (an
     /// in-memory handoff field). Layout-identical to `u32`; not a typed pointer.
     /// The `Ident` is the region name, resolved against the target. See
-    /// `doc/regions-agents-plan.md`.
+    /// `doc/regions-agents.md`.
     Addr(Ident),
     Void(Span),
 }

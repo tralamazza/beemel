@@ -930,7 +930,7 @@ impl<'a> Parser<'a> {
     /// `owns P, P.R, ...;` -- a module's exclusive register-ownership claims.
     /// Each path is a peripheral name, optionally `.register`. Field-level
     /// paths (`P.R.F`) are rejected: field-granularity ownership is not yet
-    /// supported (see doc/regions-agents-plan.md).
+    /// supported (see doc/regions-agents.md).
     fn parse_owns(&mut self) -> Option<OwnsStmt> {
         self.advance(); // owns
         let mut paths = Vec::new();

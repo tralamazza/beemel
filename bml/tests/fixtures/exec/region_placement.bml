@@ -2,7 +2,7 @@
 // script (mem-block-driven when regions exist) must map the `.region.pool`
 // section to the dma_pool block at 0x20004000, distinct from where ordinary
 // statics land (.data/.bss in the sram block, below 0x20004000). Checked by the
-// runtime addresses under QEMU. See doc/regions-agents-plan.md slice 1.
+// runtime addresses under QEMU. See doc/regions-agents.md slice 1.
 import harness.semihost;
 
 // Region memory is uninitialized at startup, so a region static takes no

@@ -65,7 +65,7 @@ pub enum Type {
     AgentShared(Box<Type>),
     /// `addr in <region>` -- a byte-address slot constrained to a region (an
     /// in-memory handoff field). Layout-identical to `u32`; the `String` is the
-    /// region name. Not a typed pointer. See `doc/regions-agents-plan.md`.
+    /// region name. Not a typed pointer. See `doc/regions-agents.md`.
     Addr(String),
     // User-defined struct types: name + representation + ordered field list
     Struct(String, StructRepr, Vec<(String, Type)>),

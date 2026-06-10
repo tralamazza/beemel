@@ -83,7 +83,7 @@ impl MemBlock {
 }
 
 /// Treatment class of an agent -- decides which checks apply, not what the
-/// silicon is called. See `doc/regions-agents-plan.md`.
+/// silicon is called. See `doc/regions-agents.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentKind {
     /// Executes BML; the compiler emits its accesses (the implicit one).
@@ -107,7 +107,7 @@ pub enum AgentKind {
 /// later, where the SVD is visible. The full byte address is written to the
 /// register verbatim -- these are dedicated address registers whose reserved low
 /// bits the hardware ignores, so the compiler applies no encoding or shift (see
-/// doc/regions-agents-plan.md).
+/// doc/regions-agents.md).
 #[derive(Debug, Clone)]
 pub struct Handoff {
     pub register: String,
@@ -919,7 +919,7 @@ impl Target {
     /// cache-line aligned, so per-buffer cache maintenance stays line-granular
     /// and does not corrupt line-neighbors. The line size comes from the CPU.
     /// This is the physics that replaces hand-written `@align` on agent-shared
-    /// statics; regions without it have no floor. See `doc/regions-agents-plan.md`.
+    /// statics; regions without it have no floor. See `doc/regions-agents.md`.
     #[must_use]
     pub fn region_alignments(&self) -> HashMap<String, u32> {
         let line = self.cache_line_size();

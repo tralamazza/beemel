@@ -112,7 +112,7 @@ pub struct IrEmitter {
     /// gets at least this alignment, so the source need not hand-write
     /// `@align(N)`: alignment is physics (cache line of cacheable memory shared
     /// with a non-coherent agent), derived from the target. See
-    /// `doc/regions-agents-plan.md`.
+    /// `doc/regions-agents.md`.
     region_alignments: HashMap<String, u32>,
 }
 

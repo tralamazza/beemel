@@ -167,8 +167,13 @@ Passes run sequentially. A pass that fails (emits errors) stops
 the pipeline. The order is:
 
 ```
-Lexer → Parser → ImportResolver → Resolver → Checker → Borrow Enforcer → IR Emitter → opt → llc
+Lexer → Parser → ImportResolver → Resolver (+ context propagation, derived
+ceilings, derived-Move) → Region pass (with --target: E60x/E61x) → Checker
+→ Borrow Enforcer → IR Emitter → opt → llc
 ```
+
+`bml check` runs without a target, so the region pass is skipped there --
+region/agent diagnostics need `bml build --target` (a recorded seam).
 
 When adding cross-cutting features:
 
@@ -279,3 +284,7 @@ keep the dependency set minimal.
 - Test fixtures in `tests/fixtures/`, assertions in `tests/tests.rs`
 - `cargo clippy` must pass with zero warnings before commit
 - No unsafe code
+- AST walkers (`Stmt`/`Expr`/`LValue` matches) are exhaustive -- no `_ =>`
+  catch-alls. A new AST node must break every walker at compile time;
+  silent fall-through has caused miscompiles and analysis bypasses.
+  (Value *classifiers* that answer "is this shape X" may catch-all.)
