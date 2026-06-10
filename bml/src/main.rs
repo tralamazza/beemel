@@ -582,6 +582,7 @@ fn build_file(
     );
     emitter.set_startup_init(target.startup_init.clone());
     emitter.set_mpu_regions(target.mpu_regions());
+    emitter.set_priority_bits(target.priority_bits);
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
 

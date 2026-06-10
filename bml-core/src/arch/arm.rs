@@ -117,7 +117,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     };
 
     let mut labeled: HashMap<String, (&str, u8)> = HashMap::new();
-    let mut unlabeled: Vec<String> = Vec::new();
+    let mut unlabeled: Vec<(String, u8)> = Vec::new();
 
     for item in &program.items {
         let (name, isr) = match item {
@@ -129,10 +129,15 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
             if let Some(label) = &isr.label {
                 labeled.insert(label.clone(), (name, isr.priority));
             } else {
-                unlabeled.push(name.to_string());
+                unlabeled.push((name.to_string(), isr.priority));
             }
         }
     }
+
+    // `(irq, priority)` for every `@isr` that lands in an NVIC slot, collected
+    // while the table is assembled below; the generated reset handler programs
+    // the IPR bytes from it (system-exception slots use SHPR, not modeled yet).
+    let mut isr_priorities: Vec<(u16, u8)> = Vec::new();
 
     let default_handler_name = if symbols.functions.contains_key("Default_Handler") {
         "Default_Handler"
@@ -158,12 +163,12 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
             .map(String::from)
     });
 
-    let reset_fn = if let Some(name) = user_reset {
-        name
-    } else {
-        emit_startup_routine(e, symbols);
-        "reset_handler".to_string()
-    };
+    // The generated reset handler is emitted AFTER the table entries are
+    // assembled (it needs the collected `@isr` priorities); only its name is
+    // needed here. With a user-written reset handler nothing is generated, so
+    // the priorities stay unprogrammed -- same limitation as startup_init/MPU.
+    let generate_reset = user_reset.is_none();
+    let reset_fn = user_reset.unwrap_or_else(|| "reset_handler".to_string());
 
     let mut entries: Vec<String> = vec![String::new(); 16];
     entries[0] = "@_stack_top".to_string();
@@ -193,8 +198,9 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         if index >= entries.len() {
             entries.resize(index + 1, format!("@{default_handler_name}"));
         }
-        if let Some((fn_name, _)) = labeled.get(label) {
+        if let Some((fn_name, priority)) = labeled.get(label) {
             entries[index] = format!("@{fn_name}");
+            isr_priorities.push((*slot, *priority));
         } else if symbols.functions.contains_key(label) {
             entries[index] = format!("@{label}");
         } else if symbols
@@ -206,7 +212,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     }
 
     let mut unlabeled_idx = irq_start;
-    for fn_name in &unlabeled {
+    for (fn_name, priority) in &unlabeled {
         while unlabeled_idx < entries.len()
             && entries[unlabeled_idx] != format!("@{default_handler_name}")
         {
@@ -217,7 +223,12 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         } else {
             entries[unlabeled_idx] = format!("@{fn_name}");
         }
+        isr_priorities.push(((unlabeled_idx - irq_start) as u16, *priority));
         unlabeled_idx += 1;
+    }
+
+    if generate_reset {
+        emit_startup_routine(e, symbols, &isr_priorities);
     }
 
     e.line(&format!(
@@ -237,7 +248,11 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     emit_module_attributes(e);
 }
 
-pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
+pub fn emit_startup_routine(
+    e: &mut IrEmitter,
+    symbols: &SymbolTable,
+    isr_priorities: &[(u16, u8)],
+) {
     e.counter = 0;
     let has_main = symbols.functions.contains_key("main");
 
@@ -305,6 +320,25 @@ pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
         ));
         e.line("call void asm sideeffect \"dsb\", \"~{memory}\"()");
         e.line("call void asm sideeffect \"isb\", \"~{memory}\"()");
+    }
+
+    // NVIC priorities: program the IPR byte of every `@isr` IRQ from its
+    // declared priority. `@isr(priority=N)` is physics the ceiling model
+    // reasons over, so the compiler grounds it instead of trusting a
+    // hand-written IPR to match. The *enable* (ISER) deliberately stays
+    // application code: enabling at reset could fire an ISR before its
+    // peripheral is initialized -- priority is static configuration, enable
+    // is runtime policy. ARMv7-M only: the ARMv6-M IPR is word-access-only
+    // (an RMW emission is the follow-up if an armv6m ISR target needs it).
+    if !matches!(e.arch, crate::arch::Arch::Armv6m) {
+        let shift = 8 - u32::from(e.priority_bits);
+        for (irq, priority) in isr_priorities {
+            let addr = 0xE000_E400u32 + u32::from(*irq);
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            e.line(&format!(
+                "store volatile i8 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+        }
     }
 
     e.line("  br label %data_copy_test");

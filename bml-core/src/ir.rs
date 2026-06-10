@@ -46,6 +46,9 @@ pub struct IrEmitter {
     /// programmed at the start of `reset_handler` so a CPU with caches on stays
     /// coherent with the DMA agents sharing the block.
     pub(crate) mpu_regions: Vec<(u64, u64)>,
+    /// NVIC priority field width (`Target::priority_bits`); positions the
+    /// `@isr(priority=N)` value in the IPR byte emitted in `reset_handler`.
+    pub(crate) priority_bits: u8,
     /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
     /// block. In verify mode, taking `&X as u32` of such a static emits an
     /// `assume` that the address is in this range -- the load-bearing provenance
@@ -255,6 +258,7 @@ impl IrEmitter {
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
+            priority_bits: 4,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -300,6 +304,7 @@ impl IrEmitter {
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
+            priority_bits: 4,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -325,6 +330,12 @@ impl IrEmitter {
     /// start of `reset_handler`. See `Target::mpu_regions`.
     pub fn set_mpu_regions(&mut self, regions: Vec<(u64, u64)>) {
         self.mpu_regions = regions;
+    }
+
+    /// NVIC priority field width (`Target::priority_bits`), used when
+    /// programming `@isr` priorities into the IPR bytes in `reset_handler`.
+    pub fn set_priority_bits(&mut self, bits: u8) {
+        self.priority_bits = bits;
     }
 
     /// Install the per-region alignment floors (region name -> bytes). A static

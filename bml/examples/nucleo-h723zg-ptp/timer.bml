@@ -10,13 +10,15 @@
 // the other out of its own clock enable) and field-level owns is rejected
 // (E603), so RCC has no ownership protection.
 //
-// FINDING (unification dogfood): `@isr("TIM2", priority = 2)` is a TRUSTED
-// claim. The compiler places the vector-table entry but does not program the
-// NVIC: this module enables IRQ 28 and writes its hardware priority by hand,
-// and nothing checks they match the annotation -- same class as
-// `reach`/`cacheable` before their verification (the model believes physics
-// it does not ground). Deriving the NVIC IPR/ISER writes from `@isr` is the
-// recorded follow-up.
+// FINDING (unification dogfood), now CLOSED for the priority half:
+// `@isr("TIM2", priority = 2)` used to be a trusted claim -- the compiler
+// placed the vector but the NVIC was programmed by hand, with nothing
+// checking they matched. The compiler now grounds the priority itself:
+// reset_handler writes each `@isr` IRQ's IPR byte from the annotation
+// (priority << (8 - priority_bits)). The *enable* (ISER below) deliberately
+// stays application code -- enabling at reset could fire an ISR before its
+// peripheral is initialized; priority is static physics, enable is runtime
+// policy.
 
 import svd.rcc;
 import svd.tim2;
@@ -43,10 +45,9 @@ fn timer_init() {
     TIM2.SR.UIF = false;
     TIM2.DIER.UIE = true;
 
-    // NVIC bring-up by hand (see FINDING above): hardware priority for IRQ 28
-    // (IPR7 byte 0; H7 uses the upper 4 bits) to match the @isr annotation,
-    // then enable it (ISER is write-1-to-set, so the whole-word write is safe).
-    NVIC.IPR7.IPR_N0 = 2 << 4;
+    // Enable IRQ 28. The priority is already in IPR7 byte 0: reset_handler
+    // programmed it from the @isr annotation (see FINDING above). ISER is
+    // write-1-to-set, so the whole-word write is safe.
     NVIC.ISER0 = 1 << 28;
 
     TIM2.CR1.CEN = true;

@@ -637,15 +637,20 @@ packed layout.
     real preemption against the derived protection. Pinned by
     `shared_derived_{isr_top,low_isr_cs,thread}.bml` (IR) +
     `exec/shared_derived.bml` (QEMU).
-  - *FINDING (new trusted physics): `@isr(priority=N)` is a claim.* The
-    compiler places the vector-table entry but does not program the NVIC --
-    the example enables IRQ 28 and writes IPR7 by hand, and nothing checks
-    they match the annotation. Same class as `reach`/`cacheable` before their
-    grounding. Deriving the NVIC ISER/IPR writes from `@isr` (the compiler
-    already knows both the slot and the priority) is the natural next slice;
-    it would also make the derived ceiling end-to-end sound (today a wrong
-    hand-written IPR silently breaks the priority model the ceiling reasons
-    over).
+  - *FINDING (new trusted physics): `@isr(priority=N)` was a claim.* CLOSED
+    for the priority half (hardware-validated): the generated reset handler
+    now programs each `@isr` IRQ's NVIC IPR byte from the annotation
+    (`priority << (8 - priority_bits)`, collected during vector-table
+    assembly in `arch/arm.rs`; `priority_bits` threaded from the target). On
+    the NUCLEO, IPR7 reads 0x20 for IRQ 28 with no hand-written NVIC priority
+    in source -- the value the ceiling model reasons over IS the silicon
+    config. The *enable* (ISER) deliberately stays application code:
+    enabling at reset could fire an ISR before its peripheral is initialized
+    -- priority is static physics, enable is runtime policy. Limitations,
+    recorded: ARMv6-M skipped (IPR is word-access-only there); system
+    exceptions (SysTick/PendSV/...) use SHPR, not modeled; a user-written
+    reset handler gets no generated NVIC programming (same as
+    startup_init/MPU). Pinned by `isr_priority_program.bml`.
   - *Remaining for the fold:* express both disciplines as one ownership
     representation (the `@shared` window = instant acquire/release pair, the
     agent window = handoff-release/flag-guarded-reclaim); a reclaim-shaped

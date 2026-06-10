@@ -1,0 +1,8 @@
+// The reset handler programs the NVIC IPR byte of every @isr IRQ from its
+// declared priority -- the annotation is grounded, not trusted. Unlabeled ISR
+// -> first free slot (IRQ 0): IPR address 0xE000E400, value 3 << (8-4) = 48.
+fn tick() @isr(priority = 3) {
+}
+
+fn main() @context(thread) {
+}

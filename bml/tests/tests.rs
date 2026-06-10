@@ -1300,6 +1300,14 @@ assert_ir_not_contains!(
     "asm sideeffect \"cpsid i\""
 );
 
+// @isr priority grounding: reset_handler writes the NVIC IPR byte from the
+// annotation (priority << (8 - priority_bits)); IRQ 0 -> 0xE000E400 = 3758154752.
+assert_ir_contains!(
+    test_isr_priority_programmed,
+    "isr_priority_program.bml",
+    "store volatile i8 48, ptr inttoptr (i32 3758154752 to ptr)"
+);
+
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
 // accessor contexts, and the lowering matches the hand-declared equivalent.
 assert_ir_not_contains!(
