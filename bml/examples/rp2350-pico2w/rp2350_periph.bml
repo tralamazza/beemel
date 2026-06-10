@@ -78,6 +78,14 @@ peripheral PSM at 0x40018000 {
     }
 }
 
+// Cortex-M33 NVIC (per-core PPB, BANKED: each core enables interrupts in
+// its OWN copy -- the enable's location decides which core takes the IRQ).
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field BITS: u32 bit[0..31]
+    }
+}
+
 // System control block (per-core PPB): fault diagnosis.
 peripheral SCB at 0xE000ED00 {
     reg ICSR offset 0x04 {

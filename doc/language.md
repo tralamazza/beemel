@@ -191,6 +191,14 @@ Annotations may be combined in any order. For example:
 fn isr() @isr(priority=1) @naked @section(".ram_code") { ... }
 ```
 
+On multi-core targets the NVIC is banked per core: a labeled `@isr` runs
+on the core(s) whose code writes its ISER enable bit, derived from the
+core-reach of the enabling function. A core1-enabled ISR sharing a mutable
+static with core0 code is cross-core sharing (E615) -- the ceiling
+protocol's interrupt masking only covers one core. Declared core entries
+re-program the banked NVIC priorities in their prologue (the reset handler
+only runs on core0).
+
 ### Context levels
 
 In ARM Cortex-M, lower priority number = higher actual priority.

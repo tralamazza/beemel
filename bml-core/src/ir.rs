@@ -58,6 +58,11 @@ pub struct IrEmitter {
     pub(crate) cross_core_locks: std::collections::HashMap<String, u32>,
     /// Base address of the hardware spinlock bank (`Target::spinlock_base`).
     pub(crate) spinlock_base: u64,
+    /// `(irq, priority)` pairs collected at vector-table assembly. The reset
+    /// handler programs them into the NVIC IPR; declared core entries repeat
+    /// the sequence in their prologue (banked per-core NVIC -- a secondary
+    /// core never runs the reset handler).
+    pub(crate) isr_priorities: Vec<(u16, u8)>,
     /// Nesting depth of `claim` blocks at the current emission point. Inside
     /// a claim (depth > 0) the per-access `@shared` critical sections are
     /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
@@ -326,6 +331,7 @@ impl IrEmitter {
             priority_bits: 4,
             claim_depth: 0,
             claimed_statics: Vec::new(),
+            isr_priorities: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -381,6 +387,7 @@ impl IrEmitter {
             priority_bits: 4,
             claim_depth: 0,
             claimed_statics: Vec::new(),
+            isr_priorities: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -1159,6 +1166,17 @@ impl IrEmitter {
 
         // Pre-emit allocas for all local variables in the entry block
         self.emit_entry_allocas(fn_def, symbols);
+
+        // Declared core entries ground the banked NVIC IPRs in their
+        // prologue -- this core never ran the reset handler (see
+        // arm::emit_ipr_stores).
+        if !self.verify_mode
+            && symbols.entry_fns.contains(&fn_def.name.0)
+            && !self.isr_priorities.is_empty()
+        {
+            let prios = self.isr_priorities.clone();
+            crate::arch::arm::emit_ipr_stores(self, &prios);
+        }
 
         // Emit body
         self.current_fn_params = fn_def

@@ -1,0 +1,29 @@
+// E615 via per-core ISR derivation: core1's entry enables TICKER, so
+// tick() runs on CORE1 -- its @shared access to X collides with core0's
+// main across cores (a cpsid ceiling cannot protect this).
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field BITS: u32 bit[0..31]
+    }
+}
+
+var X: u32 @shared;
+var ENTRY_KICK: u32;
+
+fn tick() @isr("TICKER", priority = 2) {
+    var x: u32 = X;
+    X = x + 1;
+}
+
+fn side_main() @context(thread) {
+    NVIC.ISER = 1 << 5;
+    loop {
+        asm { } : : : "memory";
+    }
+}
+
+fn main() @context(thread) {
+    ENTRY_KICK = &side_main as u32;
+    var x: u32 = X;
+    X = x + 1;
+}

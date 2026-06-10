@@ -105,3 +105,6 @@ extent = DMA.CH0_TRANS_COUNT.COUNT x4 when DMA.CH0_CTRL_TRIG.DATA_SIZE = 2
 kind = cpu
 cached = false
 reach = *
+
+[interrupts]
+SIO_IRQ_FIFO = 25

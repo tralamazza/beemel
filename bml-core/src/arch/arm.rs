@@ -92,6 +92,44 @@ pub fn emit_tailchain_epilogue(e: &mut IrEmitter, has_calls: bool) {
     e.line("unreachable");
 }
 
+/// Program the NVIC IPR of every `@isr` IRQ from its declared priority.
+/// Emitted in the reset handler (core0) AND in the prologue of every
+/// declared core entry: the NVIC is BANKED per core, and a secondary core
+/// never runs the reset handler, so its IPRs would otherwise stay
+/// unprogrammed -- the ceiling model's priorities would be fiction there.
+/// Writing the full set on every core is exact: the registers are banked,
+/// and an IRQ a core never enables ignores its priority.
+pub fn emit_ipr_stores(e: &mut IrEmitter, isr_priorities: &[(u16, u8)]) {
+    let ptr_ty = e.arch.ptr_type();
+    let shift = 8 - u32::from(e.priority_bits);
+    if matches!(e.arch, crate::arch::Arch::Armv6m) {
+        // ARMv6-M: the IPR registers are word-access-only (a byte store is
+        // unpredictable). At reset every IPR is zero and this is the only
+        // writer, so compose the four byte lanes of each touched IPR word
+        // and store it whole -- exact, no read-modify-write needed.
+        let mut words: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        for (irq, priority) in isr_priorities {
+            let lane = (u32::from(*irq) % 4) * 8;
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            *words.entry(u32::from(*irq) / 4).or_insert(0) |= val << lane;
+        }
+        for (word, val) in words {
+            let addr = 0xE000_E400u32 + 4 * word;
+            e.line(&format!(
+                "store volatile i32 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+        }
+    } else {
+        for (irq, priority) in isr_priorities {
+            let addr = 0xE000_E400u32 + u32::from(*irq);
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            e.line(&format!(
+                "store volatile i8 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+        }
+    }
+}
+
 pub fn emit_module_attributes(e: &mut IrEmitter) {
     // `no-builtins`: bml output is freestanding -- without it the optimizer
     // recognizes zero/copy loops and emits __aeabi_memclr/__aeabi_memcpy
@@ -250,6 +288,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     }
 
     if generate_reset {
+        e.isr_priorities.clone_from(&isr_priorities);
         emit_startup_routine(e, symbols, &isr_priorities);
     }
 
@@ -385,33 +424,7 @@ pub fn emit_startup_routine(
     // code: enabling at reset could fire an ISR before its peripheral is
     // initialized -- priority is static configuration, enable is runtime
     // policy.
-    let shift = 8 - u32::from(e.priority_bits);
-    if matches!(e.arch, crate::arch::Arch::Armv6m) {
-        // ARMv6-M: the IPR registers are word-access-only (a byte store is
-        // unpredictable). At reset every IPR is zero and this is the only
-        // writer, so compose the four byte lanes of each touched IPR word
-        // and store it whole -- exact, no read-modify-write needed.
-        let mut words: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-        for (irq, priority) in isr_priorities {
-            let lane = (u32::from(*irq) % 4) * 8;
-            let val = (u32::from(*priority) << shift) & 0xFF;
-            *words.entry(u32::from(*irq) / 4).or_insert(0) |= val << lane;
-        }
-        for (word, val) in words {
-            let addr = 0xE000_E400u32 + 4 * word;
-            e.line(&format!(
-                "store volatile i32 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
-            ));
-        }
-    } else {
-        for (irq, priority) in isr_priorities {
-            let addr = 0xE000_E400u32 + u32::from(*irq);
-            let val = (u32::from(*priority) << shift) & 0xFF;
-            e.line(&format!(
-                "store volatile i8 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
-            ));
-        }
-    }
+    emit_ipr_stores(e, isr_priorities);
 
     e.line("  br label %data_copy_test");
     e.line("");

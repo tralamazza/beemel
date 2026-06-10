@@ -1,0 +1,16 @@
+# Two cores + a labeled IRQ: the ISR's core is derived from where its NVIC
+# ISER bit is written (the NVIC is banked per core).
+arch = armv7em
+cpu = cortex-m7
+flash_base = 0x08000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 64K
+
+[agent.core1]
+kind = cpu
+reach = *
+entry = side_main
+
+[interrupts]
+TICKER = 5

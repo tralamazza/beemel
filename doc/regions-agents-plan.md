@@ -1064,6 +1064,33 @@ packed layout.
     vocabulary only when a real double-observation idiom appears (usage
     dictates declaration). Pinned by reclaim_cmp_{eq,blocking,wrongpol}
     and reclaim_stale{,_cleared}.bml.
+  - *Per-core NVIC/ISR modeling -- DONE, hardware-validated.* The NVIC is
+    BANKED per core, so an IRQ runs on whichever core enables it. The
+    model derives that from usage (no new vocabulary): a LABELED `@isr`'s
+    core(s) = the core-reach of the function(s) writing its ISER bit
+    (recognized by ADDRESS 0xE000E100..40, bit decoded by folding
+    `1 << n` / OR chains in literal_value), an outer fixpoint with
+    core-reach itself. Fallbacks, all conservative: no visible enable or
+    unlabeled ISR -> core0 (single-core programs unchanged); an
+    undecodable ISER value -> ALL cores. E615 now sees cross-core
+    ISR/thread sharing that the ceiling protocol cannot protect -- the
+    SAME program flips between E615 and legal on the enable's location
+    alone (percore_isr_cross / percore_isr_core0_ok fixtures).
+    IPR grounding: a secondary core never runs the reset handler, so its
+    banked IPRs were unprogrammed (the v6m hole's sibling) -- declared
+    entries now repeat the reset handler's IPR sequence in their PROLOGUE
+    (arm::emit_ipr_stores, shared; banked registers make the full set
+    exact on every core).
+    Dogfood (Pico, power-on): core1 alone enables SIO_IRQ_FIFO (25);
+    core0 pushes a word into core1's RX every 64Ki iterations; core1's
+    fifo_isr drains and counts. FIFO_MSGS 138 -> 158 across 5 s with
+    FIFO_LAST == 0xC0DE0000 | (ALIVE >> 16) EXACTLY (157/158, one
+    in-flight) -- the IRQ demonstrably lands on core1 (core0's banked
+    ISER bit was never set), the entry-prologue IPR store visible in
+    core1_main's IR (i8 16 @ 0xE000E419). All prior invariants intact
+    (PAIR ~18M, zero violations; lossless beats; COPY_OK). Remaining,
+    recorded: system exceptions (SysTick/SHPR) still unmodeled; an ISR
+    enabled via a computed ISER value smears to all cores by design.
   - *Remaining (smaller):*
     ETH link-up recovery in the H723 example driver.
 

@@ -173,8 +173,15 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
 /// launcher necessarily takes the entry's address for the handshake, and
 /// that mention must not put the entry (and its whole call tree) on the
 /// launcher's core. Consequence, documented: directly CALLING another
-/// core's entry is not detected. ISRs are assumed core0 in v0 (per-core
-/// NVIC modeling is deferred).
+/// core's entry is not detected.
+///
+/// ISR cores are DERIVED from usage: the NVIC is banked per core, so an IRQ
+/// is delivered to whichever core enables it -- a LABELED `@isr` runs on
+/// the core(s) whose code writes its ISER bit (an outer fixpoint with the
+/// reach itself, since the enabler's core depends on reach). No visible
+/// enable, an undecodable enable value, or an unlabeled ISR fall back
+/// conservatively: core0 for the no-enable case (single-core programs are
+/// unchanged), ALL cores for an ISER write whose value cannot be folded.
 /// Core-reachability for every function and static: which cores' code can
 /// touch them -- `(core names, fn -> core bitmask, static -> core bitmask)`,
 /// `None` when no agent declares an entry (single-core). Shared by the E615
@@ -205,36 +212,126 @@ fn core_reach<'p>(
     }
     let fn_names: HashSet<&str> = symbols.functions.keys().map(String::as_str).collect();
     let edges = crate::ceiling::fn_mentions(program, &fn_names);
-    let mut cores: HashMap<&str, u32> = HashMap::new();
+    let all_cores_mask: u32 = (1u32 << core_names.len()) - 1;
+
+    // Labeled ISRs and their IRQ numbers (per-core assignment needs the
+    // ISER bit, so unlabeled ISRs keep the core0 default).
+    let mut isr_irq: HashMap<&str, u32> = HashMap::new();
     for item in &program.items {
         if let Item::FnDef(f) = item
-            && (f.isr.is_some() || f.name.0 == "main")
+            && let Some(isr) = &f.isr
+            && let Some(label) = &isr.label
+            && let Some(&irq) = target.interrupts.get(label)
         {
-            *cores.entry(f.name.0.as_str()).or_default() |= 1;
+            isr_irq.insert(f.name.0.as_str(), u32::from(irq));
         }
     }
-    for (entry, bit) in &pinned {
-        *cores.entry(entry).or_default() |= bit;
-    }
-    loop {
-        let mut changed = false;
-        for (caller, callees) in &edges {
-            let Some(&caller_cores) = cores.get(*caller) else {
+
+    // NVIC ISER writes: `(containing fn, enabled-IRQ bits or None)` --
+    // recognized by the peripheral's ADDRESS (0xE000E100, banked per core),
+    // word index from the register offset. `None` bits = the value did not
+    // fold; conservatively enables everything.
+    let mut iser_writes: Vec<(&str, Option<Vec<u32>>)> = Vec::new();
+    {
+        let mut writes = Vec::new();
+        collect_peripheral_writes(program, symbols, &mut writes);
+        for w in &writes {
+            let Some(periph) = symbols.peripherals.get(&w.periph) else {
                 continue;
             };
-            for callee in callees {
-                if pinned.contains_key(*callee) {
-                    continue;
+            let Some(reg) = periph.regs.get(&w.reg) else {
+                continue;
+            };
+            let addr = periph.base_addr + reg.offset;
+            if !(0xE000_E100..0xE000_E140).contains(&addr) {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let word = ((addr - 0xE000_E100) / 4) as u32;
+            let Some(owner) = program.items.iter().find_map(|i| {
+                if let Item::FnDef(f) = i
+                    && f.body.span.file == w.span.file
+                    && f.body.span.start <= w.span.start
+                    && w.span.end <= f.body.span.end
+                {
+                    Some(f.name.0.as_str())
+                } else {
+                    None
                 }
-                let c = cores.entry(callee).or_default();
-                let merged = *c | caller_cores;
-                changed |= merged != *c;
-                *c = merged;
+            }) else {
+                continue;
+            };
+            let irqs = w.rhs_literal.map(|v| {
+                (0..32u32)
+                    .filter(|b| v & (1u64 << b) != 0)
+                    .map(|b| 32 * word + b)
+                    .collect::<Vec<u32>>()
+            });
+            iser_writes.push((owner, irqs));
+        }
+    }
+
+    // Outer fixpoint: seed ISRs (derived from their enablers' cores, default
+    // core0), run the mention-edge reach, re-derive -- enabler cores can
+    // grow as reach grows, so iterate until stable.
+    let mut isr_seed: HashMap<&str, u32> = HashMap::new();
+    let mut cores: HashMap<&str, u32>;
+    loop {
+        cores = HashMap::new();
+        for item in &program.items {
+            if let Item::FnDef(f) = item {
+                let name = f.name.0.as_str();
+                if name == "main" {
+                    *cores.entry(name).or_default() |= 1;
+                } else if f.isr.is_some() {
+                    *cores.entry(name).or_default() |= isr_seed.get(name).copied().unwrap_or(1);
+                }
             }
         }
-        if !changed {
+        for (entry, bit) in &pinned {
+            *cores.entry(entry).or_default() |= bit;
+        }
+        loop {
+            let mut changed = false;
+            for (caller, callees) in &edges {
+                let Some(&caller_cores) = cores.get(*caller) else {
+                    continue;
+                };
+                for callee in callees {
+                    if pinned.contains_key(*callee) {
+                        continue;
+                    }
+                    let c = cores.entry(callee).or_default();
+                    let merged = *c | caller_cores;
+                    changed |= merged != *c;
+                    *c = merged;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // Re-derive ISR seeds from where their ISER bits are written.
+        let mut new_seed: HashMap<&str, u32> = HashMap::new();
+        for (isr, irq) in &isr_irq {
+            let mut mask = 0u32;
+            for (owner, irqs) in &iser_writes {
+                let hits = match irqs {
+                    Some(list) => list.contains(irq),
+                    None => true, // unfoldable value: could enable anything
+                };
+                if hits && let Some(&oc) = cores.get(*owner) {
+                    mask |= if irqs.is_some() { oc } else { all_cores_mask };
+                }
+            }
+            if mask != 0 {
+                new_seed.insert(*isr, mask);
+            }
+        }
+        if new_seed == isr_seed {
             break;
         }
+        isr_seed = new_seed;
     }
     let static_names: HashSet<&str> = program
         .items
@@ -2424,6 +2521,14 @@ fn literal_value(e: &Expr) -> Option<u64> {
         Expr::Group(inner) => literal_value(inner),
         Expr::BoolLiteral(b, _) => Some(u64::from(*b)),
         Expr::IntLiteral(v, _, _) => Some(*v),
+        // Constant folds for the NVIC idioms: `1 << n` and OR-ed bit sets.
+        Expr::Binary(l, crate::ast::BinaryOp::Shl, r) => {
+            let (l, r) = (literal_value(l)?, literal_value(r)?);
+            (r < 64).then(|| l << r)
+        }
+        Expr::Binary(l, crate::ast::BinaryOp::BitOr, r) => {
+            Some(literal_value(l)? | literal_value(r)?)
+        }
         _ => None,
     }
 }

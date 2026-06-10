@@ -3407,6 +3407,45 @@ fn test_shared_in_region_noclaim_rejected() {
     );
 }
 
+// Per-core NVIC: a labeled ISR runs on the core(s) whose code writes its
+// ISER bit (banked NVIC). The same program flips between E615 (enable in
+// the other core's entry) and legal (enable on core0) on that fact alone.
+#[test]
+fn test_percore_isr_cross_rejected() {
+    let (ok, stderr) = bml_build_with_target("percore_isr_cross.bml", Some("percore_isr.target"));
+    assert!(
+        !ok,
+        "a core1-enabled ISR sharing a static with core0 must be cross-core; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E615"), "expected E615; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_percore_isr_core0_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("percore_isr_core0_ok.bml", Some("percore_isr.target"));
+    assert!(
+        ok,
+        "the same ISR enabled from core0 stays in the ceiling protocol; stderr:\n{stderr}"
+    );
+}
+
+// The entry PROLOGUE grounds the banked NVIC IPRs (a secondary core never
+// runs the reset handler): the same IPR store appears inside side_main.
+#[test]
+fn test_percore_entry_prologue_iprs() {
+    let ir = bml_ir_with_target("percore_isr_core0_ok.bml", Some("percore_isr.target"));
+    let entry_body = ir
+        .split("define void @side_main")
+        .nth(1)
+        .expect("side_main in IR");
+    let entry_body = &entry_body[..entry_body.find("\n}").unwrap_or(entry_body.len())];
+    assert!(
+        entry_body.contains("store volatile i8 32, ptr inttoptr (i32 3758154757 to ptr)"),
+        "expected the IRQ5 IPR store in the entry prologue:\n{entry_body}"
+    );
+}
+
 // E611 precision pair: compared guard forms (`== true`, `== false`,
 // `while F == false {}`) and the staleness rule (a second observation of a
 // consumed flag after a re-arm needs a clearing write in between).

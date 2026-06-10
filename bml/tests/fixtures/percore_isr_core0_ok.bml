@@ -1,0 +1,28 @@
+// Same program, ISER written from MAIN (core0): tick() runs on core0,
+// the @shared ceiling protocol covers the main/ISR pair -- no E615.
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field BITS: u32 bit[0..31]
+    }
+}
+
+var X: u32 @shared;
+var ENTRY_KICK: u32;
+
+fn tick() @isr("TICKER", priority = 2) {
+    var x: u32 = X;
+    X = x + 1;
+}
+
+fn side_main() @context(thread) {
+    loop {
+        asm { } : : : "memory";
+    }
+}
+
+fn main() @context(thread) {
+    ENTRY_KICK = &side_main as u32;
+    NVIC.ISER = 1 << 5;
+    var x: u32 = X;
+    X = x + 1;
+}

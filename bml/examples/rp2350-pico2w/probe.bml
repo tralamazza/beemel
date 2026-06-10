@@ -35,6 +35,15 @@ var PAIR_BAD0: u32;      // invariant violations seen by core0
 var PAIR_BAD1: u32;      // invariant violations seen by core1
 var CORE1_STACK: [u32; 256] @align(8); // core1's stack (sp = top of this)
 
+// Per-core NVIC dogfood: core1 (and ONLY core1) enables SIO_IRQ_FIFO in
+// its banked NVIC, so words core0 pushes into core1's RX FIFO are taken as
+// an interrupt ON CORE1 -- the ISR's statics are core1-owned (the derived
+// per-core reach knows this from the ISER write's location), and core1's
+// entry prologue grounds the banked IPR that the reset handler (core0)
+// cannot reach.
+var FIFO_MSGS: u32 @shared;   // words core1's ISR drained (core1-owned)
+var FIFO_LAST: u32 @shared;   // last drained word (core1-owned)
+
 fn dma_setup() {
     // Bring the DMA out of reset. Inverted gating, now CHECKED physics:
     // `enabled_by = !RESETS.RESET.DMA` makes E609 require this clearing
@@ -110,7 +119,20 @@ fn HardFault() {
     }
 }
 
+// Core1's FIFO ISR: drains one word per assertion (the IRQ is level on
+// VLD) and W1Cs the sticky error bits.
+fn fifo_isr() @isr("SIO_IRQ_FIFO", priority = 1) {
+    if SIO.FIFO_ST.VLD {
+        var w: u32 = SIO.FIFO_RD.DATA;
+        FIFO_LAST = w;
+        var m: u32 = FIFO_MSGS;
+        FIFO_MSGS = m + 1;  // free-running drain counter; wrap intended // bml-verify: ignore V130
+    }
+    SIO.FIFO_ST = 0xFF;
+}
+
 fn core1_main() @context(thread) {
+    NVIC.ISER = 1 << 25;  // SIO_IRQ_FIFO into CORE1's banked NVIC
     CORE1_COUNT = 1000 + SIO.CPUID.CORE;  // CPUID is 0/1; the +1000 cannot meaningfully wrap (MMIO havoc artifact) // bml-verify: ignore V130
     // Acknowledge over the inter-core FIFO -- the sanctioned cross-core
     // channel (E615's first real catch was core0 reading CORE1_COUNT
@@ -236,6 +258,12 @@ fn main() @context(thread) {
                 var b: u32 = CORE0_BEATS;
                 CORE0_BEATS = b + 1;  // free-running FIFO beat counter // bml-verify: ignore V130
             }
+        }
+        // Feed core1's FIFO ISR: one word every 64Ki iterations (core0's
+        // TX is core1's RX -- the IRQ fires on core1 because only core1
+        // enabled it).
+        if (a & 0xFFFF) == 0 && SIO.FIFO_ST.RDY {
+            SIO.FIFO_WR = 0xC0DE0000 + (a >> 16);
         }
         // Core0's side of the cross-core pair: same window, same invariant.
         claim PAIR {
