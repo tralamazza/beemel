@@ -86,6 +86,9 @@ pub struct FieldSymbol {
 
 pub struct Resolver {
     table: SymbolTable,
+    /// Derived ceilings for `@shared` statics (ceiling.rs), computed at the
+    /// start of `resolve` and consumed when materializing bare `@shared`.
+    derived_ceilings: HashMap<String, u8>,
 }
 
 impl Default for Resolver {
@@ -108,6 +111,7 @@ impl Resolver {
                 import_aliases: HashMap::new(),
                 target_endianness: crate::arch::Endianness::default(),
             },
+            derived_ceilings: HashMap::new(),
         }
     }
 
@@ -118,6 +122,9 @@ impl Resolver {
         aliases: HashMap<String, AliasInfo>,
     ) -> SymbolTable {
         self.table.import_aliases = aliases;
+        // Derive ceilings for bare `@shared` statics from the accessor
+        // contexts (pure AST pass); collect_static materializes them.
+        self.derived_ceilings = crate::ceiling::derive_shared_ceilings(program);
 
         for item in &program.items {
             match item {
@@ -245,15 +252,30 @@ impl Resolver {
             return;
         }
 
+        // Materialize bare `@shared` (ceiling None) to the derived value, so
+        // every consumer downstream (type wrapper, E402, critical-section
+        // emission) sees a concrete ceiling. Pinned ceilings pass through.
+        let mut storage = s.storage.clone();
+        for ann in &mut storage {
+            if let StorageAnnotation::Shared(ceiling @ None) = ann {
+                *ceiling = Some(
+                    self.derived_ceilings
+                        .get(&name)
+                        .copied()
+                        .unwrap_or_else(|| crate::context::Context::Thread.level()),
+                );
+            }
+        }
+
         let base_ty =
             crate::types::resolve_type_expr(&s.ty, &self.table.structs, &self.table.enums);
-        let wrapped_ty = wrap_with_storage(base_ty, &s.storage);
+        let wrapped_ty = wrap_with_storage(base_ty, &storage);
 
         self.table.statics.insert(
             name,
             StaticSymbol {
                 ty: wrapped_ty,
-                storage: s.storage.clone(),
+                storage,
             },
         );
     }
@@ -554,13 +576,17 @@ impl Resolver {
         // Pass 2c: re-resolve static types
         // (struct/enum names that were Unresolved in pass 1)
         for item in &program.items {
-            if let ast::Item::StaticDef(s) = item
-                && let Some(sym) = self.table.statics.get_mut(&s.name.0)
-            {
+            if let ast::Item::StaticDef(s) = item {
+                // Borrow-split: resolve against structs/enums first, then
+                // re-wrap with the symbol's storage -- the MATERIALIZED copy
+                // from collect_static (bare `@shared` already carries its
+                // derived ceiling), not the raw AST annotations.
                 let base_ty =
                     crate::types::resolve_type_expr(&s.ty, &self.table.structs, &self.table.enums);
-                let wrapped_ty = wrap_with_storage(base_ty, &s.storage);
-                sym.ty = wrapped_ty;
+                if let Some(sym) = self.table.statics.get_mut(&s.name.0) {
+                    let wrapped_ty = wrap_with_storage(base_ty, &sym.storage);
+                    sym.ty = wrapped_ty;
+                }
             }
         }
 
@@ -659,7 +685,12 @@ fn wrap_with_storage(
                 ty = Type::Exclusive(Box::new(ty));
             }
             StorageAnnotation::Shared(ceiling) => {
-                ty = Type::Shared(Box::new(ty), *ceiling);
+                // None (bare `@shared`) is materialized to the derived value
+                // in `collect_static` before this runs.
+                ty = Type::Shared(
+                    Box::new(ty),
+                    ceiling.expect("bare @shared ceiling derived during collect_static"),
+                );
             }
             // `@dma` and `@external` are distinct keywords (different intent)
             // but the same type: memory an autonomous agent concurrently

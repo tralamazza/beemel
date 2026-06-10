@@ -245,6 +245,10 @@ fn write_generated(name: &str, source: &str) -> PathBuf {
 // ─── smoke ──────────────────────────────────────────────────────────────────
 assert_exec!(exec_smoke, "smoke.bml");
 
+// Bare `@shared` (derived ceiling): the thread access runs inside the
+// conservative cpsid/cpsie critical section and the value survives.
+assert_exec!(exec_shared_derived, "shared_derived.bml");
+
 // ─── integer wrapping (design-decisions.md §8) ───────────────────────────────
 assert_exec!(exec_wrapping, "wrapping.bml");
 

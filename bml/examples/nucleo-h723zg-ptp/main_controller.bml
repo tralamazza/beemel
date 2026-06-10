@@ -21,12 +21,19 @@ fn main() @context(thread) {
     timer_init();
     copy_setup();
 
+    // The heartbeat cadence now comes from the TIM2 ISR: the ISR counts ticks
+    // into the bare-@shared TICKS (timer.bml) and this thread loop fires a
+    // heartbeat whenever the count moved -- ISR producer, thread consumer,
+    // protection derived from the accessor contexts.
     var seq: u32 = 0;
+    var last_tick: u32 = 0;
     loop {
         phy_poll_link();
         eth_poll_rx();
         copy_poll();
-        if timer_expired() {
+        const t = timer_ticks();
+        if t != last_tick {
+            last_tick = t;
             const now = ptp_now();
             eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
             seq = seq + 1;

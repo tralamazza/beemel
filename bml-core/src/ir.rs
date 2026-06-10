@@ -3851,7 +3851,8 @@ impl IrEmitter {
         if let Some(sym) = symbols.statics.get(name) {
             for ann in &sym.storage {
                 if let StorageAnnotation::Shared(ceiling) = ann {
-                    return self.current_ctx.needs_critical_section(*ceiling);
+                    let ceiling = ceiling.expect("@shared ceiling materialized at resolve");
+                    return self.current_ctx.needs_critical_section(ceiling);
                 }
             }
         }

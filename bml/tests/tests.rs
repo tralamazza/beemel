@@ -1300,6 +1300,24 @@ assert_ir_not_contains!(
     "asm sideeffect \"cpsid i\""
 );
 
+// Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
+// accessor contexts, and the lowering matches the hand-declared equivalent.
+assert_ir_not_contains!(
+    test_shared_derived_isr_top,
+    "shared_derived_isr_top.bml",
+    "asm sideeffect \"cpsid i\""
+);
+assert_ir_contains!(
+    test_shared_derived_low_isr_cs,
+    "shared_derived_low_isr_cs.bml",
+    "asm sideeffect \"cpsid i\""
+);
+assert_ir_contains!(
+    test_shared_derived_thread,
+    "shared_derived_thread.bml",
+    "asm sideeffect \"cpsid i\""
+);
+
 // Inline assembly tests
 assert_ir_contains!(
     test_asm_nop,

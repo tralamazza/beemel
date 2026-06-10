@@ -95,7 +95,7 @@ Four distinct address spaces, each with different compiler semantics:
 |----------------------------------|--------------------------------------------|
 | `peripheral X at 0x... { ... }`  | MMIO -- volatile per-access, no reordering  |
 | `@dma` / `@external`            | RAM -- Move-typed; accesses are *not* volatile |
-| `@shared(ceiling = N)`          | RAM -- auto critical section on access      |
+| `@shared` / `@shared(ceiling = N)` | RAM -- auto critical section on access   |
 | `@exclusive(owner)`             | RAM -- single-context ownership             |
 | (no annotation)                 | RAM -- full optimization (thread-only)      |
 
@@ -156,7 +156,8 @@ USART1 = 37
 | `@naked` | Functions | No LLVM `"interrupt"` attribute, no default return. Emits `unreachable` fallback. Full manual control of prologue/epilogue via inline asm. |
 | `@section("name")` | Functions, statics | Places the item in the named linker section (e.g. `.ram_code`) |
 | `@exclusive(fn)` | Statics | Single-context ownership, only `fn` may access |
-| `@shared(ceiling=N)` | Statics | Auto critical section via `cpsid i` / `cpsie i` |
+| `@shared` | Statics | Auto critical section via `cpsid i` / `cpsie i`; the ceiling is derived from the accessor contexts |
+| `@shared(ceiling=N)` | Statics | Same, with the ceiling pinned to `N` (an accessor that outranks the pin is E402) |
 | `@dma` | Statics | DMA-accessible RAM |
 | `@external` | Statics | External/C-accessible RAM |
 | `@align(N)` | Statics | Minimum byte alignment `N` (a power of two); over-aligns the static (e.g. DMA buffers) |
@@ -204,6 +205,15 @@ function could be called from thread context where preemption is possible.
 The priority ceiling is the *highest priority* (lowest ARM number) among all
 contexts that access a resource. Tasks at equal or lower priority (higher
 number) can access. Tasks at higher priority are rejected.
+
+With bare `@shared` the compiler derives the ceiling: it is exactly that
+"highest priority among accessors", computed from the contexts of the
+functions that mention the static, so E402 cannot fire and the top accessor
+skips the critical section automatically. `@shared(ceiling=N)` pins the
+number instead; it behaves as before (an accessor that outranks the pin is
+E402 -- the pin disagreeing with usage). `Any`-context functions contribute
+nothing to the derivation (their accesses always take the conservative
+critical section); the contexts of their callers are not propagated.
 
 ```
 @shared(ceiling = 2):

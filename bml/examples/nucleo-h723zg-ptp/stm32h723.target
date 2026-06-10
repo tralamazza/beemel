@@ -31,6 +31,7 @@ data_block = sram
 
 [interrupts]
 ETH = 61
+TIM2 = 28
 
 # Memory blocks. The 32K D2 AHB SRAM is split: the `sram` working RAM block
 # (.data/.bss/.stack, selected by data_block above) and a dma_pool block the ETH

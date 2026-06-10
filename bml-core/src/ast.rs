@@ -635,7 +635,11 @@ pub struct EnumVariantDef {
 #[derive(Debug, Clone)]
 pub enum StorageAnnotation {
     Exclusive(Ident),
-    Shared(u8),
+    /// `@shared` (None: ceiling derived from the accessor contexts, see
+    /// ceiling.rs) or `@shared(ceiling=N)` (Some: pinned). The resolver
+    /// materializes None to the derived value; after resolution the ceiling
+    /// is always Some.
+    Shared(Option<u8>),
     Dma,
     External,
     Section(String),

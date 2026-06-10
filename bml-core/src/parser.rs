@@ -535,6 +535,11 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Shared => {
                 self.advance();
+                // Bare `@shared`: the ceiling is derived from the accessor
+                // contexts (ceiling.rs). `@shared(ceiling=N)` pins it.
+                if !matches!(self.peek_kind(), TokenKind::LParen) {
+                    return Some(StorageAnnotation::Shared(None));
+                }
                 self.expect(&TokenKind::LParen, "expected `(`").ok()?;
                 self.expect(&TokenKind::Ceiling, "expected `ceiling`")
                     .ok()?;
@@ -550,7 +555,7 @@ impl<'a> Parser<'a> {
                     return None;
                 }
                 self.expect(&TokenKind::RParen, "expected `)`").ok()?;
-                Some(StorageAnnotation::Shared(prio as u8))
+                Some(StorageAnnotation::Shared(Some(prio as u8)))
             }
             TokenKind::Dma => {
                 self.advance();

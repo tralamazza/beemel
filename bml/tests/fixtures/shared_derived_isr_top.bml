@@ -1,0 +1,10 @@
+// Bare @shared: the ceiling is derived from the accessor contexts. The sole
+// accessor is the ISR at priority 2, so the derived ceiling is 2 and the top
+// accessor needs no critical section -- the same lowering
+// shared_cs_isr_same.bml pins with a hand-declared ceiling=2.
+var counter: u32 @shared;
+
+fn only_isr() @isr(priority = 2) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

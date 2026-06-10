@@ -1,38 +1,68 @@
-// TIM2 periodic tick -- Stage 1 dogfood for the modules / RCC-ownership model.
+// TIM2 periodic tick. Originally the Stage 1 dogfood for the modules /
+// RCC-ownership model (polled UIF); now the unification dogfood: the tick is
+// counted in a real ISR and shared with the thread-context main loop through
+// a bare `@shared` static. No ceiling number is declared -- the compiler
+// derives it from the accessor contexts (tim2_isr at priority 2, the
+// thread-level reader below): the ISR is the top accessor and gets no
+// critical section, the thread read gets the cpsid/cpsie pair.
 //
-// This is a SECOND module (besides eth_dma) that must enable its own clock in
-// the shared RCC register. The finding Stage 1 is meant to surface: neither
-// module can `owns RCC` (that would lock the other out of its own clock enable),
-// and field-level `owns RCC.C1_APB1LENR.TIM2EN` is rejected (E603) -- so RCC, the
-// most-shared register on the chip, currently has no ownership protection. A
-// module can toggle any other peripheral's clock bit with no diagnostic.
+// Stage 1 finding still stands: neither module can `owns RCC` (it would lock
+// the other out of its own clock enable) and field-level owns is rejected
+// (E603), so RCC has no ownership protection.
+//
+// FINDING (unification dogfood): `@isr("TIM2", priority = 2)` is a TRUSTED
+// claim. The compiler places the vector-table entry but does not program the
+// NVIC: this module enables IRQ 28 and writes its hardware priority by hand,
+// and nothing checks they match the annotation -- same class as
+// `reach`/`cacheable` before their verification (the model believes physics
+// it does not ground). Deriving the NVIC IPR/ISER writes from `@isr` is the
+// recorded follow-up.
 
 import svd.rcc;
 import svd.tim2;
+import svd.nvic;
 
-export fn timer_init, fn timer_expired;
+export fn timer_init, fn timer_ticks;
 
 // This module owns the TIM2 peripheral. It cannot own its RCC enable bit.
 owns TIM2;
+
+// Tick counter, ISR producer -> thread consumer. Bare `@shared`: the ceiling
+// is derived from the accessor contexts (here: 2).
+var TICKS: u32 @shared;
 
 fn timer_init() {
     // Enable the TIM2 clock in the shared RCC register.
     RCC.C1_APB1LENR.TIM2EN = true;
 
     // Free-running periodic counter. PSC/ARR are not clock-tree-calibrated
-    // (Stage 1 is about the module model, not timer accuracy); this just yields
-    // a periodic update event for the main loop to poll.
+    // (this drives the heartbeat cadence, not timekeeping); each update event
+    // now raises IRQ 28 instead of being polled.
     TIM2.PSC = 47999;
     TIM2.ARR = 1000;
     TIM2.SR.UIF = false;
+    TIM2.DIER.UIE = true;
+
+    // NVIC bring-up by hand (see FINDING above): hardware priority for IRQ 28
+    // (IPR7 byte 0; H7 uses the upper 4 bits) to match the @isr annotation,
+    // then enable it (ISER is write-1-to-set, so the whole-word write is safe).
+    NVIC.IPR7.IPR_N0 = 2 << 4;
+    NVIC.ISER0 = 1 << 28;
+
     TIM2.CR1.CEN = true;
 }
 
-// Poll, clear, and report the periodic update flag.
-fn timer_expired() -> b1 {
-    if TIM2.SR.UIF {
-        TIM2.SR.UIF = false;
-        return true;
-    }
-    return false;
+// The vector-table slot comes from `[interrupts] TIM2 = 28` in the target.
+fn tim2_isr() @isr("TIM2", priority = 2) {
+    TIM2.SR.UIF = false;
+    var t: u32 = TICKS;
+    TICKS = t + 1;
+}
+
+// Thread-side reader. Annotated @context(thread) so this access contributes
+// the thread level to the derived ceiling -- an unannotated fn would be Any:
+// still protected (conservative critical section), but invisible to the
+// derivation.
+fn timer_ticks() -> u32 @context(thread) {
+    return TICKS;
 }

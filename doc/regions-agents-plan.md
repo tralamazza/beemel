@@ -615,6 +615,44 @@ packed layout.
   transfer mechanism derived from the sharer set (instant priority-raise for CPU
   contexts, signal-gated handshake for agents). B is the shared engine; the plan
   is to build it, show the ceiling reduces to its instant case, then fold them.
+  - *Slice U1: derived ceilings.* DONE, hardware-validated. The observation:
+    the declared `ceiling=N` is a number the compiler can compute -- every
+    accessor's context is static, the emitted critical section is a global
+    mask (`cpsid i`), so N only feeds E402 and the skip-CS optimization at the
+    top accessor, both functions of the accessor set. Bare `@shared` now
+    derives it (`ceiling.rs`: min context level over functions mentioning the
+    static; materialized in the resolver, zero changes downstream).
+    `@shared(ceiling=N)` stays as a pin -- an accessor outranking it is E402,
+    which is precisely "the pin disagrees with usage". This is the CPU-side
+    mirror of derived-Move: the annotation acknowledges *that* the data is
+    shared; mechanism and parameters come from the sharer set. Conservative
+    v0 edges (documented in ceiling.rs): name-based access scan, `Any`
+    contexts contribute nothing (their accesses stay conservatively masked,
+    caller contexts not propagated -- a blind spot the declared form has
+    too). Dogfooded on the NUCLEO: TIM2 update IRQ (`@isr("TIM2",
+    priority=2)`) counts into a bare-`@shared` TICKS consumed by the thread
+    loop; the generated IR has no cpsid in the ISR (top accessor) and a
+    cpsid/cpsie pair around the thread read; on the board TICKS advances at
+    ~1 Hz with ETH RX, the MDMA/DTCM copy, MPU, and D-cache all intact --
+    real preemption against the derived protection. Pinned by
+    `shared_derived_{isr_top,low_isr_cs,thread}.bml` (IR) +
+    `exec/shared_derived.bml` (QEMU).
+  - *FINDING (new trusted physics): `@isr(priority=N)` is a claim.* The
+    compiler places the vector-table entry but does not program the NVIC --
+    the example enables IRQ 28 and writes IPR7 by hand, and nothing checks
+    they match the annotation. Same class as `reach`/`cacheable` before their
+    grounding. Deriving the NVIC ISER/IPR writes from `@isr` (the compiler
+    already knows both the slot and the priority) is the natural next slice;
+    it would also make the derived ceiling end-to-end sound (today a wrong
+    hand-written IPR silently breaks the priority model the ceiling reasons
+    over).
+  - *Remaining for the fold:* express both disciplines as one ownership
+    representation (the `@shared` window = instant acquire/release pair, the
+    agent window = handoff-release/flag-guarded-reclaim); a reclaim-shaped
+    escape for CPU-shared data (views over `@shared` are rejected today for
+    exactly the reason views over agent-shared were before `reclaim` -- the
+    symmetric construct is a view valid within a masked window); call-graph
+    context propagation; B's blocking-acquire guard forms (`while !flag {}`).
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

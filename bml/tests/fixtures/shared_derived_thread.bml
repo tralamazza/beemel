@@ -1,0 +1,8 @@
+// Bare @shared accessed only from thread context: derived ceiling = 255
+// (thread level), and thread always takes the conservative critical section.
+var counter: u32 @shared;
+
+fn main() @context(thread) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

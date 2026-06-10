@@ -1,0 +1,21 @@
+// Bare @shared (derived ceiling), end to end: a thread accessor and an ISR
+// accessor coexist; the thread access takes the conservative critical section
+// and the value survives the cpsid/cpsie pair. (The ISR never fires under
+// QEMU here -- this pins the lowering of derived-ceiling accesses, not
+// preemption behavior.)
+import harness.semihost;
+
+var counter: u32 @shared;
+
+fn tick() @isr(priority = 2) {
+    var x: u32 = counter;
+    counter = x + 1;
+}
+
+fn main() @context(thread) {
+    counter = 41;
+    var x: u32 = counter;
+    counter = x + 1;
+    expect_u32(counter, 42);
+    done();
+}

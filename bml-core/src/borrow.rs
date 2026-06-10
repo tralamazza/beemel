@@ -377,8 +377,12 @@ fn check_static_access(
                 }
             }
             StorageAnnotation::Shared(ceiling) => {
+                // Concrete after resolution (bare `@shared` is materialized to
+                // the derived ceiling, which every accessor satisfies by
+                // construction -- E402 can only fire against a pinned value).
+                let ceiling = ceiling.expect("@shared ceiling materialized at resolve");
                 let level = current_ctx.level();
-                if !current_ctx.can_access(*ceiling) {
+                if !current_ctx.can_access(ceiling) {
                     diags.error(
                         format!(
                             "global `{name}` has @shared(ceiling={ceiling}), but current priority is {level} (lower = higher priority in ARM)"
