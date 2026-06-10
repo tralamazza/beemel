@@ -1,0 +1,9 @@
+# Cortex-M3-style target with bit-banding (the default): single-bit field
+# writes go through the 0x42 alias region, which the verify hwaddrs
+# whitelist must cover.
+arch = armv7m
+cpu = cortex-m3
+flash_base = 0x08000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 64K

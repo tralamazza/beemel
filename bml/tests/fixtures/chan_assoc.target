@@ -1,0 +1,35 @@
+# Two channels of one DMA controller, each with its OWN completion flag --
+# the per-buffer association fixture: a buffer delivered to ch0 must be
+# reclaimed under ch0's flag, not ch1's.
+arch = armv7em
+cpu = cortex-m7
+vector_table_offset = 0x08000000
+data_block = sram
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x20000000
+size = 64K
+
+[mem.pool]
+base = 0x30000000
+size = 4K
+
+[agent.dmac]
+kind = dma
+reach = pool
+
+[agent.dmac.ch0]
+handoff = DMAC.A_ADDR
+completes_by = DMAC.SR.DONE_A
+
+[agent.dmac.ch1]
+handoff = DMAC.B_ADDR
+completes_by = DMAC.SR.DONE_B
+
+[region.pool]
+mem = pool
+agents = dmac

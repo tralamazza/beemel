@@ -28,6 +28,24 @@ const SRAM_BITBAND_REGION_BASE: u64 = 0x2000_0000;
 const SRAM_BITBAND_REGION_END: u64 = 0x200F_FFFF;
 const SRAM_BITBAND_ALIAS_BASE: u64 = 0x2200_0000;
 
+/// The 32-word bit-band alias range of a 4-byte register at `addr`, when the
+/// register sits in a bit-band region: `(alias_start, alias_end_inclusive)`.
+/// Used by the verify hwaddrs whitelist -- the emitter writes single-bit
+/// fields through these aliases, and IKOS must know they are MMIO, not wild
+/// pointers.
+#[must_use]
+pub fn bitband_alias_range(addr: u64) -> Option<(u64, u64)> {
+    let base = if (PERI_BITBAND_REGION_BASE..=PERI_BITBAND_REGION_END).contains(&addr) {
+        PERI_BITBAND_ALIAS_BASE + (addr - PERI_BITBAND_REGION_BASE) * 32
+    } else if (SRAM_BITBAND_REGION_BASE..=SRAM_BITBAND_REGION_END).contains(&addr) {
+        SRAM_BITBAND_ALIAS_BASE + (addr - SRAM_BITBAND_REGION_BASE) * 32
+    } else {
+        return None;
+    };
+    // 4 register bytes x 8 bits x 4 alias bytes per bit.
+    Some((base, base + 4 * 8 * 4 - 1))
+}
+
 #[must_use]
 pub fn bitband_alias(addr: u64, bits: &BitSpec) -> Option<u64> {
     let bit = match bits {

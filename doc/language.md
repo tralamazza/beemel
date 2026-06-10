@@ -609,7 +609,11 @@ consume the result. It is the *reclaim* counterpart to the handoff write (the
 *release*). If the agent declares a `completes_by` flag in the target, the
 reclaim must be guarded by observing it -- it must sit in the then-block of an
 `if <flag>` (or `if done()`, where `done` returns the flag) so the CPU cannot
-read mid-transfer (E611); without `completes_by` the reclaim stays trusted. Only the contiguous `view` form is tightened;
+read mid-transfer (E611); without `completes_by` the reclaim stays trusted.
+A direct delivery (`P.R = &BUF`) associates the buffer with that register's
+channel, so the guard must be one of THAT channel's flags; buffers without
+a visible direct delivery accept any flag of the region's agents
+(conservative union). Only the contiguous `view` form is tightened;
 `ring`/`bits` over agent-shared are not yet.
 
 The transfer LENGTH is checked by `bml verify` (IKOS), not the compiler: a

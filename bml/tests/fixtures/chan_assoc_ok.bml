@@ -1,0 +1,26 @@
+// Positive: the delivered channel's own flag guards the reclaim.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE_A: b1 bit[0]
+        field DONE_B: b1 bit[1]
+    }
+    reg A_ADDR offset 0x04 {
+        field A: u32 bit[0..31]
+    }
+    reg B_ADDR offset 0x08 {
+        field A: u32 bit[0..31]
+    }
+}
+
+owns DMAC;
+
+var BUF: [u8; 32] in pool;
+var X: u32;
+
+fn main() @context(thread) {
+    DMAC.A_ADDR = &BUF as u32;
+    if DMAC.SR.DONE_A {
+        const v = reclaim(BUF);
+        X = v[0] as u32;
+    }
+}

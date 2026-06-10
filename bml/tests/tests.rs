@@ -2187,6 +2187,23 @@ fn test_verify_claim_window_proven() {
     );
 }
 
+// Bit-band targets: the single-bit field write goes through the 0x42 alias
+// region, whose 32-word image per register is whitelisted in hwaddrs --
+// without it IKOS reports the alias store as a definite V100.
+#[test]
+fn test_verify_bitband_alias_clean() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_bitband.target");
+    let (ok, _stdout, stderr) = bml_verify_args("verify_bitband.bml", &["--target", &target]);
+    assert!(
+        ok && !stderr.contains("[V100]"),
+        "the bit-band alias store must be whitelisted MMIO; stderr:\n{stderr}"
+    );
+}
+
 // Pointer-related V11x mapping: an unknown pointer parameter that's
 // dereferenced after a null-check produces a V114 finding from IKOS.
 #[test]
@@ -3372,6 +3389,37 @@ fn test_shared_in_region_noclaim_rejected() {
     assert!(
         stderr.contains("claim"),
         "the error should point at `claim`; stderr:\n{stderr}"
+    );
+}
+
+// Per-buffer flag association: a direct delivery (`P.R = &BUF`) binds the
+// buffer to that register's channel, so its reclaim is guarded by THAT
+// channel's flags; indirect deliveries keep the conservative region union.
+#[test]
+fn test_chan_assoc_cross_rejected() {
+    let (ok, stderr) = bml_build_with_target("chan_assoc_cross.bml", Some("chan_assoc.target"));
+    assert!(
+        !ok,
+        "another channel's flag must not justify the reclaim; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_chan_assoc_own_flag_ok() {
+    let (ok, stderr) = bml_build_with_target("chan_assoc_ok.bml", Some("chan_assoc.target"));
+    assert!(
+        ok,
+        "the delivered channel's own flag should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_chan_assoc_indirect_fallback_ok() {
+    let (ok, stderr) = bml_build_with_target("chan_assoc_indirect.bml", Some("chan_assoc.target"));
+    assert!(
+        ok,
+        "an indirect delivery keeps the union fallback; stderr:\n{stderr}"
     );
 }
 

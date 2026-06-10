@@ -1282,35 +1282,68 @@ fn check_reclaim_guards(
         return; // no agent declares a completion signal -> reclaim stays trusted
     }
 
-    // Release sites: writes to a handoff register of an agent that declares
-    // `completes_by`. Each carries the agent's flags so a release only kills
-    // justifications resting on that agent's completion signal.
+    // Per-channel handoff maps. `chan_flags` carries EVERY channel's flag
+    // set (possibly empty) for the buffer association below; `handoff_flags`
+    // keeps only flagged channels for the release-truncation check.
+    let mut chan_flags: HashMap<(String, String), Vec<String>> = HashMap::new();
     let mut handoff_flags: HashMap<(String, String), Vec<String>> = HashMap::new();
     for agent in &target.agents {
         for ch in &agent.channels {
-            if ch.completes_by.is_empty() {
-                continue;
-            }
-            // Per channel: a release through ch's handoff registers only
-            // invalidates justifications resting on ch's own flags.
             for h in &ch.handoffs {
                 if let Some((p, r)) = handoff_register_path(&h.register) {
-                    handoff_flags
-                        .entry((p, r))
+                    chan_flags
+                        .entry((p.clone(), r.clone()))
                         .or_default()
                         .extend(ch.completes_by.iter().cloned());
+                    if !ch.completes_by.is_empty() {
+                        // Per channel: a release through ch's handoff
+                        // registers only invalidates justifications resting
+                        // on ch's own flags.
+                        handoff_flags
+                            .entry((p, r))
+                            .or_default()
+                            .extend(ch.completes_by.iter().cloned());
+                    }
                 }
             }
         }
     }
+    let mut writes = Vec::new();
+    collect_peripheral_writes(program, symbols, &mut writes);
     let mut releases: Vec<(Span, Vec<String>)> = Vec::new();
-    if !handoff_flags.is_empty() {
-        let mut writes = Vec::new();
-        collect_peripheral_writes(program, symbols, &mut writes);
-        for w in &writes {
-            if let Some(flags) = handoff_flags.get(&(w.periph.clone(), w.reg.clone())) {
-                releases.push((w.span, flags.clone()));
-            }
+    for w in &writes {
+        if let Some(flags) = handoff_flags.get(&(w.periph.clone(), w.reg.clone())) {
+            releases.push((w.span, flags.clone()));
+        }
+    }
+
+    // Per-buffer flag association: a direct delivery (`P.R = &BUF`) binds
+    // the buffer to that register's CHANNEL, so its reclaim must be guarded
+    // by that channel's own completion flags -- not any flag of any agent
+    // on the region (the old union let ch1's flag justify reclaiming ch0's
+    // buffer). Narrowing is sound (stricter); a buffer with no visible
+    // direct delivery keeps the region union (indirect deliveries through
+    // helpers stay conservative); a buffer delivered only to flag-less
+    // channels has no sound guard to demand and drops back to trusted.
+    let mut delivered: HashMap<String, Vec<String>> = HashMap::new();
+    for w in &writes {
+        if let Some(st) = &w.rhs_static
+            && flags_of.contains_key(st)
+            && let Some(flags) = chan_flags.get(&(w.periph.clone(), w.reg.clone()))
+        {
+            delivered
+                .entry(st.clone())
+                .or_default()
+                .extend(flags.iter().cloned());
+        }
+    }
+    for (st, mut flags) in delivered {
+        flags.sort();
+        flags.dedup();
+        if flags.is_empty() {
+            flags_of.remove(&st);
+        } else {
+            flags_of.insert(st, flags);
         }
     }
 

@@ -1005,6 +1005,23 @@ packed layout.
     AUTO_RST resets the target on (some) debugger attaches -- a readback
     right after `init` shows fresh-boot state (TICKS=0 confusion); hold
     the session open or sample twice.
+  - *Per-buffer flag association + bit-band hwaddrs -- DONE.* The oldest
+    E611 imprecision, made cheap by channels: a direct delivery
+    (`P.R = &BUF`) binds the buffer to that register's CHANNEL, so its
+    reclaim must be guarded by that channel's own completion flags -- the
+    old region union let ch1's flag justify reclaiming ch0's buffer
+    (chan_assoc_cross.bml pins the rejection). Narrowing is sound;
+    indirect deliveries (through helpers) keep the conservative union;
+    a buffer delivered only to flag-less channels drops back to trusted.
+    Release truncation inherits the same precision via the existing
+    per-channel maps. Blind spot recorded: in-memory deliveries
+    (descriptor `addr in R` fields) are not associated -- the descriptor
+    static is, the buffer it points to is not.
+    Rider: bit-band ALIAS ranges (0x22/0x42) are now in the verify
+    hwaddrs whitelist (32-word image per register, only when the target
+    has bit-banding) -- single-bit field writes on M3/M4 targets were
+    definite V100s (verify_bitband.bml). The black-pill (F411) is the
+    natural hardware validator when it gets wired.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

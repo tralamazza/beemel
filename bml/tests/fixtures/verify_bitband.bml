@@ -1,0 +1,13 @@
+// A single-bit MMIO field write on a bit-band target lowers to a store at
+// the 0x42xxxxxx alias address; the hwaddrs whitelist now includes each
+// register's alias image, so IKOS treats it as MMIO instead of reporting a
+// definite buffer overflow (V100).
+peripheral CTL at 0x40020000 {
+    reg CR offset 0x00 {
+        field EN: b1 bit[3]
+    }
+}
+
+fn main() @context(thread) {
+    CTL.CR.EN = true;
+}

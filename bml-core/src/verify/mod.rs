@@ -188,7 +188,7 @@ pub fn verify(
 
     // 3. Write hardware addresses file.
     let hwaddrs_path = stem.with_extension("verify.hwaddrs");
-    hwaddrs::write_hwaddrs_file(symbols, &hwaddrs_path)
+    hwaddrs::write_hwaddrs_file(symbols, target.has_bitband, &hwaddrs_path)
         .map_err(|e| VerifyError::ToolInvocation(format!("failed to write hwaddrs: {e}")))?;
 
     // 4. Collect entry points.
