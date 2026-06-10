@@ -1,0 +1,19 @@
+// Without the claim window the reclaim handshake alone is not enough --
+// another CPU context could race the consumption. The nested carrier
+// (Shared(AgentShared)) makes the claim REQUIRED by construction (E335
+// pointing at `claim`).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] @shared in pool;
+var THREAD_SEEN: u32;
+
+fn main() @context(thread) {
+    if DMAC.SR.DONE {
+        const v = reclaim(BUF);
+        THREAD_SEEN = v[1] as u32;
+    }
+}

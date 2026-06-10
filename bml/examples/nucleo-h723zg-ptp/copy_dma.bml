@@ -19,15 +19,16 @@
 import svd.mdma;
 import svd.rcc;
 
-export fn copy_setup, fn copy_poll;
+export fn copy_setup, fn copy_poll, fn copy_isr_peek;
 
 owns MDMA;
 
 var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM, AXI side)
-var SCRATCH: [u8; 64] in tcm_scratch;   // MDMA writes this (DTCM, AHBS side)
+var SCRATCH: [u8; 64] @shared in tcm_scratch; // MDMA writes; thread AND ISR consume
 var SCRATCH_CHECK: u32;                  // CPU-visible: first reclaimed byte
 var SCRATCH_DONE: u32;                   // CPU-visible: set once the copy is consumed
 var SCRATCH_FIRST: u32;                  // CPU-visible: byte [1] via the blocking acquire
+var SCRATCH_ISR_SEEN: u32 @shared;       // CPU-visible: byte [2], consumed from the ISR path
 
 fn copy_setup() {
     // Enable the MDMA peripheral clock (shared RCC register).
@@ -60,29 +61,41 @@ fn copy_setup() {
     MDMA.MDMA_C0CR.EN = true;             // enable the channel
     MDMA.MDMA_C0CR.SWRQ = true;           // trigger the transfer
 
-    // Blocking acquire (B broadening): the empty busy-wait exits only with
-    // the completion flag observed set, which establishes it for the rest of
-    // this block -- so this reclaim needs no `if` (E611 accepts the
-    // lock-style acquire; copy_poll below keeps the try-acquire form).
-    while !mdma_done() {}
-    const first = reclaim(SCRATCH);
-    SCRATCH_FIRST = first[1] as u32;
+    // SCRATCH is now @shared in tcm_scratch -- the mixed-sharer composition.
+    // Consumption needs BOTH ownership windows: `claim` (CPU mutual
+    // exclusion against the ISR consumer) wrapping the completion-guarded
+    // reclaim (the agent handshake). Claim bodies forbid calls, so the guard
+    // is the inline flag read, and the busy-wait is the blocking-acquire
+    // form (establishes the flag for the rest of the claim body).
+    claim SCRATCH {
+        while !MDMA.MDMA_C0ISR.CTCIF0 {}
+        const first = reclaim(SCRATCH);
+        SCRATCH_FIRST = first[1] as u32;
+    }
 }
 
-// A completion predicate: returns the channel transfer-complete flag. The
-// sound-reclaim guard recognizes it, so `if mdma_done() { reclaim }` is accepted
-// (the idiomatic form, resolved inter-procedurally).
-fn mdma_done() -> b1 {
-    return MDMA.MDMA_C0ISR.CTCIF0;
-}
-
-// Consume MDMA's output once it signals complete. The reclaim is gated on the
-// transfer-complete predicate (the agent's `completes_by`), so the bounds-checked
-// read only runs after MDMA is done -- the sound-reclaim guard (E611).
+// Thread-side consumer: claim (masks out the ISR consumer) + the inline
+// completion guard + reclaim. The try-acquire form of the composed window.
 fn copy_poll() {
-    if mdma_done() {
-        const v = reclaim(SCRATCH);
-        SCRATCH_CHECK = v[0] as u32;
-        SCRATCH_DONE = 1;
+    claim SCRATCH {
+        if MDMA.MDMA_C0ISR.CTCIF0 {
+            const v = reclaim(SCRATCH);
+            SCRATCH_CHECK = v[0] as u32;
+            SCRATCH_DONE = 1;
+        }
+    }
+}
+
+// ISR-side consumer, called from tim2_isr: the SECOND CPU context consuming
+// the agent's buffer -- exactly the mixed-sharer race the U3 probes showed
+// was undetectable before the fold. Same composed window; without the
+// `claim` the reclaim is rejected (E335 pointing at claim), without the
+// flag guard it is E611.
+fn copy_isr_peek() {
+    claim SCRATCH {
+        if MDMA.MDMA_C0ISR.CTCIF0 {
+            const v = reclaim(SCRATCH);
+            SCRATCH_ISR_SEEN = v[2] as u32;
+        }
     }
 }

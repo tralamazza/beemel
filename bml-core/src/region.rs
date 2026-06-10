@@ -89,6 +89,21 @@ pub fn apply_derived_move(program: &Program, target: &Target, symbols: &mut Symb
         if matches!(sym.ty, Type::Array(..)) {
             let inner = sym.ty.clone();
             sym.ty = Type::AgentShared(Box::new(inner));
+        } else if let Type::Shared(inner, ceiling) = &sym.ty
+            && matches!(**inner, Type::Array(..))
+        {
+            // `@shared in R` -- the composed mixed-sharer case (CPU contexts
+            // AND an async agent). Nest the carriers Shared(AgentShared(..)):
+            // outside a `claim` window the outer Shared blocks everything
+            // including `reclaim` (its base must be AgentShared), so the
+            // masked window is REQUIRED by construction; inside `claim` the
+            // patched table strips the outer Shared and the static is the
+            // plain agent-shared world -- reclaim, the E611 guards, and E326
+            // compose unchanged. See doc/regions-agents-plan.md (the fold).
+            sym.ty = Type::Shared(
+                Box::new(Type::AgentShared(Box::new((**inner).clone()))),
+                *ceiling,
+            );
         }
     }
 }
@@ -200,29 +215,12 @@ fn check_placement(s: &StaticDef, target: &Target, diags: &mut DiagnosticBag) {
         );
     }
 
-    // E613: `@shared` + `in <region>` does not compose yet. The `Shared` type
-    // wrapper displaces the derived `AgentShared` carrier (dropping the agent
-    // discipline), and a reclaim view would escape the ceiling critical
-    // section the CPU side needs -- today the combination is only safe by
-    // accident (the Shared wrapper happens to block indexing too). Reject it
-    // loudly; the composed window (a view valid within a masked section) is
-    // the unification fold's remaining construct.
-    if s.storage
-        .iter()
-        .any(|a| matches!(a, StorageAnnotation::Shared(_)))
-    {
-        diags.error(
-            format!(
-                "`{}` is `@shared` and placed `in {region_name}`: combining the CPU ceiling \
-                 discipline with agent-shared placement is not modeled yet. Keep the \
-                 agent-shared consumption in one CPU context (the context checks enforce \
-                 this), or move the CPU-shared data out of the region.",
-                s.name.0
-            ),
-            "E613",
-            s.name.1,
-        );
-    }
+    // `@shared` + `in <region>` (the mixed-sharer composition) is legal: the
+    // carriers nest Shared(AgentShared(..)) (see apply_derived_move), so
+    // consumption requires BOTH ownership windows -- `claim` for the CPU
+    // mutual exclusion and the completion-guarded `reclaim` inside it for
+    // the agent handshake. (E613, which rejected the combination while it
+    // was only safe by accident, is retired.)
 }
 
 /// A " (known regions: a, b)" suffix for the diagnostic, or a hint when the

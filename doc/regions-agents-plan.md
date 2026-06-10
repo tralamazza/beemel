@@ -716,13 +716,32 @@ packed layout.
     pair there, zero in the ISR). Pinned by `claim_view.bml` (+IR),
     `claim_{not_shared,call,return,break}.bml` (E614),
     `exec/claim_window.bml` (QEMU).
-  - *Remaining for the fold:* express both disciplines as one ownership
-    representation (the `@shared` window = instant acquire/release pair, the
-    agent window = handoff-release/flag-guarded-reclaim) -- with `claim` in
-    hand this is now mostly bookkeeping plus the `@shared in R` composition
-    (E613 lifts when a claim window can satisfy both disciplines at once);
-    scoped view lifetimes (shared by claim and reclaim); pointer-call
-    context edges; compared guard conditions; per-buffer flag association.
+  - *Slice U5: the composition -- `@shared in R` (E613 lifted).* DONE. The
+    mixed-sharer case (CPU contexts AND an async agent on one buffer)
+    composes by NESTING the carriers: `apply_derived_move` turns
+    `Shared(Array)` into `Shared(AgentShared(Array))`. Outside a `claim`
+    window the outer Shared blocks everything including `reclaim` (its base
+    must be AgentShared; a dedicated E335 message points at `claim`), so the
+    masked window is required BY CONSTRUCTION; inside `claim` the patched
+    table strips the outer Shared and the static is the plain agent-shared
+    world -- reclaim, the E611 guards, E326 all compose with zero new check
+    logic. The consumption idiom is `claim X { if <flag> { reclaim(X) } }`
+    (inline flag reads -- claim bodies forbid calls) or the blocking form
+    with the busy-wait inside the claim. E613 is retired. Both windows from
+    both contexts in the example: SCRATCH is `@shared in tcm_scratch`,
+    consumed by the thread (copy_poll try-acquire, copy_setup blocking
+    acquire) AND from the TIM2 ISR (copy_isr_peek via tim2_isr) -- the exact
+    ISR-vs-thread race over an agent's buffer that U3's probes could only
+    reject is now expressible and checked. IR: one cpsid/cpsie pair per
+    consumer window, none in the ISR's top-accessor writes. The derived
+    ceiling of SCRATCH comes from U3's context propagation (the ISR reaches
+    it through an Any helper). Pinned by `shared_in_region.bml` (composed,
+    accepted) and `shared_in_region_noclaim.bml` (reclaim without claim
+    rejected, message points at claim).
+  - *Remaining (smaller):* scoped view lifetimes (the trust gap claim and
+    reclaim share); pointer-call context edges; compared guard conditions;
+    per-buffer flag association; PMSAv8 MPU emission; multi-core (core1)
+    consumption.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

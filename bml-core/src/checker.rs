@@ -2369,6 +2369,22 @@ fn check_expr(
                     // over agent-shared memory. Requires an `AgentShared` base
                     // (a plain array needs no reclaiming); bypasses the
                     // agent-shared rejection that `view` now applies.
+                    if matches!(&base_ty, Type::Shared(inner, _) if matches!(**inner, Type::AgentShared(..)))
+                    {
+                        // The mixed-sharer composition: agent-shared AND
+                        // CPU-shared. The reclaim handshake alone is not
+                        // enough -- another CPU context could race it; the
+                        // masked window supplies that half.
+                        let guard = diags.error(
+                            "`reclaim` of a `@shared` region static requires the masked window: \
+                             wrap it in `claim X { ... }` (inside the claim the static is plain \
+                             agent-shared and the completion-guarded reclaim applies)."
+                                .to_string(),
+                            "E335",
+                            *span,
+                        );
+                        return Type::Error(guard);
+                    }
                     if !matches!(base_ty, Type::AgentShared(..)) {
                         let guard = diags.error(
                             format!(

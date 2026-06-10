@@ -23,6 +23,7 @@
 import svd.rcc;
 import svd.tim2;
 import svd.nvic;
+import copy_dma;
 
 export fn timer_init, fn timer_ticks, fn timer_log_sum;
 
@@ -68,6 +69,10 @@ fn tim2_isr() @isr("TIM2", priority = 2) {
     // The ISR is the top accessor of both statics (derived ceiling 2): no
     // critical section is emitted for these writes.
     TICK_LOG[t & 3] = t;
+    // Mixed-sharer consumption: peek at the MDMA buffer from ISR context
+    // (copy_dma.bml) -- the composed claim+reclaim window makes this safe
+    // against the thread consumer.
+    copy_isr_peek();
 }
 
 // Thread-side reader. Annotated @context(thread) so this access contributes

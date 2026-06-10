@@ -3017,13 +3017,28 @@ fn test_region_isr_launder_rejected() {
 }
 
 #[test]
-fn test_shared_in_region_rejected() {
+fn test_shared_in_region_composed_ok() {
+    // The fold: @shared + in <region> composes -- claim (CPU window) wrapping
+    // a completion-guarded reclaim (agent window), from both contexts.
     let (ok, stderr) = bml_build_with_target("shared_in_region.bml", Some("reclaim_guard.target"));
     assert!(
-        !ok,
-        "@shared + in <region> does not compose yet and must be loud; stderr:\n{stderr}"
+        ok,
+        "the composed claim+reclaim consumption should build; stderr:\n{stderr}"
     );
-    assert!(stderr.contains("E613"), "expected E613; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_shared_in_region_noclaim_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("shared_in_region_noclaim.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "reclaim of a @shared region static outside claim must fail; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("claim"),
+        "the error should point at `claim`; stderr:\n{stderr}"
+    );
 }
 
 // B broadening: blocking-acquire guard forms. The busy-wait (`while !flag {}`,

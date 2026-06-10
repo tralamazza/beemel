@@ -1,9 +1,32 @@
-// `@shared` + `in <region>` does not compose yet: the Shared wrapper would
-// displace the derived AgentShared carrier (dropping the agent discipline),
-// and a reclaim view would escape the ceiling critical section. Rejected
-// loudly (E613) instead of safe-by-accident.
+// The mixed-sharer composition (`@shared in <region>`): BUF is written by the
+// DMA agent AND consumed from two CPU contexts. Consumption requires BOTH
+// ownership windows -- `claim` for CPU mutual exclusion, and inside it the
+// completion-guarded `reclaim` for the agent handshake (the guard must be an
+// inline flag read: claim bodies forbid calls).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
 var BUF: [u8; 32] @shared in pool;
+var THREAD_SEEN: u32;
+var ISR_SEEN: u32 @shared;
+
+fn grab() @isr(priority = 2) {
+    claim BUF {
+        if DMAC.SR.DONE {
+            const v = reclaim(BUF);
+            ISR_SEEN = v[0] as u32;
+        }
+    }
+}
 
 fn main() @context(thread) {
-    BUF[0] = 1;
+    claim BUF {
+        if DMAC.SR.DONE {
+            const v = reclaim(BUF);
+            THREAD_SEEN = v[1] as u32;
+        }
+    }
 }

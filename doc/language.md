@@ -191,7 +191,7 @@ The compiler uses the ARM convention directly:
 | ISR cannot call `@context(thread)` functions | E403 |
 | Thread cannot call `@isr(...)` functions | E403 |
 | Unannotated module `var` -- implicitly thread-only | E404 |
-| `@shared` combined with `in <region>` -- not modeled yet | E613 |
+| (retired: `@shared in <region>` now composes -- consumption requires `claim` wrapping a completion-guarded `reclaim`) | E613 |
 | `claim` misuse: target not `@shared`, or a call/escape inside the window | E614 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
