@@ -1,0 +1,17 @@
+// E616: a view over the claimed static assigned to a binding declared
+// OUTSIDE the claim window -- the view would outlive the mask that makes it
+// safe (the ISR can touch BUF again after the cpsie).
+var BUF: [u8; 8] @shared;
+var OTHER: [u8; 8];
+
+fn tick() @isr(priority = 2) {
+    BUF[0] = 1;
+}
+
+fn main() @context(thread) {
+    var v = view(OTHER);
+    claim BUF {
+        v = view(BUF);
+    }
+    var x: u32 = v[0] as u32;
+}

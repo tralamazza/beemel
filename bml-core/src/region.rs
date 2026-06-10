@@ -155,7 +155,7 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
     }
     check_ownership_exclusivity(program, symbols, diags);
     check_handoff_writes(program, symbols, target, diags);
-    check_reclaim_guards(program, target, diags);
+    check_reclaim_guards(program, symbols, target, diags);
     check_core_sharing(program, symbols, target, diags);
 }
 
@@ -1110,7 +1110,32 @@ fn disables_field(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -> bool
 /// (`flag == true`), waits with non-empty bodies, per-buffer association
 /// (one async agent per region). Opt-in: only agents that declare
 /// `completes_by` are guarded; without it `reclaim` stays trusted.
-fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut DiagnosticBag) {
+///
+/// Scoped view lifetimes (E616). The view a guarded `reclaim` yields is only
+/// trustworthy while its justification holds, so two temporal escapes are
+/// rejected on top of the guard itself:
+/// - a binding holding the reclaimed view (`const v = reclaim(BUF)`) mentioned
+///   OUTSIDE every guard span that contains the reclaim -- the view outlived
+///   its window (e.g. assigned to an outer variable in a try-acquire then used
+///   after the `if`);
+/// - a RELEASE between the justification and a use: a write to a handoff
+///   register of an agent that declares `completes_by` hands the buffer back,
+///   so the previously observed completion no longer covers it. A release
+///   between guard and reclaim re-opens E611; one between reclaim and a later
+///   mention of the binding is E616. Conservative: ANY handoff write of an
+///   agent with matching flags counts, even if it delivers a different buffer
+///   (per-buffer association is the same recorded follow-up as above).
+///
+/// Lexical, per function: bindings and mentions are matched by name within one
+/// function, so a view carried across a loop back-edge (mention textually
+/// before the reclaim) is not seen -- recorded blind spot, with addresses cast
+/// to integers (the verify/provenance domain).
+fn check_reclaim_guards(
+    program: &Program,
+    symbols: &SymbolTable,
+    target: &Target,
+    diags: &mut DiagnosticBag,
+) {
     // static name -> the completion flags ("P.R.F") of the DMA/external agents
     // that write its region.
     let mut flags_of: HashMap<String, Vec<String>> = HashMap::new();
@@ -1136,34 +1161,111 @@ fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut Diagnost
         return; // no agent declares a completion signal -> reclaim stays trusted
     }
 
-    let mut scan = GuardScan::default();
+    // Release sites: writes to a handoff register of an agent that declares
+    // `completes_by`. Each carries the agent's flags so a release only kills
+    // justifications resting on that agent's completion signal.
+    let mut handoff_flags: HashMap<(String, String), Vec<String>> = HashMap::new();
+    for agent in &target.agents {
+        if agent.completes_by.is_empty() {
+            continue;
+        }
+        for h in &agent.handoffs {
+            if let Some((p, r)) = handoff_register_path(&h.register) {
+                handoff_flags
+                    .entry((p, r))
+                    .or_default()
+                    .extend(agent.completes_by.iter().cloned());
+            }
+        }
+    }
+    let mut releases: Vec<(Span, Vec<String>)> = Vec::new();
+    if !handoff_flags.is_empty() {
+        let mut writes = Vec::new();
+        collect_peripheral_writes(program, symbols, &mut writes);
+        for w in &writes {
+            if let Some(flags) = handoff_flags.get(&(w.periph.clone(), w.reg.clone())) {
+                releases.push((w.span, flags.clone()));
+            }
+        }
+    }
+
     // Completion predicates: a fn whose result is a *direct* flag read (empty
     // `preds` -> no predicate-through-predicate) maps to that flag, so
     // `if mdma_done() { reclaim }` counts as a guard -- same soundness as the
     // inline read, since the predicate returns the flag's current value.
+    let mut preds = HashMap::new();
     let no_preds = HashMap::new();
     for item in &program.items {
         if let Item::FnDef(f) = item
             && let Some(result) = fn_result_expr(&f.body)
             && let Some(flag) = cond_flag(result, &no_preds)
         {
-            scan.preds.insert(f.name.0.clone(), flag);
-        }
-    }
-    for item in &program.items {
-        if let Item::FnDef(f) = item {
-            gscan_block(&f.body, &flags_of, &mut scan);
+            preds.insert(f.name.0.clone(), flag);
         }
     }
 
+    // Per function: guard/reclaim containment is span-local anyway, and the
+    // binding/mention matching is by NAME, so scanning per fn keeps an
+    // unrelated local that happens to share a binding's name in another fn
+    // from being checked against it.
+    for item in &program.items {
+        if let Item::FnDef(f) = item {
+            let mut scan = GuardScan {
+                preds: preds.clone(),
+                ..GuardScan::default()
+            };
+            gscan_block(&f.body, &flags_of, &mut scan);
+            check_fn_reclaims(&scan, &releases, diags);
+        }
+    }
+}
+
+/// Whether a release of any flag in `flags` lies strictly between file
+/// positions `lo` and `hi` (same file) -- the buffer was handed back to the
+/// agent inside that interval, so a completion observed at `lo` no longer
+/// covers a use at `hi`.
+fn released_between(
+    releases: &[(Span, Vec<String>)],
+    flags: &[String],
+    at: Span,
+    lo: usize,
+    hi: usize,
+) -> bool {
+    releases.iter().any(|(rspan, rflags)| {
+        rspan.file == at.file
+            && lo < rspan.start
+            && rspan.start < hi
+            && rflags.iter().any(|f| flags.contains(f))
+    })
+}
+
+/// The E611 + E616 checks over one function's scan (see
+/// `check_reclaim_guards` for the rules).
+fn check_fn_reclaims(
+    scan: &GuardScan,
+    releases: &[(Span, Vec<String>)],
+    diags: &mut DiagnosticBag,
+) {
+    // E611: every reclaim inside a guard span of one of its flags, with no
+    // release between the guard's start and the reclaim.
+    let mut guarded_reclaims: Vec<Span> = Vec::new();
     for (rspan, flags) in &scan.reclaims {
-        let guarded = scan.guards.iter().any(|(gflag, gspan)| {
-            flags.contains(gflag)
-                && gspan.file == rspan.file
-                && gspan.start <= rspan.start
-                && rspan.end <= gspan.end
-        });
-        if !guarded {
+        let contained: Vec<&(String, Span)> = scan
+            .guards
+            .iter()
+            .filter(|(gflag, gspan)| {
+                flags.contains(gflag)
+                    && gspan.file == rspan.file
+                    && gspan.start <= rspan.start
+                    && rspan.end <= gspan.end
+            })
+            .collect();
+        let guarded = contained
+            .iter()
+            .any(|(_, gspan)| !released_between(releases, flags, *rspan, gspan.start, rspan.start));
+        if guarded {
+            guarded_reclaims.push(*rspan);
+        } else if contained.is_empty() {
             diags.error(
                 format!(
                     "`reclaim` here is not guarded by a completion check: the agent may still be \
@@ -1173,6 +1275,73 @@ fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut Diagnost
                 ),
                 "E611",
                 *rspan,
+            );
+        } else {
+            diags.error(
+                "`reclaim` here is guarded, but the buffer was released back to the agent \
+                 (handoff register written) after the completion check -- the observed \
+                 completion covers the PREVIOUS transfer. Re-check the flag after re-arming."
+                    .to_string(),
+                "E611",
+                *rspan,
+            );
+        }
+    }
+
+    // E616: a mention of a binding whose MOST RECENT whole-name binding event
+    // (before the mention, in source order) was a guarded reclaim must still
+    // sit inside a guard span containing that reclaim, with no release in
+    // between. A kill (rebind to something else) in between clears the
+    // obligation; unguarded reclaims already got E611, so their mentions are
+    // skipped to avoid cascading.
+    let reclaim_names: HashSet<&str> = scan
+        .bind_events
+        .iter()
+        .filter(|(_, _, ev)| matches!(ev, BindEvent::Reclaim(..)))
+        .map(|(n, _, _)| n.as_str())
+        .collect();
+    for (mname, mspan) in &scan.mentions {
+        if !reclaim_names.contains(mname.as_str()) {
+            continue;
+        }
+        let last = scan
+            .bind_events
+            .iter()
+            .filter(|(n, pos, _)| n == mname && *pos < mspan.start)
+            .max_by_key(|(_, pos, _)| *pos);
+        let Some((_, _, BindEvent::Reclaim(rspan, flags))) = last else {
+            continue;
+        };
+        if mspan.start < rspan.end || !guarded_reclaims.contains(rspan) {
+            continue;
+        }
+        let covering = scan.guards.iter().any(|(gflag, gspan)| {
+            flags.contains(gflag)
+                && gspan.file == rspan.file
+                && gspan.start <= rspan.start
+                && rspan.end <= gspan.end
+                && gspan.start <= mspan.start
+                && mspan.end <= gspan.end
+        });
+        if !covering {
+            diags.error(
+                format!(
+                    "view `{mname}` from `reclaim` is used outside the completion-guarded \
+                     window that justified it: past the guard the agent may be writing the \
+                     buffer again. Keep every use of the view inside the guard."
+                ),
+                "E616",
+                *mspan,
+            );
+        } else if released_between(releases, flags, *mspan, rspan.start, mspan.start) {
+            diags.error(
+                format!(
+                    "view `{mname}` is used after the buffer was released back to the agent \
+                     (handoff register written): the completion that justified the `reclaim` \
+                     covers the PREVIOUS transfer, not this use."
+                ),
+                "E616",
+                *mspan,
             );
         }
     }
@@ -1187,6 +1356,38 @@ struct GuardScan {
     /// Completion predicates: a fn name -> the flag it returns, so an
     /// `if mdma_done()` guard resolves to the underlying flag.
     preds: HashMap<String, String>,
+    /// Whole-name binding events in source order: `const v = ...` and
+    /// `v = ...` either bind a reclaimed view (its later mentions must stay
+    /// inside the justifying guard span, E616) or KILL the association (the
+    /// name now holds something else). A mention is judged against the most
+    /// recent event before it, so re-using a name across windows or rebinding
+    /// it to a harmless view does not trip the check.
+    bind_events: Vec<(String, usize, BindEvent)>,
+    /// Every identifier occurrence `(name, span)` -- reads, index bases, and
+    /// lvalue bases, but NOT a whole-variable assignment target (that is a
+    /// kill/rebind, not a use of the old view). Filtered by binding names.
+    mentions: Vec<(String, Span)>,
+}
+
+enum BindEvent {
+    /// The name was bound to `reclaim(BUF)`: `(reclaim span, BUF's flags)`.
+    Reclaim(Span, Vec<String>),
+    /// The name was bound to something else; earlier reclaim facts about it
+    /// no longer apply.
+    Kill,
+}
+
+impl GuardScan {
+    /// Record a whole-name binding (`const name = value` / `name = value`)
+    /// as a reclaim binding or a kill, positioned at the value's start.
+    fn bind_event(&mut self, name: &str, value: &Expr, flags_of: &HashMap<String, Vec<String>>) {
+        let ev = match reclaim_init(value, flags_of) {
+            Some((rspan, flags)) => BindEvent::Reclaim(rspan, flags),
+            None => BindEvent::Kill,
+        };
+        self.bind_events
+            .push((name.to_string(), value.span().start, ev));
+    }
 }
 
 /// The single expression a function evaluates to -- its trailing expression, or
@@ -1298,9 +1499,28 @@ fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
                 gscan_stmt(eb, flags_of, scan);
             }
         }
-        Stmt::VarDecl(vd) => gscan_expr(&vd.init, flags_of, scan),
-        Stmt::Assign(a) => gscan_expr(&a.value, flags_of, scan),
-        Stmt::CompoundAssign(ca) => gscan_expr(&ca.value, flags_of, scan),
+        Stmt::VarDecl(vd) => {
+            scan.bind_event(&vd.name.0, &vd.init, flags_of);
+            gscan_expr(&vd.init, flags_of, scan);
+        }
+        Stmt::Assign(a) => {
+            // A whole-variable target is a kill/rebind of the name, not a use
+            // of the view it held -- skip the mention but record the binding
+            // event. Any other lvalue shape (index/field/deref) reads its
+            // base, so it counts as a mention.
+            if let LValue::Name(n) = &a.target {
+                scan.bind_event(&n.0, &a.value, flags_of);
+            } else {
+                gscan_lvalue(&a.target, flags_of, scan);
+            }
+            gscan_expr(&a.value, flags_of, scan);
+        }
+        Stmt::CompoundAssign(ca) => {
+            // `x OP= v` reads the target, so even a whole-name target is a
+            // mention (unlike a plain assignment).
+            gscan_lvalue(&ca.target, flags_of, scan);
+            gscan_expr(&ca.value, flags_of, scan);
+        }
         Stmt::Expr(e) => gscan_expr(e, flags_of, scan),
         Stmt::Loop(l) => gscan_block(&l.body, flags_of, scan),
         Stmt::Claim(c) => gscan_block(&c.body, flags_of, scan),
@@ -1342,6 +1562,43 @@ fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
     }
 }
 
+/// The `reclaim(BUF)` initializer of a binding, through grouping parens:
+/// `(reclaim span, BUF's completion flags)` when `BUF` is a tracked static.
+fn reclaim_init(e: &Expr, flags_of: &HashMap<String, Vec<String>>) -> Option<(Span, Vec<String>)> {
+    match e {
+        Expr::Group(inner) => reclaim_init(inner, flags_of),
+        Expr::ViewNew {
+            base,
+            reclaim: true,
+            span,
+            ..
+        } => {
+            if let Expr::Ident((name, _)) = base.as_ref() {
+                flags_of.get(name).map(|flags| (*span, flags.clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Mention collection over assignment targets: the base name of an
+/// index/field/deref write is a USE of the binding (`v[0] = 1` dereferences
+/// the view `v`), and embedded index expressions are walked like any other
+/// expression (a `reclaim` in an index position is still a reclaim site).
+fn gscan_lvalue(lv: &LValue, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
+    match lv {
+        LValue::Name(id) => scan.mentions.push((id.0.clone(), id.1)),
+        LValue::Field(base, _) => gscan_lvalue(base, flags_of, scan),
+        LValue::Index(base, idx) => {
+            gscan_lvalue(base, flags_of, scan);
+            gscan_expr(idx, flags_of, scan);
+        }
+        LValue::Deref(e) => gscan_expr(e, flags_of, scan),
+    }
+}
+
 fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
     match expr {
         Expr::IntLiteral(..)
@@ -1349,9 +1606,9 @@ fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
         | Expr::BoolLiteral(..)
         | Expr::StringLiteral(..)
         | Expr::NullLiteral(_)
-        | Expr::Ident(_)
         | Expr::EnumVariant { .. }
         | Expr::SizeOf(..) => {}
+        Expr::Ident((id, id_span)) => scan.mentions.push((id.clone(), *id_span)),
         Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
             gscan_expr(e, flags_of, scan);
         }

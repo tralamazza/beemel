@@ -1,0 +1,21 @@
+// E616: the reclaimed view is bound inside the try-acquire window but used
+// after it -- past the `if` the completion fact is gone (the agent may be
+// re-armed and writing again).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+var OTHER: [u8; 32];
+var X: u32;
+
+fn main() @context(thread) {
+    var v = view(OTHER);
+    if DMAC.SR.DONE {
+        v = reclaim(BUF);
+        X = v[0] as u32;
+    }
+    X = v[1] as u32;
+}

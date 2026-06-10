@@ -706,9 +706,9 @@ packed layout.
     rejects: a non-`@shared` target, calls inside (a callee's own critical
     sections would cpsie mid-window), and escapes (`return`, or
     break/continue of an outer loop; loops fully inside are fine). View
-    escape through a pre-declared local stays TRUSTED -- the same lifetime
-    gap `reclaim` has; scoped/linear view lifetimes are the shared
-    follow-up. The acquire symmetry is now complete: `claim` enters by
+    escape through a pre-declared local was TRUSTED at first -- the same
+    lifetime gap `reclaim` had; both are now closed by E616 (scoped view
+    lifetimes, below). The acquire symmetry is now complete: `claim` enters by
     masking (instant acquire), `reclaim` by observing the completion signal;
     E405's message points at `claim`. Dogfood: tim2_isr logs ticks into
     `TICK_LOG: [u32;4] @shared` (top accessor, no CS), the thread drains all
@@ -799,9 +799,46 @@ packed layout.
     of windows; the in-window counters are the real invariant.) Pinned by
     cross_core_locked{,_nophys}.bml (+IR spinlock values),
     cross_core_unclaimed.bml, cross_core_locks.target.
-  - *Remaining (smaller):* scoped
-    view lifetimes (the trust gap claim and reclaim share); pointer-call
+  - *Scoped view lifetimes (E616) -- DONE.* The trust gap claim and reclaim
+    shared: a window minted a view and nothing kept it from outliving its
+    justification. One code, three teeth, all lexical span/order reasoning
+    (no flow sensitivity, same soundness class as E611):
+    1. *Claim escape* (`checker.rs::check_claim_view_escape`): inside
+       `claim X {}`, a view/ring/bits over X -- or an inside binding holding
+       one, lexical taint -- assigned to a binding declared outside the body
+       (or through a pointer) is rejected. Value copies out are the point of
+       the window and stay legal. Calls cannot smuggle (E614 forbids them).
+    2. *Reclaim mention containment* (`region.rs::check_fn_reclaims`): a
+       mention of a binding whose most recent whole-name binding event is a
+       guarded `reclaim` must sit inside a guard span that also contains the
+       reclaim. Events (reclaim-bind vs kill/rebind) are judged per name in
+       source order, per function, so name reuse across windows and rebinds
+       to harmless views do not trip it. Lvalue bases now count as mentions
+       (and reclaims in lvalue index positions are now seen at all -- a
+       latent E611 gap the new `gscan_lvalue` closed).
+    3. *Release truncation*: a write to a handoff register of an agent that
+       declares `completes_by` is a RELEASE -- it hands the buffer back, so
+       the observed completion covers the previous transfer. Between guard
+       and reclaim it re-opens E611 (tailored message); between reclaim and
+       a later mention it is E616. Conservative: any handoff write with
+       matching flags counts, even delivering a different buffer
+       (per-buffer association is the standing follow-up).
+    Falsified live on both examples: hoisting `copy_dma.bml`'s reclaim into
+    a pre-declared local fires the claim escape; moving `probe.bml`'s
+    CH0_WRITE_ADDR release after the busy-wait fires the truncated E611;
+    using `first` after a re-arm fires E616 -- and both untouched examples
+    still build (release-before-guard, the canonical arm->wait->consume
+    order, is explicitly not flagged). Check-only slice, zero IR change.
+    Pinned by claim_view_escape{,_taint}.bml, reclaim_view_escape.bml,
+    reclaim_{after,use_after}_release.bml, reclaim_release_before_guard.bml,
+    reclaim_name_reuse.bml, reclaim_release.target. Recorded blind spots:
+    views carried across a loop back-edge (mention textually before the
+    reclaim), addresses cast to integers (verify/provenance domain),
+    same-name shadowing games inside one claim body (false-negative only).
+  - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
+    flag staleness across transfers (a release BEFORE the guard whose flag
+    was never cleared -- needs W1C discipline modeling);
     ETH link-up recovery in the H723 example driver.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct

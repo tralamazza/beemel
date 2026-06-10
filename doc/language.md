@@ -193,6 +193,7 @@ The compiler uses the ARM convention directly:
 | Unannotated module `var` -- implicitly thread-only | E404 |
 | (retired: `@shared in <region>` now composes -- consumption requires `claim` wrapping a completion-guarded `reclaim`) | E613 |
 | `claim` misuse: target not `@shared`, or a call/escape inside the window | E614 |
+| A view outlives its justification window: a view over the claimed static escapes the `claim` body, or a reclaimed view is used outside its completion guard / after the buffer is released back to the agent | E616 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
@@ -252,9 +253,13 @@ Restrictions (E614): the target must be a `@shared` static; the body may not
 contain function calls (a callee's own critical sections would `cpsie`
 inside the window and unmask it early) or escape the window (`return`, or a
 `break`/`continue` of an outer loop -- both would skip the unmask).
-`break`/`continue` of loops fully inside the window are fine. A view bound
-inside the window must not be smuggled out through a pre-declared local;
-this is currently trusted, like `reclaim`'s view lifetime.
+`break`/`continue` of loops fully inside the window are fine. A view built
+over the claimed static must not leave the window either (E616): assigning
+it -- or an inside binding holding it -- to a binding declared outside the
+claim is rejected, because the descriptor is only trustworthy while the mask
+holds. Copying *values* out (`outer = v[0] as u32`) is the point of the
+window and stays legal. Addresses cast to integers (`&X as u32`) are not
+tracked here; that provenance belongs to the verify pipeline.
 
 `claim` is the CPU-side counterpart of `reclaim`: both are explicit
 ownership windows over shared memory, one entered by masking (instant
@@ -581,6 +586,17 @@ reclaim must be guarded by observing it -- it must sit in the then-block of an
 `if <flag>` (or `if done()`, where `done` returns the flag) so the CPU cannot
 read mid-transfer (E611); without `completes_by` the reclaim stays trusted. Only the contiguous `view` form is tightened;
 `ring`/`bits` over agent-shared are not yet.
+
+The reclaimed view's *lifetime* is scoped to that justification (E616): a
+binding holding it may only be mentioned inside a guard span that also
+contains the reclaim, and a write to the agent's handoff register (a
+*release*, handing the buffer back) ends the justification mid-span -- a
+reclaim after the release loses its guard (E611), and a use of the earlier
+view after it is rejected (E616). Mentions are judged against the most
+recent binding of the name, so re-using a name across windows or rebinding
+it to a harmless view is fine. Blind spots, recorded: views carried across a
+loop back-edge, and addresses cast to integers (the verify/provenance
+domain).
 
 **Limitations (v1).** Strided linear views exist with a *compile-time* stride;
 runtime-valued strides, strided bit views, and segmented (scatter/gather) views

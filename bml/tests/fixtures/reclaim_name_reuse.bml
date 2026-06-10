@@ -1,0 +1,39 @@
+// Positive: mentions are judged against the MOST RECENT binding of the name.
+// Re-using one name across two acquire windows, and rebinding it to a
+// harmless view after the window, are both legal -- neither use touches a
+// reclaimed view outside its justification.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+var OTHER: [u8; 32];
+var X: u32;
+
+fn two_windows() {
+    if DMAC.SR.DONE {
+        const v = reclaim(BUF);
+        X = v[0] as u32;
+    }
+    if DMAC.SR.DONE {
+        const v = reclaim(BUF);
+        X = v[1] as u32;
+    }
+}
+
+fn rebind_kills() {
+    var v = view(OTHER);
+    if DMAC.SR.DONE {
+        v = reclaim(BUF);
+        X = v[0] as u32;
+    }
+    v = view(OTHER);
+    X = v[1] as u32;
+}
+
+fn main() @context(thread) {
+    two_windows();
+    rebind_kills();
+}

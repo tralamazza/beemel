@@ -1,0 +1,23 @@
+// Positive: release THEN wait THEN reclaim+use is the canonical pipeline
+// order (arm the channel, block on completion, consume) -- a release BEFORE
+// the guard does not invalidate anything the guard later observes.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+    reg ADDR offset 0x04 {
+        field A: u32 bit[0..31]
+    }
+}
+
+owns DMAC;
+
+var BUF: [u8; 32] in pool;
+var X: u32;
+
+fn main() @context(thread) {
+    DMAC.ADDR = &BUF as u32;
+    while !DMAC.SR.DONE {}
+    const v = reclaim(BUF);
+    X = v[0] as u32;
+}

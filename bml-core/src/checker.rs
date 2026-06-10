@@ -1065,6 +1065,7 @@ fn check_block(
                     .is_some_and(|sym| matches!(sym.ty, Type::Shared(..)));
                 if is_shared {
                     check_claim_restrictions(&c.body, 0, &c.name.1, diags);
+                    check_claim_view_escape(&c.body, &c.name.0, diags);
                     let patched = symbols.with_claimed(&c.name.0);
                     check_block(&c.body, &patched, scope, fn_name, expected_ret, diags);
                 } else {
@@ -1556,6 +1557,306 @@ fn claim_restrict_expr(expr: &Expr, claim_span: &crate::source::Span, diags: &mu
             check_claim_restrictions(&i.then_block, 0, claim_span, diags);
             claim_restrict_expr(&i.else_branch, claim_span, diags);
         }
+    }
+}
+
+/// E616 (claim half): a view built over the claimed static must not escape the
+/// `claim` window. Inside the window `X` is its inner type and views over it
+/// are legal, but the descriptor is only trustworthy while the window's mask
+/// holds -- assigned to a binding declared OUTSIDE the body it would outlive
+/// the cpsie. Value copies out (`outer = v[0] as u32`) are the point of the
+/// window and stay legal; what may not leave is the CAPABILITY: a
+/// view/ring/bits expression whose base is `X`, or a binding holding one
+/// (lexical taint through inside-declared `const`s). Addresses cast to
+/// integers (`&X as u32`) are the verify/provenance domain, not checked here.
+///
+/// Lexical and name-based: a sub-block shadowing an outer name with an inside
+/// declaration makes same-named outer assignments invisible (false negative
+/// only); calls cannot smuggle the view out because claim bodies forbid calls
+/// (E614).
+fn check_claim_view_escape(block: &ast::Block, claim_name: &str, diags: &mut DiagnosticBag) {
+    let mut esc = EscapeState::default();
+    esc_block(block, claim_name, &mut esc, diags);
+}
+
+#[derive(Default)]
+struct EscapeState {
+    /// Names declared inside the claim body (any nesting depth).
+    declared: std::collections::HashSet<String>,
+    /// Inside-declared names currently holding a view over the claimed static.
+    tainted: std::collections::HashSet<String>,
+}
+
+fn esc_block(block: &ast::Block, name: &str, esc: &mut EscapeState, diags: &mut DiagnosticBag) {
+    for stmt in &block.stmts {
+        esc_stmt(stmt, name, esc, diags);
+    }
+    if let Some(t) = &block.trailing {
+        esc_expr(t, name, esc, diags);
+    }
+}
+
+fn esc_stmt(stmt: &Stmt, name: &str, esc: &mut EscapeState, diags: &mut DiagnosticBag) {
+    match stmt {
+        Stmt::VarDecl(vd) => {
+            esc_expr(&vd.init, name, esc, diags);
+            if is_capability(&vd.init, name, esc) {
+                esc.tainted.insert(vd.name.0.clone());
+            }
+            esc.declared.insert(vd.name.0.clone());
+        }
+        Stmt::Assign(a) => {
+            esc_expr(&a.value, name, esc, diags);
+            let capability = is_capability(&a.value, name, esc);
+            match lvalue_base_name(&a.target) {
+                Some(base) => {
+                    let inside = esc.declared.contains(&base.0);
+                    if capability && !inside {
+                        diags.error(
+                            format!(
+                                "a view over the claimed static `{name}` escapes the `claim` \
+                                 window here: `{}` is declared outside the window, so the view \
+                                 would outlive the mask that makes it safe. Bind the view with \
+                                 `const` inside the claim and finish using it before the window \
+                                 closes.",
+                                base.0
+                            ),
+                            "E616",
+                            a.value.span(),
+                        );
+                    }
+                    // A whole-name rebind tracks what the binding now holds; a
+                    // capability stored into an inside aggregate is not
+                    // re-tracked (conservative: the aggregate is inside, so it
+                    // dies with the window anyway).
+                    if let LValue::Name(_) = &a.target
+                        && inside
+                    {
+                        if capability {
+                            esc.tainted.insert(base.0.clone());
+                        } else {
+                            esc.tainted.remove(&base.0);
+                        }
+                    }
+                }
+                // Writing the capability through a pointer escapes to an
+                // unknowable place; reject like an outside binding.
+                None => {
+                    if capability {
+                        diags.error(
+                            format!(
+                                "a view over the claimed static `{name}` is written through a \
+                                 pointer inside the `claim` window: the view must not outlive \
+                                 the window's mask."
+                            ),
+                            "E616",
+                            a.value.span(),
+                        );
+                    }
+                }
+            }
+            esc_lvalue_exprs(&a.target, name, esc, diags);
+        }
+        Stmt::CompoundAssign(ca) => {
+            esc_expr(&ca.value, name, esc, diags);
+            esc_lvalue_exprs(&ca.target, name, esc, diags);
+        }
+        Stmt::Expr(e) => esc_expr(e, name, esc, diags),
+        Stmt::If(i) => {
+            esc_expr(&i.cond, name, esc, diags);
+            esc_block(&i.then_block, name, esc, diags);
+            if let Some(eb) = &i.else_branch {
+                esc_stmt(eb, name, esc, diags);
+            }
+        }
+        Stmt::Loop(l) => esc_block(&l.body, name, esc, diags),
+        Stmt::While(w) => {
+            esc_expr(&w.cond, name, esc, diags);
+            esc_block(&w.body, name, esc, diags);
+        }
+        Stmt::For(f) => {
+            esc_expr(&f.start, name, esc, diags);
+            esc_expr(&f.end, name, esc, diags);
+            if let Some(step) = &f.step {
+                esc_expr(step, name, esc, diags);
+            }
+            esc.declared.insert(f.var.0.clone());
+            esc_block(&f.body, name, esc, diags);
+        }
+        Stmt::Match(m) => {
+            esc_expr(&m.scrutinee, name, esc, diags);
+            for arm in &m.arms {
+                esc_block(&arm.body, name, esc, diags);
+            }
+        }
+        // `return` inside claim is already E614; nothing to track here.
+        Stmt::Return(_) | Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Asm(a) => {
+            for (_, target) in &a.outputs {
+                esc_expr(target, name, esc, diags);
+            }
+            for (_, value) in &a.inputs {
+                esc_expr(value, name, esc, diags);
+            }
+        }
+        Stmt::Assume(a) => esc_expr(&a.cond, name, esc, diags),
+        Stmt::Assert(a) => esc_expr(&a.cond, name, esc, diags),
+        Stmt::Block(b) => esc_block(b, name, esc, diags),
+        Stmt::Claim(c) => esc_block(&c.body, name, esc, diags),
+    }
+}
+
+/// Expression recursion only reaches statements embedded in block/if/match
+/// expressions; a bare capability in value position that is not stored
+/// anywhere cannot escape. Exhaustive (no catch-all).
+fn esc_expr(expr: &Expr, name: &str, esc: &mut EscapeState, diags: &mut DiagnosticBag) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::Ident(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => {}
+        Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
+            esc_expr(e, name, esc, diags);
+        }
+        Expr::Binary(l, _, r) | Expr::Index(l, r) => {
+            esc_expr(l, name, esc, diags);
+            esc_expr(r, name, esc, diags);
+        }
+        Expr::Call(callee, args) => {
+            esc_expr(callee, name, esc, diags);
+            for a in args {
+                esc_expr(a, name, esc, diags);
+            }
+        }
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            esc_expr(base, name, esc, diags);
+            if let Some(l) = len {
+                esc_expr(l, name, esc, diags);
+            }
+            if let Some(s) = stride {
+                esc_expr(s, name, esc, diags);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            esc_expr(base, name, esc, diags);
+            if let Some(c) = capacity {
+                esc_expr(c, name, esc, diags);
+            }
+            esc_expr(head, name, esc, diags);
+            esc_expr(len, name, esc, diags);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            esc_expr(base, name, esc, diags);
+            if let Some(o) = bit_offset {
+                esc_expr(o, name, esc, diags);
+            }
+            if let Some(l) = len_bits {
+                esc_expr(l, name, esc, diags);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                esc_expr(e, name, esc, diags);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                esc_expr(e, name, esc, diags);
+            }
+        }
+        Expr::Match(m) => {
+            esc_expr(&m.scrutinee, name, esc, diags);
+            for arm in &m.arms {
+                esc_block(&arm.body, name, esc, diags);
+            }
+        }
+        Expr::Block(b) => esc_block(&b.block, name, esc, diags),
+        Expr::If(i) => {
+            esc_expr(&i.cond, name, esc, diags);
+            esc_block(&i.then_block, name, esc, diags);
+            esc_expr(&i.else_branch, name, esc, diags);
+        }
+    }
+}
+
+/// Walk the expressions embedded in an lvalue (index positions, deref bases)
+/// without treating them as escapes.
+fn esc_lvalue_exprs(lv: &LValue, name: &str, esc: &mut EscapeState, diags: &mut DiagnosticBag) {
+    match lv {
+        LValue::Name(_) => {}
+        LValue::Field(base, _) => esc_lvalue_exprs(base, name, esc, diags),
+        LValue::Index(base, idx) => {
+            esc_lvalue_exprs(base, name, esc, diags);
+            esc_expr(idx, name, esc, diags);
+        }
+        LValue::Deref(e) => esc_expr(e, name, esc, diags),
+    }
+}
+
+/// The root binding of an lvalue (`v[0].f` -> `v`); `None` for a deref target.
+fn lvalue_base_name(lv: &LValue) -> Option<&ast::Ident> {
+    match lv {
+        LValue::Name(id) => Some(id),
+        LValue::Field(base, _) | LValue::Index(base, _) => lvalue_base_name(base),
+        LValue::Deref(_) => None,
+    }
+}
+
+/// Whether `e` evaluates to a view/ring/bits descriptor over the claimed
+/// static: a `view`/`ring`/`bits`/`reclaim` whose base is the static (or a
+/// tainted binding), a tainted identifier, or an embedded block expression
+/// whose result is one.
+fn is_capability(e: &Expr, name: &str, esc: &EscapeState) -> bool {
+    match e {
+        Expr::Group(inner) => is_capability(inner, name, esc),
+        Expr::Ident((n, _)) => esc.tainted.contains(n),
+        Expr::ViewNew { base, .. } | Expr::RingNew { base, .. } | Expr::BitNew { base, .. } => {
+            capability_base(base, name, esc)
+        }
+        Expr::Block(b) => b
+            .block
+            .trailing
+            .as_ref()
+            .is_some_and(|t| is_capability(t, name, esc)),
+        Expr::If(i) => {
+            i.then_block
+                .trailing
+                .as_ref()
+                .is_some_and(|t| is_capability(t, name, esc))
+                || is_capability(&i.else_branch, name, esc)
+        }
+        Expr::Match(m) => m.arms.iter().any(|arm| {
+            arm.body
+                .trailing
+                .as_ref()
+                .is_some_and(|t| is_capability(t, name, esc))
+        }),
+        _ => false,
+    }
+}
+
+fn capability_base(base: &Expr, name: &str, esc: &EscapeState) -> bool {
+    match base {
+        Expr::Group(inner) => capability_base(inner, name, esc),
+        Expr::Ident((n, _)) => n == name || esc.tainted.contains(n),
+        _ => false,
     }
 }
 

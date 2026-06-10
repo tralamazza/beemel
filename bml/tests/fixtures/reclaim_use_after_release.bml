@@ -1,0 +1,24 @@
+// E616 (release truncation): the reclaim itself is sound, but the buffer is
+// released back to the agent before the LAST use of the view -- that use
+// reads memory the agent may be rewriting.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+    reg ADDR offset 0x04 {
+        field A: u32 bit[0..31]
+    }
+}
+
+owns DMAC;
+
+var BUF: [u8; 32] in pool;
+var X: u32;
+
+fn main() @context(thread) {
+    while !DMAC.SR.DONE {}
+    const v = reclaim(BUF);
+    X = v[0] as u32;
+    DMAC.ADDR = &BUF as u32;
+    X = v[1] as u32;
+}

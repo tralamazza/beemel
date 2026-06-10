@@ -3213,6 +3213,79 @@ fn test_reclaim_busywait_nonempty_body_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// Scoped view lifetimes (E616): the capability a window mints (a view over
+// the claimed static, or a guarded reclaim's view) must not outlive its
+// justification -- escaping the claim window, leaving the guard span, or
+// surviving a release (handoff write) back to the agent.
+assert_error!(
+    test_claim_view_escape_rejected,
+    "claim_view_escape.bml",
+    "E616"
+);
+assert_error!(
+    test_claim_view_escape_taint_rejected,
+    "claim_view_escape_taint.bml",
+    "E616"
+);
+
+#[test]
+fn test_reclaim_view_escape_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_view_escape.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "a reclaimed view used past its try-acquire window must be rejected; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E616"), "expected E616; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_after_release_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_after_release.bml", Some("reclaim_release.target"));
+    assert!(
+        !ok,
+        "a reclaim after the buffer was released back to the agent must be rejected; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_use_after_release_rejected() {
+    let (ok, stderr) = bml_build_with_target(
+        "reclaim_use_after_release.bml",
+        Some("reclaim_release.target"),
+    );
+    assert!(
+        !ok,
+        "using the reclaimed view after re-arming the agent must be rejected; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E616"), "expected E616; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_name_reuse_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_name_reuse.bml", Some("reclaim_guard.target"));
+    assert!(
+        ok,
+        "re-using a binding name across windows / rebinding it after the window \
+         must not be flagged; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_reclaim_release_before_guard_ok() {
+    let (ok, stderr) = bml_build_with_target(
+        "reclaim_release_before_guard.bml",
+        Some("reclaim_release.target"),
+    );
+    assert!(
+        ok,
+        "arm -> wait -> reclaim -> use is the canonical order and should build; stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn test_reclaim_before_wait_rejected() {
     let (ok, stderr) =
