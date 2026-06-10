@@ -1,0 +1,4 @@
+// Minimal program; the MPU region comes from the target's cacheable = false
+// block and is programmed in the generated reset_handler.
+fn main() @context(thread) {
+}

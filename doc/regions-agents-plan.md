@@ -746,8 +746,8 @@ packed layout.
     rejected, message points at claim).
   - *Remaining (smaller):* scoped view lifetimes (the trust gap claim and
     reclaim share); pointer-call context edges; compared guard conditions;
-    per-buffer flag association; PMSAv8 MPU emission; multi-core (core1)
-    consumption.
+    per-buffer flag association; multi-core (core1) consumption; ETH
+    link-up recovery in the H723 example driver.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the
@@ -793,11 +793,20 @@ milestone, the user has a debug probe).
    target now declares it and the probe's reset-clear is checked physics
    (verified: removing the clear is E609). Pinned by
    `enable_inverted{_ok,_missing}.bml` + `clock_stomp_inverted.bml`.
-2. **MPU generation is PMSAv7-only.** The RP2350 M33 MPU is PMSAv8
-   (RBAR/RLAR); the generated RNR/RBAR/RASR sequence would program garbage.
-   `has_mpu = false` until v8-M emission exists (moot in practice here: no
-   data cache, so no `cacheable = false` blocks arise -- but the gap is
-   architectural, not theoretical).
+2. **MPU generation is PMSAv7-only.** CLOSED, hardware-validated:
+   `MpuFlavor` follows the core (`cortex-m33` -> PMSAv8), the validation
+   relaxes to 32-byte granularity (no power-of-two rule), and the emission
+   branches to MAIR0 (attr 0 = 0x44, Normal non-cacheable) + per-region
+   RBAR (base|SH=00|AP=01|XN) / RLAR (limit|AttrIndx=0|EN). The Pico 2 W
+   target sets `has_mpu = true` and marks the non-striped sram8 bank
+   (hosting dma_buf) `cacheable = false`; on the board MPU_CTRL=5,
+   RBAR=0x20080003, RLAR=0x20080FE1, MAIR0=0x44 read back exactly as
+   emitted with the DMA probe running inside the covered bank. (RP2350 has
+   no data cache, so the attribute is configuration truth, not a coherence
+   requirement -- the point was the v8 emission on real PMSAv8 silicon.)
+   The PMSAv7 path is byte-identical post-refactor (H723 IR diff clean).
+   Pinned by `pmsa8_mpu.{bml,target}` (IR) and the pmsa8 target.rs unit
+   tests.
 3. **E611 misses the wait-while-set idiom.** CLOSED: `completes_by =
    !DMA.CH0_CTRL_TRIG.BUSY` declares a busy-HIGH flag (done-when-clear), and
    the guard machinery is polarity-generic -- `cond_flag` normalizes `!` (a

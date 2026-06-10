@@ -14,9 +14,10 @@ size = 4M
 # Project claim: which blocks this program actually hands to the DMA. The
 # chip's bus windows (rp2350.target) cross-check it at target load.
 [agent.dma]
-reach = sram, flash
+reach = sram8, flash
 
-# DMA copy buffers live in main SRAM, shared with the DMA agent.
+# DMA copy buffers live in the dedicated non-striped sram8 bank (declared
+# non-cacheable in the chip target -> generated PMSAv8 MPU region).
 [region.dma_buf]
-mem = sram
+mem = sram8
 agents = dma

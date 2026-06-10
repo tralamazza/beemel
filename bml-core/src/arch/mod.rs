@@ -31,6 +31,17 @@ pub enum Arch {
     Armv7em,
 }
 
+/// MPU programming model. Follows the CORE, not the emitted ISA: a
+/// Cortex-M33 (`ARMv8-M`) implements `PMSAv8` (`RBAR`/`RLAR` + `MAIR` attribute
+/// indirection) even though we emit `v7e-m` code for it. `PMSAv7` regions are
+/// power-of-two sized and size-aligned; `PMSAv8` regions are `[base, limit]`
+/// pairs at 32-byte granularity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MpuFlavor {
+    Pmsa7,
+    Pmsa8,
+}
+
 impl Arch {
     #[must_use]
     pub fn datalayout(&self) -> &'static str {

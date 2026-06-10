@@ -49,6 +49,9 @@ pub struct IrEmitter {
     /// NVIC priority field width (`Target::priority_bits`); positions the
     /// `@isr(priority=N)` value in the IPR byte emitted in `reset_handler`.
     pub(crate) priority_bits: u8,
+    /// MPU programming model for the `mpu_regions` emission (`PMSAv7` `RASR` vs
+    /// `PMSAv8` `RBAR`/`RLAR`+`MAIR`). From `Target::mpu_flavor`.
+    pub(crate) mpu_flavor: crate::arch::MpuFlavor,
     /// Nesting depth of `claim` blocks at the current emission point. Inside
     /// a claim (depth > 0) the per-access `@shared` critical sections are
     /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
@@ -266,6 +269,7 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -313,6 +317,7 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -344,6 +349,11 @@ impl IrEmitter {
     /// programming `@isr` priorities into the IPR bytes in `reset_handler`.
     pub fn set_priority_bits(&mut self, bits: u8) {
         self.priority_bits = bits;
+    }
+
+    /// MPU programming model (see `Target::mpu_flavor`).
+    pub fn set_mpu_flavor(&mut self, flavor: crate::arch::MpuFlavor) {
+        self.mpu_flavor = flavor;
     }
 
     /// Install the per-region alignment floors (region name -> bytes). A static

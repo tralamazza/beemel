@@ -583,23 +583,38 @@ impl Target {
             if m.size == 0 {
                 return Err(format!("mem `{}` has zero size", m.name));
             }
-            // A non-cacheable block becomes an MPU region (when the part has an
-            // MPU): the ARMv7-M MPU needs a power-of-two size >= 32 with a
-            // size-aligned base.
+            // A non-cacheable block becomes an MPU region (when the part has
+            // an MPU). The shape rules follow the MPU flavor: PMSAv7 needs a
+            // power-of-two size >= 32 with a size-aligned base; PMSAv8 is
+            // [base, limit] at 32-byte granularity (no power-of-two rule).
             if self.has_mpu && !m.cacheable {
-                if !m.size.is_power_of_two() || m.size < 32 {
-                    return Err(format!(
-                        "mem `{}` is `cacheable = false` (an MPU region) but its size {} is not a \
-                         power of two >= 32",
-                        m.name, m.size
-                    ));
-                }
-                if m.base % m.size != 0 {
-                    return Err(format!(
-                        "mem `{}` is `cacheable = false` (an MPU region) but its base 0x{:08X} is \
-                         not aligned to its size {}",
-                        m.name, m.base, m.size
-                    ));
+                match self.mpu_flavor() {
+                    crate::arch::MpuFlavor::Pmsa7 => {
+                        if !m.size.is_power_of_two() || m.size < 32 {
+                            return Err(format!(
+                                "mem `{}` is `cacheable = false` (an MPU region) but its size {} \
+                                 is not a power of two >= 32 (PMSAv7)",
+                                m.name, m.size
+                            ));
+                        }
+                        if m.base % m.size != 0 {
+                            return Err(format!(
+                                "mem `{}` is `cacheable = false` (an MPU region) but its base \
+                                 0x{:08X} is not aligned to its size {} (PMSAv7)",
+                                m.name, m.base, m.size
+                            ));
+                        }
+                    }
+                    crate::arch::MpuFlavor::Pmsa8 => {
+                        if m.size < 32 || m.size % 32 != 0 || m.base % 32 != 0 {
+                            return Err(format!(
+                                "mem `{}` is `cacheable = false` (an MPU region) but PMSAv8 \
+                                 needs base and size 32-byte aligned (size >= 32); got base \
+                                 0x{:08X} size {}",
+                                m.name, m.base, m.size
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -819,6 +834,18 @@ impl Target {
     /// agents sharing it -- turning the trusted claim into enforced config. Empty
     /// when the part has no MPU. `validate_regions` guarantees each is
     /// MPU-encodable (power-of-two size >= 32, base aligned to size); the emitter
+    /// Which MPU programming model the part implements -- decided by the CPU
+    /// core (`cortex-m33` is ARMv8-M / `PMSAv8`), defaulting to `PMSAv7` for the
+    /// v6/v7-M parts. Drives both the region-shape validation and the
+    /// `reset_handler` emission.
+    #[must_use]
+    pub fn mpu_flavor(&self) -> crate::arch::MpuFlavor {
+        match self.cpu.as_deref() {
+            Some("cortex-m33") => crate::arch::MpuFlavor::Pmsa8,
+            _ => crate::arch::MpuFlavor::Pmsa7,
+        }
+    }
+
     /// programs one MPU region per entry at the start of `reset_handler`.
     #[must_use]
     pub fn mpu_regions(&self) -> Vec<(u64, u64)> {
@@ -1939,6 +1966,54 @@ handoff = P.R align 3
 
     // A non-cacheable (MPU) block must be MPU-encodable: power-of-two size,
     // size-aligned base.
+    #[test]
+    fn pmsa8_accepts_non_pow2_regions() {
+        // PMSAv8 (cortex-m33) is [base, limit] at 32-byte granularity: a
+        // 12K region (not a power of two) is fine, and the flavor follows
+        // the core.
+        let src = "\
+arch = armv7em
+cpu = cortex-m33
+vector_table_offset = 0x10000000
+data_block = sram
+[mem.flash]
+base = 0x10000000
+size = 4M
+[mem.sram]
+base = 0x20000000
+size = 512K
+[mem.pool]
+base = 0x20080000
+size = 12K
+cacheable = false
+";
+        let target = t(src);
+        assert_eq!(target.mpu_flavor(), crate::arch::MpuFlavor::Pmsa8);
+        assert_eq!(target.mpu_regions(), vec![(0x2008_0000, 12 * 1024)]);
+    }
+
+    #[test]
+    fn pmsa8_rejects_unaligned_regions() {
+        let src = "\
+arch = armv7em
+cpu = cortex-m33
+vector_table_offset = 0x10000000
+data_block = sram
+[mem.flash]
+base = 0x10000000
+size = 4M
+[mem.sram]
+base = 0x20000000
+size = 512K
+[mem.pool]
+base = 0x20080010
+size = 48
+cacheable = false
+";
+        let err = Target::parse(src).unwrap_err();
+        assert!(err.contains("PMSAv8"), "got: {err}");
+    }
+
     #[test]
     fn noncacheable_block_must_be_mpu_shaped() {
         let err = Target::parse(

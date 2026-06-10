@@ -248,6 +248,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     emit_module_attributes(e);
 }
 
+#[allow(clippy::similar_names)] // rbar/rlar are the architectural names
 pub fn emit_startup_routine(
     e: &mut IrEmitter,
     symbols: &SymbolTable,
@@ -293,25 +294,58 @@ pub fn emit_startup_routine(
         const MPU_CTRL: u32 = 0xE000_ED94;
         const MPU_RNR: u32 = 0xE000_ED98;
         const MPU_RBAR: u32 = 0xE000_ED9C;
-        const MPU_RASR: u32 = 0xE000_EDA0;
+        // PMSAv7: RASR. PMSAv8: RLAR (same address, different layout) + MAIR.
+        const MPU_RASR_RLAR: u32 = 0xE000_EDA0;
+        const MPU_MAIR0: u32 = 0xE000_EDC0;
         // Disable the MPU while reconfiguring.
         e.line(&format!(
             "store volatile i32 0, ptr inttoptr ({ptr_ty} {MPU_CTRL} to ptr)"
         ));
-        for (i, (base, size)) in mpu.iter().enumerate() {
-            let size_field = size.trailing_zeros() - 1; // SIZE = log2(size) - 1
-            let rasr: u32 =
-                1 | (size_field << 1) | (1 << 18) | (1 << 19) | (0b011 << 24) | (1 << 28);
-            let base = *base as u32;
-            e.line(&format!(
-                "store volatile i32 {i}, ptr inttoptr ({ptr_ty} {MPU_RNR} to ptr)"
-            ));
-            e.line(&format!(
-                "store volatile i32 {base}, ptr inttoptr ({ptr_ty} {MPU_RBAR} to ptr)"
-            ));
-            e.line(&format!(
-                "store volatile i32 {rasr}, ptr inttoptr ({ptr_ty} {MPU_RASR} to ptr)"
-            ));
+        match e.mpu_flavor {
+            crate::arch::MpuFlavor::Pmsa7 => {
+                for (i, (base, size)) in mpu.iter().enumerate() {
+                    let size_field = size.trailing_zeros() - 1; // SIZE = log2(size) - 1
+                    let rasr: u32 =
+                        1 | (size_field << 1) | (1 << 18) | (1 << 19) | (0b011 << 24) | (1 << 28);
+                    let base = *base as u32;
+                    e.line(&format!(
+                        "store volatile i32 {i}, ptr inttoptr ({ptr_ty} {MPU_RNR} to ptr)"
+                    ));
+                    e.line(&format!(
+                        "store volatile i32 {base}, ptr inttoptr ({ptr_ty} {MPU_RBAR} to ptr)"
+                    ));
+                    e.line(&format!(
+                        "store volatile i32 {rasr}, ptr inttoptr ({ptr_ty} {MPU_RASR_RLAR} to ptr)"
+                    ));
+                }
+            }
+            crate::arch::MpuFlavor::Pmsa8 => {
+                // Attribute indirection: MAIR0 attr index 0 = 0x44, Normal
+                // memory, outer and inner non-cacheable. Every generated
+                // region uses index 0 (they exist precisely to be
+                // non-cacheable).
+                e.line(&format!(
+                    "store volatile i32 68, ptr inttoptr ({ptr_ty} {MPU_MAIR0} to ptr)"
+                ));
+                for (i, (base, size)) in mpu.iter().enumerate() {
+                    // RBAR = BASE[31:5] | SH=00 | AP=01 (RW any privilege) |
+                    // XN=1. Shareability is architecturally ignored for
+                    // Normal Non-cacheable memory, so SH stays 0.
+                    let rbar: u32 = (*base as u32 & 0xFFFF_FFE0) | 0b011;
+                    // RLAR = LIMIT[31:5] (inclusive, last 32-byte granule) |
+                    // AttrIndx=0 | EN=1.
+                    let rlar: u32 = (((*base + *size - 32) as u32) & 0xFFFF_FFE0) | 1;
+                    e.line(&format!(
+                        "store volatile i32 {i}, ptr inttoptr ({ptr_ty} {MPU_RNR} to ptr)"
+                    ));
+                    e.line(&format!(
+                        "store volatile i32 {rbar}, ptr inttoptr ({ptr_ty} {MPU_RBAR} to ptr)"
+                    ));
+                    e.line(&format!(
+                        "store volatile i32 {rlar}, ptr inttoptr ({ptr_ty} {MPU_RASR_RLAR} to ptr)"
+                    ));
+                }
+            }
         }
         // Enable the MPU (ENABLE | PRIVDEFENA), then barriers so it is active
         // before any later access to the region.

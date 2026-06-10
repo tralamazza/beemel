@@ -16,15 +16,18 @@
 # - CLOSED: `completes_by = !DMA.CH0_CTRL_TRIG.BUSY` expresses the busy-HIGH
 #   flag; the native `while BUSY {}` wait-while-set idiom is an accepted
 #   E611 guard (the raw INTR bit remains as the done-high alternative).
-# - OPEN: the MPU is PMSAv8 (RBAR/RLAR), not the PMSAv7 sequence the
-#   compiler generates -- has_mpu = false until v8-M MPU emission exists.
-#   (Moot in practice: no data cache, so no cacheable = false blocks arise.)
+# - CLOSED: PMSAv8 MPU emission exists (MpuFlavor follows the core:
+#   cortex-m33 -> RBAR/RLAR + MAIR attribute indirection, 32-byte
+#   granularity instead of the PMSAv7 power-of-two shape). has_mpu = true;
+#   the board target marks sram8 cacheable = false, generating one v8
+#   region. (No data cache here, so the attribute is belt-and-braces; the
+#   point is validating the v8 emission on real PMSAv8 silicon.)
 arch = armv7em
 cpu = cortex-m33
 priority_bits = 4
 has_fpu = true
 has_bitband = false
-has_mpu = false
+has_mpu = true
 # Code runs from the XIP window; the board target's flash block covers this.
 vector_table_offset = 0x10000000
 data_block = sram
@@ -48,10 +51,15 @@ base = 0x20000000
 size = 512K
 
 # SRAM8/9: 4 KB each, non-striped, directly after the striped region. Useful
-# as dedicated per-purpose banks (no striping contention).
+# as dedicated per-purpose banks (no striping contention). sram8 hosts the
+# DMA buffers (board target's dma_buf region) and is declared non-cacheable
+# -> one generated PMSAv8 MPU region (the v8 emission validation; RP2350 has
+# no data cache, so this is configuration truth rather than a coherence
+# requirement).
 [mem.sram8]
 base = 0x20080000
 size = 4K
+cacheable = false
 
 [mem.sram9]
 base = 0x20081000

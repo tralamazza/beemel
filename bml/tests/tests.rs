@@ -2913,6 +2913,48 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// PMSAv8 MPU emission (cortex-m33): MAIR0 = 0x44 at 0xE000EDC0, RBAR =
+// base|SH=00|AP=01|XN=1, RLAR = limit|EN -- and a non-power-of-two region
+// size is legal (32-byte granularity).
+#[test]
+fn test_pmsa8_mpu_emission() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let path = dir.join("pmsa8_mpu.bml");
+    let out = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--target")
+        .arg(dir.join("pmsa8_mpu.target"))
+        .arg(&path)
+        .output()
+        .expect("failed to run bml build");
+    let ll = std::fs::read_to_string(path.with_extension("ll")).unwrap_or_default();
+    let _ = std::fs::remove_file(path.with_extension("o"));
+    let _ = std::fs::remove_file(path.with_extension("ld"));
+    let _ = std::fs::remove_file(path.with_extension("ll"));
+    assert!(
+        out.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // MAIR0 (0xE000EDC0 = 3758157248) = 68 (0x44, Normal non-cacheable).
+    assert!(
+        ll.contains("store volatile i32 68, ptr inttoptr (i32 3758157248 to ptr)"),
+        "missing MAIR0 write:\n{ll}"
+    );
+    // RBAR = 0x20080000 | 0b011 = 537395203.
+    assert!(
+        ll.contains("store volatile i32 537395203"),
+        "missing RBAR write:\n{ll}"
+    );
+    // RLAR = (0x20080000 + 12K - 32) | EN = 0x20082FE1 = 537407457.
+    assert!(
+        ll.contains("store volatile i32 537407457"),
+        "missing RLAR write:\n{ll}"
+    );
+}
+
 // Inverted-polarity gates and completion flags (`!` prefix): RP2350-class
 // physics where the enable is CLEAR-to-enable (RESETS) and the completion
 // signal is busy-HIGH (CTRL.BUSY).
