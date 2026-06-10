@@ -266,6 +266,47 @@ pub fn emit_startup_routine(e: &mut IrEmitter, symbols: &SymbolTable) {
         let updated = e.emit_line(&format!("or i32 {old}, {mask}"));
         e.line(&format!("store volatile i32 {updated}, ptr {p}"));
     }
+
+    // MPU: program each `cacheable = false` mem block as a non-cacheable region
+    // (Target::mpu_regions) so a CPU with caches on stays coherent with the DMA
+    // agents sharing it -- turning the trusted claim into enforced config.
+    // Register-only, before .data/.bss and before any cache is enabled. RASR is
+    // Normal non-cacheable shareable (TEX=001, S=1, C=0, B=0), full RW (AP=011),
+    // execute-never (XN=1).
+    let mpu = e.mpu_regions.clone();
+    if !mpu.is_empty() {
+        const MPU_CTRL: u32 = 0xE000_ED94;
+        const MPU_RNR: u32 = 0xE000_ED98;
+        const MPU_RBAR: u32 = 0xE000_ED9C;
+        const MPU_RASR: u32 = 0xE000_EDA0;
+        // Disable the MPU while reconfiguring.
+        e.line(&format!(
+            "store volatile i32 0, ptr inttoptr ({ptr_ty} {MPU_CTRL} to ptr)"
+        ));
+        for (i, (base, size)) in mpu.iter().enumerate() {
+            let size_field = size.trailing_zeros() - 1; // SIZE = log2(size) - 1
+            let rasr: u32 =
+                1 | (size_field << 1) | (1 << 18) | (1 << 19) | (0b011 << 24) | (1 << 28);
+            let base = *base as u32;
+            e.line(&format!(
+                "store volatile i32 {i}, ptr inttoptr ({ptr_ty} {MPU_RNR} to ptr)"
+            ));
+            e.line(&format!(
+                "store volatile i32 {base}, ptr inttoptr ({ptr_ty} {MPU_RBAR} to ptr)"
+            ));
+            e.line(&format!(
+                "store volatile i32 {rasr}, ptr inttoptr ({ptr_ty} {MPU_RASR} to ptr)"
+            ));
+        }
+        // Enable the MPU (ENABLE | PRIVDEFENA), then barriers so it is active
+        // before any later access to the region.
+        e.line(&format!(
+            "store volatile i32 5, ptr inttoptr ({ptr_ty} {MPU_CTRL} to ptr)"
+        ));
+        e.line("call void asm sideeffect \"dsb\", \"~{memory}\"()");
+        e.line("call void asm sideeffect \"isb\", \"~{memory}\"()");
+    }
+
     e.line("  br label %data_copy_test");
     e.line("");
 

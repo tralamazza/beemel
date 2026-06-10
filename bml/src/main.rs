@@ -581,6 +581,7 @@ fn build_file(
         Some(source_map),
     );
     emitter.set_startup_init(target.startup_init.clone());
+    emitter.set_mpu_regions(target.mpu_regions());
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
 

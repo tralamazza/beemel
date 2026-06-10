@@ -46,6 +46,10 @@ size = 28K
 [mem.dma_pool]
 base = 0x30007000
 size = 4K
+# Non-cacheable: the ETH/MDMA DMA buffers live here and the CPU shares them with
+# D-cache on. The compiler generates an MPU region enforcing this (no manual
+# cache maintenance), so the CPU's accesses bypass the cache and stay coherent.
+cacheable = false
 
 # The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
 # descriptor base + tail-pointer registers are handoffs: source writes the full

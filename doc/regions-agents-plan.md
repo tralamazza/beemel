@@ -286,18 +286,23 @@ Checks and derivations:
 - **Reach check:** the region's memory must lie within the reach of every
   listed agent. `[region.x] mem = dtcm, agents = eth_dma` is a target-file
   error -- the DTCM footgun dies here, before any source is compiled.
-- **Cache discipline** (failure mode #3): DONE (detection). `validate_regions`
-  rejects a region whose mem is cacheable (the `cacheable` mem-block attribute,
-  default `true`) when it is shared by a cached CPU (a `kind = cpu`, `cached =
-  true` agent that reaches the mem) and a non-snooping agent (a `dma`/`external`
-  agent, `cached = false`, the region lists). Fix: declare the mem `cacheable =
-  false`. On the current bring-up (D-cache never enabled, no `cached = true` cpu)
-  it is dormant; declaring `[agent.cpu] cached = true` later -- i.e. *enabling*
-  D-cache -- makes every non-coherent DMA region a target error instead of
-  silently corrupting RX (exactly failure mode #3). The check is detection only:
-  it forces the `cacheable = false` declaration but does not yet *generate* or
-  *verify* the MPU config that makes the memory non-cacheable -- that (and an
-  implicit cpu agent from the `cpu` field) is the follow-up.
+- **Cache discipline** (failure mode #3): DONE (detection **and enforcement**).
+  Detection: `validate_regions` rejects a cacheable region (the `cacheable`
+  mem-block attribute, default `true`) shared by a cached CPU and a non-snooping
+  `dma`/`external` agent. Fix: declare the mem `cacheable = false`. **Enforcement
+  (Stage 4, hardware-validated):** a `cacheable = false` mem block is *generated*
+  into an MPU non-cacheable region (`Target::mpu_regions` -> `arch/arm.rs` emits
+  the MPU setup at the start of `reset_handler`, before `.data`/`.bss` and any
+  cache: disable MPU, per region RNR/RBAR/RASR = Normal non-cacheable shareable
+  RW XN, enable MPU + DSB/ISB). `validate_regions` requires each non-cacheable
+  block be MPU-encodable (power-of-two size >= 32, size-aligned base). On the
+  NUCLEO the example now runs with the **D-cache enabled**: `dma_pool` is
+  `cacheable = false`, the generated MPU keeps the CPU coherent with ETH/MDMA, and
+  `RX_PACKET_COUNT` keeps advancing (`SCB_CCR.DC=1`, `MPU_CTRL=0x5`). So the
+  trusted claim is now enforced silicon config, not just a forced declaration --
+  the last detection-only founding failure mode is closed. (Still trusted: which
+  blocks need it, since `reach`/`cacheable` are unverified physics -- the
+  bus-matrix sourcing thread.)
 - **Alignment-as-derived-physics** (same physics, second consequence): DONE.
   RM0468 confirms the ETH DMA imposes *no* buffer-address alignment ("There is
   no limitation to the buffer address alignment", Table 579) and only word

@@ -16,18 +16,34 @@ export fn board_bringup, fn delay;
 // produced ~15.6 ms between heartbeats on the reset clock tree.
 const HEARTBEAT_DELAY_COUNT: u32 = 64000000;
 
-// Core/cache setup for first bring-up. Keep D-cache disabled so the CPU and ETH
-// DMA see the same descriptor and packet-buffer contents without explicit cache
-// maintenance. Enable I-cache; it does not create DMA coherency issues. This is
-// the minimal version: it does not clean/invalidate the D-cache by set/way.
-// Production code should configure an MPU non-cacheable region for ETH
-// descriptors and buffers instead.
-//
-// SCB comes from the generated SVD; only ICIALLU is hand-written (see cache.bml).
-fn board_init() {
-    SCB.CCR.DC = false;
+// Invalidate the D-cache by set/way, then enable it. H723 L1 D-cache: 16 KB,
+// 4-way, 32-byte line -> 128 sets. DCISW takes `(way<<30) | (set<<5)`. The
+// invalidate is required because the cache's reset state is undefined.
+fn enable_dcache() {
+    var set: u32 = 0;
+    while set < 128 {
+        var way: u32 = 0;
+        while way < 4 {
+            CM7_CACHE.DCISW = (way << 30) | (set << 5);
+            way = way + 1;
+        }
+        set = set + 1;
+    }
+    asm { dsb } : : : "memory";
+    SCB.CCR.DC = true;
     asm { dsb } : : : "memory";
     asm { isb } : : : "memory";
+}
+
+// Core/cache setup. The D-cache is now ENABLED: the DMA buffers live in
+// dma_pool, which the target marks `cacheable = false`, and the compiler
+// generates an MPU non-cacheable region for it (programmed in reset_handler).
+// So the CPU stays coherent with the ETH/MDMA agents without per-buffer cache
+// maintenance -- failure mode #3 closed by enforcement, not just detection.
+//
+// SCB comes from the generated SVD; ICIALLU/DCISW are hand-written (cache.bml).
+fn board_init() {
+    enable_dcache();
 
     CM7_CACHE.ICIALLU = 0;
     asm { dsb } : : : "memory";

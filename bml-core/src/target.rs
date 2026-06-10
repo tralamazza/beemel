@@ -507,6 +507,25 @@ impl Target {
             if m.size == 0 {
                 return Err(format!("mem `{}` has zero size", m.name));
             }
+            // A non-cacheable block becomes an MPU region (when the part has an
+            // MPU): the ARMv7-M MPU needs a power-of-two size >= 32 with a
+            // size-aligned base.
+            if self.has_mpu && !m.cacheable {
+                if !m.size.is_power_of_two() || m.size < 32 {
+                    return Err(format!(
+                        "mem `{}` is `cacheable = false` (an MPU region) but its size {} is not a \
+                         power of two >= 32",
+                        m.name, m.size
+                    ));
+                }
+                if m.base % m.size != 0 {
+                    return Err(format!(
+                        "mem `{}` is `cacheable = false` (an MPU region) but its base 0x{:08X} is \
+                         not aligned to its size {}",
+                        m.name, m.base, m.size
+                    ));
+                }
+            }
         }
         for (i, a) in self.mem_blocks.iter().enumerate() {
             for b in &self.mem_blocks[i + 1..] {
@@ -673,6 +692,24 @@ impl Target {
             }
         }
         out
+    }
+
+    /// Base + size of each mem block that must be made non-cacheable by the MPU
+    /// (`cacheable = false`), so a CPU with caches on stays coherent with the DMA
+    /// agents sharing it -- turning the trusted claim into enforced config. Empty
+    /// when the part has no MPU. `validate_regions` guarantees each is
+    /// MPU-encodable (power-of-two size >= 32, base aligned to size); the emitter
+    /// programs one MPU region per entry at the start of `reset_handler`.
+    #[must_use]
+    pub fn mpu_regions(&self) -> Vec<(u64, u64)> {
+        if !self.has_mpu {
+            return Vec::new();
+        }
+        self.mem_blocks
+            .iter()
+            .filter(|m| !m.cacheable)
+            .map(|m| (m.base, m.size))
+            .collect()
     }
 
     #[must_use]
@@ -1516,6 +1553,51 @@ handoff = P.R align 3
             err.contains("data_block") && err.contains("no [mem"),
             "got: {err}"
         );
+    }
+
+    // A `cacheable = false` mem block becomes an MPU non-cacheable region; a
+    // cacheable one does not. The emitter programs one MPU region per entry.
+    #[test]
+    fn mpu_regions_from_noncacheable_blocks() {
+        let t = t("arch = armv7em\n\
+                   cpu = cortex-m7\n\
+                   vector_table_offset = 0x08000000\n\
+                   data_block = sram\n\
+                   [mem.flash]\n\
+                   base = 0x08000000\n\
+                   size = 256K\n\
+                   [mem.sram]\n\
+                   base = 0x20000000\n\
+                   size = 64K\n\
+                   [mem.dma]\n\
+                   base = 0x30000000\n\
+                   size = 4K\n\
+                   cacheable = false\n");
+        assert_eq!(t.mpu_regions(), vec![(0x3000_0000, 4096)]);
+    }
+
+    // A non-cacheable (MPU) block must be MPU-encodable: power-of-two size,
+    // size-aligned base.
+    #[test]
+    fn noncacheable_block_must_be_mpu_shaped() {
+        let err = Target::parse(
+            "arch = armv7em\n\
+             cpu = cortex-m7\n\
+             vector_table_offset = 0x08000000\n\
+             data_block = sram\n\
+             [mem.flash]\n\
+             base = 0x08000000\n\
+             size = 256K\n\
+             [mem.sram]\n\
+             base = 0x20000000\n\
+             size = 64K\n\
+             [mem.dma]\n\
+             base = 0x30000000\n\
+             size = 3K\n\
+             cacheable = false\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("power of two"), "got: {err}");
     }
 
     #[test]

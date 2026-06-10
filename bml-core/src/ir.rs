@@ -42,6 +42,10 @@ pub struct IrEmitter {
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
     pub(crate) startup_init: Vec<(u64, u64)>,
+    /// Non-cacheable MPU regions `(base, size)` from `Target::mpu_regions`,
+    /// programmed at the start of `reset_handler` so a CPU with caches on stays
+    /// coherent with the DMA agents sharing the block.
+    pub(crate) mpu_regions: Vec<(u64, u64)>,
     /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
     /// block. In verify mode, taking `&X as u32` of such a static emits an
     /// `assume` that the address is in this range -- the load-bearing provenance
@@ -250,6 +254,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
+            mpu_regions: Vec::new(),
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -294,6 +299,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             preempt: None,
             startup_init: Vec::new(),
+            mpu_regions: Vec::new(),
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -313,6 +319,12 @@ impl IrEmitter {
     /// `Target::startup_init`.
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
         self.startup_init = writes;
+    }
+
+    /// Install the non-cacheable MPU regions (base, size). Programmed at the
+    /// start of `reset_handler`. See `Target::mpu_regions`.
+    pub fn set_mpu_regions(&mut self, regions: Vec<(u64, u64)>) {
+        self.mpu_regions = regions;
     }
 
     /// Install the per-region alignment floors (region name -> bytes). A static

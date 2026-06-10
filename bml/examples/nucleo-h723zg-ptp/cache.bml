@@ -13,4 +13,9 @@ export peripheral CM7_CACHE;
 peripheral CM7_CACHE at 0xE000EF50 {
     reg ICIALLU offset 0x00 {
     }
+    // DCISW (0xE000EF60): D-cache invalidate by set/way. Write `(way<<30) |
+    // (set<<5)` per line; needed before enabling the D-cache so no undefined
+    // reset-state lines are treated as valid.
+    reg DCISW offset 0x10 {
+    }
 }
