@@ -1041,6 +1041,11 @@ packed layout.
     body became a verify ENTRY POINT and got IKOS-analyzed for the first
     time (five new intentional-wrap suppressions). Trusted, recorded: an
     entry's address reused as an ordinary callback would dodge E408.
+    HARDWARE-REVALIDATED on the Pico (power-on boot after SWD reflash):
+    first-try launch with core1_main @context(thread) -- CORE1_COUNT
+    9.5M -> 10.8M across samples, CORE0_BEATS == COUNT>>16 (lossless
+    heartbeats), COPY_OK = 1, and the cross-core claim invariant intact
+    at PAIR ~21M windows with PAIR_BAD0 = PAIR_BAD1 = 0.
   - *Remaining (smaller):* compared guard conditions;
     flag staleness across transfers (a release BEFORE the guard whose flag
     was never cleared -- needs W1C discipline modeling);
