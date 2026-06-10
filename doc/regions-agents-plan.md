@@ -959,6 +959,42 @@ packed layout.
        project files stay small.
     Both examples rebuild + verify clean through the channel-structured
     targets; E618/extent falsifications re-fire through channel sections.
+  - *Cross-vendor falsification #3: Nordic nRF51 (micro:bit v1) -- paper
+    phase DONE.* Third vendor, third agent shape: Nordic has NO central
+    DMA -- every capable peripheral is its own bus master walking a handed
+    pointer (EasyDMA style). The probe uses the simplest one, the AES ECB
+    engine (known-answer test: zero key + zero block -> FIPS-197
+    66e94bd4...). Findings, each closed:
+    1. *Fixed-block extents*: ECB walks exactly 48 bytes from ECBDATAPTR;
+       there is NO count register, so `extent = P.R.F` cannot express it.
+       New form `extent = N` (bytes): the obligation moves to the DELIVERY
+       -- a buffer handed to the channel must be >= N bytes (E619, compile
+       time for direct `&X` deliveries). Pinned by
+       fixed_extent_{ok,short}.bml.
+    2. *ARMv6-M NVIC IPR closed* (the recorded skip): byte stores to IPR
+       are unpredictable on the M0, so declared @isr priorities were
+       silently NOT programmed -- the ceiling model's priorities would be
+       fiction on silicon. The reset handler now composes the four byte
+       lanes of each touched IPR word and stores it whole (reset state is
+       zero, single writer -- no RMW). Pinned by isr_priority_v6m.bml.
+    3. *Freestanding libcalls*: LLVM's loop-idiom pass turned the 48-byte
+       block clear into __aeabi_memclr4 -- undefined at link (no libc).
+       All bml functions now carry the `no-builtins` attribute; latent on
+       every chip, first surfaced by thumbv6m codegen.
+    4. The EasyDMA RAM-only constraint (flash pointers fail silently --
+       the classic Nordic footgun) is expressed as the agent's bus window
+       (0x20000000..0x20004000): reach outside RAM dies at target load and
+       the verify reach assert bounds delivered addresses to RAM.
+    5. *IKOS interaction artifact* (recorded): MMIO setup + an infinite
+       asm-memory-clobber loop in ONE function smears spurious
+       V110/V113/V114 onto earlier view reads (each half alone is clean;
+       armv7em repro instead surfaced that BIT-BAND ALIAS addresses are
+       not in the hwaddrs whitelist -> V100, separate pre-existing item).
+       Probe restructured (ecb_run() its own fn) -- clean verify.
+    E605/E611/E619 all falsified live on the probe; micro:bit verify is
+    clean. The schema needed ONE new column variant (fixed extent), zero
+    new questions. Hardware leg pending (DAPLink drag-and-drop .hex +
+    CMSIS-DAP readback).
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

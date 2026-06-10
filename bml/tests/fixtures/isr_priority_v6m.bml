@@ -1,0 +1,13 @@
+// ARMv6-M IPR programming: byte stores are unpredictable on the M0, so the
+// reset handler composes the four byte lanes of each touched IPR word and
+// stores it whole (reset state is zero; the handler is the only writer).
+// IRQ0 prio 1 -> 1<<6 = 64 in lane 0; IRQ1 prio 2 -> 2<<6 = 128 in lane 1:
+// word value 64 | 128<<8 = 32832 at 0xE000E400.
+fn tick() @isr(priority = 1) {
+}
+
+fn tock() @isr(priority = 2) {
+}
+
+fn main() @context(thread) {
+}

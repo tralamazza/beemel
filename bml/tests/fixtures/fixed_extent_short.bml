@@ -1,0 +1,26 @@
+// E619: a 32-byte buffer delivered to a channel that walks a fixed
+// 48-byte block -- the engine runs 16 bytes past it.
+peripheral ECB at 0x4000E000 {
+    reg TASKS_STARTECB offset 0x000 {
+        field START: b1 bit[0]
+    }
+    reg EVENTS_ENDECB offset 0x100 {
+        field READY: b1 bit[0]
+    }
+    reg ECBDATAPTR offset 0x504 {
+        field PTR: u32 bit[0..31]
+    }
+}
+
+owns ECB;
+
+var BLOCK: [u8; 32] in ecb_buf;
+var X: u32;
+
+fn main() @context(thread) {
+    ECB.ECBDATAPTR = &BLOCK as u32;
+    ECB.TASKS_STARTECB.START = true;
+    while !ECB.EVENTS_ENDECB.READY {}
+    const v = reclaim(BLOCK);
+    X = v[8] as u32;
+}

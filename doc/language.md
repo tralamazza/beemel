@@ -123,7 +123,7 @@ small (regions, reach claims, an `entry`).
 | May it run at all? | `enabled_by` (`!` = clear-to-enable) | agent |
 | Where can it physically touch? | `bus` (wiring), `reach` (claim), `port_by` (routing, on a handoff) | agent / handoff |
 | Which buffer does it get? | `handoff` (register), `addr in R` (in-memory) | channel |
-| How much of it? | `extent [xN] [when P.R.F = V]`, `@extent` (in-memory) | channel |
+| How much of it? | `extent = P.R.F [xN] [when P.R.F = V]` or `extent = N` (fixed block), `@extent` (in-memory) | channel |
 | When is it finished? | `completes_by` (`!` = done-when-clear) | channel |
 | What code runs on it? | `entry` (cpu agents) | agent |
 
@@ -218,6 +218,7 @@ The compiler uses the ARM convention directly:
 | A view outlives its justification window: a view over the claimed static escapes the `claim` body, or a reclaimed view is used outside its completion guard / after the buffer is released back to the agent | E616 |
 | `@extent` declaration sanity: the named sibling must be an `addr in <region>` field and the annotated field a 32-bit integer | E617 |
 | Extent unit cross-check: arming an agent whose `extent ... when P.R.F = V` unit field is never set to V (or set to something else) | E618 |
+| Fixed-block extent: a buffer smaller than the channel's fixed `extent = N` block is delivered to its handoff register | E619 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
@@ -618,6 +619,11 @@ byte length must fit the buffer last delivered to each of the channel's
 handoff registers (`= &X as u32` deliveries carry `sizeof(X)`). Arming the
 DMA one unit past its buffer is a definite verify error at the arming line;
 nothing is emitted in normal builds.
+
+Engines with no count register (EasyDMA-style fixed blocks, e.g. the nRF
+ECB's 48-byte structure) declare `extent = N` instead: the obligation moves
+to the delivery -- a buffer handed to the channel's handoff register must
+be at least N bytes (E619, compile time for direct `&X as u32` deliveries).
 
 Descriptor-carried lengths get the same treatment through a struct-field
 attribute: `control: u32 @extent(buf1)` (optionally `@extent(buf1, x4)`)

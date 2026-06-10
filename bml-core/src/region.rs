@@ -665,17 +665,31 @@ fn check_handoff_writes(
     // that have one (E612).
     let mut handoff_regs: HashMap<(String, String), String> = HashMap::new();
     let mut handoff_ports: HashMap<(String, String), (String, PortBy)> = HashMap::new();
+    // Fixed-block channels (`extent = N`): a buffer delivered to any of the
+    // channel's handoff registers must be at least N bytes (E619).
+    let mut handoff_fixed: HashMap<(String, String), (String, u64)> = HashMap::new();
     for agent in &target.agents {
-        for h in agent.handoffs() {
-            if let Some((p, r)) = handoff_register_path(&h.register) {
-                if let Some(pb) = &h.port_by {
-                    handoff_ports
-                        .entry((p.clone(), r.clone()))
-                        .or_insert_with(|| (agent.name.clone(), pb.clone()));
+        for ch in &agent.channels {
+            let fixed = match &ch.extent {
+                Some(crate::target::ExtentSpec::Fixed(n)) => Some(*n),
+                _ => None,
+            };
+            for h in &ch.handoffs {
+                if let Some((p, r)) = handoff_register_path(&h.register) {
+                    if let Some(pb) = &h.port_by {
+                        handoff_ports
+                            .entry((p.clone(), r.clone()))
+                            .or_insert_with(|| (agent.name.clone(), pb.clone()));
+                    }
+                    if let Some(n) = fixed {
+                        handoff_fixed
+                            .entry((p.clone(), r.clone()))
+                            .or_insert((agent.name.clone(), n));
+                    }
+                    handoff_regs
+                        .entry((p, r))
+                        .or_insert_with(|| agent.name.clone());
                 }
-                handoff_regs
-                    .entry((p, r))
-                    .or_insert_with(|| agent.name.clone());
             }
         }
     }
@@ -767,6 +781,35 @@ fn check_handoff_writes(
             {
                 check_descriptor_reach(static_name, agent, symbols, target, w.span, diags);
 
+                // E619: fixed-block extent. The engine walks exactly N bytes
+                // from the delivered address (no count register to arm), so
+                // the buffer itself must be at least N bytes.
+                if let Some((aname, n)) = handoff_fixed.get(&key)
+                    && let Some(sym) = symbols.statics.get(static_name)
+                {
+                    // Strip storage wrappers (Shared/AgentShared) to size the
+                    // value type.
+                    let mut ty = &sym.ty;
+                    loop {
+                        let inner = ty.inner();
+                        if std::ptr::eq(inner, ty) {
+                            break;
+                        }
+                        ty = inner;
+                    }
+                    let size = u64::from(crate::types::element_size(ty));
+                    if size > 0 && size < *n {
+                        diags.error(
+                            format!(
+                                "`&{static_name}` ({size} bytes) is delivered to agent `{aname}`, whose channel walks a fixed {n}-byte block -- the engine would run {} bytes past the buffer.",
+                                n - size
+                            ),
+                            "E619",
+                            w.span,
+                        );
+                    }
+                }
+
                 // E612: software port select. The handoff declares which field
                 // routes its address to which port (window tag); the address's
                 // mem block says which port it is actually behind.
@@ -824,7 +867,9 @@ fn check_channel_unit(
     diags: &mut DiagnosticBag,
 ) {
     {
-        let Some(eb) = &ch.extent else { return };
+        let Some(crate::target::ExtentSpec::Counter(eb)) = &ch.extent else {
+            return;
+        };
         let Some((upath, uval)) = &eb.unit else {
             return;
         };

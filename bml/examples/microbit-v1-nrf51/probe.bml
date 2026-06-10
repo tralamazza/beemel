@@ -1,0 +1,89 @@
+// micro:bit v1 probe: the third vendor's agent shape, end to end.
+//
+// The AES ECB engine encrypts one all-zero block with an all-zero key --
+// FIPS-197 gives the exact answer (66e94bd4 ef8a2c3b 884cfa59 ca342b2e),
+// so the SWD readback is a known-answer test of the whole chain: handoff
+// (ECBDATAPTR, E605-owned), fixed extent (the 48-byte block, E619 at the
+// delivery), completion-guarded reclaim (EVENTS_ENDECB, E611), derived
+// Move on the region buffer, and the ARMv6-M paths (word-composed NVIC
+// IPR, thumbv6m codegen) that no other board exercises.
+//
+// Visual check: the top-left LED (ROW1 = P0.13 high, COL1 = P0.4 low)
+// lights only when the ciphertext matches the known answer.
+import nrf51_periph;
+
+export fn main, fn timer0_isr;
+
+owns ECB;
+owns TIMER0;
+
+// The fixed 48-byte ECB block: KEY[0..16] | CLEARTEXT[16..32] |
+// CIPHERTEXT[32..48]. The engine reads the first two and writes the third.
+var ECB_DATA: [u8; 48] in ecb_buf;
+
+var CIPHER0: u32;   // first ciphertext word, expect 0xd44be966 (LE)
+var CIPHER1: u32;   // second, expect 0x3b2c8aef
+var ECB_OK: u32;    // 1 = known-answer match
+var TICKS: u32 @shared;  // timer heartbeat (ISR top accessor)
+var ALIVE: u32;     // main-loop liveness counter
+
+fn timer0_isr() @isr("TIMER0", priority = 1) {
+    TIMER0.EVENTS_COMPARE0.FIRED = false;
+    var t: u32 = TICKS;
+    TICKS = t + 1;
+}
+
+// One ECB known-answer run, in its own function: deliver, trigger, await,
+// reclaim, compare. (Also keeps the verify fixpoint of the infinite main
+// loop out of this function -- see the plan doc note on the IKOS
+// interaction artifact.)
+fn ecb_run() {
+    // Key and cleartext all zero (BSS already is; write them anyway so the
+    // test does not depend on startup zeroing).
+    var i: u32 = 0;
+    while i < 48 {
+        ECB_DATA[i] = 0;
+        i = i + 1;
+    }
+
+    // Release: hand the engine its block, run it, and reclaim the result
+    // only after the completion event (E611 blocking acquire).
+    ECB.ECBDATAPTR = &ECB_DATA as u32;
+    ECB.TASKS_STARTECB.START = true;
+    while !ECB.EVENTS_ENDECB.READY {}
+    const v = reclaim(ECB_DATA);
+    CIPHER0 = (v[32] as u32) | ((v[33] as u32) << 8)
+        | ((v[34] as u32) << 16) | ((v[35] as u32) << 24);
+    CIPHER1 = (v[36] as u32) | ((v[37] as u32) << 8)
+        | ((v[38] as u32) << 16) | ((v[39] as u32) << 24);
+    if CIPHER0 == 0xd44be966 {
+        if CIPHER1 == 0x3b2c8aef {
+            ECB_OK = 1;
+            // Light the top-left LED: row high, column low.
+            GPIO.DIRSET = (1 << 13) | (1 << 4);
+            GPIO.OUTSET = 1 << 13;
+            GPIO.OUTCLR = 1 << 4;
+        }
+    }
+
+}
+
+fn main() @context(thread) {
+    ecb_run();
+
+    // 1 Hz heartbeat: 16 MHz / 2^4 = 1 MHz, compare at 1_000_000.
+    TIMER0.MODE.MODE = 0;
+    TIMER0.BITMODE.BITMODE = 3;
+    TIMER0.PRESCALER.PRESCALER = 4;
+    TIMER0.CC0 = 1000000;
+    TIMER0.SHORTS.COMPARE0_CLEAR = true;
+    TIMER0.INTENSET.COMPARE0 = true;
+    NVIC.ISER = 1 << 8;
+    TIMER0.TASKS_START.START = true;
+
+    loop {
+        // Free-running liveness counter; wrap intended. // bml-verify: ignore V130
+        ALIVE = ALIVE + 1;
+        asm { } : : : "memory";
+    }
+}

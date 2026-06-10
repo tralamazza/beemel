@@ -1308,6 +1308,13 @@ assert_ir_contains!(
     "store volatile i8 48, ptr inttoptr (i32 3758154752 to ptr)"
 );
 
+assert_ir_contains_target!(
+    test_isr_priority_v6m_word_composed,
+    "isr_priority_v6m.bml",
+    "isr_v6m.target",
+    "store volatile i32 32832, ptr inttoptr (i32 3758154752 to ptr)"
+);
+
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
 // accessor contexts, and the lowering matches the hand-declared equivalent.
 assert_ir_not_contains!(
@@ -2660,6 +2667,22 @@ fn test_extent_unit_wrong_rejected() {
     let (ok, stderr) = bml_build_with_target("extent_unit_wrong.bml", Some("extent_unit.target"));
     assert!(!ok, "a different unit value must fail; stderr:\n{stderr}");
     assert!(stderr.contains("E618"), "expected E618; stderr:\n{stderr}");
+}
+
+// Fixed-block extents (`extent = N`, EasyDMA-style engines with no count
+// register): the obligation moves to the delivery -- the buffer must be at
+// least N bytes (E619, compile time for direct `&X` deliveries).
+#[test]
+fn test_fixed_extent_ok() {
+    let (ok, stderr) = bml_build_with_target("fixed_extent_ok.bml", Some("fixed_extent.target"));
+    assert!(ok, "an exact-size block should build; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_fixed_extent_short_rejected() {
+    let (ok, stderr) = bml_build_with_target("fixed_extent_short.bml", Some("fixed_extent.target"));
+    assert!(!ok, "a short buffer must be rejected; stderr:\n{stderr}");
+    assert!(stderr.contains("E619"), "expected E619; stderr:\n{stderr}");
 }
 
 // Descriptor-carried extents (`@extent(addr_field [, xN])` struct-field

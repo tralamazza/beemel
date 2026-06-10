@@ -1,0 +1,8 @@
+# BBC micro:bit v1 -- board + project target. The chip file carries all the
+# physics; this file is the thin project layer (the user-facing layering
+# rule: chip files may be verbose, project files stay small).
+include = nrf51.target
+
+[region.ecb_buf]
+mem = ecb_ram
+agents = ecb

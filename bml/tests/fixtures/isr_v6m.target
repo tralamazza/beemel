@@ -1,0 +1,8 @@
+# ARMv6-M (Cortex-M0): IPR is word-access-only, priority field is 2 bits.
+arch = armv6m
+cpu = cortex-m0
+priority_bits = 2
+flash_base = 0x00000000
+flash_size = 256K
+ram_base = 0x20000000
+ram_size = 16K

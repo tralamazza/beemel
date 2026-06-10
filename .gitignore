@@ -3,3 +3,7 @@
 # jscpd copy-paste detector output / cache
 /report
 /.jscpd
+
+# example build artifacts
+bml/examples/*/*.hex
+bml/examples/*/*.verify.*

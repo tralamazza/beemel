@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Target {
     pub arch: String,
     /// Cortex-M cpu (`cortex-m0`, `cortex-m0plus`, `cortex-m3`, `cortex-m4`, `cortex-m7`).
@@ -11,6 +12,9 @@ pub struct Target {
     pub priority_bits: u8,
     pub has_fpu: bool,
     pub has_bitband: bool,
+    /// Whether `has_bitband` was written explicitly (vs the default): the
+    /// ARMv6-M ignore-warning only makes sense for an explicit `true`.
+    has_bitband_set: bool,
     pub has_mpu: bool,
     pub flash_base: u64,
     pub flash_size: u64,
@@ -142,6 +146,20 @@ pub struct ExtentBy {
     pub unit: Option<(String, u64)>,
 }
 
+/// A channel's transfer-extent declaration: how MUCH the agent moves.
+#[derive(Debug, Clone)]
+pub enum ExtentSpec {
+    /// `extent = P.R.F [xN] [when ...]`: a count register the program arms;
+    /// verify asserts each write fits the delivered buffer.
+    Counter(ExtentBy),
+    /// `extent = N`: a fixed block size in bytes (EasyDMA-style engines with
+    /// no count register -- the nRF ECB walks exactly 48 bytes). The
+    /// obligation moves to the DELIVERY: a buffer handed to this channel
+    /// must be at least N bytes (E619, compile time for direct `&X`
+    /// deliveries).
+    Fixed(u64),
+}
+
 /// One transaction channel of an agent (`[agent.NAME.CHANNEL]`), grouping the
 /// per-transaction vocabulary: which registers receive buffer addresses
 /// (`handoff`), which signal marks the transfer done (`completes_by`), and
@@ -154,7 +172,7 @@ pub struct Channel {
     pub name: String,
     pub handoffs: Vec<Handoff>,
     pub completes_by: Vec<String>,
-    pub extent: Option<ExtentBy>,
+    pub extent: Option<ExtentSpec>,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -287,6 +305,7 @@ impl Default for Target {
             priority_bits: 4,
             has_fpu: false,
             has_bitband: true,
+            has_bitband_set: false,
             has_mpu: true,
             flash_base: 0x0800_0000,
             flash_size: 256 * 1024,
@@ -602,7 +621,10 @@ impl Target {
                     })?;
                 }
                 "has_fpu" => target.has_fpu = parse_bool(val, key, line_num)?,
-                "has_bitband" => target.has_bitband = parse_bool(val, key, line_num)?,
+                "has_bitband" => {
+                    target.has_bitband = parse_bool(val, key, line_num)?;
+                    target.has_bitband_set = true;
+                }
                 "has_mpu" => target.has_mpu = parse_bool(val, key, line_num)?,
                 "flash_base" => {
                     target.flash_base = parse_int(val)
@@ -648,11 +670,14 @@ impl Target {
     /// Final post-processing and self-consistency checks, run once after all
     /// `include`s are merged so the checks see the fully composed target.
     fn finalize(&mut self) -> Result<(), String> {
-        // ARMv6-M (Cortex-M0/M0+) does not support bit-banding
+        // ARMv6-M (Cortex-M0/M0+) does not support bit-banding. The default
+        // is silently corrected; only an EXPLICIT `has_bitband = true` warns.
         if self.has_bitband && self.arch == "armv6m" {
-            eprintln!(
-                "warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`"
-            );
+            if self.has_bitband_set {
+                eprintln!(
+                    "warning: ARMv6-M does not support bit-banding; ignoring `has_bitband = true`"
+                );
+            }
             self.has_bitband = false;
         }
         self.validate_regions()
@@ -1305,7 +1330,18 @@ fn parse_channel_kv(ch: &mut Channel, key: &str, val: &str, line_num: usize) -> 
     match key {
         "handoff" => ch.handoffs.push(parse_handoff(val, line_num)?),
         "completes_by" => ch.completes_by = parse_list(val),
-        "extent" => ch.extent = Some(parse_extent(val, line_num)?),
+        "extent" => {
+            // A bare integer is the fixed-block form; anything else is the
+            // count-register form.
+            ch.extent = Some(if let Ok(n) = parse_int(val.trim()) {
+                if n == 0 {
+                    return Err(format!("line {}: fixed extent must be > 0", line_num + 1));
+                }
+                ExtentSpec::Fixed(n)
+            } else {
+                ExtentSpec::Counter(parse_extent(val, line_num)?)
+            });
+        }
         _ => {
             return Err(format!(
                 "line {}: unknown channel key `{key}` (channels take handoff, completes_by,                  extent; reach/bus/enabled_by belong on the agent)",
@@ -2278,7 +2314,9 @@ kind = dma
 extent = DMA.CNT.COUNT x4
 ";
         let target = t(src);
-        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
+        let Some(ExtentSpec::Counter(eb)) = &target.agents[0].channels[0].extent else {
+            panic!("expected counter extent");
+        };
         assert_eq!(eb.path, "DMA.CNT.COUNT");
         assert_eq!(eb.scale, 4);
 
@@ -2286,10 +2324,10 @@ extent = DMA.CNT.COUNT x4
         let target = t(
             "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT\n",
         );
-        assert_eq!(
-            target.agents[0].channels[0].extent.as_ref().unwrap().scale,
-            1
-        );
+        let Some(ExtentSpec::Counter(eb1)) = &target.agents[0].channels[0].extent else {
+            panic!("expected counter extent");
+        };
+        assert_eq!(eb1.scale, 1);
 
         // Path must be Peripheral.REGISTER.FIELD; multiplier must be xN.
         let err = Target::parse(
@@ -2308,12 +2346,16 @@ extent = DMA.CNT.COUNT x4
         let target = t(
             "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE = 2\n",
         );
-        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
+        let Some(ExtentSpec::Counter(eb)) = &target.agents[0].channels[0].extent else {
+            panic!("expected counter extent");
+        };
         assert_eq!(eb.unit.as_ref().unwrap(), &("DMA.CTRL.SIZE".to_string(), 2));
         let target = t(
             "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT when DMA.CTRL.SIZE = 1\n",
         );
-        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
+        let Some(ExtentSpec::Counter(eb)) = &target.agents[0].channels[0].extent else {
+            panic!("expected counter extent");
+        };
         assert_eq!(eb.scale, 1);
         assert_eq!(eb.unit.as_ref().unwrap().1, 1);
         let err = Target::parse(
@@ -2344,7 +2386,10 @@ handoff = DMA.CH1_SAR
         assert_eq!(dma.channels[0].name, "ch0");
         assert_eq!(dma.channels[0].handoffs.len(), 1);
         assert_eq!(dma.channels[0].completes_by, vec!["DMA.ISR.TC0"]);
-        assert_eq!(dma.channels[0].extent.as_ref().unwrap().scale, 4);
+        assert!(matches!(
+            dma.channels[0].extent,
+            Some(ExtentSpec::Counter(ref e)) if e.scale == 4
+        ));
         assert_eq!(dma.channels[1].name, "ch1");
         // The flat iterator spans channels.
         assert_eq!(dma.handoffs().count(), 2);

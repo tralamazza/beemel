@@ -375,7 +375,7 @@ fn extent_obligations(
     let mut asserts = HashMap::new();
     for agent in &target.agents {
         for ch in &agent.channels {
-            let Some(eb) = &ch.extent else {
+            let Some(crate::target::ExtentSpec::Counter(eb)) = &ch.extent else {
                 continue;
             };
             let parts: Vec<&str> = eb.path.split('.').collect();

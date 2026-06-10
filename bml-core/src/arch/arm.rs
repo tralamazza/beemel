@@ -75,9 +75,13 @@ pub fn emit_tailchain_epilogue(e: &mut IrEmitter, has_calls: bool) {
 }
 
 pub fn emit_module_attributes(e: &mut IrEmitter) {
-    e.line("attributes #0 = { nounwind }");
-    e.line("attributes #1 = { nounwind \"interrupt\" }");
-    e.line("attributes #2 = { nounwind optnone noinline }");
+    // `no-builtins`: bml output is freestanding -- without it the optimizer
+    // recognizes zero/copy loops and emits __aeabi_memclr/__aeabi_memcpy
+    // libcalls nothing provides (first hit: a 48-byte buffer clear on
+    // thumbv6m became an undefined __aeabi_memclr4 at link).
+    e.line("attributes #0 = { nounwind \"no-builtins\" }");
+    e.line("attributes #1 = { nounwind \"interrupt\" \"no-builtins\" }");
+    e.line("attributes #2 = { nounwind optnone noinline \"no-builtins\" }");
 }
 
 pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
@@ -356,16 +360,32 @@ pub fn emit_startup_routine(
         e.line("call void asm sideeffect \"isb\", \"~{memory}\"()");
     }
 
-    // NVIC priorities: program the IPR byte of every `@isr` IRQ from its
-    // declared priority. `@isr(priority=N)` is physics the ceiling model
-    // reasons over, so the compiler grounds it instead of trusting a
-    // hand-written IPR to match. The *enable* (ISER) deliberately stays
-    // application code: enabling at reset could fire an ISR before its
-    // peripheral is initialized -- priority is static configuration, enable
-    // is runtime policy. ARMv7-M only: the ARMv6-M IPR is word-access-only
-    // (an RMW emission is the follow-up if an armv6m ISR target needs it).
-    if !matches!(e.arch, crate::arch::Arch::Armv6m) {
-        let shift = 8 - u32::from(e.priority_bits);
+    // NVIC priorities: program the IPR of every `@isr` IRQ from its declared
+    // priority. `@isr(priority=N)` is physics the ceiling model reasons
+    // over, so the compiler grounds it instead of trusting a hand-written
+    // IPR to match. The *enable* (ISER) deliberately stays application
+    // code: enabling at reset could fire an ISR before its peripheral is
+    // initialized -- priority is static configuration, enable is runtime
+    // policy.
+    let shift = 8 - u32::from(e.priority_bits);
+    if matches!(e.arch, crate::arch::Arch::Armv6m) {
+        // ARMv6-M: the IPR registers are word-access-only (a byte store is
+        // unpredictable). At reset every IPR is zero and this is the only
+        // writer, so compose the four byte lanes of each touched IPR word
+        // and store it whole -- exact, no read-modify-write needed.
+        let mut words: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        for (irq, priority) in isr_priorities {
+            let lane = (u32::from(*irq) % 4) * 8;
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            *words.entry(u32::from(*irq) / 4).or_insert(0) |= val << lane;
+        }
+        for (word, val) in words {
+            let addr = 0xE000_E400u32 + 4 * word;
+            e.line(&format!(
+                "store volatile i32 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+        }
+    } else {
         for (irq, priority) in isr_priorities {
             let addr = 0xE000_E400u32 + u32::from(*irq);
             let val = (u32::from(*priority) << shift) & 0xFF;
