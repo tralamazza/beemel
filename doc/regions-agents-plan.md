@@ -764,16 +764,19 @@ packed layout.
     Pinned by cross_core_{static,partitioned,shared}.bml + cross_core.target.
     HARDWARE: core1 launch via the bootrom FIFO handshake (datasheet 5.3,
     PSM reset + {0,0,1,vtor,sp,entry|1} + echo verify + bounded-ack retry,
-    all in bml) ran bml code on core1 repeatedly (counter at ~1.9M/s for
-    many seconds, CPUID read back, FIFO ack + heartbeats). OPEN FINDING:
-    the launch is BIMODAL on this board -- same binary either comes up fully
-    functional or with core1's SRAM stores silently dying while its SIO
-    MMIO writes work (FIFO-heartbeat discriminator experiment); suspects:
-    ACCESSCTRL/security state vs the pen, debug-reset vs power-on state.
-    Also: openocd cm1 `reg pc` is unreliable with this config (read 0xda
-    while core1 was demonstrably counting) -- calibrate instruments first.
-    Recorded in probe.bml; fresh-session investigation.
-  - *Remaining (smaller):* the RP2350 bimodal-launch investigation; scoped
+    all in bml) VALIDATED under power-on boot: first-try launch, core1
+    counting at ~1.9M/s indefinitely, every 64Ki-iteration FIFO heartbeat
+    received losslessly (CORE0_BEATS == COUNT >> 16 exactly), zero faults,
+    the DMA probe and core0 untouched. RESOLVED FINDING: the earlier
+    "bimodal launch" / "core1 stops at ~40ms" behaviors were artifacts of
+    DEBUGGER-INITIATED resets (openocd `reset run`): under a debug reset
+    core1 either came up with SRAM stores silently dying while SIO MMIO
+    writes worked, or stopped executing ~80k iterations in -- ACCESSCTRL
+    fully open in both modes, no fault taken (shared-vector HardFault
+    recorder stayed clean), no matching erratum. Dev workflow: flash over
+    SWD, then POWER-CYCLE for clean multi-core runs. Instrument caveat
+    recorded: openocd cm1 `reg pc` is unreliable with this config.
+  - *Remaining (smaller):* scoped
     view lifetimes (the trust gap claim and reclaim share); pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     cross-core claim (hardware-spinlock-backed) once the launch is solid;

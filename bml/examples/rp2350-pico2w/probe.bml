@@ -23,6 +23,9 @@ var LAUNCH_MISS: u32;    // echo mismatches seen
 var LAUNCH_LAST: u32;    // last response value
 var LAUNCH_TRIES: u32;   // launch attempts (core0 retries while core1 silent)
 var CORE0_BEATS: u32;    // FIFO heartbeats received from core1 (core0-owned)
+var FAULT_WHO: u32;      // 0xDEAD0000 + CPUID of the core that hard-faulted
+var FAULT_ICSR: u32;     // its ICSR (VECTACTIVE)
+var FAULT_CFSR: u32;     // its CFSR
 var CORE1_STACK: [u32; 256] @align(8); // core1's stack (sp = top of this)
 
 fn dma_setup() {
@@ -73,17 +76,31 @@ fn dma_poll() {
 // core0's). UNANNOTATED (context Any): the launch handshake takes its
 // address, and E408 forbids taking a @context fn's address.
 //
-// OPEN HARDWARE FINDING (2026-06-10): the launch is BIMODAL on this board.
-// Same binary, same sequence: core1 either comes up fully functional
-// (counter advancing ~1.9M/s for many seconds, CPUID read back, validated
-// repeatedly) or comes up with its SRAM stores silently dying while its SIO
-// MMIO writes still work (FIFO ack + first heartbeat arrive; the counter
-// never holds even its init value), dying entirely within microseconds.
-// Discriminated empirically via the FIFO-heartbeat experiment below.
-// Suspects: ACCESSCTRL / security-state interaction with the bootrom pen
-// state, or debug-reset vs power-on state differences. Needs a fresh
-// investigation session (note: openocd's cm1 `reg pc` is UNRELIABLE with
-// this config -- it read 0xda even while core1 was demonstrably counting).
+// RESOLVED FINDING (2026-06-10): after a true POWER-ON boot, the launch is
+// first-try deterministic and indefinitely stable (core1 counting for
+// minutes at ~1.9M/s, every 64Ki-iteration FIFO heartbeat received
+// losslessly, zero retries, zero faults). The earlier "bimodal launch" and
+// "core1 stops after ~40ms" behaviors were artifacts of DEBUGGER-INITIATED
+// resets (openocd `reset run`): under a debug reset core1 either came up
+// with its SRAM stores silently dying while SIO MMIO writes worked, or
+// stopped executing ~80k iterations in -- with ACCESSCTRL fully open and no
+// fault taken (HardFault recorder stayed clean). Dev workflow: flash over
+// SWD, then POWER-CYCLE for clean multi-core runs. Also calibrated:
+// openocd's cm1 `reg pc` is unreliable with this config (read 0xda while
+// core1 was demonstrably counting) -- distrust per-core halts here.
+// Fault recorder: the shared vector table points HardFault here (slot by
+// function name). Records which core faulted and why, then parks. (E615
+// note: written from an ISR-root fn -- model says core0; it may actually
+// run on either core, a documented v0 limitation.)
+fn HardFault() {
+    FAULT_WHO = 0xDEAD0000 + SIO.CPUID.CORE;
+    FAULT_ICSR = SCB.ICSR.VECTACTIVE;
+    FAULT_CFSR = SCB.CFSR.RAW;
+    loop {
+        asm { } : : : "memory";
+    }
+}
+
 fn core1_main() {
     CORE1_COUNT = 1000 + SIO.CPUID.CORE;
     // Acknowledge over the inter-core FIFO -- the sanctioned cross-core

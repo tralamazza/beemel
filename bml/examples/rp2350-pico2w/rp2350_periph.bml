@@ -77,3 +77,13 @@ peripheral PSM at 0x40018000 {
         field PROC1: b1 bit[24]
     }
 }
+
+// System control block (per-core PPB): fault diagnosis.
+peripheral SCB at 0xE000ED00 {
+    reg ICSR offset 0x04 {
+        field VECTACTIVE: u32 bit[0..8]
+    }
+    reg CFSR offset 0x28 {
+        field RAW: u32 bit[0..31]
+    }
+}
