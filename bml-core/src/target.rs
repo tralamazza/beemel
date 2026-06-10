@@ -116,6 +116,22 @@ pub struct Handoff {
     pub register: String,
     /// Optional minimum byte alignment of the handed-off address (power of two).
     pub align: Option<u32>,
+    /// Optional software port select (`port_by P.R.F TAG`): the field whose
+    /// *set* state routes this handoff's address through the agent's bus
+    /// windows tagged `TAG` (clear state = the untagged/other windows). Drives
+    /// the port-select check (E612): an address in a TAG-only window requires
+    /// the field set; an address outside every TAG window forbids setting it.
+    pub port_by: Option<PortBy>,
+}
+
+/// See `Handoff::port_by`.
+#[derive(Debug, Clone)]
+pub struct PortBy {
+    /// `Peripheral.REGISTER.FIELD` path, resolved against the program's SVD
+    /// peripherals at check time (like `enabled_by`).
+    pub field: String,
+    /// The window tag the set state selects.
+    pub tag: String,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -127,10 +143,15 @@ pub struct Handoff {
 /// cross-checked: a reach over a block no window covers fails at target load.
 /// Two independent sources must now both be wrong for a bad placement to
 /// compile -- the MDMA/DTCM class of error.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct BusWindow {
     pub start: u64,
     pub end: u64,
+    /// Optional port tag (`bus = axi: ..., ahbs: ...`): which of the agent's
+    /// master ports addresses this window. A tag is sticky over the following
+    /// untagged items in the list. `None` = port not modeled for this window.
+    /// Consumed by the port-select check (E612) via `Handoff.port_by`.
+    pub port: Option<String>,
 }
 
 impl BusWindow {
@@ -167,11 +188,12 @@ pub struct Agent {
     /// available, `reach` stays trusted. Non-empty = every reached block must
     /// fit inside a window (validated at target load).
     ///
-    /// Windows are the UNION over the agent's master ports. Port selection is
-    /// not modeled: an agent like the H7 MDMA reaches the TCMs only via its
-    /// AHBS port, chosen by software (`MDMA_CxTBR.SBUS/DBUS`) -- a reach inside
-    /// the union can still fail at runtime if the wrong port is configured.
-    /// That is a port-selection bug, a separate (recorded) check.
+    /// Windows are the UNION over the agent's master ports; the reach check
+    /// catches what NO port can address. When a port must be selected by
+    /// software (the H7 MDMA reaches the TCMs only via its AHBS port, chosen
+    /// by `MDMA_CxTBR.SBUS/DBUS`), tag the windows (`axi:`/`ahbs:`) and
+    /// declare `port_by` on the handoff -- the port-select check (E612) then
+    /// requires the bit to match where the handed-off address lives.
     pub bus: Vec<BusWindow>,
 }
 
@@ -620,6 +642,21 @@ impl Target {
                     return Err(format!(
                         "agent `{}` handoff `{}` align {n} is not a power of two",
                         agent.name, h.register
+                    ));
+                }
+                // A port_by tag must name a port that actually has windows;
+                // otherwise the port-select check could never fire (or fires
+                // on a typo'd tag, silently checking nothing).
+                if let Some(pb) = &h.port_by
+                    && !agent
+                        .bus
+                        .iter()
+                        .any(|w| w.port.as_deref() == Some(pb.tag.as_str()))
+                {
+                    return Err(format!(
+                        "agent `{}` handoff `{}` has `port_by {} {}`, but no bus window of the \
+                         agent is tagged `{}:`",
+                        agent.name, h.register, pb.field, pb.tag, pb.tag
                     ));
                 }
             }
@@ -1114,9 +1151,10 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
     Ok(())
 }
 
-/// Parse a handoff spec: `Peripheral.REGISTER [align N]`. The full byte address
-/// is written to the register verbatim; `align` is its optional minimum
-/// alignment.
+/// Parse a handoff spec: `Peripheral.REGISTER [align N] [port_by P.R.F TAG]`.
+/// The full byte address is written to the register verbatim; `align` is its
+/// optional minimum alignment; `port_by` names the software port-select field
+/// and the window tag its set state routes through.
 fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
     let mut tokens = val.split_whitespace();
     let register = tokens
@@ -1124,6 +1162,7 @@ fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
         .ok_or_else(|| format!("line {}: handoff has empty register", line_num + 1))?
         .to_string();
     let mut align = None;
+    let mut port_by = None;
     while let Some(tok) = tokens.next() {
         match tok {
             "align" => {
@@ -1141,6 +1180,24 @@ fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
                 })?;
                 align = Some(n);
             }
+            "port_by" => {
+                let field = tokens.next().ok_or_else(|| {
+                    format!(
+                        "line {}: handoff `{register}` port_by needs `P.R.F TAG`",
+                        line_num + 1
+                    )
+                })?;
+                let tag = tokens.next().ok_or_else(|| {
+                    format!(
+                        "line {}: handoff `{register}` port_by `{field}` needs a window tag",
+                        line_num + 1
+                    )
+                })?;
+                port_by = Some(PortBy {
+                    field: field.to_string(),
+                    tag: tag.to_string(),
+                });
+            }
             _ => {
                 return Err(format!(
                     "line {}: handoff `{register}` unexpected token `{tok}`",
@@ -1149,17 +1206,35 @@ fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
             }
         }
     }
-    Ok(Handoff { register, align })
+    Ok(Handoff {
+        register,
+        align,
+        port_by,
+    })
 }
 
-/// Parse `bus = start..end, start..end, ...` into half-open windows. Restating
-/// the key replaces the list (include/override semantics, like `reach`).
+/// Parse `bus = [tag:] start..end, start..end, ...` into half-open windows. A
+/// `tag:` prefix names the master port the following windows belong to and is
+/// sticky until the next tag. Restating the key replaces the list
+/// (include/override semantics, like `reach`).
 fn parse_bus_windows(val: &str, line_num: usize) -> Result<Vec<BusWindow>, String> {
     let mut out = Vec::new();
+    let mut port: Option<String> = None;
     for item in val.split(',') {
-        let item = item.trim();
+        let mut item = item.trim();
         if item.is_empty() {
             continue;
+        }
+        if let Some((tag, rest)) = item.split_once(':') {
+            let tag = tag.trim();
+            if tag.is_empty() {
+                return Err(format!(
+                    "line {}: bus window `{item}` has an empty port tag",
+                    line_num + 1
+                ));
+            }
+            port = Some(tag.to_string());
+            item = rest.trim();
         }
         let (s, e) = item.split_once("..").ok_or_else(|| {
             format!(
@@ -1177,7 +1252,11 @@ fn parse_bus_windows(val: &str, line_num: usize) -> Result<Vec<BusWindow>, Strin
                 line_num + 1
             ));
         }
-        out.push(BusWindow { start, end });
+        out.push(BusWindow {
+            start,
+            end,
+            port: port.clone(),
+        });
     }
     Ok(out)
 }
@@ -1527,6 +1606,47 @@ agents = eth_dma
         let src = H723_REGIONS.replace("kind = dma", "kind = dma\nbus = 0x10..0x10");
         let err = Target::parse(&src).unwrap_err();
         assert!(err.contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn bus_window_port_tags_parse_and_stick() {
+        let src = H723_REGIONS.replace(
+            "kind = dma",
+            "kind = dma\nbus = axi: 0x08000000..0x08100000, 0x30000000..0x30008000, \
+             ahbs: 0x20000000..0x20020000",
+        );
+        let eth = &t(&src).agents[0];
+        assert_eq!(eth.bus.len(), 3);
+        assert_eq!(eth.bus[0].port.as_deref(), Some("axi"));
+        assert_eq!(eth.bus[1].port.as_deref(), Some("axi")); // sticky
+        assert_eq!(eth.bus[2].port.as_deref(), Some("ahbs"));
+    }
+
+    #[test]
+    fn handoff_port_by_parses() {
+        let src = H723_REGIONS.replace(
+            "handoff = Ethernet_DMA.DMACTxDLAR align 4",
+            "handoff = Ethernet_DMA.DMACTxDLAR align 4 port_by MDMA.MDMA_C0TBR.DBUS ahbs\n\
+             bus = axi: 0x30000000..0x30008000, ahbs: 0x20000000..0x20020000",
+        );
+        let h = &t(&src).agents[0].handoffs[0];
+        assert_eq!(h.align, Some(4));
+        let pb = h.port_by.as_ref().unwrap();
+        assert_eq!(pb.field, "MDMA.MDMA_C0TBR.DBUS");
+        assert_eq!(pb.tag, "ahbs");
+    }
+
+    #[test]
+    fn port_by_without_matching_tagged_window_is_error() {
+        // port_by names tag `ahbs` but the agent has only untagged windows --
+        // the check could never fire, so the target must not load.
+        let src = format!("{H723_REGIONS}{ETH_BUS_D2}").replace(
+            "handoff = Ethernet_DMA.DMACTxDLAR align 4",
+            "handoff = Ethernet_DMA.DMACTxDLAR align 4 port_by MDMA.MDMA_C0TBR.DBUS ahbs",
+        );
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("no bus window"), "got: {err}");
+        assert!(err.contains("ahbs"), "got: {err}");
     }
 
     #[test]

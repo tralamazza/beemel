@@ -1,0 +1,20 @@
+// The handed-off address is behind the agent's software-selected `tcm` port,
+// but the port-select bit (MDMA.TBR.DBUS, declared `port_by` in the target) is
+// never set: on the default port the address is unmapped and the transfer
+// errors at runtime (the MDMA/DTCM TED). Rejected (E612).
+peripheral MDMA at 0x52000000 {
+    reg DAR offset 0x00 {
+        field ADDR: u32 bit[0..31]
+    }
+    reg TBR offset 0x04 {
+        field DBUS: b1 bit[17]
+    }
+}
+
+owns MDMA;
+
+var DST: [u8; 32] in pool_tcm;
+
+fn main() @context(thread) {
+    MDMA.DAR = &DST as u32;
+}

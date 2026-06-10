@@ -17,3 +17,10 @@ agents = eth, mdma
 [region.scratch]
 mem = dma_pool
 agents = mdma
+
+# MDMA's copy destination, deliberately in DTCM: reachable only through the
+# AHBS port, so the C0DAR handoff's `port_by` (E612) requires DBUS = 1 -- the
+# exact configuration whose absence produced the original TED bus error.
+[region.tcm_scratch]
+mem = dtcm
+agents = mdma

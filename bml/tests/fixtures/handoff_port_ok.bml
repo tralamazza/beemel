@@ -1,0 +1,20 @@
+// Same handoff as handoff_port_missing.bml, but the port-select bit is set:
+// the `tcm`-side address is routed through the right port. Accepted (E612
+// satisfied; presence check, like E609).
+peripheral MDMA at 0x52000000 {
+    reg DAR offset 0x00 {
+        field ADDR: u32 bit[0..31]
+    }
+    reg TBR offset 0x04 {
+        field DBUS: b1 bit[17]
+    }
+}
+
+owns MDMA;
+
+var DST: [u8; 32] in pool_tcm;
+
+fn main() @context(thread) {
+    MDMA.TBR.DBUS = true;
+    MDMA.DAR = &DST as u32;
+}

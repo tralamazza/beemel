@@ -1,0 +1,20 @@
+// The inverse port bug: the handed-off address is on the default (`axi`) side,
+// but the port-select bit routes the access through the `tcm` port, where the
+// address is not mapped -- misrouted. Rejected (E612, at the TBR write).
+peripheral MDMA at 0x52000000 {
+    reg DAR offset 0x00 {
+        field ADDR: u32 bit[0..31]
+    }
+    reg TBR offset 0x04 {
+        field DBUS: b1 bit[17]
+    }
+}
+
+owns MDMA;
+
+var DST: [u8; 32] in pool_axi;
+
+fn main() @context(thread) {
+    MDMA.TBR.DBUS = true;
+    MDMA.DAR = &DST as u32;
+}

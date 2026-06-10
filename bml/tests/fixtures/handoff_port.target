@@ -1,0 +1,38 @@
+# Agent with a software-selected master port for the E612 port-select check:
+# the `tcm` window is reachable only when MDMA.TBR.DBUS is set (port_by), the
+# `axi` window only when it is clear. Modeled on the H7 MDMA, whose AHBS port
+# into the TCMs is chosen by MDMA_CxTBR.SBUS/DBUS.
+arch = armv7em
+cpu = cortex-m7
+vector_table_offset = 0x08000000
+data_block = sram
+
+[mem.flash]
+base = 0x08000000
+size = 256K
+
+[mem.sram]
+base = 0x20000000
+size = 64K
+
+[mem.d2_pool]
+base = 0x30000000
+size = 4K
+
+[mem.tcm_pool]
+base = 0x20040000
+size = 4K
+
+[agent.mdma]
+kind = dma
+reach = d2_pool, tcm_pool
+bus = axi: 0x30000000..0x30001000, tcm: 0x20040000..0x20041000
+handoff = MDMA.DAR port_by MDMA.TBR.DBUS tcm
+
+[region.pool_axi]
+mem = d2_pool
+agents = mdma
+
+[region.pool_tcm]
+mem = tcm_pool
+agents = mdma

@@ -258,15 +258,24 @@ Rules:
   block in `reach` must fit inside a window or the target fails to load.
   `reach` is a *claim* (project intent); `bus` is a *transcription* (manual
   facts); the cross-check means a bad placement needs both to be wrong.
-  Restating the key replaces the list (overridable like `reach`). Limitations,
-  deliberate for v0: windows do not model *which* port reaches what -- the H7
-  MDMA reaches the TCMs only via its AHBS port, selected by software
-  (`MDMA_CxTBR.SBUS/DBUS`), so a reach inside the union can still fail at
-  runtime if the port bit is wrong (exactly the TED error the dogfooding hit;
-  the original "MDMA cannot reach TCM" diagnosis was wrong -- it was a port
-  bit, RM0468 2.1.2 states the AHBS path explicitly). Port-aware windows, and
-  deriving/checking the TBR bits from handoff addresses, are the recorded
-  follow-up.
+  Restating the key replaces the list (overridable like `reach`). The reach
+  containment check treats the windows as a union over ports: it catches what
+  NO port can address. (The original "MDMA cannot reach TCM" diagnosis was
+  wrong -- it was a port bit, RM0468 2.1.2 states the AHBS path explicitly.)
+- Software port selection (E612): when a port is chosen by software (the H7
+  MDMA routes each side through AXI or AHBS per `MDMA_CxTBR.SBUS/DBUS`), tag
+  the windows (`bus = axi: ..., ahbs: ...`; a tag is sticky over following
+  items) and declare the select on the handoff:
+  `handoff = MDMA.MDMA_C0DAR port_by MDMA.MDMA_C0TBR.DBUS ahbs`. The check
+  (region.rs::check_handoff_port, off the same write walk) resolves where the
+  handed-off address lives (literal `&STATIC` -> region -> mem block -> the
+  covering windows) and requires the bit to match: a block behind tag-only
+  windows requires the field set somewhere (presence semantics, like E609); a
+  block behind no tagged window rejects a definite set (misroute). Mixed or
+  unknown coverage is skipped, conservative. Target load validates that a
+  `port_by` tag names at least one tagged window. This is "usage dictates
+  declaration" for ports: the requirement is derived from where the address
+  lands, not declared per use.
 
 ## Target composition (`include`)
 
@@ -586,10 +595,20 @@ packed layout.
   misconfigured `MDMA_CxTBR.DBUS` port bit, not unreachability -- the manual
   (2.1.2) and Table 2 both give MDMA an AHBS path to the TCMs. The windows are
   port-unions, so they catch what *no* port can address (ETH -> TCM dies at
-  target load, verified) and deliberately accept MDMA -> DTCM (verified);
-  port-selection checking (deriving TBR bits from handoff addresses) is the
-  follow-up. Pinned by target.rs unit tests (`reach_outside_bus_windows_*`,
+  target load, verified) and deliberately accept MDMA -> DTCM (verified).
+  Pinned by target.rs unit tests (`reach_outside_bus_windows_*`,
   `bus_windows_override_last_wins`).
+- *Port-select check (E612).* DONE, hardware-validated -- the full-circle close
+  of the DTCM saga. Tagged windows + `port_by` on the handoff (see Layer 1)
+  make the compiler require `MDMA_CxTBR.DBUS` whenever the handed-off address
+  is behind the AHBS-only window. The example now does the copy the dogfood
+  originally failed at: COPY_SRC (D2, AXI side) -> SCRATCH (DTCM 0x20000000,
+  AHBS side) with `DBUS = true`; on the NUCLEO the ramp lands in DTCM
+  (C0ISR=0x1E, TEIF0=0), the guarded reclaim consumes it, RX stays coherent
+  (D-cache + MPU, now two generated regions: dtcm + dma_pool). Removing the
+  DBUS line is E612 at the C0DAR write -- the exact runtime TED converted to a
+  compile error. Pinned by `handoff_port_{missing,ok,misroute}.bml` +
+  `handoff_port.target`.
 - *Toward unifying with the ceiling protocol.* The two concurrency disciplines
   (ceiling = mutual exclusion for CPU contexts; release/reclaim = ownership
   transfer for async agents) are one concept -- region ownership -- with the

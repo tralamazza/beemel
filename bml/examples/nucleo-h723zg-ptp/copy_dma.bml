@@ -3,15 +3,19 @@
 // a sound-reclaim guarded on the channel transfer-complete flag.
 //
 // COPY_SRC is in dma_shared (eth+mdma region); the CPU fills it before releasing
-// it to MDMA via the C0SAR handoff. SCRATCH is in the scratch region; MDMA writes
-// it, and the CPU reads it back only through `reclaim(SCRATCH)` once
-// MDMA.MDMA_C0ISR.CTCIF0 is observed set (E611).
+// it to MDMA via the C0SAR handoff. SCRATCH is in tcm_scratch (DTCM); MDMA
+// writes it through its AHBS port, and the CPU reads it back only through
+// `reclaim(SCRATCH)` once MDMA.MDMA_C0ISR.CTCIF0 is observed set (E611).
 //
-// FINDING (hardware bringup): scratch was first placed in DTCM, but the MDMA
-// write errored (C0ESR.TED=1) -- the H7 TCMs are CPU-private, no DMA reaches
-// them. The target's `reach` is a *trusted* claim the bus matrix can falsify;
-// scratch now lives in D2, which MDMA does reach. Validated on the NUCLEO:
-// SCRATCH holds the copied ramp and the guarded reclaim returns it.
+// FINDING (hardware bringup, corrected): SCRATCH in DTCM first errored
+// (C0ESR.TED=1) and was misdiagnosed as "no DMA reaches the H7 TCMs". RM0468
+// 2.1.2 says otherwise: MDMA reaches the TCMs via the CPU's AHBS port -- but
+// the port is software-selected, and C0TBR.DBUS was left 0 (the AXI port,
+// where DTCM is unmapped). The DBUS write below is what was missing; the
+// compiler now *requires* it, because the C0DAR handoff declares
+// `port_by ... ahbs` and SCRATCH's mem block sits behind an ahbs-tagged bus
+// window (E612). Removing the DBUS line is a compile error instead of a
+// runtime bus fault.
 import svd.mdma;
 import svd.rcc;
 
@@ -19,8 +23,8 @@ export fn copy_setup, fn copy_poll;
 
 owns MDMA;
 
-var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM)
-var SCRATCH: [u8; 64] in scratch;       // MDMA writes this (DTCM)
+var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM, AXI side)
+var SCRATCH: [u8; 64] in tcm_scratch;   // MDMA writes this (DTCM, AHBS side)
 var SCRATCH_CHECK: u32;                  // CPU-visible: first reclaimed byte
 var SCRATCH_DONE: u32;                   // CPU-visible: set once the copy is consumed
 
@@ -40,6 +44,10 @@ fn copy_setup() {
 
     // Program MDMA channel 0: 64-byte mem-to-mem copy, byte size, src+dst
     // incrementing, one software-triggered whole transfer.
+    // SCRATCH is in DTCM, behind MDMA's AHBS port: route the destination side
+    // there. E612 requires this write (and would reject an SBUS set, since
+    // COPY_SRC is on the AXI side). TBR is write-protected while EN = 1.
+    MDMA.MDMA_C0TBR.DBUS = true;
     MDMA.MDMA_C0SAR = &COPY_SRC as u32;   // release: hand MDMA the source
     MDMA.MDMA_C0DAR = &SCRATCH as u32;    // release: hand MDMA the destination
     MDMA.MDMA_C0BNDTR.BNDT = 64;          // 64 bytes in the block

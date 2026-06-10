@@ -29,6 +29,11 @@
 //!   rejected (E610). Clock enables are shared/idempotent, so only the disabling
 //!   direction is guarded -- a stranger gating an agent's clock off silently
 //!   stops it; the owning module may still manage its own clock.
+//! - Port-select check: a handoff with `port_by F TAG` (software-selected
+//!   master port, e.g. the H7 MDMA's `MDMA_CxTBR.SBUS/DBUS`) must have F match
+//!   where the handed-off address lives: an address behind TAG-only bus
+//!   windows requires F set, one behind no TAG window forbids it (E612) --
+//!   same write walk, presence semantics like E609.
 //!
 //! The handoff provenance checks (slice 4) extend this module.
 
@@ -38,7 +43,7 @@ use crate::ast::{
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, AgentKind, Region, Target};
+use crate::target::{Agent, AgentKind, PortBy, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -360,10 +365,18 @@ fn check_handoff_writes(
     diags: &mut DiagnosticBag,
 ) {
     // (peripheral, register) -> agent name, from every agent's handoff list.
+    // `handoff_ports` carries the port-select declaration for the handoffs
+    // that have one (E612).
     let mut handoff_regs: HashMap<(String, String), String> = HashMap::new();
+    let mut handoff_ports: HashMap<(String, String), (String, PortBy)> = HashMap::new();
     for agent in &target.agents {
         for h in &agent.handoffs {
             if let Some((p, r)) = handoff_register_path(&h.register) {
+                if let Some(pb) = &h.port_by {
+                    handoff_ports
+                        .entry((p.clone(), r.clone()))
+                        .or_insert_with(|| (agent.name.clone(), pb.clone()));
+                }
                 handoff_regs
                     .entry((p, r))
                     .or_insert_with(|| agent.name.clone());
@@ -372,6 +385,17 @@ fn check_handoff_writes(
     }
     if handoff_regs.is_empty() {
         return;
+    }
+
+    // Static name -> region name, for resolving where a handed-off address
+    // lives (the port-select check keys on the region's mem block).
+    let mut static_regions: HashMap<String, String> = HashMap::new();
+    for item in &program.items {
+        if let Item::StaticDef(s) = item
+            && let Some((region_name, _)) = &s.region
+        {
+            static_regions.insert(s.name.0.clone(), region_name.clone());
+        }
     }
 
     // Which files own each register, via `owns P` (whole peripheral) or
@@ -446,6 +470,23 @@ fn check_handoff_writes(
                 && let Some(agent) = target.agents.iter().find(|a| &a.name == agent_name)
             {
                 check_descriptor_reach(static_name, agent, symbols, target, w.span, diags);
+
+                // E612: software port select. The handoff declares which field
+                // routes its address to which port (window tag); the address's
+                // mem block says which port it is actually behind.
+                if let Some((_, pb)) = handoff_ports.get(&key) {
+                    check_handoff_port(
+                        static_name,
+                        agent,
+                        pb,
+                        &static_regions,
+                        &writes,
+                        symbols,
+                        target,
+                        w.span,
+                        diags,
+                    );
+                }
             }
         }
     }
@@ -561,6 +602,103 @@ fn check_agent_clock_stomp(
             }
         }
     }
+}
+
+/// E612 port-select check. A handoff with `port_by F TAG` hands its address to
+/// an agent whose master port is chosen by software: F set routes through the
+/// windows tagged TAG, F clear through the rest. Where the address actually
+/// lives (its region's mem block, against the agent's windows) dictates the
+/// required state of F:
+/// - block behind TAG-only windows -> F must be set somewhere (presence check,
+///   like E609; ordering is not checked). On the default port the address is
+///   unmapped and the transfer errors at runtime -- the MDMA/DTCM TED.
+/// - block behind no TAG window -> a definite set of F is rejected (it would
+///   misroute the access).
+/// - block covered by both (ambiguous) or by no window, or an address that is
+///   not a literal `&STATIC` in a region: skipped, conservative.
+#[allow(clippy::too_many_arguments)]
+fn check_handoff_port(
+    static_name: &str,
+    agent: &Agent,
+    pb: &PortBy,
+    static_regions: &HashMap<String, String>,
+    writes: &[PeriphWrite],
+    symbols: &SymbolTable,
+    target: &Target,
+    span: Span,
+    diags: &mut DiagnosticBag,
+) {
+    let Some(region_name) = static_regions.get(static_name) else {
+        return;
+    };
+    let Some(region) = target.regions.iter().find(|r| &r.name == region_name) else {
+        return;
+    };
+    let Some(mem) = target.mem_blocks.iter().find(|m| m.name == region.mem) else {
+        return;
+    };
+    let covering: Vec<_> = agent
+        .bus
+        .iter()
+        .filter(|w| w.covers(mem.base, mem.end()))
+        .collect();
+    if covering.is_empty() {
+        return; // unreachable placement is the reach/bus validation's report
+    }
+    let is_tag = |w: &&crate::target::BusWindow| w.port.as_deref() == Some(pb.tag.as_str());
+    let on_tag = covering.iter().all(is_tag);
+    let off_tag = !covering.iter().any(is_tag);
+    let Some((ep, er, ef)) = resolve_enable(&pb.field, symbols) else {
+        diags.error(
+            format!(
+                "agent `{}` handoff has `port_by {} {}`, but that does not name a known \
+                 peripheral register/field.",
+                agent.name, pb.field, pb.tag
+            ),
+            "E612",
+            span,
+        );
+        return;
+    };
+    if on_tag {
+        let set = writes
+            .iter()
+            .any(|w| enable_write_matches(w, &ep, &er, ef.as_deref()));
+        if !set {
+            diags.error(
+                format!(
+                    "`{static_name}` (region `{region_name}`, mem `{}`) is behind agent `{}`'s \
+                     `{}` port, and `{}` -- which selects that port -- is never set. On the \
+                     default port this address is unmapped and the transfer errors at runtime. \
+                     Set `{} = true` before enabling the agent.",
+                    mem.name, agent.name, pb.tag, pb.field, pb.field
+                ),
+                "E612",
+                span,
+            );
+        }
+    } else if off_tag {
+        for w in writes {
+            if w.periph == ep
+                && w.reg == er
+                && w.field.as_deref() == ef.as_deref()
+                && !w.rhs_disabling
+            {
+                diags.error(
+                    format!(
+                        "`{}` routes agent `{}`'s handoff through its `{}` port, but \
+                         `{static_name}` (mem `{}`) is not behind that port -- the access would \
+                         be misrouted. Clear `{}` or hand off an address behind the `{}` port.",
+                        pb.field, agent.name, pb.tag, mem.name, pb.field, pb.tag
+                    ),
+                    "E612",
+                    w.span,
+                );
+            }
+        }
+    }
+    // Covered by a mix of TAG and non-TAG windows: either port works, nothing
+    // to require.
 }
 
 /// Resolve an `enabled_by` path (`P.R` or `P.R.F`) against the peripheral table.

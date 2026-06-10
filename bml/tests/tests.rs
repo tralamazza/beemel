@@ -2887,6 +2887,41 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// Port-select check (E612): a handoff with `port_by F TAG` hands its address to
+// an agent whose master port is software-selected (the H7 MDMA's TCM access via
+// MDMA_CxTBR.DBUS). The address's mem block, against the agent's tagged bus
+// windows, dictates the required state of F.
+#[test]
+fn test_handoff_port_missing_select_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("handoff_port_missing.bml", Some("handoff_port.target"));
+    assert!(
+        !ok,
+        "a tcm-side handoff without the port select set should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E612"), "expected E612; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_handoff_port_selected_ok() {
+    let (ok, stderr) = bml_build_with_target("handoff_port_ok.bml", Some("handoff_port.target"));
+    assert!(
+        ok,
+        "a tcm-side handoff with the port select set should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_handoff_port_misroute_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("handoff_port_misroute.bml", Some("handoff_port.target"));
+    assert!(
+        !ok,
+        "setting the port select for an axi-side address should fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E612"), "expected E612; stderr:\n{stderr}");
+}
+
 // Derived-Move: the same array placed in an agent-shared region (no `@dma`
 // adjective) is wrapped in `Type::AgentShared` at resolution because the region
 // has a DMA agent, so the rvalue index-read is rejected with the same E326. The
