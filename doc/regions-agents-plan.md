@@ -993,8 +993,18 @@ packed layout.
        Probe restructured (ecb_run() its own fn) -- clean verify.
     E605/E611/E619 all falsified live on the probe; micro:bit verify is
     clean. The schema needed ONE new column variant (fixed extent), zero
-    new questions. Hardware leg pending (DAPLink drag-and-drop .hex +
-    CMSIS-DAP readback).
+    new questions. HARDWARE-VALIDATED (first flash, DAPLink drag-and-drop):
+    CIPHER0/1 = d44be966/3b2c8aef and ECB_OK = 1 -- the exact FIPS-197
+    known answer through the full chain (handoff -> fixed extent ->
+    E611-guarded reclaim) on Nordic silicon; ECB_DATA[32..48] holds the
+    ciphertext bytes verbatim. TICKS advances at EXACTLY 1 Hz (184 -> 189
+    over a 5 s window) -- the ARMv6-M vector table, the word-composed NVIC
+    IPR (IPR2 reads 0x40 = priority 1 in IRQ8's lane, the new emission
+    path live), and @shared on the M0 all work. ALIVE ~2M/s (16 MHz / ~8
+    instr -- thumbv6m codegen sane). Instrument caveat, recorded: DAPLink
+    AUTO_RST resets the target on (some) debugger attaches -- a readback
+    right after `init` shows fresh-boot state (TICKS=0 confusion); hold
+    the session open or sample twice.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag
