@@ -835,6 +835,33 @@ packed layout.
     views carried across a loop back-edge (mention textually before the
     reclaim), addresses cast to integers (verify/provenance domain),
     same-name shadowing games inside one claim body (false-negative only).
+  - *Claim-aware verify -- DONE.* The first time `claim` pays off in proofs
+    rather than only in rejected programs, plus a preempt-shim soundness fix
+    the probe exposed:
+    1. *Soundness (verify/preempt.rs):* the shim skipped any reader that was
+       ITSELF a writer of the static, so a thread's write-then-read-back
+       (`X = 7; x = X; assert(x == 7)`) was wrongly proven even though an
+       ISR writer can fire between the two (CS'd) accesses -- confirmed
+       live: zero `forget_mem` calls in the .ll, IKOS "proves" the assert.
+       Correct rule: a fn only cannot preempt ITSELF; being a writer does
+       not exempt it from other higher-priority writers.
+    2. *Precision (ir.rs):* the emitter keeps a `claimed_statics` stack;
+       in verify mode, reads of the CLAIMED static inside its window are
+       not havoc'd -- the mask stops local preemption and the spinlock
+       (cross-core) excludes the other core, so in-window stability is
+       exactly the consistency the window provides. Other statics read
+       in-window keep their havoc. Without this, fix 1 would have turned
+       every legitimate in-window read-back into a false V200.
+    Net: the same read-back is V200 outside the window and PROVEN inside
+    it (verify_shared_writeback.bml / verify_claim_window.bml). Arrays
+    need no havoc at all, by construction: E326 forbids element reads of
+    `@shared` arrays outside `claim`, and inside the window suppression is
+    the correct semantics -- the checker closes upstream what the verify
+    model would otherwise have to havoc. H7 example verify findings are
+    byte-identical before/after (all pre-existing; the unproven
+    descriptor-reach V200s in eth_dma.bml remain a standing item). Not
+    modeled: agent (DMA) concurrency on reclaimed buffers -- reclaim views
+    load without havoc; the lexical E611/E616 windows are the guard there.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

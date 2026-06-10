@@ -2148,6 +2148,38 @@ fn test_verify_shared_with_writer() {
     );
 }
 
+// Preempt shim soundness: a reader that ALSO writes the static is still
+// havoc'd against other higher-priority writers (a fn only cannot preempt
+// itself) -- the write-then-read-back is not provable outside a window.
+#[test]
+fn test_verify_shared_writeback_not_proven() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (_ok, output) = bml_verify("verify_shared_writeback.bml");
+    assert!(
+        output.contains("[V200]"),
+        "the read-back must NOT be provable (ISR can write in between), got:\n{output}"
+    );
+}
+
+// Claim-aware verify: the same read-back IS proven inside `claim` -- the
+// window's mask makes the value stable, and the emitter suppresses the havoc
+// for the claimed static in-window.
+#[test]
+fn test_verify_claim_window_proven() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_claim_window.bml");
+    assert!(
+        ok && !output.contains("[V200]"),
+        "the in-window read-back must verify clean; got:\n{output}"
+    );
+}
+
 // Pointer-related V11x mapping: an unknown pointer parameter that's
 // dereferenced after a null-check produces a V114 finding from IKOS.
 #[test]

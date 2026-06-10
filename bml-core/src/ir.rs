@@ -63,6 +63,13 @@ pub struct IrEmitter {
     /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
     /// inner cpsie would unmask the window early.
     pub(crate) claim_depth: u32,
+    /// Names of the statics claimed by the enclosing `claim` windows (a
+    /// stack). In verify mode, reads of a CLAIMED static are not havoc'd:
+    /// the window's mask stops local preemption and its spinlock (cross-core
+    /// statics) excludes the other core, so the value is stable in-window --
+    /// the precision the window exists to provide. Other statics read inside
+    /// the window keep their havoc (conservative).
+    claimed_statics: Vec<String>,
     /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
     /// block. In verify mode, taking `&X as u32` of such a static emits an
     /// `assume` that the address is in this range -- the load-bearing provenance
@@ -275,6 +282,7 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            claimed_statics: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -325,6 +333,7 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            claimed_statics: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -1716,6 +1725,7 @@ impl IrEmitter {
                     crate::arch::arm::emit_critical_enter(self);
                 }
                 self.claim_depth += 1;
+                self.claimed_statics.push(c.name.0.clone());
                 let lock_addr = self
                     .cross_core_locks
                     .get(&c.name.0)
@@ -1750,6 +1760,7 @@ impl IrEmitter {
                         "store volatile i32 1, ptr inttoptr ({ptr_ty} {addr} to ptr)"
                     ));
                 }
+                self.claimed_statics.pop();
                 self.claim_depth -= 1;
                 if self.claim_depth == 0 {
                     crate::arch::arm::emit_critical_leave(self);
@@ -3945,6 +3956,13 @@ impl IrEmitter {
 
     fn emit_verify_forget_shared_static(&mut self, name: &str, ty: &Type) {
         if !self.verify_mode {
+            return;
+        }
+        // Inside this static's own `claim` window the value is stable: the
+        // mask stops local preemption, and for cross-core statics the
+        // spinlock excludes the other core. Havocing here would erase
+        // exactly the consistency the window provides.
+        if self.claimed_statics.iter().any(|n| n == name) {
             return;
         }
         // Without preemption info we have no choice but to over-approximate.

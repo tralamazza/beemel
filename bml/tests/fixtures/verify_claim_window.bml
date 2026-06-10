@@ -1,0 +1,18 @@
+// Claim-aware verify: inside `claim COUNT {}` the value is stable (the mask
+// stops the ISR writer), so the same write-then-read-back that is unprovable
+// outside the window (verify_shared_writeback.bml) is PROVEN inside it.
+// This is the first time `claim` pays off in proofs, not only in rejected
+// programs.
+var COUNT: u32 @shared = 5;
+
+fn timer() @isr(priority = 1) {
+    COUNT = 42;
+}
+
+fn main() @context(thread) {
+    claim COUNT {
+        COUNT = 7;
+        var x: u32 = COUNT;
+        assert(x == 7);
+    }
+}

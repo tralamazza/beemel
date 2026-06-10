@@ -25,10 +25,15 @@ pub fn analyze(program: &Program, symbols: &SymbolTable) -> PreemptInfo {
 
     for (static_name, writer_fns) in &writers {
         for (reader_name, reader_prio) in &priorities {
-            if writer_fns.contains(reader_name) {
-                continue;
-            }
             for writer_name in writer_fns {
+                // A function cannot preempt itself -- but being a writer does
+                // NOT exempt a reader from OTHER writers: between a thread's
+                // own (CS'd) write and a later read, a higher-priority ISR
+                // writer can still fire. The old reader-in-writer-set skip
+                // wrongly proved such read-backs stable.
+                if writer_name == reader_name {
+                    continue;
+                }
                 if let Some(writer_prio) = priorities.get(writer_name) {
                     // Writer has higher priority (lower number) than reader
                     if writer_prio < reader_prio {

@@ -1,0 +1,15 @@
+// Preempt shim soundness: being a WRITER of a shared static does not exempt
+// a reader from havoc. Between main's (CS'd) write and its later read the
+// ISR can fire and overwrite, so the read-back is NOT provably 7 -- the old
+// reader-in-writer-set skip wrongly proved it.
+var COUNT: u32 @shared = 5;
+
+fn timer() @isr(priority = 1) {
+    COUNT = 42;
+}
+
+fn main() @context(thread) {
+    COUNT = 7;
+    var x: u32 = COUNT;
+    assert(x == 7);
+}
