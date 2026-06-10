@@ -690,9 +690,13 @@ packed layout.
     `shared_in_region.bml` (E613), `shared_derived_propagated.bml` (the
     soundness fix visible in IR: the top accessor now takes its cpsid when a
     higher-priority ISR reaches the static through a helper).
-  - *Slice U4: `claim` -- the masked ownership window.* DONE (QEMU + IR
-    validated; board flashed, final probe readback pending an ST-Link
-    reconnect). The reclaim-shaped escape for CPU-shared data:
+  - *Slice U4: `claim` -- the masked ownership window.* DONE,
+    hardware-validated: on the NUCLEO, LOG_SUM tracks the atomic-snapshot
+    invariant 4*TICKS - 10 exactly at independent sample points (54 at
+    TICKS=16, 90 at TICKS=25) with the ISR, ETH, and MDMA stack intact. (A
+    one-off FORCED/IMPRECISERR HardFault seen mid-session was a debugger
+    attach artifact from a flaky ST-Link USB period -- unreproducible after
+    a clean reset.) The reclaim-shaped escape for CPU-shared data:
     `claim X { ... }` wraps the block in ONE cpsid/cpsie pair; inside, the
     `@shared` static is its inner type (views and index-reads allowed -- the
     checker and emitter recurse with `SymbolTable::with_claimed`, a patched
