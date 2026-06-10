@@ -26,7 +26,7 @@ size = 16K
 kind = dma
 reach = sram1
 handoff = MyDma.DESCADDR align 4
-extent_by = MyDma.XFERCNT.COUNT x4
+extent = MyDma.XFERCNT.COUNT x4
 
 [region.dma_shared]
 mem = sram1

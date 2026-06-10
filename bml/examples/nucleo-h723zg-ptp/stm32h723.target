@@ -78,8 +78,14 @@ bus = 0x08000000..0x08100000, 0x24000000..0x24050000, 0x30000000..0x30008000
 # and the clock-stomp guard (E610): a non-owning module disabling any of these
 # silently stops the ETH DMA.
 enabled_by = RCC.C1_AHB1ENR.ETH1MACEN, RCC.C1_AHB1ENR.ETH1TXEN, RCC.C1_AHB1ENR.ETH1RXEN
+# TX and RX are separate transaction channels of the one ETH bus master:
+# each groups its own handoff registers (and, when modeled, its own
+# completion signal and length field).
+[agent.eth.tx]
 handoff = Ethernet_DMA.DMACTxDLAR
 handoff = Ethernet_DMA.DMACTxDTPR
+
+[agent.eth.rx]
 handoff = Ethernet_DMA.DMACRxDLAR
 handoff = Ethernet_DMA.DMACRxDTPR
 
@@ -100,11 +106,13 @@ handoff = Ethernet_DMA.DMACRxDTPR
 kind = dma
 reach = dma_pool, dtcm
 bus = axi: 0x08000000..0x08100000, 0x24000000..0x24050000, 0x30000000..0x30008000, 0x38000000..0x38004000, 0x38800000..0x38801000, ahbs: 0x00000000..0x00040000, 0x20000000..0x20020000
-# Channel transfer-complete flag. Declaring it activates the sound-reclaim guard
-# (E611): a reclaim of MDMA's output must be gated on observing this bit.
+
+# MDMA channel 0 (the only one this program uses). Channel transfer-complete
+# flag: declaring it activates the sound-reclaim guard (E611). Extent: BNDT
+# counts BYTES (RM0468 16.5.6); verify asserts the armed length fits the
+# buffer last delivered to each of this channel's handoff registers.
+[agent.mdma.ch0]
 completes_by = MDMA.MDMA_C0ISR.CTCIF0
-# Block transfer length: BNDT counts BYTES (RM0468 16.5.6). Verify asserts
-# the armed length fits the buffer last delivered to each handoff register.
-extent_by = MDMA.MDMA_C0BNDTR.BNDT
+extent = MDMA.MDMA_C0BNDTR.BNDT
 handoff = MDMA.MDMA_C0SAR port_by MDMA.MDMA_C0TBR.SBUS ahbs
 handoff = MDMA.MDMA_C0DAR port_by MDMA.MDMA_C0TBR.DBUS ahbs

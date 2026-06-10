@@ -927,6 +927,38 @@ packed layout.
     descriptors read back buf1 = 0x30007000 (TX_BUFFER), control = 60
     (the proven extent) with DES3 OWN CLEARED by the DMA -- silicon
     write-back proof the frames were consumed and transmitted.
+  - *Vocabulary consolidation -- DONE.* Response to the user's sprawl worry
+    (extent_by, completes_by, reach, enabled_by, port_by...). Audit verdict:
+    the SEMANTICS are a closed schema -- every key answers one of six
+    questions about a bus master (may it run / where can it touch / which
+    buffer / how much / when done / what code) and the RP2350 falsification
+    added zero new questions -- but the surface showed accretion. Changes:
+    1. *Channels*: `[agent.NAME.CHANNEL]` sections group the per-transaction
+       keys (handoff, completes_by, extent); transaction keys at the agent
+       level form an implicit default channel, so single-channel agents and
+       project files stay flat. The H7 eth agent is now [agent.eth.tx]/[.rx],
+       mdma and the RP2350 dma are [.ch0]. Precision wins fell out: extent
+       shadows and release-truncation flags are now per-channel. Full
+       per-buffer flag association (region buffer -> channel) remains the
+       recorded follow-up; E611's buffer flags still take the agent union.
+    2. *extent_by -> extent, by -> when*: the mega-line is now
+       `extent = P.R.F [xN] [when P.R.F = V]` -- reads as a sentence, and
+       `_by` is reserved for observed signals (enabled_by/completes_by).
+    3. *`access` key removed* (was parsed, checked nothing). Its design
+       note survives here: the one intrinsically read-only master on the
+       H7 is the LTDC (RM0468 Table 2); when an LTDC-style agent appears,
+       `access = read` should return and relax derived-Move for its region
+       (CPU produces the framebuffer; index-read protection would be
+       counterproductive). Until then the key implied a guarantee nothing
+       checked. `kind = debug` STAYS: its skip-semantics are consumed
+       behavior (a halted-CPU prober is not a runtime concurrent mutator).
+    4. *The admission rule* is now in doc/language.md ("The agent
+       contract"): a key that does not answer one of the six questions
+       does not get in. Layering principle recorded there too (user):
+       chip files are written once and shipped -- verbose is fine;
+       project files stay small.
+    Both examples rebuild + verify clean through the channel-structured
+    targets; E618/extent falsifications re-fire through channel sections.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

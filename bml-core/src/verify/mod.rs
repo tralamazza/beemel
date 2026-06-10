@@ -374,32 +374,37 @@ fn extent_obligations(
     let mut cap_shadows = HashMap::new();
     let mut asserts = HashMap::new();
     for agent in &target.agents {
-        let Some(eb) = &agent.extent_by else {
-            continue;
-        };
-        let parts: Vec<&str> = eb.path.split('.').collect();
-        let [ep, er, ef] = parts.as_slice() else {
-            continue; // shape validated at target load
-        };
-        let mut shadows = Vec::new();
-        for h in &agent.handoffs {
-            let mut reg_parts = h.register.split('.');
-            let (Some(p), Some(r), None) = (reg_parts.next(), reg_parts.next(), reg_parts.next())
-            else {
+        for ch in &agent.channels {
+            let Some(eb) = &ch.extent else {
                 continue;
             };
-            let shadow = format!("__bml_cap_{}_{r}", agent.name);
-            cap_shadows.insert((p.to_string(), r.to_string()), shadow.clone());
-            shadows.push(shadow);
+            let parts: Vec<&str> = eb.path.split('.').collect();
+            let [ep, er, ef] = parts.as_slice() else {
+                continue; // shape validated at target load
+            };
+            // Shadows of THIS channel's handoffs only: arming channel 0
+            // is not checked against a buffer delivered to channel 1.
+            let mut shadows = Vec::new();
+            for h in &ch.handoffs {
+                let mut reg_parts = h.register.split('.');
+                let (Some(p), Some(r), None) =
+                    (reg_parts.next(), reg_parts.next(), reg_parts.next())
+                else {
+                    continue;
+                };
+                let shadow = format!("__bml_cap_{}_{r}", agent.name);
+                cap_shadows.insert((p.to_string(), r.to_string()), shadow.clone());
+                shadows.push(shadow);
+            }
+            if shadows.is_empty() {
+                continue;
+            }
+            shadows.sort();
+            asserts.insert(
+                ((*ep).to_string(), (*er).to_string(), (*ef).to_string()),
+                (eb.scale, shadows),
+            );
         }
-        if shadows.is_empty() {
-            continue;
-        }
-        shadows.sort();
-        asserts.insert(
-            ((*ep).to_string(), (*er).to_string(), (*ef).to_string()),
-            (eb.scale, shadows),
-        );
     }
     (cap_shadows, asserts)
 }
@@ -440,7 +445,7 @@ fn handoff_reach_bounds(target: &Target) -> HashMap<String, (u64, u64)> {
         ) else {
             continue;
         };
-        for h in &agent.handoffs {
+        for h in agent.handoffs() {
             map.insert(h.register.clone(), (lo, hi));
         }
     }

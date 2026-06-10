@@ -110,6 +110,28 @@ placement for visibility. The regions/agents model
 (`doc/regions-agents-plan.md`) is what makes those obligations checkable;
 `@dma` itself is only a placement/aliasing marker.
 
+### The agent contract (target files)
+
+The `[agent.*]` vocabulary is a CLOSED schema: every key answers one of six
+questions about an autonomous bus master, and a key that does not answer one
+of them does not get in. Chip target files are written once and shipped with
+the compiler -- verbosity there is fine; project target files should stay
+small (regions, reach claims, an `entry`).
+
+| Question | Key | Level |
+|---|---|---|
+| May it run at all? | `enabled_by` (`!` = clear-to-enable) | agent |
+| Where can it physically touch? | `bus` (wiring), `reach` (claim), `port_by` (routing, on a handoff) | agent / handoff |
+| Which buffer does it get? | `handoff` (register), `addr in R` (in-memory) | channel |
+| How much of it? | `extent [xN] [when P.R.F = V]`, `@extent` (in-memory) | channel |
+| When is it finished? | `completes_by` (`!` = done-when-clear) | channel |
+| What code runs on it? | `entry` (cpu agents) | agent |
+
+A multi-channel controller groups its per-transaction keys into
+`[agent.NAME.CHANNEL]` sections (e.g. `[agent.eth.tx]` / `[agent.eth.rx]`);
+transaction keys written directly in `[agent.NAME]` form an implicit default
+channel, so single-channel agents never need the extra section.
+
 ## 3. Move / Copy semantics
 
 - **Copy**: Primitives (`i8`..`i64`, `u8`..`u64`, `f16`..`f64`, `b1`, `b8`),
@@ -195,7 +217,7 @@ The compiler uses the ARM convention directly:
 | `claim` misuse: target not `@shared`, or a call/escape inside the window | E614 |
 | A view outlives its justification window: a view over the claimed static escapes the `claim` body, or a reclaimed view is used outside its completion guard / after the buffer is released back to the agent | E616 |
 | `@extent` declaration sanity: the named sibling must be an `addr in <region>` field and the annotated field a 32-bit integer | E617 |
-| Extent unit cross-check: arming an agent whose `extent_by ... by P.R.F = V` unit field is never set to V (or set to something else) | E618 |
+| Extent unit cross-check: arming an agent whose `extent ... when P.R.F = V` unit field is never set to V (or set to something else) | E618 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
@@ -589,10 +611,10 @@ reclaim must be guarded by observing it -- it must sit in the then-block of an
 read mid-transfer (E611); without `completes_by` the reclaim stays trusted. Only the contiguous `view` form is tightened;
 `ring`/`bits` over agent-shared are not yet.
 
-The transfer LENGTH is checked by `bml verify` (IKOS), not the compiler: an
-agent declaring `extent_by = P.R.F [xN]` (its count field, with N bytes per
+The transfer LENGTH is checked by `bml verify` (IKOS), not the compiler: a
+channel declaring `extent = P.R.F [xN]` (its count field, with N bytes per
 count unit) gets an obligation at every write of that field -- the armed
-byte length must fit the buffer last delivered to each of the agent's
+byte length must fit the buffer last delivered to each of the channel's
 handoff registers (`= &X as u32` deliveries carry `sizeof(X)`). Arming the
 DMA one unit past its buffer is a definite verify error at the arming line;
 nothing is emitted in normal builds.
@@ -606,7 +628,7 @@ the length-vs-buffer check itself is a verify obligation, exactly like
 `extent_by`.
 
 A multiplier can be tied to the unit-select field that makes it true:
-`extent_by = DMA.CH0_TRANS_COUNT.COUNT x4 by DMA.CH0_CTRL_TRIG.DATA_SIZE = 2`
+`extent = DMA.CH0_TRANS_COUNT.COUNT x4 when DMA.CH0_CTRL_TRIG.DATA_SIZE = 2`
 requires (E618, compile time) that arming the agent is accompanied by a
 write establishing exactly that field value -- the multiplier stops being
 trusted policy.

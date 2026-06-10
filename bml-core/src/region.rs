@@ -43,7 +43,7 @@ use crate::ast::{
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, AgentKind, PortBy, Region, Target};
+use crate::target::{Agent, AgentKind, Channel, PortBy, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -666,7 +666,7 @@ fn check_handoff_writes(
     let mut handoff_regs: HashMap<(String, String), String> = HashMap::new();
     let mut handoff_ports: HashMap<(String, String), (String, PortBy)> = HashMap::new();
     for agent in &target.agents {
-        for h in &agent.handoffs {
+        for h in agent.handoffs() {
             if let Some((p, r)) = handoff_register_path(&h.register) {
                 if let Some(pb) = &h.port_by {
                     handoff_ports
@@ -811,21 +811,34 @@ fn check_handoff_writes(
 /// values neither satisfy nor violate; the missing-write message covers them.
 fn check_extent_units(target: &Target, writes: &[PeriphWrite], diags: &mut DiagnosticBag) {
     for agent in &target.agents {
-        let Some(eb) = &agent.extent_by else { continue };
+        for ch in &agent.channels {
+            check_channel_unit(agent, ch, writes, diags);
+        }
+    }
+}
+
+fn check_channel_unit(
+    agent: &Agent,
+    ch: &Channel,
+    writes: &[PeriphWrite],
+    diags: &mut DiagnosticBag,
+) {
+    {
+        let Some(eb) = &ch.extent else { return };
         let Some((upath, uval)) = &eb.unit else {
-            continue;
+            return;
         };
         let eparts: Vec<&str> = eb.path.split('.').collect();
         let uparts: Vec<&str> = upath.split('.').collect();
         let ([ep, er, ef], [up, ur, uf]) = (eparts.as_slice(), uparts.as_slice()) else {
-            continue; // shapes validated at target load
+            return; // shapes validated at target load
         };
         // Armed? Use the first extent-field write as the report site.
         let Some(site) = writes
             .iter()
             .find(|w| w.periph == *ep && w.reg == *er && w.field.as_deref() == Some(*ef))
         else {
-            continue;
+            return;
         };
         let unit_writes: Vec<&PeriphWrite> = writes
             .iter()
@@ -837,7 +850,7 @@ fn check_extent_units(target: &Target, writes: &[PeriphWrite], diags: &mut Diagn
             {
                 diags.error(
                     format!(
-                        "`{up}.{ur}.{uf}` is set to {v}, but agent `{}` declares its transfer count scaled x{} only when this field is {uval} (`extent_by ... by`). The armed byte length would be mis-scaled.",
+                        "`{up}.{ur}.{uf}` is set to {v}, but agent `{}` declares its transfer count scaled x{} only when this field is {uval} (`extent ... when`). The armed byte length would be mis-scaled.",
                         agent.name, eb.scale
                     ),
                     "E618",
@@ -848,7 +861,7 @@ fn check_extent_units(target: &Target, writes: &[PeriphWrite], diags: &mut Diagn
         if !unit_writes.iter().any(|w| w.rhs_literal == Some(*uval)) {
             diags.error(
                 format!(
-                    "agent `{}` is armed here with a count scaled x{}, but nothing sets `{up}.{ur}.{uf} = {uval}` -- the multiplier declared by `extent_by ... by` is not established. Write the unit field before arming.",
+                    "agent `{}` is armed here with a count scaled x{}, but nothing sets `{up}.{ur}.{uf} = {uval}` -- the multiplier declared by `extent ... when` is not established. Write the unit field before arming.",
                     agent.name, eb.scale
                 ),
                 "E618",
@@ -1212,7 +1225,7 @@ fn check_reclaim_guards(
                 if let Some(agent) = target.agents.iter().find(|a| &a.name == aname)
                     && matches!(agent.kind, AgentKind::Dma | AgentKind::External)
                 {
-                    flags.extend(agent.completes_by.iter().cloned());
+                    flags.extend(agent.completes_by().cloned());
                 }
             }
             if !flags.is_empty() {
@@ -1229,15 +1242,19 @@ fn check_reclaim_guards(
     // justifications resting on that agent's completion signal.
     let mut handoff_flags: HashMap<(String, String), Vec<String>> = HashMap::new();
     for agent in &target.agents {
-        if agent.completes_by.is_empty() {
-            continue;
-        }
-        for h in &agent.handoffs {
-            if let Some((p, r)) = handoff_register_path(&h.register) {
-                handoff_flags
-                    .entry((p, r))
-                    .or_default()
-                    .extend(agent.completes_by.iter().cloned());
+        for ch in &agent.channels {
+            if ch.completes_by.is_empty() {
+                continue;
+            }
+            // Per channel: a release through ch's handoff registers only
+            // invalidates justifications resting on ch's own flags.
+            for h in &ch.handoffs {
+                if let Some((p, r)) = handoff_register_path(&h.register) {
+                    handoff_flags
+                        .entry((p, r))
+                        .or_default()
+                        .extend(ch.completes_by.iter().cloned());
+                }
             }
         }
     }

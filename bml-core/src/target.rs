@@ -97,24 +97,6 @@ pub enum AgentKind {
     External,
 }
 
-/// Whether a bus-master agent can write memory or only read it.
-///
-/// DORMANT (parsed from `access = read | rw`, default `ReadWrite`, but no check
-/// consumes it yet -- a deliberate placeholder, not an oversight). Its one real
-/// consumer in this silicon family is the LCD-TFT controller (LTDC), the *only*
-/// intrinsically read-only bus master on the STM32H7 (RM0468 Table 2: every
-/// other master -- the DMAs, SDMMC, ETH, USB, and even DMA2D/Chrom-Art -- reads
-/// *and* writes). When an LTDC-style agent appears, `access = read` should relax
-/// derived-Move for its region: the CPU *produces* the framebuffer, so the
-/// index-read protection is both unnecessary and counterproductive (you read
-/// pixels back). Cache discipline still applies (CPU writes cached, LTDC reads
-/// stale). Until such an agent exists, building that check would be premature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentAccess {
-    ReadWrite,
-    Read,
-}
-
 /// A handoff register: the place where a written address is handed to the agent,
 /// which then dereferences it. `register` is an unresolved SVD path string
 /// (`Peripheral.REGISTER`); resolution against the peripheral table happens
@@ -153,11 +135,26 @@ pub struct ExtentBy {
     /// Compile-time byte multiplier: bytes the agent moves per count unit
     /// (1 = the field counts bytes, 4 = words, ...).
     pub scale: u32,
-    /// `by P.R.F = V`: the unit-select field write that makes `scale` true
+    /// `when P.R.F = V`: the unit-select field write that makes `scale` true
     /// physics (e.g. the RP2350's `CTRL_TRIG.DATA_SIZE = 2` for x4). When
     /// declared, arming the agent without setting the field to exactly V is
     /// rejected (E618) -- the multiplier stops being trusted policy.
     pub unit: Option<(String, u64)>,
+}
+
+/// One transaction channel of an agent (`[agent.NAME.CHANNEL]`), grouping the
+/// per-transaction vocabulary: which registers receive buffer addresses
+/// (`handoff`), which signal marks the transfer done (`completes_by`), and
+/// which field programs how much is moved (`extent`). Transaction keys
+/// written directly in `[agent.NAME]` land in an implicit default channel,
+/// so single-channel agents never need a channel section -- the grouping
+/// exists for multi-channel controllers (8-channel DMACs, ETH TX vs RX).
+#[derive(Debug, Clone, Default)]
+pub struct Channel {
+    pub name: String,
+    pub handoffs: Vec<Handoff>,
+    pub completes_by: Vec<String>,
+    pub extent: Option<ExtentBy>,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -199,24 +196,11 @@ pub struct Agent {
     pub reach_all: bool,
     /// Whether this agent's view of `reach` is cached/snooped.
     pub cached: bool,
-    pub access: AgentAccess,
-    pub handoffs: Vec<Handoff>,
     /// Register paths that must be enabled for the agent to operate (clock gates).
     pub enabled_by: Vec<String>,
-    /// Register/field paths whose *set* state signals the agent has finished a
-    /// transfer (e.g. a DMA transfer-complete flag). Declaring it activates the
-    /// sound-reclaim guard (E611): a `reclaim` of a buffer this agent writes must
-    /// be control-dependent on observing one of these. Empty = `reclaim` stays
-    /// trusted (unchecked).
-    pub completes_by: Vec<String>,
-    /// Transfer-extent declaration (`extent_by = P.R.F [xN]`): the register
-    /// field programming how MUCH this agent transfers, with an optional
-    /// compile-time byte multiplier (`x4` = the field counts words). Feeds
-    /// the verify-mode extent obligation: writing the field asserts
-    /// `value * N <= sizeof(the buffer last delivered to each handoff
-    /// register)`, discharged by IKOS -- the agent cannot be armed to run
-    /// past the buffer it was handed. None = transfer length stays trusted.
-    pub extent_by: Option<ExtentBy>,
+    /// Transaction channels (see `Channel`). Transaction keys written at the
+    /// agent level go into an implicit default channel (empty name).
+    pub channels: Vec<Channel>,
     /// Entry function for a `cpu`-kind agent (`entry = <fn>`): the function
     /// this core starts executing (launched by another core, e.g. the RP2350
     /// FIFO handshake). Project policy, not chip physics -- it binds CODE to
@@ -239,6 +223,30 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// All handoff registers across every channel.
+    pub fn handoffs(&self) -> impl Iterator<Item = &Handoff> {
+        self.channels.iter().flat_map(|c| c.handoffs.iter())
+    }
+
+    /// All completion flags across every channel. Buffer-to-channel
+    /// association is not modeled yet, so checks that need "this buffer's
+    /// flags" take the union (recorded follow-up).
+    pub fn completes_by(&self) -> impl Iterator<Item = &String> {
+        self.channels.iter().flat_map(|c| c.completes_by.iter())
+    }
+
+    /// The implicit default channel (agent-level transaction keys),
+    /// created on first use.
+    fn default_channel_mut(&mut self) -> &mut Channel {
+        if !self.channels.iter().any(|c| c.name.is_empty()) {
+            self.channels.insert(0, Channel::default());
+        }
+        self.channels
+            .iter_mut()
+            .find(|c| c.name.is_empty())
+            .expect("default channel just ensured")
+    }
+
     /// Whether this agent can reach the named mem block.
     #[must_use]
     pub fn reaches(&self, mem: &str) -> bool {
@@ -260,6 +268,8 @@ pub struct Region {
 /// (`[mem.itcm]`) carry the index of the block being filled so subsequent
 /// key/value lines append to it.
 enum Section {
+    /// `[agent.NAME.CHANNEL]` -- (agent index, channel index).
+    AgentChannel(usize, usize),
     Top,
     Interrupts,
     Startup,
@@ -388,6 +398,12 @@ impl Target {
                         Section::Mem(idx)
                     }
                     Some(("agent", name)) => {
+                        // `[agent.NAME.CHANNEL]`: a transaction channel of an
+                        // agent (find-or-add both, like every other section).
+                        let (name, channel) = match name.split_once('.') {
+                            Some((a, c)) => (a, Some(c)),
+                            None => (name, None),
+                        };
                         let idx = if let Some(i) = target.agents.iter().position(|a| a.name == name)
                         {
                             i
@@ -398,17 +414,31 @@ impl Target {
                                 reach: Vec::new(),
                                 reach_all: false,
                                 cached: false,
-                                access: AgentAccess::ReadWrite,
-                                handoffs: Vec::new(),
                                 enabled_by: Vec::new(),
-                                completes_by: Vec::new(),
-                                extent_by: None,
+                                channels: Vec::new(),
                                 entry: None,
                                 bus: Vec::new(),
                             });
                             target.agents.len() - 1
                         };
-                        Section::Agent(idx)
+                        match channel {
+                            None => Section::Agent(idx),
+                            Some(ch) => {
+                                let agent = &mut target.agents[idx];
+                                let ci = if let Some(i) =
+                                    agent.channels.iter().position(|c| c.name == ch)
+                                {
+                                    i
+                                } else {
+                                    agent.channels.push(Channel {
+                                        name: ch.to_string(),
+                                        ..Channel::default()
+                                    });
+                                    agent.channels.len() - 1
+                                };
+                                Section::AgentChannel(idx, ci)
+                            }
+                        }
                     }
                     Some(("region", name)) => {
                         let idx =
@@ -466,6 +496,13 @@ impl Target {
             if let Section::Agent(idx) = section {
                 let (key, val) = split_kv(line, line_num)?;
                 parse_agent_kv(&mut target.agents[idx], key, val, line_num)?;
+                continue;
+            }
+            // In [agent.NAME.CHANNEL] section: transaction keys only
+            if let Section::AgentChannel(aidx, cidx) = section {
+                let (key, val) = split_kv(line, line_num)?;
+                let ch = &mut target.agents[aidx].channels[cidx];
+                parse_channel_kv(ch, key, val, line_num)?;
                 continue;
             }
             // In [region.NAME] section
@@ -726,7 +763,7 @@ impl Target {
                     }
                 }
             }
-            for h in &agent.handoffs {
+            for h in agent.handoffs() {
                 if let Some(n) = h.align
                     && !n.is_power_of_two()
                 {
@@ -1246,22 +1283,12 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
             }
         }
         "cached" => agent.cached = parse_bool(val, "cached", line_num)?,
-        "access" => {
-            agent.access = match val {
-                "read" => AgentAccess::Read,
-                "readwrite" | "rw" => AgentAccess::ReadWrite,
-                _ => {
-                    return Err(format!(
-                        "line {}: unknown agent access `{val}` (expected read or readwrite)",
-                        line_num + 1
-                    ));
-                }
-            };
+        // Transaction keys at the agent level land in the implicit default
+        // channel -- single-channel agents never need a channel section.
+        "handoff" | "completes_by" | "extent" => {
+            parse_channel_kv(agent.default_channel_mut(), key, val, line_num)?;
         }
-        "handoff" => agent.handoffs.push(parse_handoff(val, line_num)?),
         "enabled_by" => agent.enabled_by = parse_list(val),
-        "completes_by" => agent.completes_by = parse_list(val),
-        "extent_by" => agent.extent_by = Some(parse_extent_by(val, line_num)?),
         "bus" => agent.bus = parse_bus_windows(val, line_num)?,
         "entry" => agent.entry = Some(val.to_string()),
         _ => {
@@ -1271,32 +1298,51 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
     Ok(())
 }
 
-/// Parse an extent spec: `Peripheral.REGISTER.FIELD [xN]` -- the count field
-/// plus an optional compile-time byte multiplier (default 1 = the field
-/// counts bytes).
-fn parse_extent_by(val: &str, line_num: usize) -> Result<ExtentBy, String> {
+/// Parse one `key = value` line of a transaction channel (a
+/// `[agent.NAME.CHANNEL]` section, or a transaction key written at the agent
+/// level for the implicit default channel).
+fn parse_channel_kv(ch: &mut Channel, key: &str, val: &str, line_num: usize) -> Result<(), String> {
+    match key {
+        "handoff" => ch.handoffs.push(parse_handoff(val, line_num)?),
+        "completes_by" => ch.completes_by = parse_list(val),
+        "extent" => ch.extent = Some(parse_extent(val, line_num)?),
+        _ => {
+            return Err(format!(
+                "line {}: unknown channel key `{key}` (channels take handoff, completes_by,                  extent; reach/bus/enabled_by belong on the agent)",
+                line_num + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parse an extent spec: `Peripheral.REGISTER.FIELD [xN] [when P.R.F = V]` --
+/// the count field, an optional compile-time byte multiplier (default 1 =
+/// the field counts bytes), and the optional unit-select condition that
+/// makes the multiplier checked physics (E618).
+fn parse_extent(val: &str, line_num: usize) -> Result<ExtentBy, String> {
     let mut parts = val.split_whitespace();
     let path = parts
         .next()
-        .ok_or_else(|| format!("line {}: empty extent_by", line_num + 1))?
+        .ok_or_else(|| format!("line {}: empty extent", line_num + 1))?
         .to_string();
     if path.split('.').count() != 3 {
         return Err(format!(
-            "line {}: extent_by expects `Peripheral.REGISTER.FIELD`, got `{path}`",
+            "line {}: extent expects `Peripheral.REGISTER.FIELD`, got `{path}`",
             line_num + 1
         ));
     }
     let mut scale = 1u32;
     let mut pending = parts.next();
     if let Some(tok) = pending
-        && tok != "by"
+        && tok != "when"
     {
         let n = tok.strip_prefix('x').and_then(|n| n.parse::<u32>().ok());
         match n {
             Some(n) if n > 0 => scale = n,
             _ => {
                 return Err(format!(
-                    "line {}: extent_by multiplier must be `xN` (N > 0), got `{tok}`",
+                    "line {}: extent multiplier must be `xN` (N > 0), got `{tok}`",
                     line_num + 1
                 ));
             }
@@ -1305,34 +1351,34 @@ fn parse_extent_by(val: &str, line_num: usize) -> Result<ExtentBy, String> {
     }
     let mut unit = None;
     if let Some(tok) = pending {
-        if tok != "by" {
+        if tok != "when" {
             return Err(format!(
-                "line {}: expected `by P.R.F = V` after extent_by multiplier, got `{tok}`",
+                "line {}: expected `when P.R.F = V` after the extent multiplier, got `{tok}`",
                 line_num + 1
             ));
         }
         let upath = parts
             .next()
-            .ok_or_else(|| format!("line {}: extent_by `by` needs a field path", line_num + 1))?;
+            .ok_or_else(|| format!("line {}: extent `when` needs a field path", line_num + 1))?;
         if upath.split('.').count() != 3 {
             return Err(format!(
-                "line {}: extent_by `by` expects `Peripheral.REGISTER.FIELD`, got `{upath}`",
+                "line {}: extent `when` expects `Peripheral.REGISTER.FIELD`, got `{upath}`",
                 line_num + 1
             ));
         }
         let (Some("="), Some(v)) = (parts.next(), parts.next()) else {
             return Err(format!(
-                "line {}: extent_by `by` expects `= <value>` after the field path",
+                "line {}: extent `when` expects `= <value>` after the field path",
                 line_num + 1
             ));
         };
         let value = parse_int(v)
-            .map_err(|e| format!("line {}: bad extent_by unit value `{v}`: {e}", line_num + 1))?;
+            .map_err(|e| format!("line {}: bad extent unit value `{v}`: {e}", line_num + 1))?;
         unit = Some((upath.to_string(), value));
     }
     if let Some(extra) = parts.next() {
         return Err(format!(
-            "line {}: unexpected token `{extra}` after extent_by",
+            "line {}: unexpected token `{extra}` after extent",
             line_num + 1
         ));
     }
@@ -1636,13 +1682,13 @@ agents = eth_dma
         assert!(eth.reaches("sram1") && eth.reaches("sram2"));
         assert!(!eth.reaches("dtcm"));
         assert!(!eth.cached);
-        assert_eq!(eth.access, AgentAccess::ReadWrite);
         assert_eq!(eth.enabled_by.len(), 2);
 
-        assert_eq!(eth.handoffs.len(), 2);
-        assert_eq!(eth.handoffs[0].register, "Ethernet_DMA.DMACTxDLAR");
-        assert_eq!(eth.handoffs[0].align, Some(4));
-        assert_eq!(eth.handoffs[1].align, None);
+        let handoffs: Vec<_> = eth.handoffs().collect();
+        assert_eq!(handoffs.len(), 2);
+        assert_eq!(handoffs[0].register, "Ethernet_DMA.DMACTxDLAR");
+        assert_eq!(handoffs[0].align, Some(4));
+        assert_eq!(handoffs[1].align, None);
 
         assert_eq!(target.regions.len(), 1);
         assert_eq!(target.regions[0].mem, "sram1");
@@ -1817,7 +1863,8 @@ agents = eth_dma
             "handoff = Ethernet_DMA.DMACTxDLAR align 4 port_by MDMA.MDMA_C0TBR.DBUS ahbs\n\
              bus = axi: 0x30000000..0x30008000, ahbs: 0x20000000..0x20020000",
         );
-        let h = &t(&src).agents[0].handoffs[0];
+        let tgt = t(&src);
+        let h = tgt.agents[0].handoffs().next().unwrap();
         assert_eq!(h.align, Some(4));
         let pb = h.port_by.as_ref().unwrap();
         assert_eq!(pb.field, "MDMA.MDMA_C0TBR.DBUS");
@@ -2001,7 +2048,10 @@ handoff = P.R align 3
         assert_eq!(t.cpu.as_deref(), Some("cortex-m7"));
         assert_eq!(t.agents.len(), 1);
         assert_eq!(t.agents[0].name, "eth");
-        assert_eq!(t.agents[0].handoffs[0].register, "Ethernet_DMA.DMACTxDLAR");
+        assert_eq!(
+            t.agents[0].handoffs().next().unwrap().register,
+            "Ethernet_DMA.DMACTxDLAR"
+        );
         // Key-level override: cacheable flipped, base/size kept from the base.
         let m = t.mem_blocks.iter().find(|m| m.name == "dma_pool").unwrap();
         assert_eq!(m.base, 0x3000_0000);
@@ -2219,55 +2269,117 @@ agents = d
     }
 
     #[test]
-    fn extent_by_parses_and_validates() {
+    fn extent_parses_and_validates() {
         let src = "\
 arch = armv7em
 ram_base = 0x30000000
 [agent.d]
 kind = dma
-extent_by = DMA.CNT.COUNT x4
+extent = DMA.CNT.COUNT x4
 ";
         let target = t(src);
-        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
         assert_eq!(eb.path, "DMA.CNT.COUNT");
         assert_eq!(eb.scale, 4);
 
         // Default scale is 1 (the field counts bytes).
         let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT\n",
         );
-        assert_eq!(target.agents[0].extent_by.as_ref().unwrap().scale, 1);
+        assert_eq!(
+            target.agents[0].channels[0].extent.as_ref().unwrap().scale,
+            1
+        );
 
         // Path must be Peripheral.REGISTER.FIELD; multiplier must be xN.
         let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT\n",
         )
         .unwrap_err();
         assert!(err.contains("Peripheral.REGISTER.FIELD"), "got: {err}");
         let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT 4\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT 4\n",
         )
         .unwrap_err();
         assert!(err.contains("xN"), "got: {err}");
 
-        // Unit cross-check clause: `by P.R.F = V`, with or without an
+        // Unit cross-check clause: `when P.R.F = V`, with or without an
         // explicit multiplier before it.
         let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT x4 by DMA.CTRL.SIZE = 2\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE = 2\n",
         );
-        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
         assert_eq!(eb.unit.as_ref().unwrap(), &("DMA.CTRL.SIZE".to_string(), 2));
         let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT by DMA.CTRL.SIZE = 1\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT when DMA.CTRL.SIZE = 1\n",
         );
-        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        let eb = target.agents[0].channels[0].extent.as_ref().unwrap();
         assert_eq!(eb.scale, 1);
         assert_eq!(eb.unit.as_ref().unwrap().1, 1);
         let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT x4 by DMA.CTRL.SIZE\n",
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE\n",
         )
         .unwrap_err();
         assert!(err.contains("= <value>"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_channels_parse_and_merge() {
+        let src = "\
+arch = armv7em
+ram_base = 0x30000000
+[agent.dma]
+kind = dma
+enabled_by = RCC.EN.DMA
+[agent.dma.ch0]
+handoff = DMA.CH0_SAR
+completes_by = DMA.ISR.TC0
+extent = DMA.CH0_CNT.N x4
+[agent.dma.ch1]
+handoff = DMA.CH1_SAR
+";
+        let target = t(src);
+        let dma = &target.agents[0];
+        assert_eq!(dma.channels.len(), 2);
+        assert_eq!(dma.channels[0].name, "ch0");
+        assert_eq!(dma.channels[0].handoffs.len(), 1);
+        assert_eq!(dma.channels[0].completes_by, vec!["DMA.ISR.TC0"]);
+        assert_eq!(dma.channels[0].extent.as_ref().unwrap().scale, 4);
+        assert_eq!(dma.channels[1].name, "ch1");
+        // The flat iterator spans channels.
+        assert_eq!(dma.handoffs().count(), 2);
+
+        // Agent-level keys inside a channel section are rejected.
+        let err = Target::parse(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\n[agent.d.ch0]\nreach = sram\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("belong on the agent"), "got: {err}");
+
+        // Re-opening a channel section (include semantics) resumes it:
+        // handoff lines accumulate, no duplicate channel appears.
+        let src2 = format!("{src}[agent.dma.ch0]\nhandoff = DMA.CH0_DAR\n");
+        let target = t(&src2);
+        assert_eq!(target.agents[0].channels.len(), 2);
+        assert_eq!(target.agents[0].channels[0].handoffs.len(), 2);
+    }
+
+    #[test]
+    fn agent_level_transaction_keys_form_default_channel() {
+        let src = "\
+arch = armv7em
+ram_base = 0x30000000
+[agent.d]
+kind = dma
+handoff = DMA.SAR
+completes_by = DMA.ISR.TC
+";
+        let target = t(src);
+        let d = &target.agents[0];
+        assert_eq!(d.channels.len(), 1);
+        assert_eq!(d.channels[0].name, "");
+        assert_eq!(d.handoffs().count(), 1);
+        assert_eq!(d.completes_by().count(), 1);
     }
 
     #[test]

@@ -80,24 +80,22 @@ size = 4K
 [agent.dma]
 kind = dma
 bus = 0x00000000..0x00008000, 0x10000000..0x20000000, 0x20000000..0x20082000, 0x40000000..0x60000000
-# Channel 0 address handoffs: READ_ADDR is where the agent reads, WRITE_ADDR
-# where it writes (full byte addresses, written verbatim -- same model as the
-# H7 MDMA SAR/DAR).
-handoff = DMA.CH0_READ_ADDR
-handoff = DMA.CH0_WRITE_ADDR
-# Raw per-channel completion bit (INTR, offset 0x400): set when the channel
-# finishes a transfer sequence, readable with interrupts disabled. Activates
-# the sound-reclaim guard (E611).
-completes_by = DMA.INTR.CH0, !DMA.CH0_CTRL_TRIG.BUSY
-# TRANS_COUNT counts TRANSFERS of 2^DATA_SIZE bytes; this project arms word
-# transfers, so one count = 4 bytes. The `by` clause makes the x4 CHECKED
-# physics, not trusted policy: arming the channel without writing
-# CTRL_TRIG.DATA_SIZE = 2 (or writing another size) is E618. Verify then
-# asserts count*4 fits the delivered buffers.
-extent_by = DMA.CH0_TRANS_COUNT.COUNT x4 by DMA.CH0_CTRL_TRIG.DATA_SIZE = 2
 # Clear-to-enable gating (`!` = inverted polarity): the DMA is held in reset
 # at boot; software clears the bit to enable it.
 enabled_by = !RESETS.RESET.DMA
+
+# One transaction channel of the 16-channel controller (the only one this
+# program uses). READ_ADDR/WRITE_ADDR receive full byte addresses verbatim
+# (same model as the H7 MDMA SAR/DAR). The completion bits activate the
+# sound-reclaim guard (E611). TRANS_COUNT counts TRANSFERS of 2^DATA_SIZE
+# bytes; this project arms word transfers, so one count = 4 bytes -- the
+# `when` clause makes the x4 CHECKED physics (E618), and verify asserts
+# count*4 fits the delivered buffers.
+[agent.dma.ch0]
+handoff = DMA.CH0_READ_ADDR
+handoff = DMA.CH0_WRITE_ADDR
+completes_by = DMA.INTR.CH0, !DMA.CH0_CTRL_TRIG.BUSY
+extent = DMA.CH0_TRANS_COUNT.COUNT x4 when DMA.CH0_CTRL_TRIG.DATA_SIZE = 2
 
 # The second Cortex-M33. A full crossbar master -- a genuine cpu-kind agent,
 # declared to probe the multi-core boundary the plan defers ("multi-core not
