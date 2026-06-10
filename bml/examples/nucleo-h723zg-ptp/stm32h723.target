@@ -103,5 +103,8 @@ bus = axi: 0x08000000..0x08100000, 0x24000000..0x24050000, 0x30000000..0x3000800
 # Channel transfer-complete flag. Declaring it activates the sound-reclaim guard
 # (E611): a reclaim of MDMA's output must be gated on observing this bit.
 completes_by = MDMA.MDMA_C0ISR.CTCIF0
+# Block transfer length: BNDT counts BYTES (RM0468 16.5.6). Verify asserts
+# the armed length fits the buffer last delivered to each handoff register.
+extent_by = MDMA.MDMA_C0BNDTR.BNDT
 handoff = MDMA.MDMA_C0SAR port_by MDMA.MDMA_C0TBR.SBUS ahbs
 handoff = MDMA.MDMA_C0DAR port_by MDMA.MDMA_C0TBR.DBUS ahbs

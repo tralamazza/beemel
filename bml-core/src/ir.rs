@@ -84,6 +84,18 @@ pub struct IrEmitter {
     /// write to an `addr in R` struct field (an in-memory handoff) asserts the
     /// stored address is in `R`'s range. Empty outside verify.
     region_ranges: HashMap<String, (u64, u64)>,
+    /// Extent obligations (verify mode): `(periph, reg)` of a handoff
+    /// register -> name of its capacity shadow global. A handoff write of a
+    /// direct `&X as u32` stores `sizeof(X)` into the shadow (unknown
+    /// deliveries store `u32::MAX` = unconstrained); the extent-field write
+    /// asserts against it. Empty outside verify.
+    extent_cap_shadows: HashMap<(String, String), String>,
+    /// `(periph, reg, field)` of an agent's `extent_by` count field ->
+    /// `(byte scale, capacity shadows of the agent's handoff registers)`.
+    /// Writing the field asserts `value * scale <= capacity` for each shadow
+    /// -- the agent cannot be armed past the buffer it was handed. Empty
+    /// outside verify.
+    extent_asserts: HashMap<(String, String, String), (u32, Vec<String>)>,
     /// Region name -> derived alignment floor (bytes). A static placed `in R`
     /// gets at least this alignment, so the source need not hand-write
     /// `@align(N)`: alignment is physics (cache line of cacheable memory shared
@@ -109,6 +121,30 @@ struct MatchDispatch {
 /// If `expr` is `&NAME` / `&mut NAME` (possibly wrapped in groups), return
 /// `NAME`. Used to recognize `&X as u32` of a region-placed static so the
 /// provenance assume lands at the address-of site.
+/// The static delivered by an assignment RHS of the form `&X as u32` (through
+/// grouping parens). Used by the extent obligation's delivery side; an RHS
+/// that is anything else (helper-call result, arithmetic) yields `None` =
+/// unknown capacity.
+fn delivered_static_name(expr: &ast::Expr) -> Option<&str> {
+    match expr {
+        ast::Expr::Group(inner) => delivered_static_name(inner),
+        ast::Expr::Cast(inner, _) => addr_of_static_name(inner),
+        _ => None,
+    }
+}
+
+/// Strip storage wrappers (Shared/AgentShared/...) down to the value type.
+fn strip_storage(ty: &Type) -> &Type {
+    let mut t = ty;
+    loop {
+        let inner = t.inner();
+        if std::ptr::eq(inner, t) {
+            return t;
+        }
+        t = inner;
+    }
+}
+
 fn addr_of_static_name(expr: &ast::Expr) -> Option<&str> {
     match expr {
         ast::Expr::Group(inner) => addr_of_static_name(inner),
@@ -290,6 +326,8 @@ impl IrEmitter {
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             region_ranges: HashMap::new(),
+            extent_cap_shadows: HashMap::new(),
+            extent_asserts: HashMap::new(),
         }
     }
 
@@ -341,6 +379,8 @@ impl IrEmitter {
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             region_ranges: HashMap::new(),
+            extent_cap_shadows: HashMap::new(),
+            extent_asserts: HashMap::new(),
         }
     }
 
@@ -405,6 +445,17 @@ impl IrEmitter {
         self.region_addr_ranges = region_addr_ranges;
         self.handoff_reach_bounds = handoff_reach_bounds;
         self.region_ranges = region_ranges;
+    }
+
+    /// Install the verify-mode transfer-extent obligation maps (see the
+    /// fields).
+    pub fn set_extent_obligations(
+        &mut self,
+        cap_shadows: HashMap<(String, String), String>,
+        asserts: HashMap<(String, String, String), (u32, Vec<String>)>,
+    ) {
+        self.extent_cap_shadows = cap_shadows;
+        self.extent_asserts = asserts;
     }
 
     /// Emit `assume(lo <= value < hi)` as the branch-to-unreachable pattern IKOS
@@ -624,6 +675,18 @@ impl IrEmitter {
             // intrinsics. Keep them verify-only so normal builds stay clean.
             self.line("declare void @__ikos_assert(i32)");
             self.line("declare void @__ikos_forget_mem(ptr, i32)");
+            // Capacity shadows for the extent obligation, initialized to
+            // u32::MAX (= unconstrained until a handoff delivers a buffer).
+            let mut shadows: Vec<&String> = self.extent_cap_shadows.values().collect();
+            shadows.sort();
+            shadows.dedup();
+            let lines: Vec<String> = shadows
+                .iter()
+                .map(|sh| format!("@{sh} = internal global i32 -1, align 4"))
+                .collect();
+            for l in lines {
+                self.line(&l);
+            }
             any = true;
         }
         if any {
@@ -1416,6 +1479,7 @@ impl IrEmitter {
                     &val_reg,
                     &val_ty,
                     dbg_span,
+                    Some(&assign.value),
                 );
                 (Some(target), false)
             }
@@ -3301,6 +3365,7 @@ impl IrEmitter {
             &val_reg,
             &val_ty,
             ca.target.span(),
+            None,
         );
     }
 
@@ -3369,7 +3434,7 @@ impl IrEmitter {
                 ));
                 let target = &asm.outputs[0].1;
                 if let Some(lv) = crate::parser::expr_to_lvalue(target.clone()) {
-                    self.emit_store_target(&lv, symbols, fn_name, &ret, ty, target.span());
+                    self.emit_store_target(&lv, symbols, fn_name, &ret, ty, target.span(), None);
                 }
             }
             _ => {
@@ -3390,7 +3455,7 @@ impl IrEmitter {
                     self.line(&format!("{ev} = extractvalue {struct_ty} {ret}, {i}"));
                     let target = &asm.outputs[i].1;
                     if let Some(lv) = crate::parser::expr_to_lvalue(target.clone()) {
-                        self.emit_store_target(&lv, symbols, fn_name, &ev, ty, target.span());
+                        self.emit_store_target(&lv, symbols, fn_name, &ev, ty, target.span(), None);
                     }
                 }
             }
@@ -3569,7 +3634,12 @@ impl IrEmitter {
         }
     }
 
-    /// Emit a store to an lvalue. Returns the register holding the stored value.
+    /// Emit a store to an lvalue. Returns the register holding the stored
+    /// value. `value_expr` is the assignment's RHS when syntactically
+    /// available -- the extent obligation reads the delivered static
+    /// (`= &X as u32`) from it; `None` (compound assigns, internal callers)
+    /// just means an unknown delivery.
+    #[allow(clippy::too_many_arguments)]
     fn emit_store_target(
         &mut self,
         lval: &LValue,
@@ -3578,6 +3648,7 @@ impl IrEmitter {
         val_reg: &str,
         val_ty: &Type,
         dbg_span: Span,
+        value_expr: Option<&ast::Expr>,
     ) -> String {
         let dbg = self.dbg_loc(dbg_span);
         match lval {
@@ -3628,6 +3699,24 @@ impl IrEmitter {
                     {
                         self.emit_range_assert(val_reg, lo, hi, &dbg);
                     }
+                    // Extent obligation, delivery side: remember how big the
+                    // buffer handed to this handoff register is. A direct
+                    // `= &X as u32` delivery has a compile-time size; anything
+                    // else resets the shadow to unconstrained (u32::MAX).
+                    if self.verify_mode
+                        && let Some(shadow) = self
+                            .extent_cap_shadows
+                            .get(&(periph_name.clone(), field.0.clone()))
+                    {
+                        let cap = value_expr
+                            .and_then(delivered_static_name)
+                            .and_then(|n| symbols.statics.get(n))
+                            .map_or(-1i64, |sym| {
+                                i64::from(crate::types::element_size(strip_storage(&sym.ty)))
+                            });
+                        let line = format!("store i32 {cap}, ptr @{shadow}");
+                        self.line(&line);
+                    }
                     self.line(&format!(
                         "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
@@ -3668,6 +3757,27 @@ impl IrEmitter {
                     self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
                     // widen narrow value to i32 for RMW math
                     let widened = self.widen_to_i32(val_reg, val_ty, &field_def.ty);
+                    // Extent obligation, arming side: the count written here,
+                    // scaled to bytes, must fit the buffer last delivered to
+                    // each of the agent's handoff registers. IKOS discharges
+                    // it against the capacity shadows (sizeof is a constant,
+                    // so the interval domain needs no base/limit relation).
+                    if self.verify_mode {
+                        let key = (periph_name.clone(), reg_field.0.clone(), field.0.clone());
+                        if let Some((scale, shadows)) = self.extent_asserts.get(&key).cloned() {
+                            let bytes = self.new_reg();
+                            self.line(&format!("{bytes} = mul i32 {widened}, {scale}"));
+                            for shadow in shadows {
+                                let cap = self.new_reg();
+                                self.line(&format!("{cap} = load i32, ptr @{shadow}"));
+                                let ok = self.new_reg();
+                                self.line(&format!("{ok} = icmp ule i32 {bytes}, {cap}"));
+                                let z = self.new_reg();
+                                self.line(&format!("{z} = zext i1 {ok} to i32"));
+                                self.line(&format!("call void @__ikos_assert(i32 {z}){dbg}"));
+                            }
+                        }
+                    }
                     // shift new value into the field's bit position
                     let shifted = self.new_reg();
                     if shift > 0 {

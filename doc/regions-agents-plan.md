@@ -862,6 +862,43 @@ packed layout.
     descriptor-reach V200s in eth_dma.bml remain a standing item). Not
     modeled: agent (DMA) concurrency on reclaimed buffers -- reclaim views
     load without havoc; the lexical E611/E616 windows are the guard there.
+  - *Verify offload: report hygiene + transfer-extent obligations -- DONE.*
+    The user's directive: have `bml verify` + IKOS offload work from the
+    compiler. Two parts.
+    *Hygiene first* (an offload target nobody reads is no offload): the
+    provenance assume at `&X as u32` is tightened by the static's size
+    (base <= block_end - sizeof; whole-region assumes made every
+    base-plus-offset handoff -- tail pointers, descriptor #2 -- structurally
+    unprovable); DISubprogram now carries the function's own DIFile
+    (multi-module findings were attributed to the wrong file at the right
+    line); kind-0 "unreachable" IKOS entries dropped at parse (one per
+    obligation by construction); example wrap counters rewritten as modulo
+    (`if == COUNT {0}` is unbounded after interval widening) and
+    intentional free-running counters carry `bml-verify: ignore V130`
+    directives. BOTH example verify reports are now CLEAN with every
+    obligation proven.
+    *Then the new obligation* -- the transfer LENGTH was trusted physics:
+    nothing connected `BNDT = 64` / `TRANS_COUNT = 16` to the delivered
+    buffer's size. `extent_by = P.R.F [xN]` on the agent (target file)
+    declares its count field and byte multiplier; verify mode emits a
+    capacity shadow global per handoff register (a direct `= &X as u32`
+    delivery stores `sizeof(X)`, anything else u32::MAX = unconstrained)
+    and asserts `count * N <= capacity` at every count-field write.
+    Capacity-as-constant is the load-bearing encoding choice: IKOS's
+    interval domain cannot relate base/limit loads from two globals, but
+    constant-vs-interval comparisons are trivial. Compiler grows NO new
+    E-code -- the entire check lives in the verify pipeline. Validated on
+    both chips: H7 `BNDT = 65` and RP2350 `COUNT = 17` are definite
+    `error[assert]` at the arming line naming each violated handoff
+    register; the untouched examples stay verify-clean (64 <= 64 proven).
+    Pinned by verify_extent_{ok,over}.bml + verify_extent.target +
+    extent_by parse tests. Known limits, recorded: arm-then-deliver order
+    assumed (a count written before any handoff is unconstrained);
+    whole-register count writes not matched (field writes only);
+    descriptor-carried lengths (ETH's per-descriptor control word) are the
+    in-memory analogue, a follow-up; the RP2350 x4 multiplier is project
+    policy pinned in the target (DATA_SIZE=2), not cross-checked against
+    the DATA_SIZE field write yet.
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

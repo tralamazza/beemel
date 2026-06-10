@@ -2633,6 +2633,38 @@ fn test_verify_handoff_provenance_ok() {
     assert!(ok, "expected a clean verify exit; stderr:\n{stderr}");
 }
 
+// Transfer-extent obligation (`extent_by`): arming the agent within the
+// delivered buffer is proven; arming past it is a DEFINITE assert error
+// (both sides constant: count*scale vs sizeof of the delivered static).
+#[test]
+fn test_verify_extent_ok() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_extent.target");
+    let (ok, _stdout, stderr) = bml_verify_args("verify_extent_ok.bml", &["--target", &target]);
+    assert!(
+        ok && !stderr.contains("[V200]"),
+        "an in-bounds extent must verify clean; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_verify_extent_overrun_rejected() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_extent.target");
+    let (ok, _stdout, stderr) = bml_verify_args("verify_extent_over.bml", &["--target", &target]);
+    assert!(!ok, "an extent past the buffer must fail verify:\n{stderr}");
+    assert!(
+        stderr.contains("error[assert]"),
+        "expected a definite extent violation:\n{stderr}"
+    );
+}
+
 // Interior-pointer handoff (&DESC + 16): provable only because the provenance
 // assume is tightened by the static's size (base <= block_end - sizeof).
 #[test]

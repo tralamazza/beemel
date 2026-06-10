@@ -1,0 +1,20 @@
+// Extent obligation, provable: 8 words x4 = 32 bytes, exactly the size of
+// the delivered DESC. IKOS proves count*scale <= capacity (the capacity
+// shadow holds sizeof(DESC) after the handoff write).
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+    reg XFERCNT offset 0x08 {
+        field COUNT: u32 bit[0..15]
+    }
+}
+
+owns MyDma;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    MyDma.DESCADDR = &DESC as u32;
+    MyDma.XFERCNT.COUNT = 8;
+}

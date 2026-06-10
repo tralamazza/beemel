@@ -145,6 +145,16 @@ pub struct PortBy {
     pub tag: String,
 }
 
+/// See `Agent::extent_by`.
+#[derive(Debug, Clone)]
+pub struct ExtentBy {
+    /// `Peripheral.REGISTER.FIELD` path of the transfer-count field.
+    pub path: String,
+    /// Compile-time byte multiplier: bytes the agent moves per count unit
+    /// (1 = the field counts bytes, 4 = words, ...).
+    pub scale: u32,
+}
+
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
 /// master port can physically address, transcribed from the vendor's
 /// bus-master-to-bus-slave interconnect table (RM0468 Table 2 for the H72x).
@@ -194,6 +204,14 @@ pub struct Agent {
     /// be control-dependent on observing one of these. Empty = `reclaim` stays
     /// trusted (unchecked).
     pub completes_by: Vec<String>,
+    /// Transfer-extent declaration (`extent_by = P.R.F [xN]`): the register
+    /// field programming how MUCH this agent transfers, with an optional
+    /// compile-time byte multiplier (`x4` = the field counts words). Feeds
+    /// the verify-mode extent obligation: writing the field asserts
+    /// `value * N <= sizeof(the buffer last delivered to each handoff
+    /// register)`, discharged by IKOS -- the agent cannot be armed to run
+    /// past the buffer it was handed. None = transfer length stays trusted.
+    pub extent_by: Option<ExtentBy>,
     /// Entry function for a `cpu`-kind agent (`entry = <fn>`): the function
     /// this core starts executing (launched by another core, e.g. the RP2350
     /// FIFO handshake). Project policy, not chip physics -- it binds CODE to
@@ -379,6 +397,7 @@ impl Target {
                                 handoffs: Vec::new(),
                                 enabled_by: Vec::new(),
                                 completes_by: Vec::new(),
+                                extent_by: None,
                                 entry: None,
                                 bus: Vec::new(),
                             });
@@ -1237,6 +1256,7 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
         "handoff" => agent.handoffs.push(parse_handoff(val, line_num)?),
         "enabled_by" => agent.enabled_by = parse_list(val),
         "completes_by" => agent.completes_by = parse_list(val),
+        "extent_by" => agent.extent_by = Some(parse_extent_by(val, line_num)?),
         "bus" => agent.bus = parse_bus_windows(val, line_num)?,
         "entry" => agent.entry = Some(val.to_string()),
         _ => {
@@ -1244,6 +1264,43 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
         }
     }
     Ok(())
+}
+
+/// Parse an extent spec: `Peripheral.REGISTER.FIELD [xN]` -- the count field
+/// plus an optional compile-time byte multiplier (default 1 = the field
+/// counts bytes).
+fn parse_extent_by(val: &str, line_num: usize) -> Result<ExtentBy, String> {
+    let mut parts = val.split_whitespace();
+    let path = parts
+        .next()
+        .ok_or_else(|| format!("line {}: empty extent_by", line_num + 1))?
+        .to_string();
+    if path.split('.').count() != 3 {
+        return Err(format!(
+            "line {}: extent_by expects `Peripheral.REGISTER.FIELD`, got `{path}`",
+            line_num + 1
+        ));
+    }
+    let mut scale = 1u32;
+    if let Some(tok) = parts.next() {
+        let n = tok.strip_prefix('x').and_then(|n| n.parse::<u32>().ok());
+        match n {
+            Some(n) if n > 0 => scale = n,
+            _ => {
+                return Err(format!(
+                    "line {}: extent_by multiplier must be `xN` (N > 0), got `{tok}`",
+                    line_num + 1
+                ));
+            }
+        }
+    }
+    if let Some(extra) = parts.next() {
+        return Err(format!(
+            "line {}: unexpected token `{extra}` after extent_by multiplier",
+            line_num + 1
+        ));
+    }
+    Ok(ExtentBy { path, scale })
 }
 
 /// Parse a handoff spec: `Peripheral.REGISTER [align N] [port_by P.R.F TAG]`.
@@ -2123,6 +2180,39 @@ agents = d
 ";
         let err = Target::parse(src).unwrap_err();
         assert!(err.contains("vector table"), "got: {err}");
+    }
+
+    #[test]
+    fn extent_by_parses_and_validates() {
+        let src = "\
+arch = armv7em
+ram_base = 0x30000000
+[agent.d]
+kind = dma
+extent_by = DMA.CNT.COUNT x4
+";
+        let target = t(src);
+        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        assert_eq!(eb.path, "DMA.CNT.COUNT");
+        assert_eq!(eb.scale, 4);
+
+        // Default scale is 1 (the field counts bytes).
+        let target = t(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT\n",
+        );
+        assert_eq!(target.agents[0].extent_by.as_ref().unwrap().scale, 1);
+
+        // Path must be Peripheral.REGISTER.FIELD; multiplier must be xN.
+        let err = Target::parse(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("Peripheral.REGISTER.FIELD"), "got: {err}");
+        let err = Target::parse(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT 4\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("xN"), "got: {err}");
     }
 
     #[test]

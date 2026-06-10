@@ -587,6 +587,14 @@ reclaim must be guarded by observing it -- it must sit in the then-block of an
 read mid-transfer (E611); without `completes_by` the reclaim stays trusted. Only the contiguous `view` form is tightened;
 `ring`/`bits` over agent-shared are not yet.
 
+The transfer LENGTH is checked by `bml verify` (IKOS), not the compiler: an
+agent declaring `extent_by = P.R.F [xN]` (its count field, with N bytes per
+count unit) gets an obligation at every write of that field -- the armed
+byte length must fit the buffer last delivered to each of the agent's
+handoff registers (`= &X as u32` deliveries carry `sizeof(X)`). Arming the
+DMA one unit past its buffer is a definite verify error at the arming line;
+nothing is emitted in normal builds.
+
 The reclaimed view's *lifetime* is scoped to that justification (E616): a
 binding holding it may only be mentioned inside a guard span that also
 contains the reclaim, and a write to the agent's handoff register (a

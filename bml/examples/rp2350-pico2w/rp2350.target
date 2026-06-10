@@ -89,6 +89,11 @@ handoff = DMA.CH0_WRITE_ADDR
 # finishes a transfer sequence, readable with interrupts disabled. Activates
 # the sound-reclaim guard (E611).
 completes_by = DMA.INTR.CH0, !DMA.CH0_CTRL_TRIG.BUSY
+# TRANS_COUNT counts TRANSFERS; this project arms word transfers
+# (CTRL_TRIG.DATA_SIZE = 2), so one count = 4 bytes. The x4 is project
+# policy riding on chip physics -- a byte/halfword program would declare
+# its own multiplier. Verify asserts count*4 fits the delivered buffers.
+extent_by = DMA.CH0_TRANS_COUNT.COUNT x4
 # Clear-to-enable gating (`!` = inverted polarity): the DMA is held in reset
 # at boot; software clears the bit to enable it.
 enabled_by = !RESETS.RESET.DMA

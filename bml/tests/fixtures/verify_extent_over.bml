@@ -1,0 +1,20 @@
+// Extent obligation, violated: 9 words x4 = 36 bytes armed against a
+// 32-byte buffer -- the agent would run 4 bytes past DESC. A definite
+// assert violation (error, not warning): both sides are constants.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+    reg XFERCNT offset 0x08 {
+        field COUNT: u32 bit[0..15]
+    }
+}
+
+owns MyDma;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    MyDma.DESCADDR = &DESC as u32;
+    MyDma.XFERCNT.COUNT = 9;
+}

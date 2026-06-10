@@ -138,6 +138,8 @@ pub fn verify(
         handoff_reach_bounds(target),
         region_ranges(target),
     );
+    let (cap_shadows, extent_asserts) = extent_obligations(target);
+    emitter.set_extent_obligations(cap_shadows, extent_asserts);
     let llvm_ir = emitter.emit(program, symbols);
 
     let ll_path = stem.with_extension("verify.ll");
@@ -356,6 +358,50 @@ fn region_addr_ranges(
         }
     }
     map
+}
+
+/// Build the transfer-extent obligation maps from `extent_by` declarations:
+/// per agent, a capacity shadow global per handoff register (delivery side)
+/// and the count field -> (scale, shadows) entry (arming side). See
+/// `Agent::extent_by` and the emission sites in `ir.rs`.
+#[allow(clippy::type_complexity)]
+fn extent_obligations(
+    target: &Target,
+) -> (
+    HashMap<(String, String), String>,
+    HashMap<(String, String, String), (u32, Vec<String>)>,
+) {
+    let mut cap_shadows = HashMap::new();
+    let mut asserts = HashMap::new();
+    for agent in &target.agents {
+        let Some(eb) = &agent.extent_by else {
+            continue;
+        };
+        let parts: Vec<&str> = eb.path.split('.').collect();
+        let [ep, er, ef] = parts.as_slice() else {
+            continue; // shape validated at target load
+        };
+        let mut shadows = Vec::new();
+        for h in &agent.handoffs {
+            let mut reg_parts = h.register.split('.');
+            let (Some(p), Some(r), None) = (reg_parts.next(), reg_parts.next(), reg_parts.next())
+            else {
+                continue;
+            };
+            let shadow = format!("__bml_cap_{}_{r}", agent.name);
+            cap_shadows.insert((p.to_string(), r.to_string()), shadow.clone());
+            shadows.push(shadow);
+        }
+        if shadows.is_empty() {
+            continue;
+        }
+        shadows.sort();
+        asserts.insert(
+            ((*ep).to_string(), (*er).to_string(), (*ef).to_string()),
+            (eb.scale, shadows),
+        );
+    }
+    (cap_shadows, asserts)
 }
 
 /// Region name -> `[lo, hi)` byte range of its mem block. A write to an
