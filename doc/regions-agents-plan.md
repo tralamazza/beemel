@@ -252,6 +252,21 @@ Rules:
   written once per chip (ideally generated/audited from the reference manual's
   bus-matrix table). A project target `include`s that base and adds its own
   policy on top -- see "Target composition" below.
+- `bus = start..end, ...` (optional, per agent) transcribes the reference
+  manual's bus-master-to-bus-slave table (RM0468 Table 2) as half-open address
+  windows -- the union over the agent's master ports. When declared, every
+  block in `reach` must fit inside a window or the target fails to load.
+  `reach` is a *claim* (project intent); `bus` is a *transcription* (manual
+  facts); the cross-check means a bad placement needs both to be wrong.
+  Restating the key replaces the list (overridable like `reach`). Limitations,
+  deliberate for v0: windows do not model *which* port reaches what -- the H7
+  MDMA reaches the TCMs only via its AHBS port, selected by software
+  (`MDMA_CxTBR.SBUS/DBUS`), so a reach inside the union can still fail at
+  runtime if the port bit is wrong (exactly the TED error the dogfooding hit;
+  the original "MDMA cannot reach TCM" diagnosis was wrong -- it was a port
+  bit, RM0468 2.1.2 states the AHBS path explicitly). Port-aware windows, and
+  deriving/checking the TBR bits from handoff addresses, are the recorded
+  follow-up.
 
 ## Target composition (`include`)
 
@@ -300,9 +315,10 @@ Checks and derivations:
   `cacheable = false`, the generated MPU keeps the CPU coherent with ETH/MDMA, and
   `RX_PACKET_COUNT` keeps advancing (`SCB_CCR.DC=1`, `MPU_CTRL=0x5`). So the
   trusted claim is now enforced silicon config, not just a forced declaration --
-  the last detection-only founding failure mode is closed. (Still trusted: which
-  blocks need it, since `reach`/`cacheable` are unverified physics -- the
-  bus-matrix sourcing thread.)
+  the last detection-only founding failure mode is closed. (`reach` is now
+  cross-checked against `bus` windows when the base target declares them --
+  see the `bus` key above; `cacheable` remains a trusted declaration, but a
+  wrong one is at least *visible* silicon config now, not silent.)
 - **Alignment-as-derived-physics** (same physics, second consequence): DONE.
   RM0468 confirms the ETH DMA imposes *no* buffer-address alignment ("There is
   no limitation to the buffer address alignment", Table 579) and only word
@@ -561,6 +577,19 @@ packed layout.
   the follow-up. Pinned by `reclaim_guarded{,_helper}.bml`,
   `reclaim_unguarded.bml`/`reclaim_guard_nonpredicate.bml` (E611); dogfooded on
   `copy_dma.bml` (`if mdma_done()`).
+- *Bus-matrix cross-check (reach verification, v0).* DONE. The deepest finding
+  of the single-board dogfood was that `reach` is trusted physics the silicon
+  can falsify. The `bus` key (see Layer 1) turns it into a cross-checked claim:
+  windows transcribed from RM0468 Table 2 in the vendored base target, reach
+  containment validated at target load. Dogfooding the transcription itself
+  *falsified our own earlier conclusion*: the MDMA/DTCM TED error was a
+  misconfigured `MDMA_CxTBR.DBUS` port bit, not unreachability -- the manual
+  (2.1.2) and Table 2 both give MDMA an AHBS path to the TCMs. The windows are
+  port-unions, so they catch what *no* port can address (ETH -> TCM dies at
+  target load, verified) and deliberately accept MDMA -> DTCM (verified);
+  port-selection checking (deriving TBR bits from handoff addresses) is the
+  follow-up. Pinned by target.rs unit tests (`reach_outside_bus_windows_*`,
+  `bus_windows_override_last_wins`).
 - *Toward unifying with the ceiling protocol.* The two concurrency disciplines
   (ceiling = mutual exclusion for CPU contexts; release/reclaim = ownership
   transfer for async agents) are one concept -- region ownership -- with the

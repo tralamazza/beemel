@@ -55,9 +55,16 @@ cacheable = false
 # descriptor base + tail-pointer registers are handoffs: source writes the full
 # descriptor byte address to each register; the reserved low 2 bits are
 # hardware-ignored, so no shift is applied.
+#
+# `bus` transcribes the RM0468 Table 2 row set for the Eth MAC AHB master:
+# flash bank 1, AXI SRAM + ITCM-shared RAM (0x24000000..0x24050000), and D2
+# SRAM1+SRAM2. NOT the TCMs, SRAM4, or backup RAM -- the matrix has no path.
+# External-memory slaves (OCTOSPI, FMC) are omitted until a mem block needs
+# them. With windows declared, `reach` is cross-checked at target load.
 [agent.eth]
 kind = dma
 reach = dma_pool
+bus = 0x08000000..0x08100000, 0x24000000..0x24050000, 0x30000000..0x30008000
 # The RCC clock gates ETH depends on. Drives the enable-before-touch check (E609)
 # and the clock-stomp guard (E610): a non-owning module disabling any of these
 # silently stops the ETH DMA.
@@ -70,9 +77,20 @@ handoff = Ethernet_DMA.DMACRxDTPR
 # Stage 2: a general-purpose mem-to-mem agent. Two handoffs -- C0SAR is the
 # address it reads from, C0DAR the address it writes to. Reaches dma_pool (where
 # it reads ETH RX data); a later stage adds an AXI/TCM scratch it writes to.
+# `bus` is the union over BOTH MDMA master ports (RM0468 Table 2): the AXI port
+# (flash, AXI SRAM + shared, D2 SRAM1/2, D3 SRAM4, backup RAM) and the AHBS
+# port into the CPU's TCMs (ITCM 0x00000000, DTCM 0x20000000). Section 2.1.2:
+# "The MDMA controller can access the DTCM and ITCM through AHBS."
+#
+# CAVEAT (learned on hardware): port selection is software -- MDMA_CxTBR
+# SBUS/DBUS must be 1 for a TCM-side address, or the transfer errors (TEIF,
+# CxESR.TED) because the AXI port has no TCM mapping. A reach inside these
+# windows can still fail if the port bit is wrong; the windows only rule out
+# what NO port can address.
 [agent.mdma]
 kind = dma
 reach = dma_pool
+bus = 0x00000000..0x00040000, 0x08000000..0x08100000, 0x20000000..0x20020000, 0x24000000..0x24050000, 0x30000000..0x30008000, 0x38000000..0x38004000, 0x38800000..0x38801000
 # Channel transfer-complete flag. Declaring it activates the sound-reclaim guard
 # (E611): a reclaim of MDMA's output must be gated on observing this bit.
 completes_by = MDMA.MDMA_C0ISR.CTCIF0

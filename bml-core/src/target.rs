@@ -118,6 +118,29 @@ pub struct Handoff {
     pub align: Option<u32>,
 }
 
+/// A bus-matrix window: an address range `[start, end)` that an agent's bus
+/// master port can physically address, transcribed from the vendor's
+/// bus-master-to-bus-slave interconnect table (RM0468 Table 2 for the H72x).
+///
+/// `reach` is a *claim* (project intent); `bus` is a *transcription* (chip
+/// physics from the manual). Declaring windows turns reach from trusted to
+/// cross-checked: a reach over a block no window covers fails at target load.
+/// Two independent sources must now both be wrong for a bad placement to
+/// compile -- the MDMA/DTCM class of error.
+#[derive(Debug, Clone, Copy)]
+pub struct BusWindow {
+    pub start: u64,
+    pub end: u64,
+}
+
+impl BusWindow {
+    /// Whether the window fully contains `[base, end)`.
+    #[must_use]
+    pub fn covers(&self, base: u64, end: u64) -> bool {
+        self.start <= base && end <= self.end
+    }
+}
+
 /// A hardware agent (`[agent.NAME]`).
 #[derive(Debug, Clone)]
 pub struct Agent {
@@ -139,6 +162,17 @@ pub struct Agent {
     /// be control-dependent on observing one of these. Empty = `reclaim` stays
     /// trusted (unchecked).
     pub completes_by: Vec<String>,
+    /// Bus-matrix windows (`bus = start..end, ...`): the address ranges this
+    /// agent's master ports can physically address. Empty = no transcription
+    /// available, `reach` stays trusted. Non-empty = every reached block must
+    /// fit inside a window (validated at target load).
+    ///
+    /// Windows are the UNION over the agent's master ports. Port selection is
+    /// not modeled: an agent like the H7 MDMA reaches the TCMs only via its
+    /// AHBS port, chosen by software (`MDMA_CxTBR.SBUS/DBUS`) -- a reach inside
+    /// the union can still fail at runtime if the wrong port is configured.
+    /// That is a port-selection bug, a separate (recorded) check.
+    pub bus: Vec<BusWindow>,
 }
 
 impl Agent {
@@ -301,6 +335,7 @@ impl Target {
                                 handoffs: Vec::new(),
                                 enabled_by: Vec::new(),
                                 completes_by: Vec::new(),
+                                bus: Vec::new(),
                             });
                             target.agents.len() - 1
                         };
@@ -547,6 +582,35 @@ impl Target {
             for r in &agent.reach {
                 if !self.mem_blocks.iter().any(|m| &m.name == r) {
                     return Err(format!("agent `{}` reaches unknown mem `{r}`", agent.name));
+                }
+            }
+            // Bus-matrix cross-check: if the agent declares bus windows (a
+            // transcription of the vendor interconnect table), every block it
+            // claims to reach must fit inside one window. This turns `reach`
+            // from a trusted claim into one cross-checked against an
+            // independent source -- a wrong placement now needs both the claim
+            // and the transcription to be wrong.
+            if !agent.bus.is_empty() {
+                let reached: Vec<&MemBlock> = if agent.reach_all {
+                    self.mem_blocks.iter().collect()
+                } else {
+                    self.mem_blocks
+                        .iter()
+                        .filter(|m| agent.reach.iter().any(|r| r == &m.name))
+                        .collect()
+                };
+                for m in reached {
+                    if !agent.bus.iter().any(|w| w.covers(m.base, m.end())) {
+                        return Err(format!(
+                            "agent `{}` declares reach over `{}` (0x{:08X}..0x{:08X}), but none \
+                             of its bus windows covers it -- the bus matrix says this master \
+                             cannot address that memory",
+                            agent.name,
+                            m.name,
+                            m.base,
+                            m.end()
+                        ));
+                    }
                 }
             }
             for h in &agent.handoffs {
@@ -1042,6 +1106,7 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
         "handoff" => agent.handoffs.push(parse_handoff(val, line_num)?),
         "enabled_by" => agent.enabled_by = parse_list(val),
         "completes_by" => agent.completes_by = parse_list(val),
+        "bus" => agent.bus = parse_bus_windows(val, line_num)?,
         _ => {
             return Err(format!("line {}: unknown agent key `{key}`", line_num + 1));
         }
@@ -1085,6 +1150,36 @@ fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
         }
     }
     Ok(Handoff { register, align })
+}
+
+/// Parse `bus = start..end, start..end, ...` into half-open windows. Restating
+/// the key replaces the list (include/override semantics, like `reach`).
+fn parse_bus_windows(val: &str, line_num: usize) -> Result<Vec<BusWindow>, String> {
+    let mut out = Vec::new();
+    for item in val.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (s, e) = item.split_once("..").ok_or_else(|| {
+            format!(
+                "line {}: bus window `{item}` must be `start..end`",
+                line_num + 1
+            )
+        })?;
+        let start = parse_int(s.trim())
+            .map_err(|_| format!("line {}: bad bus window start `{s}`", line_num + 1))?;
+        let end = parse_int(e.trim())
+            .map_err(|_| format!("line {}: bad bus window end `{e}`", line_num + 1))?;
+        if start >= end {
+            return Err(format!(
+                "line {}: bus window `{item}` is empty (start >= end)",
+                line_num + 1
+            ));
+        }
+        out.push(BusWindow { start, end });
+    }
+    Ok(out)
 }
 
 fn parse_bool(val: &str, key: &str, line: usize) -> Result<bool, String> {
@@ -1375,6 +1470,76 @@ agents = eth_dma
         let src = H723_REGIONS.replace("reach = sram1, sram2", "reach = sram1, sram9");
         let err = Target::parse(&src).unwrap_err();
         assert!(err.contains("unknown mem"), "got: {err}");
+    }
+
+    // D2 SRAM1+SRAM2 window, as the bus matrix gives the H723 ETH MAC. Reopens
+    // the agent section (find-or-add), exercising the include/merge path too.
+    const ETH_BUS_D2: &str = "\n[agent.eth_dma]\nbus = 0x30000000..0x30008000\n";
+
+    #[test]
+    fn bus_windows_parse() {
+        let src = H723_REGIONS.replace(
+            "kind = dma",
+            "kind = dma\nbus = 0x08000000..0x08100000, 0x30000000..0x30008000",
+        );
+        let eth = &t(&src).agents[0];
+        assert_eq!(eth.bus.len(), 2);
+        assert_eq!(eth.bus[0].start, 0x0800_0000);
+        assert_eq!(eth.bus[0].end, 0x0810_0000);
+        assert!(eth.bus[1].covers(0x3000_4000, 0x3000_8000));
+        assert!(!eth.bus[1].covers(0x3000_7000, 0x3000_9000)); // straddles the edge
+    }
+
+    #[test]
+    fn reach_outside_bus_windows_is_error() {
+        // The bus matrix says the ETH MAC cannot address the TCMs. With windows
+        // declared, a reach claim over dtcm dies at target load instead of as a
+        // runtime bus error.
+        let src = format!("{H723_REGIONS}{ETH_BUS_D2}")
+            .replace("reach = sram1, sram2", "reach = sram1, sram2, dtcm");
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("bus window"), "got: {err}");
+        assert!(err.contains("dtcm"), "got: {err}");
+    }
+
+    #[test]
+    fn reach_inside_bus_windows_is_ok() {
+        let src = format!("{H723_REGIONS}{ETH_BUS_D2}");
+        t(&src); // reach = sram1, sram2 -- both inside the D2 window
+    }
+
+    #[test]
+    fn reach_all_is_checked_against_bus_windows() {
+        // `reach = *` with windows means every mem block must be coverable;
+        // flash and dtcm are outside the D2 window.
+        let src =
+            format!("{H723_REGIONS}{ETH_BUS_D2}").replace("reach = sram1, sram2", "reach = *");
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("bus window"), "got: {err}");
+    }
+
+    #[test]
+    fn bus_window_syntax_errors() {
+        let src = H723_REGIONS.replace("kind = dma", "kind = dma\nbus = 0x30000000");
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("start..end"), "got: {err}");
+
+        let src = H723_REGIONS.replace("kind = dma", "kind = dma\nbus = 0x10..0x10");
+        let err = Target::parse(&src).unwrap_err();
+        assert!(err.contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn bus_windows_override_last_wins() {
+        // Include/override semantics: a later [agent.*] section restating `bus`
+        // replaces the list, so a project file can widen (or fix) the physics.
+        let narrow = format!("{H723_REGIONS}{ETH_BUS_D2}")
+            .replace("reach = sram1, sram2", "reach = sram1, sram2, dtcm");
+        Target::parse(&narrow).unwrap_err();
+        let widened = format!(
+            "{narrow}\n[agent.eth_dma]\nbus = 0x20000000..0x20020000, 0x30000000..0x30008000\n"
+        );
+        t(&widened);
     }
 
     #[test]
