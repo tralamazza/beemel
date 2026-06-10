@@ -1,0 +1,23 @@
+# Two cpu agents: the implicit core0 and core1 with a declared entry. Drives
+# the cross-core sharing check (E615).
+arch = armv7em
+cpu = cortex-m33
+# Hardware spinlock bank (RP2350 SIO): read = try-acquire, write = release.
+spinlock_base = 0xD0000100
+spinlock_count = 32
+vector_table_offset = 0x10000000
+data_block = sram
+
+[mem.flash]
+base = 0x10000000
+size = 4M
+
+[mem.sram]
+base = 0x20000000
+size = 512K
+
+[agent.core1]
+kind = cpu
+cached = false
+reach = *
+entry = core1_main

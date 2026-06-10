@@ -776,10 +776,32 @@ packed layout.
     recorder stayed clean), no matching erratum. Dev workflow: flash over
     SWD, then POWER-CYCLE for clean multi-core runs. Instrument caveat
     recorded: openocd cm1 `reg pc` is unreliable with this config.
+  - *Multi-core slice 2: cross-core `claim` (hardware-spinlock-backed).*
+    DONE, hardware-validated. The unification's thesis crosses the core
+    boundary: the target declares its mutex physics (`spinlock_base` /
+    `spinlock_count`, read-to-claim / write-to-release -- the RP2350 SIO
+    bank at 0xD0000100 x32, transcribed from the user-provided SVD), and a
+    cross-core `@shared` static becomes legal IFF every access sits inside
+    a `claim X {}` window (E615 relaxes from reject to require-window; new
+    span walker `claims_and_mentions`). Each such static gets a
+    deterministic lock index (`region::cross_core_locks`, name order,
+    overflow checked); the claim lowering adds spin-acquire (volatile load
+    until nonzero) after the cpsid and release (store) before the cpsie, at
+    any nesting depth -- the mask only excludes the local core. Spinning
+    masked is sound: the holder is the other core, whose progress does not
+    need our IRQs. No QEMU exec fixture is possible (single-core machine,
+    no SIO bank); the silicon validation serves as the exec proof: both
+    Pico 2 W cores increment both slots of one `@shared` pair inside their
+    windows with an in-window A==B invariant check -- ZERO violations
+    across ~44 million contended windows from power-on, first-try launch,
+    DMA probe and core0 untouched. (Debugger note: an SWD snapshot of the
+    pair legitimately shows skew -- the two word reads straddle thousands
+    of windows; the in-window counters are the real invariant.) Pinned by
+    cross_core_locked{,_nophys}.bml (+IR spinlock values),
+    cross_core_unclaimed.bml, cross_core_locks.target.
   - *Remaining (smaller):* scoped
     view lifetimes (the trust gap claim and reclaim share); pointer-call
     context edges; compared guard conditions; per-buffer flag association;
-    cross-core claim (hardware-spinlock-backed) once the launch is solid;
     ETH link-up recovery in the H723 example driver.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct

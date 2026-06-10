@@ -52,6 +52,12 @@ pub struct IrEmitter {
     /// MPU programming model for the `mpu_regions` emission (`PMSAv7` `RASR` vs
     /// `PMSAv8` `RBAR`/`RLAR`+`MAIR`). From `Target::mpu_flavor`.
     pub(crate) mpu_flavor: crate::arch::MpuFlavor,
+    /// Cross-core lock assignment: `@shared` statics reachable from multiple
+    /// cores -> hardware spinlock index (`region::cross_core_locks`). A claim
+    /// over one of these additionally spin-acquires/releases its lock.
+    pub(crate) cross_core_locks: std::collections::HashMap<String, u32>,
+    /// Base address of the hardware spinlock bank (`Target::spinlock_base`).
+    pub(crate) spinlock_base: u64,
     /// Nesting depth of `claim` blocks at the current emission point. Inside
     /// a claim (depth > 0) the per-access `@shared` critical sections are
     /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
@@ -269,6 +275,8 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            cross_core_locks: std::collections::HashMap::new(),
+            spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
@@ -317,6 +325,8 @@ impl IrEmitter {
             mpu_regions: Vec::new(),
             priority_bits: 4,
             claim_depth: 0,
+            cross_core_locks: std::collections::HashMap::new(),
+            spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
@@ -354,6 +364,17 @@ impl IrEmitter {
     /// MPU programming model (see `Target::mpu_flavor`).
     pub fn set_mpu_flavor(&mut self, flavor: crate::arch::MpuFlavor) {
         self.mpu_flavor = flavor;
+    }
+
+    /// Cross-core claim wiring: lock indices per `@shared` static plus the
+    /// spinlock bank base (see `region::cross_core_locks`).
+    pub fn set_cross_core_locks(
+        &mut self,
+        locks: std::collections::HashMap<String, u32>,
+        base: u64,
+    ) {
+        self.cross_core_locks = locks;
+        self.spinlock_base = base;
     }
 
     /// Install the per-region alignment floors (region name -> bytes). A static
@@ -1685,13 +1706,50 @@ impl IrEmitter {
                 // (E614), so nothing can unmask early or skip the leave, and
                 // per-access critical sections inside are suppressed
                 // (claim_depth). A nested claim adds no second pair.
+                //
+                // CROSS-CORE statics additionally take their hardware
+                // spinlock (read = try-acquire, 0 = held; write = release),
+                // at any nesting depth -- the mask only excludes this core.
+                // Spinning with interrupts masked is sound: the holder is
+                // the other core, whose progress does not need our IRQs.
                 if self.claim_depth == 0 {
                     crate::arch::arm::emit_critical_enter(self);
                 }
                 self.claim_depth += 1;
+                let lock_addr = self
+                    .cross_core_locks
+                    .get(&c.name.0)
+                    .map(|idx| self.spinlock_base + 4 * u64::from(*idx));
+                if let Some(addr) = lock_addr {
+                    let ptr_ty = self.arch.ptr_type();
+                    let spin = self.new_label("spinlock_try");
+                    let acq = self.new_label("spinlock_acq");
+                    self.line(&format!("br label %{spin}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{spin}:"));
+                    self.indent += 1;
+                    let r = self.new_reg();
+                    self.line(&format!(
+                        "{r} = load volatile i32, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+                    ));
+                    let z = self.new_reg();
+                    self.line(&format!("{z} = icmp eq i32 {r}, 0"));
+                    self.line(&format!("br i1 {z}, label %{spin}, label %{acq}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{acq}:"));
+                    self.indent += 1;
+                }
                 let patched = symbols.with_claimed(&c.name.0);
                 let (_, body_term) =
                     self.emit_block(&c.body, &patched, fn_name, break_label, continue_label);
+                if let Some(addr) = lock_addr {
+                    let ptr_ty = self.arch.ptr_type();
+                    self.line(&format!(
+                        "store volatile i32 1, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+                    ));
+                }
                 self.claim_depth -= 1;
                 if self.claim_depth == 0 {
                     crate::arch::arm::emit_critical_leave(self);

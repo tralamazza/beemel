@@ -1,0 +1,21 @@
+// Cross-core @shared with claim windows on BOTH cores: legal when the
+// target declares spinlock physics -- the claim lowers to mask +
+// spin-acquire of the static's assigned hardware lock + release.
+var TALLY: u32 @shared;
+
+fn core1_main() {
+    loop {
+        claim TALLY {
+            var t: u32 = TALLY;
+            TALLY = t + 1;
+        }
+    }
+}
+
+fn main() @context(thread) {
+    var e: u32 = &core1_main as u32;
+    claim TALLY {
+        var t: u32 = TALLY;
+        TALLY = t + e;
+    }
+}

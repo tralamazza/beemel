@@ -2944,6 +2944,69 @@ fn test_cross_core_shared_rejected() {
     assert!(stderr.contains("E615"), "expected E615; stderr:\n{stderr}");
 }
 
+// Cross-core claim (spinlock-backed): with spinlock physics declared, a
+// cross-core @shared static is legal IFF every access sits inside a claim
+// window; the lowering spin-acquires the assigned hardware lock.
+#[test]
+fn test_cross_core_locked_ok_and_lowering() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let path = dir.join("cross_core_locked.bml");
+    let out = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--target")
+        .arg(dir.join("cross_core_locks.target"))
+        .arg(&path)
+        .output()
+        .expect("failed to run bml build");
+    let ll = std::fs::read_to_string(path.with_extension("ll")).unwrap_or_default();
+    let _ = std::fs::remove_file(path.with_extension("o"));
+    let _ = std::fs::remove_file(path.with_extension("ld"));
+    let _ = std::fs::remove_file(path.with_extension("ll"));
+    assert!(
+        out.status.success(),
+        "claimed cross-core @shared should build:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Spin-acquire load of SPINLOCK0 (0xD0000100 = 3489661184) + release.
+    assert!(
+        ll.contains("load volatile i32, ptr inttoptr (i32 3489661184 to ptr)"),
+        "missing spinlock acquire:\n{ll}"
+    );
+    assert!(
+        ll.contains("store volatile i32 1, ptr inttoptr (i32 3489661184 to ptr)"),
+        "missing spinlock release:\n{ll}"
+    );
+}
+
+#[test]
+fn test_cross_core_unclaimed_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("cross_core_unclaimed.bml", Some("cross_core_locks.target"));
+    assert!(!ok, "bare cross-core access must fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E615"), "expected E615; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("claim"),
+        "should point at claim; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_cross_core_no_spinlocks_rejected() {
+    // Same claimed program, but the target declares no spinlock physics.
+    let (ok, stderr) =
+        bml_build_with_target("cross_core_locked_nophys.bml", Some("cross_core.target"));
+    assert!(
+        !ok,
+        "cross-core @shared without spinlock physics must fail; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("spinlock"),
+        "should mention spinlocks; stderr:\n{stderr}"
+    );
+}
+
 // PMSAv8 MPU emission (cortex-m33): MAIR0 = 0x44 at 0xE000EDC0, RBAR =
 // base|SH=00|AP=01|XN=1, RLAR = limit|EN -- and a non-power-of-two region
 // size is legal (32-byte granularity).

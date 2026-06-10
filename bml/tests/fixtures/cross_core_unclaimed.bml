@@ -1,0 +1,19 @@
+// Cross-core @shared with a BARE access on core0: every access must be
+// inside a claim window of the static -- per-access critical sections
+// cannot exclude the other core (E615).
+var TALLY: u32 @shared;
+
+fn core1_main() {
+    loop {
+        claim TALLY {
+            var t: u32 = TALLY;
+            TALLY = t + 1;
+        }
+    }
+}
+
+fn main() @context(thread) {
+    var e: u32 = &core1_main as u32;
+    var t: u32 = TALLY;
+    TALLY = t + e;
+}

@@ -26,6 +26,13 @@ var CORE0_BEATS: u32;    // FIFO heartbeats received from core1 (core0-owned)
 var FAULT_WHO: u32;      // 0xDEAD0000 + CPUID of the core that hard-faulted
 var FAULT_ICSR: u32;     // its ICSR (VECTACTIVE)
 var FAULT_CFSR: u32;     // its CFSR
+// CROSS-CORE shared state: both cores increment both slots inside their
+// claim windows (spinlock-backed -- E615 requires the window, the target
+// supplies the lock physics). The invariant PAIR[0] == PAIR[1] holds at
+// window boundaries; each core checks it in-window and counts violations.
+var PAIR: [u32; 2] @shared;
+var PAIR_BAD0: u32;      // invariant violations seen by core0
+var PAIR_BAD1: u32;      // invariant violations seen by core1
 var CORE1_STACK: [u32; 256] @align(8); // core1's stack (sp = top of this)
 
 fn dma_setup() {
@@ -116,6 +123,18 @@ fn core1_main() {
         // its SRAM stores are the casualty; if both stop, core1 is dead.
         if (c & 0xFFFF) == 0 && SIO.FIFO_ST.RDY {
             SIO.FIFO_WR = 0xBEA70000 + (c >> 16);
+        }
+        // Cross-core claim window: increment both slots of the shared pair
+        // under the hardware spinlock; the A==B invariant must hold here.
+        claim PAIR {
+            var a: u32 = PAIR[0];
+            var b: u32 = PAIR[1];
+            if a != b {
+                var bad: u32 = PAIR_BAD1;
+                PAIR_BAD1 = bad + 1;
+            }
+            PAIR[0] = a + 1;
+            PAIR[1] = b + 1;
         }
         asm { } : : : "memory";
     }
@@ -215,6 +234,17 @@ fn main() @context(thread) {
                 var b: u32 = CORE0_BEATS;
                 CORE0_BEATS = b + 1;
             }
+        }
+        // Core0's side of the cross-core pair: same window, same invariant.
+        claim PAIR {
+            var p: u32 = PAIR[0];
+            var q: u32 = PAIR[1];
+            if p != q {
+                var bad: u32 = PAIR_BAD0;
+                PAIR_BAD0 = bad + 1;
+            }
+            PAIR[0] = p + 1;
+            PAIR[1] = q + 1;
         }
     }
 }

@@ -24,6 +24,10 @@
 #   point is validating the v8 emission on real PMSAv8 silicon.)
 arch = armv7em
 cpu = cortex-m33
+# SIO hardware spinlocks: 32 read-to-claim / write-to-release mutex
+# registers. Chip physics backing the cross-core `claim` window.
+spinlock_base = 0xD0000100
+spinlock_count = 32
 priority_bits = 4
 has_fpu = true
 has_bitband = false

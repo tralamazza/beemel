@@ -22,6 +22,12 @@ pub struct Target {
     /// `vector_table_offset`, so with mem blocks the flat `flash_*`/`ram_*` keys
     /// are unneeded. `None` falls back to the block containing `ram_base`.
     pub data_block: Option<String>,
+    /// Hardware spinlock physics (`spinlock_base` / `spinlock_count`): a
+    /// bank of read-to-claim / write-to-release mutex registers (e.g. the
+    /// RP2350 SIO spinlocks at 0xD0000100 x32). Required for cross-core
+    /// `claim` windows; absent = cross-core sharing stays rejected (E615).
+    pub spinlock_base: Option<u64>,
+    pub spinlock_count: u32,
     pub interrupts: HashMap<String, u16>,
     /// MMIO read-modify-write OR writes applied at the very start of
     /// `reset_handler`, before `.data`/`.bss` init -- the equivalent of CMSIS
@@ -255,6 +261,8 @@ impl Default for Target {
             ram_size: 64 * 1024,
             vector_table_offset: 0x0800_0000,
             data_block: None,
+            spinlock_base: None,
+            spinlock_count: 0,
             interrupts: HashMap::new(),
             startup_init: Vec::new(),
             boot_block: Vec::new(),
@@ -550,6 +558,16 @@ impl Target {
                 "ram_size" => {
                     target.ram_size = parse_int(val)
                         .map_err(|_| format!("line {}: invalid ram_size: {val}", line_num + 1))?;
+                }
+                "spinlock_base" => {
+                    target.spinlock_base = Some(parse_int(val).map_err(|_| {
+                        format!("line {}: invalid spinlock_base: {val}", line_num + 1)
+                    })?);
+                }
+                "spinlock_count" => {
+                    target.spinlock_count = parse_int(val).map_err(|_| {
+                        format!("line {}: invalid spinlock_count: {val}", line_num + 1)
+                    })? as u32;
                 }
                 "vector_table_offset" => {
                     target.vector_table_offset = parse_int(val).map_err(|_| {

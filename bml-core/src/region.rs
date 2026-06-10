@@ -175,6 +175,123 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
 /// launcher's core. Consequence, documented: directly CALLING another
 /// core's entry is not detected. ISRs are assumed core0 in v0 (per-core
 /// NVIC modeling is deferred).
+/// Core-reachability for every function and static: which cores' code can
+/// touch them -- `(core names, fn -> core bitmask, static -> core bitmask)`,
+/// `None` when no agent declares an entry (single-core). Shared by the E615
+/// check and the cross-core lock assignment.
+#[allow(clippy::type_complexity)]
+fn core_reach<'p>(
+    program: &'p Program,
+    symbols: &SymbolTable,
+    target: &'p Target,
+) -> Option<(Vec<String>, HashMap<&'p str, u32>, HashMap<&'p str, u32>)> {
+    let entries: Vec<(&Agent, &str)> = target
+        .agents
+        .iter()
+        .filter_map(|a| a.entry.as_deref().map(|e| (a, e)))
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let mut core_names: Vec<String> = vec!["core0 (implicit)".to_string()];
+    let mut pinned: HashMap<&str, u32> = HashMap::new();
+    for (agent, entry) in &entries {
+        if !symbols.functions.contains_key(*entry) {
+            continue; // reported by check_core_sharing
+        }
+        let bit = 1u32 << core_names.len();
+        core_names.push(agent.name.clone());
+        pinned.insert(*entry, bit);
+    }
+    let fn_names: HashSet<&str> = symbols.functions.keys().map(String::as_str).collect();
+    let edges = crate::ceiling::fn_mentions(program, &fn_names);
+    let mut cores: HashMap<&str, u32> = HashMap::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item
+            && (f.isr.is_some() || f.name.0 == "main")
+        {
+            *cores.entry(f.name.0.as_str()).or_default() |= 1;
+        }
+    }
+    for (entry, bit) in &pinned {
+        *cores.entry(entry).or_default() |= bit;
+    }
+    loop {
+        let mut changed = false;
+        for (caller, callees) in &edges {
+            let Some(&caller_cores) = cores.get(*caller) else {
+                continue;
+            };
+            for callee in callees {
+                if pinned.contains_key(*callee) {
+                    continue;
+                }
+                let c = cores.entry(callee).or_default();
+                let merged = *c | caller_cores;
+                changed |= merged != *c;
+                *c = merged;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let static_names: HashSet<&str> = program
+        .items
+        .iter()
+        .filter_map(|i| {
+            if let Item::StaticDef(sd) = i {
+                Some(sd.name.0.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let accesses = crate::ceiling::fn_mentions(program, &static_names);
+    let mut static_cores: HashMap<&str, u32> = HashMap::new();
+    for (f, statics) in &accesses {
+        let Some(&fc) = cores.get(*f) else { continue };
+        for st in statics {
+            *static_cores.entry(st).or_default() |= fc;
+        }
+    }
+    Some((core_names, cores, static_cores))
+}
+
+/// Hardware-spinlock assignment for cross-core `@shared` statics: each
+/// multi-core-reachable `@shared` static gets a deterministic lock index
+/// (declaration-name order). Consumed by the emitter (the cross-core claim
+/// window lowers to mask + spin-acquire + release) and validated by
+/// `check_core_sharing` (every access must sit inside a claim window).
+#[must_use]
+pub fn cross_core_locks(
+    program: &Program,
+    symbols: &SymbolTable,
+    target: &Target,
+) -> HashMap<String, u32> {
+    let Some((_, _, static_cores)) = core_reach(program, symbols, target) else {
+        return HashMap::new();
+    };
+    let mut names: Vec<&str> = static_cores
+        .iter()
+        .filter(|(name, c)| {
+            c.count_ones() > 1
+                && symbols.statics.get(**name).is_some_and(|sym| {
+                    sym.storage
+                        .iter()
+                        .any(|a| matches!(a, StorageAnnotation::Shared(_)))
+                })
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    names.sort_unstable();
+    names
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (n.to_string(), i as u32))
+        .collect()
+}
+
 fn check_core_sharing(
     program: &Program,
     symbols: &SymbolTable,
@@ -198,109 +315,114 @@ fn check_core_sharing(
             None
         }
     });
-
-    // Core index 0 = the implicit core (main + ISRs); declared entries get
-    // 1.. in order. Bitmask per fn.
-    let mut core_names: Vec<String> = vec!["core0 (implicit)".to_string()];
-    let mut pinned: HashMap<&str, u32> = HashMap::new();
     for (agent, entry) in &entries {
-        if !symbols.functions.contains_key(*entry) {
-            if let Some(span) = anchor {
-                diags.error(
-                    format!(
-                        "agent `{}` declares `entry = {entry}`, but no such function is defined",
-                        agent.name
-                    ),
-                    "E615",
-                    span,
-                );
-            }
-            continue;
-        }
-        let bit = 1u32 << core_names.len();
-        core_names.push(agent.name.clone());
-        pinned.insert(*entry, bit);
-    }
-
-    let fn_names: HashSet<&str> = symbols.functions.keys().map(String::as_str).collect();
-    let edges = crate::ceiling::fn_mentions(program, &fn_names);
-
-    // Roots: main + every ISR on the implicit core; each entry on its own.
-    let mut cores: HashMap<&str, u32> = HashMap::new();
-    for item in &program.items {
-        if let Item::FnDef(f) = item
-            && (f.isr.is_some() || f.name.0 == "main")
+        if !symbols.functions.contains_key(*entry)
+            && let Some(span) = anchor
         {
-            *cores.entry(f.name.0.as_str()).or_default() |= 1;
-        }
-    }
-    for (entry, bit) in &pinned {
-        *cores.entry(entry).or_default() |= bit;
-    }
-
-    loop {
-        let mut changed = false;
-        for (caller, callees) in &edges {
-            let Some(&caller_cores) = cores.get(*caller) else {
-                continue;
-            };
-            for callee in callees {
-                if pinned.contains_key(*callee) {
-                    continue; // the entry's core is the target's, not the launcher's
-                }
-                let c = cores.entry(callee).or_default();
-                let merged = *c | caller_cores;
-                changed |= merged != *c;
-                *c = merged;
-            }
-        }
-        if !changed {
-            break;
+            diags.error(
+                format!(
+                    "agent `{}` declares `entry = {entry}`, but no such function is defined",
+                    agent.name
+                ),
+                "E615",
+                span,
+            );
         }
     }
 
-    // Mutable statics mentioned from more than one core.
-    let static_names: HashSet<&str> = program
-        .items
-        .iter()
-        .filter_map(|i| {
-            if let Item::StaticDef(sd) = i {
-                Some(sd.name.0.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    let accesses = crate::ceiling::fn_mentions(program, &static_names);
-    let mut static_cores: HashMap<&str, u32> = HashMap::new();
-    for (f, statics) in &accesses {
-        let Some(&fc) = cores.get(*f) else { continue };
-        for st in statics {
-            *static_cores.entry(st).or_default() |= fc;
-        }
-    }
+    let Some((core_names, _, static_cores)) = core_reach(program, symbols, target) else {
+        return;
+    };
+
+    // For the `@shared` relaxation: every claim window (target name + body
+    // span) and every mention of a tracked static (name + span).
+    let locks = cross_core_locks(program, symbols, target);
+    let tracked: HashSet<&str> = locks.keys().map(String::as_str).collect();
+    let (windows, mentions) = claims_and_mentions(program, &tracked);
+
     for item in &program.items {
         if let Item::StaticDef(sd) = item {
             let c = static_cores.get(sd.name.0.as_str()).copied().unwrap_or(0);
-            if c.count_ones() > 1 {
-                let names: Vec<&str> = core_names
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| c & (1 << i) != 0)
-                    .map(|(_, n)| n.as_str())
-                    .collect();
+            if c.count_ones() <= 1 {
+                continue;
+            }
+            let names: Vec<&str> = core_names
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| c & (1 << i) != 0)
+                .map(|(_, n)| n.as_str())
+                .collect();
+            let is_shared = locks.contains_key(&sd.name.0);
+            if !is_shared {
                 diags.error(
                     format!(
-                        "`{}` is reachable from multiple cores ({}). Per-core protections \
-                         (`@shared` ceilings, `claim`) mask interrupts on one core only and \
-                         provide no cross-core exclusion. Partition the data per core, or \
-                         communicate through an MMIO channel (e.g. the SIO FIFOs).",
+                        "`{}` is reachable from multiple cores ({}). Per-core protections mask \
+                         interrupts on one core only. Partition the data per core, communicate \
+                         through an MMIO channel (e.g. the SIO FIFOs), or annotate it `@shared` \
+                         and access it only inside `claim {} {{ ... }}` windows (hardware-\
+                         spinlock backed, when the target declares spinlock physics).",
+                        sd.name.0,
+                        names.join(", "),
+                        sd.name.0
+                    ),
+                    "E615",
+                    sd.name.1,
+                );
+                continue;
+            }
+            // Cross-core `@shared`: needs spinlock physics, a free lock, and
+            // every access inside a `claim` window of this static.
+            if target.spinlock_base.is_none() {
+                diags.error(
+                    format!(
+                        "`{}` is `@shared` across cores ({}), but the target declares no \
+                         hardware spinlocks (`spinlock_base` / `spinlock_count`) to back the \
+                         cross-core claim window.",
                         sd.name.0,
                         names.join(", ")
                     ),
                     "E615",
                     sd.name.1,
                 );
+                continue;
+            }
+            let idx = locks[&sd.name.0];
+            if idx >= target.spinlock_count {
+                diags.error(
+                    format!(
+                        "`{}` needs hardware spinlock {} but the target declares only {} \
+                         (`spinlock_count`).",
+                        sd.name.0, idx, target.spinlock_count
+                    ),
+                    "E615",
+                    sd.name.1,
+                );
+                continue;
+            }
+            for (mname, mspan) in &mentions {
+                if mname != &sd.name.0 {
+                    continue;
+                }
+                let inside = windows.iter().any(|(wname, wspan)| {
+                    wname == &sd.name.0
+                        && wspan.file == mspan.file
+                        && wspan.start <= mspan.start
+                        && mspan.end <= wspan.end
+                });
+                if !inside {
+                    diags.error(
+                        format!(
+                            "`{}` is `@shared` across cores ({}); every access must be inside \
+                             a `claim {} {{ ... }}` window -- per-access critical sections \
+                             cannot exclude the other core.",
+                            sd.name.0,
+                            names.join(", "),
+                            sd.name.0
+                        ),
+                        "E615",
+                        *mspan,
+                    );
+                }
             }
         }
     }
@@ -1316,6 +1438,224 @@ fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
             }
             gscan_block(&i.then_block, flags_of, scan);
             gscan_expr(&i.else_branch, flags_of, scan);
+        }
+    }
+}
+
+/// Collect every `claim X {}` window (target name + body span) and every
+/// span-carrying mention of a `tracked` static, for the cross-core
+/// require-claim check. Exhaustive walk (no catch-all), mirroring the other
+/// Stmt/Expr walkers; the claim's own header name is recorded as a window,
+/// not a mention.
+#[allow(clippy::type_complexity)]
+fn claims_and_mentions(
+    program: &Program,
+    tracked: &HashSet<&str>,
+) -> (Vec<(String, Span)>, Vec<(String, Span)>) {
+    let mut windows = Vec::new();
+    let mut mentions = Vec::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item {
+            cm_block(&f.body, tracked, &mut windows, &mut mentions);
+        }
+    }
+    (windows, mentions)
+}
+
+fn cm_block(
+    block: &Block,
+    tracked: &HashSet<&str>,
+    windows: &mut Vec<(String, Span)>,
+    mentions: &mut Vec<(String, Span)>,
+) {
+    for stmt in &block.stmts {
+        cm_stmt(stmt, tracked, windows, mentions);
+    }
+    if let Some(t) = &block.trailing {
+        cm_expr(t, tracked, windows, mentions);
+    }
+}
+
+fn cm_stmt(
+    stmt: &Stmt,
+    tracked: &HashSet<&str>,
+    windows: &mut Vec<(String, Span)>,
+    mentions: &mut Vec<(String, Span)>,
+) {
+    match stmt {
+        Stmt::VarDecl(vd) => cm_expr(&vd.init, tracked, windows, mentions),
+        Stmt::Assign(a) => {
+            cm_lvalue(&a.target, tracked, windows, mentions);
+            cm_expr(&a.value, tracked, windows, mentions);
+        }
+        Stmt::CompoundAssign(ca) => {
+            cm_lvalue(&ca.target, tracked, windows, mentions);
+            cm_expr(&ca.value, tracked, windows, mentions);
+        }
+        Stmt::Expr(e) => cm_expr(e, tracked, windows, mentions),
+        Stmt::If(i) => {
+            cm_expr(&i.cond, tracked, windows, mentions);
+            cm_block(&i.then_block, tracked, windows, mentions);
+            if let Some(eb) = &i.else_branch {
+                cm_stmt(eb, tracked, windows, mentions);
+            }
+        }
+        Stmt::Loop(l) => cm_block(&l.body, tracked, windows, mentions),
+        Stmt::While(w) => {
+            cm_expr(&w.cond, tracked, windows, mentions);
+            cm_block(&w.body, tracked, windows, mentions);
+        }
+        Stmt::For(f) => {
+            cm_expr(&f.start, tracked, windows, mentions);
+            cm_expr(&f.end, tracked, windows, mentions);
+            if let Some(step) = &f.step {
+                cm_expr(step, tracked, windows, mentions);
+            }
+            cm_block(&f.body, tracked, windows, mentions);
+        }
+        Stmt::Match(m) => {
+            cm_expr(&m.scrutinee, tracked, windows, mentions);
+            for arm in &m.arms {
+                cm_block(&arm.body, tracked, windows, mentions);
+            }
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                cm_expr(v, tracked, windows, mentions);
+            }
+        }
+        Stmt::Asm(a) => {
+            for (_, target) in &a.outputs {
+                cm_expr(target, tracked, windows, mentions);
+            }
+            for (_, value) in &a.inputs {
+                cm_expr(value, tracked, windows, mentions);
+            }
+        }
+        Stmt::Assume(a) => cm_expr(&a.cond, tracked, windows, mentions),
+        Stmt::Assert(a) => cm_expr(&a.cond, tracked, windows, mentions),
+        Stmt::Block(b) => cm_block(b, tracked, windows, mentions),
+        Stmt::Claim(c) => {
+            windows.push((c.name.0.clone(), c.body.span));
+            cm_block(&c.body, tracked, windows, mentions);
+        }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn cm_lvalue(
+    lv: &LValue,
+    tracked: &HashSet<&str>,
+    windows: &mut Vec<(String, Span)>,
+    mentions: &mut Vec<(String, Span)>,
+) {
+    match lv {
+        LValue::Name((name, span)) => {
+            if tracked.contains(name.as_str()) {
+                mentions.push((name.clone(), *span));
+            }
+        }
+        LValue::Field(base, _) => cm_lvalue(base, tracked, windows, mentions),
+        LValue::Index(base, idx) => {
+            cm_lvalue(base, tracked, windows, mentions);
+            cm_expr(idx, tracked, windows, mentions);
+        }
+        LValue::Deref(e) => cm_expr(e, tracked, windows, mentions),
+    }
+}
+
+fn cm_expr(
+    expr: &Expr,
+    tracked: &HashSet<&str>,
+    windows: &mut Vec<(String, Span)>,
+    mentions: &mut Vec<(String, Span)>,
+) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => {}
+        Expr::Ident((name, span)) => {
+            if tracked.contains(name.as_str()) {
+                mentions.push((name.clone(), *span));
+            }
+        }
+        Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
+            cm_expr(e, tracked, windows, mentions);
+        }
+        Expr::Binary(l, _, r) | Expr::Index(l, r) => {
+            cm_expr(l, tracked, windows, mentions);
+            cm_expr(r, tracked, windows, mentions);
+        }
+        Expr::Call(callee, args) => {
+            cm_expr(callee, tracked, windows, mentions);
+            for a in args {
+                cm_expr(a, tracked, windows, mentions);
+            }
+        }
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            cm_expr(base, tracked, windows, mentions);
+            if let Some(l) = len {
+                cm_expr(l, tracked, windows, mentions);
+            }
+            if let Some(st) = stride {
+                cm_expr(st, tracked, windows, mentions);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            cm_expr(base, tracked, windows, mentions);
+            if let Some(c) = capacity {
+                cm_expr(c, tracked, windows, mentions);
+            }
+            cm_expr(head, tracked, windows, mentions);
+            cm_expr(len, tracked, windows, mentions);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            cm_expr(base, tracked, windows, mentions);
+            if let Some(o) = bit_offset {
+                cm_expr(o, tracked, windows, mentions);
+            }
+            if let Some(l) = len_bits {
+                cm_expr(l, tracked, windows, mentions);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                cm_expr(e, tracked, windows, mentions);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                cm_expr(e, tracked, windows, mentions);
+            }
+        }
+        Expr::Match(m) => {
+            cm_expr(&m.scrutinee, tracked, windows, mentions);
+            for arm in &m.arms {
+                cm_block(&arm.body, tracked, windows, mentions);
+            }
+        }
+        Expr::Block(b) => cm_block(&b.block, tracked, windows, mentions),
+        Expr::If(i) => {
+            cm_expr(&i.cond, tracked, windows, mentions);
+            cm_block(&i.then_block, tracked, windows, mentions);
+            cm_expr(&i.else_branch, tracked, windows, mentions);
         }
     }
 }

@@ -583,6 +583,10 @@ fn build_file(
     emitter.set_startup_init(target.startup_init.clone());
     emitter.set_mpu_regions(target.mpu_regions());
     emitter.set_mpu_flavor(target.mpu_flavor());
+    emitter.set_cross_core_locks(
+        region::cross_core_locks(&program, &symbols, target),
+        target.spinlock_base.unwrap_or(0),
+    );
     emitter.set_priority_bits(target.priority_bits);
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
