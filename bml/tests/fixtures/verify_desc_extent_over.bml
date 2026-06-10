@@ -1,0 +1,15 @@
+// Descriptor-carried extent, violated: 516 bytes armed against the 512-byte
+// buffer delivered through buf1 -- the agent walking this descriptor would
+// run past BUF. Definite assert violation (both sides constant).
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1),
+}
+
+var BUF: [u32; 128] @align(32) in dma_shared;
+var TX: [TxDesc; 2] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    TX[0].buf1 = &BUF as u32;
+    TX[0].control = 516;
+}

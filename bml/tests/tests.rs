@@ -2633,6 +2633,83 @@ fn test_verify_handoff_provenance_ok() {
     assert!(ok, "expected a clean verify exit; stderr:\n{stderr}");
 }
 
+// Extent unit cross-check (E618): `extent_by ... xN by P.R.F = V` makes the
+// multiplier checked physics -- arming without establishing the unit field
+// (or establishing a different value) is a compile error.
+#[test]
+fn test_extent_unit_ok() {
+    let (ok, stderr) = bml_build_with_target("extent_unit_ok.bml", Some("extent_unit.target"));
+    assert!(
+        ok,
+        "unit established before arming should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_extent_unit_missing_rejected() {
+    let (ok, stderr) = bml_build_with_target("extent_unit_missing.bml", Some("extent_unit.target"));
+    assert!(
+        !ok,
+        "arming without the unit write must fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E618"), "expected E618; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_extent_unit_wrong_rejected() {
+    let (ok, stderr) = bml_build_with_target("extent_unit_wrong.bml", Some("extent_unit.target"));
+    assert!(!ok, "a different unit value must fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E618"), "expected E618; stderr:\n{stderr}");
+}
+
+// Descriptor-carried extents (`@extent(addr_field [, xN])` struct-field
+// attribute): declaration sanity is E617 (compile time); the length-vs-
+// delivered-buffer check itself lives entirely in verify (IKOS).
+assert_error!(
+    test_desc_extent_bad_sibling_rejected,
+    "desc_extent_bad_sibling.bml",
+    "E617"
+);
+assert_error!(
+    test_desc_extent_not_addr_rejected,
+    "desc_extent_not_addr.bml",
+    "E617"
+);
+
+#[test]
+fn test_verify_desc_extent_ok() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) =
+        bml_verify_args("verify_desc_extent_ok.bml", &["--target", &target]);
+    assert!(
+        ok && !stderr.contains("[V200]"),
+        "an in-bounds descriptor length must verify clean; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_verify_desc_extent_overrun_rejected() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) =
+        bml_verify_args("verify_desc_extent_over.bml", &["--target", &target]);
+    assert!(
+        !ok,
+        "a descriptor length past the buffer must fail:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error[assert]"),
+        "expected a definite descriptor-extent violation:\n{stderr}"
+    );
+}
+
 // Transfer-extent obligation (`extent_by`): arming the agent within the
 // delivered buffer is proven; arming past it is a DEFINITE assert error
 // (both sides constant: count*scale vs sizeof of the delivered static).

@@ -194,6 +194,8 @@ The compiler uses the ARM convention directly:
 | (retired: `@shared in <region>` now composes -- consumption requires `claim` wrapping a completion-guarded `reclaim`) | E613 |
 | `claim` misuse: target not `@shared`, or a call/escape inside the window | E614 |
 | A view outlives its justification window: a view over the claimed static escapes the `claim` body, or a reclaimed view is used outside its completion guard / after the buffer is released back to the agent | E616 |
+| `@extent` declaration sanity: the named sibling must be an `addr in <region>` field and the annotated field a 32-bit integer | E617 |
+| Extent unit cross-check: arming an agent whose `extent_by ... by P.R.F = V` unit field is never set to V (or set to something else) | E618 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
@@ -594,6 +596,20 @@ byte length must fit the buffer last delivered to each of the agent's
 handoff registers (`= &X as u32` deliveries carry `sizeof(X)`). Arming the
 DMA one unit past its buffer is a definite verify error at the arming line;
 nothing is emitted in normal builds.
+
+Descriptor-carried lengths get the same treatment through a struct-field
+attribute: `control: u32 @extent(buf1)` (optionally `@extent(buf1, x4)`)
+declares that this field arms the buffer delivered through the `addr in R`
+sibling `buf1`. Declaration sanity is compile-checked (E617: the sibling
+must exist and be an `addr` field, the annotated field must be `u32`/`i32`);
+the length-vs-buffer check itself is a verify obligation, exactly like
+`extent_by`.
+
+A multiplier can be tied to the unit-select field that makes it true:
+`extent_by = DMA.CH0_TRANS_COUNT.COUNT x4 by DMA.CH0_CTRL_TRIG.DATA_SIZE = 2`
+requires (E618, compile time) that arming the agent is accompanied by a
+write establishing exactly that field value -- the multiplier stops being
+trusted policy.
 
 The reclaimed view's *lifetime* is scoped to that justification (E616): a
 binding holding it may only be mentioned inside a guard span that also

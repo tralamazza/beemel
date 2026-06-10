@@ -96,6 +96,13 @@ pub struct IrEmitter {
     /// -- the agent cannot be armed past the buffer it was handed. Empty
     /// outside verify.
     extent_asserts: HashMap<(String, String, String), (u32, Vec<String>)>,
+    /// Descriptor extents (verify mode), from `@extent` struct-field
+    /// annotations: `(struct, addr field)` -> capacity shadow name, and
+    /// `(struct, length field)` -> `(byte scale, shadow name)`. The in-memory
+    /// analogue of `extent_cap_shadows`/`extent_asserts`; built from the AST
+    /// at `emit()`. Empty outside verify.
+    desc_cap_shadows: HashMap<(String, String), String>,
+    desc_extent_asserts: HashMap<(String, String), (u32, String)>,
     /// Region name -> derived alignment floor (bytes). A static placed `in R`
     /// gets at least this alignment, so the source need not hand-write
     /// `@align(N)`: alignment is physics (cache line of cacheable memory shared
@@ -328,6 +335,8 @@ impl IrEmitter {
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
+            desc_cap_shadows: HashMap::new(),
+            desc_extent_asserts: HashMap::new(),
         }
     }
 
@@ -381,6 +390,8 @@ impl IrEmitter {
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
+            desc_cap_shadows: HashMap::new(),
+            desc_extent_asserts: HashMap::new(),
         }
     }
 
@@ -447,6 +458,30 @@ impl IrEmitter {
         self.region_ranges = region_ranges;
     }
 
+    /// Build the descriptor-extent maps from `@extent` struct-field
+    /// annotations (see the fields). One shadow per `(struct, addr field)`
+    /// pair: element-agnostic, like the register shadows -- the most recent
+    /// delivery through that field is what a length write is checked against.
+    fn collect_desc_extents(&mut self, program: &Program) {
+        for item in &program.items {
+            let ast::Item::StructDef(sd) = item else {
+                continue;
+            };
+            for field in &sd.fields {
+                let Some(ext) = &field.extent else { continue };
+                let shadow = format!("__bml_cap_{}_{}", sd.name.0, ext.addr_field.0);
+                self.desc_cap_shadows.insert(
+                    (sd.name.0.clone(), ext.addr_field.0.clone()),
+                    shadow.clone(),
+                );
+                self.desc_extent_asserts.insert(
+                    (sd.name.0.clone(), field.name.0.clone()),
+                    (ext.scale, shadow),
+                );
+            }
+        }
+    }
+
     /// Install the verify-mode transfer-extent obligation maps (see the
     /// fields).
     pub fn set_extent_obligations(
@@ -499,6 +534,9 @@ impl IrEmitter {
 
     #[must_use]
     pub fn emit(mut self, program: &Program, symbols: &SymbolTable) -> String {
+        if self.verify_mode {
+            self.collect_desc_extents(program);
+        }
         self.emit_module_header();
         if self.debug {
             self.emit_debug_compile_unit(program);
@@ -677,7 +715,11 @@ impl IrEmitter {
             self.line("declare void @__ikos_forget_mem(ptr, i32)");
             // Capacity shadows for the extent obligation, initialized to
             // u32::MAX (= unconstrained until a handoff delivers a buffer).
-            let mut shadows: Vec<&String> = self.extent_cap_shadows.values().collect();
+            let mut shadows: Vec<&String> = self
+                .extent_cap_shadows
+                .values()
+                .chain(self.desc_cap_shadows.values())
+                .collect();
             shadows.sort();
             shadows.dedup();
             let lines: Vec<String> = shadows
@@ -3837,6 +3879,43 @@ impl IrEmitter {
                             && let Some(&(lo, hi)) = self.region_ranges.get(region)
                         {
                             self.emit_range_assert(&val_reg, lo, hi, &dbg);
+                        }
+                        // Descriptor extent, delivery side: an `addr` field
+                        // armed by an `@extent` sibling remembers the size of
+                        // the buffer delivered here (direct `&X as u32` only;
+                        // anything else resets to unconstrained).
+                        if self.verify_mode
+                            && let Some(shadow) = self
+                                .desc_cap_shadows
+                                .get(&(struct_name.clone(), field.0.clone()))
+                        {
+                            let cap = value_expr
+                                .and_then(delivered_static_name)
+                                .and_then(|n| symbols.statics.get(n))
+                                .map_or(-1i64, |sym| {
+                                    i64::from(crate::types::element_size(strip_storage(&sym.ty)))
+                                });
+                            let line = format!("store i32 {cap}, ptr @{shadow}");
+                            self.line(&line);
+                        }
+                        // Descriptor extent, arming side: a write to the
+                        // `@extent` length field asserts the byte length fits
+                        // the buffer last delivered through the addr sibling.
+                        if self.verify_mode
+                            && let Some((scale, shadow)) = self
+                                .desc_extent_asserts
+                                .get(&(struct_name.clone(), field.0.clone()))
+                                .cloned()
+                        {
+                            let bytes = self.new_reg();
+                            self.line(&format!("{bytes} = mul i32 {val_reg}, {scale}"));
+                            let cap = self.new_reg();
+                            self.line(&format!("{cap} = load i32, ptr @{shadow}"));
+                            let ok = self.new_reg();
+                            self.line(&format!("{ok} = icmp ule i32 {bytes}, {cap}"));
+                            let z = self.new_reg();
+                            self.line(&format!("{z} = zext i1 {ok} to i32"));
+                            self.line(&format!("call void @__ikos_assert(i32 {z}){dbg}"));
                         }
                         // Encode a `@be` field to its stored (byte-swapped) form.
                         let endian = Self::field_endian(struct_name, idx, symbols);

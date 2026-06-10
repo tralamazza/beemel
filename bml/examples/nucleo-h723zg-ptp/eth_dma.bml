@@ -39,10 +39,12 @@ owns Ethernet_DMA;
 // words are plain control/status. The RX write-back read path reinterprets the
 // same 16 bytes as status, and goes through a raw `*u32` (rx_desc_get32).
 struct TxDesc @repr(packed) {
-    buf1: addr in dma_shared,   // DES0: TX buffer byte address
-    buf2: u32,                  // DES1: second buffer (unused)
-    control: u32,               // DES2: buffer lengths
-    status: u32,                // DES3: OWN | FD | LD | length
+    buf1: addr in dma_shared,        // DES0: TX buffer byte address
+    buf2: u32,                       // DES1: second buffer (unused)
+    control: u32 @extent(buf1),      // DES2: B1L buffer-1 length, in bytes --
+                                     // verify asserts it fits the buffer
+                                     // delivered through buf1
+    status: u32,                     // DES3: OWN | FD | LD | length
 }
 comptime_assert(sizeof(TxDesc) == 16);
 
@@ -249,10 +251,6 @@ fn tx_desc_addr(word_index: u32) -> u32 {
     return (&TX_DESC as u32) + (word_index * 4);
 }
 
-fn tx_buffer_addr() -> u32 {
-    return &TX_BUFFER as u32;
-}
-
 fn rx_desc_addr(word_index: u32) -> u32 {
     return (&RX_DESC as u32) + (word_index * 4);
 }
@@ -304,7 +302,9 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     const di = TX_DESC_INDEX;
 
     // buf1 is the in-memory handoff: the buffer byte address the DMA reads.
-    TX_DESC[di].buf1 = tx_buffer_addr();
+    // Direct address-of (not through a helper) so the verify-mode extent
+    // obligation knows the delivered buffer's size.
+    TX_DESC[di].buf1 = &TX_BUFFER as u32;
     TX_DESC[di].buf2 = 0;
     TX_DESC[di].control = len & TX_DESC_LEN_MASK;
     // status carries OWN and must be written last (before the barrier), so the

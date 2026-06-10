@@ -1,0 +1,22 @@
+// E618 positive: the unit field is established before arming.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+    reg XFERCNT offset 0x08 {
+        field COUNT: u32 bit[0..15]
+    }
+    reg CTRL offset 0x0c {
+        field SIZE: u32 bit[0..1]
+    }
+}
+
+owns MyDma;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    MyDma.CTRL.SIZE = 2;
+    MyDma.DESCADDR = &DESC as u32;
+    MyDma.XFERCNT.COUNT = 8;
+}

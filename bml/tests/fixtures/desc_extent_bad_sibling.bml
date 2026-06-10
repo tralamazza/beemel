@@ -1,0 +1,7 @@
+// E617: @extent names a field that does not exist in the struct.
+struct D @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(nosuch),
+}
+var X: u32;
+fn main() @context(thread) { X = 1; }

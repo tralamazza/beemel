@@ -193,6 +193,48 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
             // A single byte has no byte order, and aggregates/floats/views have
             // no well-defined wire-integer swap, so restrict the attribute to
             // multi-byte integer scalars and reject it loudly elsewhere.
+            // `@extent(addr_field [, xN])`: the named sibling must exist and
+            // be an `addr in R` field (the delivery this length arms), and
+            // the annotated field itself must be an integer count.
+            if let Some(ext) = &field.extent {
+                let sibling = s.fields.iter().find(|f| f.name.0 == ext.addr_field.0);
+                match sibling {
+                    None => {
+                        diags.error(
+                            format!(
+                                "`@extent({0})` on `{1}.{2}`: no field `{0}` in `{1}`",
+                                ext.addr_field.0, s.name.0, field.name.0
+                            ),
+                            "E617",
+                            ext.addr_field.1,
+                        );
+                    }
+                    Some(f) if !matches!(f.ty, ast::TypeExpr::Addr(_)) => {
+                        diags.error(
+                            format!(
+                                "`@extent({0})` on `{1}.{2}`: `{0}` is not an `addr in <region>`                                  field -- the extent must arm a delivered buffer",
+                                ext.addr_field.0, s.name.0, field.name.0
+                            ),
+                            "E617",
+                            ext.addr_field.1,
+                        );
+                    }
+                    Some(_) => {}
+                }
+                // 32-bit only: the verify-mode arming assert multiplies the
+                // stored value as an i32 (descriptor length words in
+                // practice); widening narrower fields is not wired up.
+                if !matches!(ty, Type::U32 | Type::I32) {
+                    diags.error(
+                        format!(
+                            "`@extent` on `{}.{}` requires a `u32`/`i32` field, got `{ty}`",
+                            s.name.0, field.name.0
+                        ),
+                        "E617",
+                        field.name.1,
+                    );
+                }
+            }
             if field.endian != ast::FieldEndian::Native && !is_multibyte_int(ty) {
                 let attr = match field.endian {
                     ast::FieldEndian::Big => "be",

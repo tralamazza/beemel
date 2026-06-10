@@ -899,6 +899,27 @@ packed layout.
     in-memory analogue, a follow-up; the RP2350 x4 multiplier is project
     policy pinned in the target (DATA_SIZE=2), not cross-checked against
     the DATA_SIZE field write yet.
+  - *Descriptor extents + unit cross-check -- DONE.* The two recorded
+    extent_by follow-ups. (1) `@extent(addr_field [, xN])` struct-field
+    attribute: a length field arms the buffer delivered through its
+    `addr in R` sibling -- the in-memory analogue of `extent_by`, same
+    capacity-shadow encoding, one shadow per (struct, addr field)
+    (element-agnostic, most-recent-delivery semantics, like the register
+    shadows). E617 checks the declaration shape (sibling exists, is addr;
+    field is u32/i32 -- the assert multiplies as i32); the check itself
+    lives in verify. eth_dma's TX control word is annotated and its buf1
+    delivery made a direct `&TX_BUFFER as u32` (helpers hide the size);
+    arming 129 bytes against the 128-byte buffer is a definite
+    error[assert]. (2) `extent_by ... xN by P.R.F = V` (E618, compile
+    time): the multiplier's unit-select field must be established to
+    exactly V when the agent is armed; a different literal is rejected at
+    its write. The RP2350 x4 is now checked physics (DATA_SIZE = 2);
+    removing the DATA_SIZE write from probe.bml is E618 at the arming
+    line. PeriphWrite grew rhs_literal for the value comparison. Pinned by
+    verify_desc_extent_{ok,over}.bml, desc_extent_{bad_sibling,not_addr}.bml,
+    extent_unit_{ok,missing,wrong}.bml + extent_unit.target. Still
+    element-agnostic and arm-then-deliver-ordered (recorded); the RX
+    write-back path stays unannotated (lengths written by hardware).
   - *Remaining (smaller):* pointer-call
     context edges; compared guard conditions; per-buffer flag association;
     flag staleness across transfers (a release BEFORE the guard whose flag

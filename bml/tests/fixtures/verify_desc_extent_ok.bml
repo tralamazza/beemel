@@ -1,0 +1,16 @@
+// Descriptor-carried extent, provable: the @extent(buf1) length field arms
+// 512 bytes against the 512-byte BUF delivered through buf1 -- the in-memory
+// analogue of the register-level extent_by. Models the ETH TX descriptor's
+// control word.
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1),
+}
+
+var BUF: [u32; 128] @align(32) in dma_shared;
+var TX: [TxDesc; 2] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    TX[0].buf1 = &BUF as u32;
+    TX[0].control = 512;
+}

@@ -153,6 +153,11 @@ pub struct ExtentBy {
     /// Compile-time byte multiplier: bytes the agent moves per count unit
     /// (1 = the field counts bytes, 4 = words, ...).
     pub scale: u32,
+    /// `by P.R.F = V`: the unit-select field write that makes `scale` true
+    /// physics (e.g. the RP2350's `CTRL_TRIG.DATA_SIZE = 2` for x4). When
+    /// declared, arming the agent without setting the field to exactly V is
+    /// rejected (E618) -- the multiplier stops being trusted policy.
+    pub unit: Option<(String, u64)>,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -1282,7 +1287,10 @@ fn parse_extent_by(val: &str, line_num: usize) -> Result<ExtentBy, String> {
         ));
     }
     let mut scale = 1u32;
-    if let Some(tok) = parts.next() {
+    let mut pending = parts.next();
+    if let Some(tok) = pending
+        && tok != "by"
+    {
         let n = tok.strip_prefix('x').and_then(|n| n.parse::<u32>().ok());
         match n {
             Some(n) if n > 0 => scale = n,
@@ -1293,14 +1301,42 @@ fn parse_extent_by(val: &str, line_num: usize) -> Result<ExtentBy, String> {
                 ));
             }
         }
+        pending = parts.next();
+    }
+    let mut unit = None;
+    if let Some(tok) = pending {
+        if tok != "by" {
+            return Err(format!(
+                "line {}: expected `by P.R.F = V` after extent_by multiplier, got `{tok}`",
+                line_num + 1
+            ));
+        }
+        let upath = parts
+            .next()
+            .ok_or_else(|| format!("line {}: extent_by `by` needs a field path", line_num + 1))?;
+        if upath.split('.').count() != 3 {
+            return Err(format!(
+                "line {}: extent_by `by` expects `Peripheral.REGISTER.FIELD`, got `{upath}`",
+                line_num + 1
+            ));
+        }
+        let (Some("="), Some(v)) = (parts.next(), parts.next()) else {
+            return Err(format!(
+                "line {}: extent_by `by` expects `= <value>` after the field path",
+                line_num + 1
+            ));
+        };
+        let value = parse_int(v)
+            .map_err(|e| format!("line {}: bad extent_by unit value `{v}`: {e}", line_num + 1))?;
+        unit = Some((upath.to_string(), value));
     }
     if let Some(extra) = parts.next() {
         return Err(format!(
-            "line {}: unexpected token `{extra}` after extent_by multiplier",
+            "line {}: unexpected token `{extra}` after extent_by",
             line_num + 1
         ));
     }
-    Ok(ExtentBy { path, scale })
+    Ok(ExtentBy { path, scale, unit })
 }
 
 /// Parse a handoff spec: `Peripheral.REGISTER [align N] [port_by P.R.F TAG]`.
@@ -2213,6 +2249,25 @@ extent_by = DMA.CNT.COUNT x4
         )
         .unwrap_err();
         assert!(err.contains("xN"), "got: {err}");
+
+        // Unit cross-check clause: `by P.R.F = V`, with or without an
+        // explicit multiplier before it.
+        let target = t(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT x4 by DMA.CTRL.SIZE = 2\n",
+        );
+        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        assert_eq!(eb.unit.as_ref().unwrap(), &("DMA.CTRL.SIZE".to_string(), 2));
+        let target = t(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT by DMA.CTRL.SIZE = 1\n",
+        );
+        let eb = target.agents[0].extent_by.as_ref().unwrap();
+        assert_eq!(eb.scale, 1);
+        assert_eq!(eb.unit.as_ref().unwrap().1, 1);
+        let err = Target::parse(
+            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent_by = DMA.CNT.COUNT x4 by DMA.CTRL.SIZE\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("= <value>"), "got: {err}");
     }
 
     #[test]

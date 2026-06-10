@@ -1,0 +1,32 @@
+# verify_extent.target with a unit-select clause: COUNT is x4 only while
+# CTRL.SIZE = 2 -- arming without establishing it (or with another size)
+# is E618 at compile time.
+arch = armv7em
+cpu = cortex-m7
+flash_base = 0x08000000
+flash_size = 1M
+ram_base = 0x20000000
+ram_size = 128K
+data_block = sram
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x20000000
+size = 128K
+
+[mem.sram1]
+base = 0x30000000
+size = 16K
+
+[agent.mydma]
+kind = dma
+reach = sram1
+handoff = MyDma.DESCADDR align 4
+extent_by = MyDma.XFERCNT.COUNT x4 by MyDma.CTRL.SIZE = 2
+
+[region.dma_shared]
+mem = sram1
+agents = mydma

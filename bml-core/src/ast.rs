@@ -619,6 +619,22 @@ pub struct StructFieldDef {
     /// stays native. Endianness is a storage property, not part of the value
     /// type: `s.field` still has the plain integer type.
     pub endian: FieldEndian,
+    /// `@extent(addr_field [, xN])`: this integer field carries the transfer
+    /// LENGTH for the buffer delivered through the named `addr in R` sibling,
+    /// in units of N bytes (default 1). Verify mode asserts every write of
+    /// this field, scaled to bytes, fits the delivered buffer -- the
+    /// in-memory analogue of the agent-level `extent_by`. Like endianness it
+    /// is a storage property: the field's value type stays the plain integer.
+    pub extent: Option<FieldExtent>,
+}
+
+/// See `StructFieldDef::extent`.
+#[derive(Debug, Clone)]
+pub struct FieldExtent {
+    /// The `addr in R` sibling field whose buffer this length arms.
+    pub addr_field: Ident,
+    /// Bytes per count unit (1 = the field counts bytes).
+    pub scale: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

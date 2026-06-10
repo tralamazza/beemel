@@ -1,0 +1,7 @@
+// E617: @extent must arm an `addr in <region>` sibling, not a plain integer.
+struct D @repr(packed) {
+    buf1: u32,
+    control: u32 @extent(buf1),
+}
+var X: u32;
+fn main() @context(thread) { X = 1; }

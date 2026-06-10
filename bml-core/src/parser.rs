@@ -630,11 +630,12 @@ impl<'a> Parser<'a> {
             self.expect(&TokenKind::Colon, "expected `:` after field name")
                 .ok()?;
             let field_ty = self.parse_type_expr()?;
-            let endian = self.parse_field_endian()?;
+            let (endian, extent) = self.parse_field_attrs()?;
             fields.push(StructFieldDef {
                 name: field_name,
                 ty: field_ty,
                 endian,
+                extent,
             });
             if !self.eat(&TokenKind::Comma) {
                 break;
@@ -688,36 +689,79 @@ impl<'a> Parser<'a> {
         Some(repr)
     }
 
-    /// Parse an optional `@be`/`@le` endianness attribute following a struct
-    /// field type. Absence yields `Native`.
-    fn parse_field_endian(&mut self) -> Option<crate::ast::FieldEndian> {
+    /// Parse the optional attributes following a struct field type:
+    /// `@be`/`@le` (byte order) and `@extent(addr_field [, xN])` (transfer
+    /// length for the buffer delivered through the named sibling). Each may
+    /// appear at most once, in either order.
+    fn parse_field_attrs(
+        &mut self,
+    ) -> Option<(crate::ast::FieldEndian, Option<crate::ast::FieldExtent>)> {
         use crate::ast::FieldEndian;
-        if !self.eat(&TokenKind::AtSign) {
-            return Some(FieldEndian::Native);
-        }
-        let span = self.peek_span();
-        let TokenKind::Ident(name) = self.peek_kind() else {
-            self.diags.error(
-                "expected `be` or `le` after `@` in struct field",
-                "E108",
-                span,
-            );
-            return None;
-        };
-        let endian = match name.as_str() {
-            "be" => FieldEndian::Big,
-            "le" => FieldEndian::Little,
-            _ => {
+        let mut endian = FieldEndian::Native;
+        let mut extent: Option<crate::ast::FieldExtent> = None;
+        while self.eat(&TokenKind::AtSign) {
+            let span = self.peek_span();
+            let TokenKind::Ident(name) = self.peek_kind() else {
                 self.diags.error(
-                    "expected `be` or `le` after `@` in struct field",
+                    "expected `be`, `le`, or `extent` after `@` in struct field",
                     "E108",
                     span,
                 );
                 return None;
+            };
+            match name.as_str() {
+                "be" => {
+                    endian = FieldEndian::Big;
+                    self.advance();
+                }
+                "le" => {
+                    endian = FieldEndian::Little;
+                    self.advance();
+                }
+                "extent" => {
+                    self.advance();
+                    self.expect(&TokenKind::LParen, "expected `(` after `@extent`")
+                        .ok()?;
+                    let addr_field = self.parse_ident()?;
+                    let mut scale = 1u32;
+                    if self.eat(&TokenKind::Comma) {
+                        let mspan = self.peek_span();
+                        let TokenKind::Ident(m) = self.peek_kind() else {
+                            self.diags.error(
+                                "expected `xN` multiplier in `@extent(field, xN)`",
+                                "E108",
+                                mspan,
+                            );
+                            return None;
+                        };
+                        match m.strip_prefix('x').and_then(|n| n.parse::<u32>().ok()) {
+                            Some(n) if n > 0 => scale = n,
+                            _ => {
+                                self.diags.error(
+                                    "expected `xN` multiplier (N > 0) in `@extent(field, xN)`",
+                                    "E108",
+                                    mspan,
+                                );
+                                return None;
+                            }
+                        }
+                        self.advance();
+                    }
+                    self.expect(&TokenKind::RParen, "expected `)` to close `@extent`")
+                        .ok()?;
+                    extent = Some(crate::ast::FieldExtent { addr_field, scale });
+                }
+                _ => {
+                    self.diags.error(
+                        "expected `be`, `le`, or `extent` after `@` in struct field",
+                        "E108",
+                        span,
+                    );
+                    return None;
+                }
             }
-        };
-        self.advance();
-        Some(endian)
+        }
+        Some((endian, extent))
     }
 
     fn parse_enum_def(&mut self) -> Option<EnumDef> {

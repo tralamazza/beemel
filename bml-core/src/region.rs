@@ -641,6 +641,10 @@ struct PeriphWrite {
     span: Span,
     rhs_static: Option<String>,
     rhs_disabling: bool,
+    /// The RHS as a compile-time literal (`= 2`, `= true`), when it is one.
+    /// The unit cross-check (E618) compares it against the declared value;
+    /// a non-literal RHS is "unknown" and neither satisfies nor violates.
+    rhs_literal: Option<u64>,
 }
 
 /// Handoff write checks, acting at peripheral-register write sites off a single
@@ -793,6 +797,65 @@ fn check_handoff_writes(
     // E610: clock-stomp guard. A disabling write to an agent's `enabled_by`
     // clock gate, from a module that does not own the agent, silently stops it.
     check_agent_clock_stomp(target, &agent_owners, &writes, symbols, diags);
+
+    // E618: extent unit cross-check. An `extent_by ... xN by P.R.F = V`
+    // multiplier is only true physics while the unit-select field holds V.
+    check_extent_units(target, &writes, diags);
+}
+
+/// E618. For each agent declaring `extent_by = ... by P.R.F = V`: once the
+/// program ARMS the agent (writes the extent count field), some write must
+/// set the unit field to exactly the literal V (presence, like E609), and a
+/// definite write of a DIFFERENT literal is rejected outright -- either way
+/// the declared byte multiplier would be a lie. Computed (non-literal)
+/// values neither satisfy nor violate; the missing-write message covers them.
+fn check_extent_units(target: &Target, writes: &[PeriphWrite], diags: &mut DiagnosticBag) {
+    for agent in &target.agents {
+        let Some(eb) = &agent.extent_by else { continue };
+        let Some((upath, uval)) = &eb.unit else {
+            continue;
+        };
+        let eparts: Vec<&str> = eb.path.split('.').collect();
+        let uparts: Vec<&str> = upath.split('.').collect();
+        let ([ep, er, ef], [up, ur, uf]) = (eparts.as_slice(), uparts.as_slice()) else {
+            continue; // shapes validated at target load
+        };
+        // Armed? Use the first extent-field write as the report site.
+        let Some(site) = writes
+            .iter()
+            .find(|w| w.periph == *ep && w.reg == *er && w.field.as_deref() == Some(*ef))
+        else {
+            continue;
+        };
+        let unit_writes: Vec<&PeriphWrite> = writes
+            .iter()
+            .filter(|w| w.periph == *up && w.reg == *ur && w.field.as_deref() == Some(*uf))
+            .collect();
+        for w in &unit_writes {
+            if let Some(v) = w.rhs_literal
+                && v != *uval
+            {
+                diags.error(
+                    format!(
+                        "`{up}.{ur}.{uf}` is set to {v}, but agent `{}` declares its transfer count scaled x{} only when this field is {uval} (`extent_by ... by`). The armed byte length would be mis-scaled.",
+                        agent.name, eb.scale
+                    ),
+                    "E618",
+                    w.span,
+                );
+            }
+        }
+        if !unit_writes.iter().any(|w| w.rhs_literal == Some(*uval)) {
+            diags.error(
+                format!(
+                    "agent `{}` is armed here with a count scaled x{}, but nothing sets `{up}.{ur}.{uf} = {uval}` -- the multiplier declared by `extent_by ... by` is not established. Write the unit field before arming.",
+                    agent.name, eb.scale
+                ),
+                "E618",
+                site.span,
+            );
+        }
+    }
 }
 
 /// E609 enable-presence check. See the call site in `check_handoff_writes`.
@@ -2114,6 +2177,7 @@ fn record_write(
 ) {
     let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
     let rhs_disabling = rhs.is_some_and(is_disabling);
+    let rhs_literal = rhs.and_then(literal_value);
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
@@ -2125,6 +2189,7 @@ fn record_write(
                     span: field.1,
                     rhs_static: rhs_static.clone(),
                     rhs_disabling,
+                    rhs_literal,
                 });
             }
             // P.R.F = ...  (reg is the register, field is the field)
@@ -2139,6 +2204,7 @@ fn record_write(
                         span: field.1,
                         rhs_static: rhs_static.clone(),
                         rhs_disabling,
+                        rhs_literal,
                     });
                 }
             }
@@ -2146,6 +2212,17 @@ fn record_write(
             // pointer deref: not a peripheral-register write path.
             LValue::Name(_) | LValue::Index(..) | LValue::Deref(_) => {}
         }
+    }
+}
+
+/// The compile-time value of a literal RHS (`2`, `true`, `(0)`), or `None`
+/// for anything computed.
+fn literal_value(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Group(inner) => literal_value(inner),
+        Expr::BoolLiteral(b, _) => Some(u64::from(*b)),
+        Expr::IntLiteral(v, _, _) => Some(*v),
+        _ => None,
     }
 }
 
