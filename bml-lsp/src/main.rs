@@ -803,6 +803,7 @@ fn find_ident_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Ident> {
                     .and_then(|s| find_ident_in_stmt(s, offset))
             }),
         ast::Stmt::Loop(l) => find_ident_in_block(&l.body, offset),
+        ast::Stmt::Claim(c) => find_ident_in_block(&c.body, offset),
         ast::Stmt::While(w) => {
             find_ident_in_expr(&w.cond, offset).or_else(|| find_ident_in_block(&w.body, offset))
         }
@@ -1568,6 +1569,7 @@ fn stmt_start(stmt: &ast::Stmt) -> usize {
         ast::Stmt::Expr(e) => e.span().start,
         ast::Stmt::If(i) => i.cond.span().start,
         ast::Stmt::Loop(l) => l.body.span.start,
+        ast::Stmt::Claim(c) => c.body.span.start,
         ast::Stmt::While(w) => w.cond.span().start,
         ast::Stmt::For(f) => f.var.1.start,
         ast::Stmt::Return(r) => r.value.as_ref().map_or(0, |e| e.span().start),
@@ -1772,6 +1774,7 @@ fn find_call_in_stmt(stmt: &ast::Stmt, offset: usize) -> Option<ast::Expr> {
                     .and_then(|s| find_call_in_stmt(s, offset))
             }),
         ast::Stmt::Loop(l) => find_call_in_block(&l.body, offset),
+        ast::Stmt::Claim(c) => find_call_in_block(&c.body, offset),
         ast::Stmt::While(w) => {
             find_call_in_expr(&w.cond, offset).or_else(|| find_call_in_block(&w.body, offset))
         }

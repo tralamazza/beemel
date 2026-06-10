@@ -45,6 +45,26 @@ pub struct FnSymbol {
     pub max_depth: u32,
 }
 
+impl SymbolTable {
+    /// A copy with `name`'s `Shared` type wrapper stripped -- the view of the
+    /// world inside a `claim name { ... }` window. The checker and the IR
+    /// emitter recurse into the claim body with this table, so the static is
+    /// its inner type there (views and index-reads allowed); everything else
+    /// (including the storage annotation, which the emitter's per-access
+    /// critical-section logic reads) is untouched -- the claim's own masked
+    /// window covers those accesses.
+    #[must_use]
+    pub fn with_claimed(&self, name: &str) -> SymbolTable {
+        let mut t = self.clone();
+        if let Some(sym) = t.statics.get_mut(name)
+            && let Type::Shared(inner, _) = &sym.ty
+        {
+            sym.ty = (**inner).clone();
+        }
+        t
+    }
+}
+
 impl FnSymbol {
     /// The function-pointer type produced by reading this function as a value
     /// (a bare function name or `&fn`): parameter types in order, with `void`

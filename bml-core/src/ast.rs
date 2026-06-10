@@ -116,6 +116,11 @@ pub enum Stmt {
     Asm(AsmStmt),
     Assume(AssumeStmt),
     Assert(AssertStmt),
+    /// `claim X { ... }`: a masked ownership window over the `@shared` static
+    /// `X` -- the CPU-side counterpart of `reclaim`. The block runs inside one
+    /// `cpsid i`/`cpsie i` pair, and within it `X` is its inner type (views
+    /// and index-reads allowed). See `doc/regions-agents-plan.md`.
+    Claim(ClaimStmt),
 }
 
 impl Stmt {
@@ -208,6 +213,14 @@ pub struct LoopStmt {
 #[derive(Debug, Clone)]
 pub struct WhileStmt {
     pub cond: Expr,
+    pub body: Block,
+}
+
+/// `claim X { ... }` -- see `Stmt::Claim`.
+#[derive(Debug, Clone)]
+pub struct ClaimStmt {
+    /// The `@shared` static the window is over.
+    pub name: Ident,
     pub body: Block,
 }
 

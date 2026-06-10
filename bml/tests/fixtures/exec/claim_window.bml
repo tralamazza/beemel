@@ -1,0 +1,27 @@
+// claim end to end: a @shared array is filled and summed inside one masked
+// window; values survive the cpsid/cpsie pair and the view reads the stores.
+import harness.semihost;
+
+var BUF: [u8; 4] @shared;
+
+fn tick() @isr(priority = 2) {
+    BUF[0] = 1;
+}
+
+fn main() @context(thread) {
+    var sum: u32 = 0;
+    claim BUF {
+        BUF[0] = 10;
+        BUF[1] = 20;
+        BUF[2] = 30;
+        BUF[3] = 40;
+        const v = view(BUF);
+        var i: u32 = 0;
+        while i < 4 {
+            sum = sum + (v[i] as u32);
+            i = i + 1;
+        }
+    }
+    expect_u32(sum, 100);
+    done();
+}

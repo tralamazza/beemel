@@ -192,6 +192,7 @@ The compiler uses the ARM convention directly:
 | Thread cannot call `@isr(...)` functions | E403 |
 | Unannotated module `var` -- implicitly thread-only | E404 |
 | `@shared` combined with `in <region>` -- not modeled yet | E613 |
+| `claim` misuse: target not `@shared`, or a call/escape inside the window | E614 |
 
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
@@ -223,6 +224,41 @@ E402 -- the pin disagreeing with usage). `Any`-context functions contribute
 the contexts of their known callers, propagated through the call graph; an
 `Any` function with no known concrete caller contributes nothing (its
 accesses always take the conservative critical section).
+
+### `claim` -- the masked ownership window
+
+Per-access critical sections make each single access atomic, but a
+multi-word operation (draining a log, snapshotting a struct) can still be
+torn between accesses, and views over `@shared` are rejected outright
+(E405). `claim X { ... }` is the block form: one `cpsid i`/`cpsie i` pair
+around the whole window, inside which `X` is its inner type -- views and
+index-reads allowed -- and per-access critical sections are suppressed (the
+mask already covers every access, including to other `@shared` statics).
+
+```bml
+var LOG: [u32; 4] @shared;
+
+fn drain() -> u32 @context(thread) {
+    var sum: u32 = 0;
+    claim LOG {
+        const v = view(LOG);
+        for i: u32 in 0 upto 4 { sum = sum + v[i]; }
+    }
+    return sum;
+}
+```
+
+Restrictions (E614): the target must be a `@shared` static; the body may not
+contain function calls (a callee's own critical sections would `cpsie`
+inside the window and unmask it early) or escape the window (`return`, or a
+`break`/`continue` of an outer loop -- both would skip the unmask).
+`break`/`continue` of loops fully inside the window are fine. A view bound
+inside the window must not be smuggled out through a pre-declared local;
+this is currently trusted, like `reclaim`'s view lifetime.
+
+`claim` is the CPU-side counterpart of `reclaim`: both are explicit
+ownership windows over shared memory, one entered by masking (instant
+acquire), one by observing the agent's completion signal.
 
 ```
 @shared(ceiling = 2):

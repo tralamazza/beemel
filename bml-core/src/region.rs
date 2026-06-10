@@ -986,6 +986,7 @@ fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
         Stmt::CompoundAssign(ca) => gscan_expr(&ca.value, flags_of, scan),
         Stmt::Expr(e) => gscan_expr(e, flags_of, scan),
         Stmt::Loop(l) => gscan_block(&l.body, flags_of, scan),
+        Stmt::Claim(c) => gscan_block(&c.body, flags_of, scan),
         Stmt::While(w) => {
             gscan_expr(&w.cond, flags_of, scan);
             gscan_block(&w.body, flags_of, scan);
@@ -1177,6 +1178,7 @@ fn walk_stmt(stmt: &Stmt, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
             }
         }
         Stmt::Loop(l) => walk_block(&l.body, symbols, out),
+        Stmt::Claim(c) => walk_block(&c.body, symbols, out),
         Stmt::While(w) => {
             walk_expr(&w.cond, symbols, out);
             walk_block(&w.body, symbols, out);

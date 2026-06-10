@@ -690,13 +690,34 @@ packed layout.
     `shared_in_region.bml` (E613), `shared_derived_propagated.bml` (the
     soundness fix visible in IR: the top accessor now takes its cpsid when a
     higher-priority ISR reaches the static through a helper).
+  - *Slice U4: `claim` -- the masked ownership window.* DONE (QEMU + IR
+    validated; board flashed, final probe readback pending an ST-Link
+    reconnect). The reclaim-shaped escape for CPU-shared data:
+    `claim X { ... }` wraps the block in ONE cpsid/cpsie pair; inside, the
+    `@shared` static is its inner type (views and index-reads allowed -- the
+    checker and emitter recurse with `SymbolTable::with_claimed`, a patched
+    table with the `Shared` wrapper stripped) and per-access critical
+    sections are suppressed (`claim_depth`; an inner cpsie would unmask the
+    window early -- also why nested claims emit no second pair). E614
+    rejects: a non-`@shared` target, calls inside (a callee's own critical
+    sections would cpsie mid-window), and escapes (`return`, or
+    break/continue of an outer loop; loops fully inside are fine). View
+    escape through a pre-declared local stays TRUSTED -- the same lifetime
+    gap `reclaim` has; scoped/linear view lifetimes are the shared
+    follow-up. The acquire symmetry is now complete: `claim` enters by
+    masking (instant acquire), `reclaim` by observing the completion signal;
+    E405's message points at `claim`. Dogfood: tim2_isr logs ticks into
+    `TICK_LOG: [u32;4] @shared` (top accessor, no CS), the thread drains all
+    four atomically in `timer_log_sum` (`claim` + view; IR shows exactly one
+    pair there, zero in the ISR). Pinned by `claim_view.bml` (+IR),
+    `claim_{not_shared,call,return,break}.bml` (E614),
+    `exec/claim_window.bml` (QEMU).
   - *Remaining for the fold:* express both disciplines as one ownership
     representation (the `@shared` window = instant acquire/release pair, the
-    agent window = handoff-release/flag-guarded-reclaim); a reclaim-shaped
-    escape for CPU-shared data (views over `@shared` are rejected today for
-    exactly the reason views over agent-shared were before `reclaim` -- the
-    symmetric construct is a view valid within a masked window, which is
-    also what a sound `@shared in R` composition needs); pointer-call
+    agent window = handoff-release/flag-guarded-reclaim) -- with `claim` in
+    hand this is now mostly bookkeeping plus the `@shared in R` composition
+    (E613 lifts when a claim window can satisfy both disciplines at once);
+    scoped view lifetimes (shared by claim and reclaim); pointer-call
     context edges; compared guard conditions; per-buffer flag association.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct

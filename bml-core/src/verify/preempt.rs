@@ -290,6 +290,16 @@ fn collect_written_statics(
                     callees,
                 );
             }
+            Stmt::Claim(c) => {
+                collect_written_statics(
+                    &c.body,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+            }
             Stmt::While(while_stmt) => {
                 collect_expr_writes(
                     &while_stmt.cond,

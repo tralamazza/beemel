@@ -249,6 +249,9 @@ assert_exec!(exec_smoke, "smoke.bml");
 // conservative cpsid/cpsie critical section and the value survives.
 assert_exec!(exec_shared_derived, "shared_derived.bml");
 
+// `claim` window: fill + view-sum a @shared array inside one masked block.
+assert_exec!(exec_claim_window, "claim_window.bml");
+
 // ─── integer wrapping (design-decisions.md §8) ───────────────────────────────
 assert_exec!(exec_wrapping, "wrapping.bml");
 

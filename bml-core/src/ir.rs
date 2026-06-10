@@ -49,6 +49,11 @@ pub struct IrEmitter {
     /// NVIC priority field width (`Target::priority_bits`); positions the
     /// `@isr(priority=N)` value in the IPR byte emitted in `reset_handler`.
     pub(crate) priority_bits: u8,
+    /// Nesting depth of `claim` blocks at the current emission point. Inside
+    /// a claim (depth > 0) the per-access `@shared` critical sections are
+    /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
+    /// inner cpsie would unmask the window early.
+    pub(crate) claim_depth: u32,
     /// Region-placed static name -> `[lo, hi)` byte range of its region's mem
     /// block. In verify mode, taking `&X as u32` of such a static emits an
     /// `assume` that the address is in this range -- the load-bearing provenance
@@ -192,6 +197,7 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
                 || match_stmt.arms.iter().any(|arm| block_has_calls(&arm.body))
         }
         ast::Stmt::Loop(loop_stmt) => block_has_calls(&loop_stmt.body),
+        ast::Stmt::Claim(c) => block_has_calls(&c.body),
         ast::Stmt::While(while_stmt) => {
             expr_has_calls(&while_stmt.cond) || block_has_calls(&while_stmt.body)
         }
@@ -259,6 +265,7 @@ impl IrEmitter {
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
             priority_bits: 4,
+            claim_depth: 0,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -305,6 +312,7 @@ impl IrEmitter {
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
             priority_bits: 4,
+            claim_depth: 0,
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
@@ -675,6 +683,13 @@ impl IrEmitter {
             }
             Stmt::Loop(l) => {
                 self.collect_and_emit_allocas_block(&l.body, symbols);
+            }
+            Stmt::Claim(c) => {
+                // Locals inside the claim are typed against the patched view
+                // of the world (the claimed static unwrapped), matching the
+                // body's emission below.
+                let patched = symbols.with_claimed(&c.name.0);
+                self.collect_and_emit_allocas_block(&c.body, &patched);
             }
             Stmt::If(i) => {
                 self.collect_and_emit_allocas_expr(&i.cond, symbols);
@@ -1651,6 +1666,27 @@ impl IrEmitter {
                 self.line(&format!("{end_lbl}:"));
                 self.indent += 1;
                 (None, false)
+            }
+
+            Stmt::Claim(c) => {
+                // One masked window for the whole block (the CPU-side
+                // `reclaim`; see ast::Stmt::Claim). A plain cpsid/cpsie pair
+                // is sound: the checker rejects calls and escapes inside
+                // (E614), so nothing can unmask early or skip the leave, and
+                // per-access critical sections inside are suppressed
+                // (claim_depth). A nested claim adds no second pair.
+                if self.claim_depth == 0 {
+                    crate::arch::arm::emit_critical_enter(self);
+                }
+                self.claim_depth += 1;
+                let patched = symbols.with_claimed(&c.name.0);
+                let (_, body_term) =
+                    self.emit_block(&c.body, &patched, fn_name, break_label, continue_label);
+                self.claim_depth -= 1;
+                if self.claim_depth == 0 {
+                    crate::arch::arm::emit_critical_leave(self);
+                }
+                (None, body_term)
             }
 
             Stmt::While(while_stmt) => {
@@ -3859,6 +3895,11 @@ impl IrEmitter {
     }
 
     fn static_needs_critical_section(&self, name: &str, symbols: &SymbolTable) -> bool {
+        // Inside a `claim` window everything is already masked; a per-access
+        // pair here would cpsie early and break the window.
+        if self.claim_depth > 0 {
+            return false;
+        }
         if let Some(sym) = symbols.statics.get(name) {
             for ann in &sym.storage {
                 if let StorageAnnotation::Shared(ceiling) = ann {

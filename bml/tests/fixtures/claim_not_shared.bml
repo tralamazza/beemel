@@ -1,0 +1,9 @@
+// `claim` only means something for the ceiling discipline: a plain static has
+// no masked window to claim (E614).
+var PLAIN: u32;
+
+fn main() @context(thread) {
+    claim PLAIN {
+        PLAIN = 1;
+    }
+}

@@ -1,0 +1,12 @@
+// Calls inside a claim window are rejected (E614): a callee's own per-access
+// critical sections would cpsie inside the window and unmask it early.
+var BUF: [u8; 8] @shared;
+
+fn helper() {
+}
+
+fn main() @context(thread) {
+    claim BUF {
+        helper();
+    }
+}

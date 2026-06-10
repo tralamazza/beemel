@@ -1,0 +1,11 @@
+// A break that exits the claim window skips its cpsie (E614); break inside a
+// loop fully contained in the window is fine.
+var BUF: [u8; 8] @shared;
+
+fn main() @context(thread) {
+    loop {
+        claim BUF {
+            break;
+        }
+    }
+}

@@ -364,6 +364,7 @@ fn stmt_contribution(
         }
 
         Stmt::Loop(loop_stmt) => block_contribution(&loop_stmt.body, symbols, defined_fns),
+        Stmt::Claim(c) => block_contribution(&c.body, symbols, defined_fns),
 
         Stmt::While(while_stmt) => {
             let cond_contrib = expr_contribution(&while_stmt.cond, symbols, defined_fns);

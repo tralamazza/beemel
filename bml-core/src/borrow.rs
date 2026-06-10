@@ -104,6 +104,23 @@ fn check_stmt(
             check_fn_body(&loop_stmt.body, current_fn, current_ctx, symbols, diags);
         }
 
+        Stmt::Claim(c) => {
+            // The claim itself is an access of the static (E402/E404 report at
+            // the claim site); the body is checked in the same context.
+            if let Some(sym) = symbols.statics.get(&c.name.0) {
+                check_static_access(
+                    &c.name.0,
+                    &c.name.1,
+                    sym,
+                    current_fn,
+                    current_ctx,
+                    symbols,
+                    diags,
+                );
+            }
+            check_fn_body(&c.body, current_fn, current_ctx, symbols, diags);
+        }
+
         Stmt::While(while_stmt) => {
             check_expr(&while_stmt.cond, current_fn, current_ctx, symbols, diags);
             check_fn_body(&while_stmt.body, current_fn, current_ctx, symbols, diags);

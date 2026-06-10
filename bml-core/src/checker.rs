@@ -1049,6 +1049,40 @@ fn check_block(
                 last_type = None;
             }
 
+            // `claim X { ... }`: a masked ownership window over the `@shared`
+            // static X (the CPU-side reclaim). Inside the body X is its inner
+            // type -- views and index-reads allowed -- via a patched symbol
+            // table; the lowering wraps the block in one cpsid/cpsie pair.
+            // Restrictions (E614): the target must be a `@shared` static, and
+            // the body may not contain calls or escape the window (return, or
+            // break/continue of an outer loop) -- a call could unmask early
+            // through its own critical sections, an escape would skip the
+            // unmask.
+            Stmt::Claim(c) => {
+                let is_shared = symbols
+                    .statics
+                    .get(&c.name.0)
+                    .is_some_and(|sym| matches!(sym.ty, Type::Shared(..)));
+                if is_shared {
+                    check_claim_restrictions(&c.body, 0, &c.name.1, diags);
+                    let patched = symbols.with_claimed(&c.name.0);
+                    check_block(&c.body, &patched, scope, fn_name, expected_ret, diags);
+                } else {
+                    diags.error(
+                        format!(
+                            "`claim {0}` requires `{0}` to be a `@shared` static -- the claim \
+                             window is the masked counterpart of `reclaim`, and only the \
+                             ceiling discipline needs it.",
+                            c.name.0
+                        ),
+                        "E614",
+                        c.name.1,
+                    );
+                    check_block(&c.body, symbols, scope, fn_name, expected_ret, diags);
+                }
+                last_type = None;
+            }
+
             Stmt::While(while_stmt) => {
                 let cond_ty = check_expr(
                     &while_stmt.cond,
@@ -1339,6 +1373,192 @@ fn check_match_coverage(
     }
 }
 
+/// Enforce the `claim` body restrictions (E614): no function calls, no
+/// `return`, and no `break`/`continue` that would exit the claim block
+/// (`loop_depth` tracks loops fully inside it, whose break/continue are
+/// fine). A call's own per-access critical sections would `cpsie` inside the
+/// window and unmask it early; an escape would skip the unmask entirely.
+/// Exhaustive walk (no catch-all), mirroring the other Stmt/Expr walkers.
+fn check_claim_restrictions(
+    block: &ast::Block,
+    loop_depth: u32,
+    claim_span: &crate::source::Span,
+    diags: &mut DiagnosticBag,
+) {
+    for stmt in &block.stmts {
+        claim_restrict_stmt(stmt, loop_depth, claim_span, diags);
+    }
+    if let Some(t) = &block.trailing {
+        claim_restrict_expr(t, claim_span, diags);
+    }
+}
+
+fn claim_restrict_stmt(
+    stmt: &Stmt,
+    loop_depth: u32,
+    claim_span: &crate::source::Span,
+    diags: &mut DiagnosticBag,
+) {
+    match stmt {
+        Stmt::VarDecl(vd) => claim_restrict_expr(&vd.init, claim_span, diags),
+        Stmt::Assign(a) => claim_restrict_expr(&a.value, claim_span, diags),
+        Stmt::CompoundAssign(ca) => claim_restrict_expr(&ca.value, claim_span, diags),
+        Stmt::Expr(e) => claim_restrict_expr(e, claim_span, diags),
+        Stmt::If(i) => {
+            claim_restrict_expr(&i.cond, claim_span, diags);
+            check_claim_restrictions(&i.then_block, loop_depth, claim_span, diags);
+            if let Some(eb) = &i.else_branch {
+                claim_restrict_stmt(eb, loop_depth, claim_span, diags);
+            }
+        }
+        Stmt::Loop(l) => check_claim_restrictions(&l.body, loop_depth + 1, claim_span, diags),
+        Stmt::While(w) => {
+            claim_restrict_expr(&w.cond, claim_span, diags);
+            check_claim_restrictions(&w.body, loop_depth + 1, claim_span, diags);
+        }
+        Stmt::For(f) => {
+            claim_restrict_expr(&f.start, claim_span, diags);
+            claim_restrict_expr(&f.end, claim_span, diags);
+            if let Some(step) = &f.step {
+                claim_restrict_expr(step, claim_span, diags);
+            }
+            check_claim_restrictions(&f.body, loop_depth + 1, claim_span, diags);
+        }
+        Stmt::Match(m) => {
+            claim_restrict_expr(&m.scrutinee, claim_span, diags);
+            for arm in &m.arms {
+                check_claim_restrictions(&arm.body, loop_depth, claim_span, diags);
+            }
+        }
+        Stmt::Return(_) => {
+            diags.error(
+                "`return` inside a `claim` block would leave interrupts masked (the window's \
+                 cpsie is at the block end). Move the return outside the claim.",
+                "E614",
+                *claim_span,
+            );
+        }
+        Stmt::Break(span) | Stmt::Continue(span) => {
+            if loop_depth == 0 {
+                diags.error(
+                    "`break`/`continue` here exits the `claim` block and would skip its cpsie \
+                     (interrupts stay masked). Restructure so the claim block runs to its end.",
+                    "E614",
+                    *span,
+                );
+            }
+        }
+        Stmt::Asm(a) => {
+            for (_, target) in &a.outputs {
+                claim_restrict_expr(target, claim_span, diags);
+            }
+            for (_, value) in &a.inputs {
+                claim_restrict_expr(value, claim_span, diags);
+            }
+        }
+        Stmt::Assume(a) => claim_restrict_expr(&a.cond, claim_span, diags),
+        Stmt::Assert(a) => claim_restrict_expr(&a.cond, claim_span, diags),
+        Stmt::Block(b) => check_claim_restrictions(b, loop_depth, claim_span, diags),
+        // A nested claim is its own (depth-suppressed) window; its body obeys
+        // the same restrictions relative to the same outer window.
+        Stmt::Claim(c) => check_claim_restrictions(&c.body, loop_depth, claim_span, diags),
+    }
+}
+
+fn claim_restrict_expr(expr: &Expr, claim_span: &crate::source::Span, diags: &mut DiagnosticBag) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::Ident(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => {}
+        Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
+            claim_restrict_expr(e, claim_span, diags);
+        }
+        Expr::Binary(l, _, r) | Expr::Index(l, r) => {
+            claim_restrict_expr(l, claim_span, diags);
+            claim_restrict_expr(r, claim_span, diags);
+        }
+        Expr::Call(callee, args) => {
+            diags.error(
+                "function calls inside a `claim` block are not allowed: a callee's own \
+                 critical sections would cpsie inside the window and unmask it early. Hoist \
+                 the call out of the claim.",
+                "E614",
+                callee.span(),
+            );
+            claim_restrict_expr(callee, claim_span, diags);
+            for a in args {
+                claim_restrict_expr(a, claim_span, diags);
+            }
+        }
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            claim_restrict_expr(base, claim_span, diags);
+            if let Some(l) = len {
+                claim_restrict_expr(l, claim_span, diags);
+            }
+            if let Some(s) = stride {
+                claim_restrict_expr(s, claim_span, diags);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            claim_restrict_expr(base, claim_span, diags);
+            if let Some(c) = capacity {
+                claim_restrict_expr(c, claim_span, diags);
+            }
+            claim_restrict_expr(head, claim_span, diags);
+            claim_restrict_expr(len, claim_span, diags);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            claim_restrict_expr(base, claim_span, diags);
+            if let Some(o) = bit_offset {
+                claim_restrict_expr(o, claim_span, diags);
+            }
+            if let Some(l) = len_bits {
+                claim_restrict_expr(l, claim_span, diags);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                claim_restrict_expr(e, claim_span, diags);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                claim_restrict_expr(e, claim_span, diags);
+            }
+        }
+        Expr::Match(m) => {
+            claim_restrict_expr(&m.scrutinee, claim_span, diags);
+            for arm in &m.arms {
+                check_claim_restrictions(&arm.body, 0, claim_span, diags);
+            }
+        }
+        Expr::Block(b) => check_claim_restrictions(&b.block, 0, claim_span, diags),
+        Expr::If(i) => {
+            claim_restrict_expr(&i.cond, claim_span, diags);
+            check_claim_restrictions(&i.then_block, 0, claim_span, diags);
+            claim_restrict_expr(&i.else_branch, claim_span, diags);
+        }
+    }
+}
+
 fn block_definitely_returns(block: &ast::Block) -> bool {
     block.stmts.iter().any(stmt_definitely_returns)
 }
@@ -1347,6 +1567,7 @@ fn stmt_definitely_returns(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Return(_) => true,
         Stmt::Block(block) => block_definitely_returns(block),
+        Stmt::Claim(c) => block_definitely_returns(&c.body),
         Stmt::If(if_stmt) => {
             let then_returns = block_definitely_returns(&if_stmt.then_block);
             let else_returns = if_stmt
@@ -1384,6 +1605,7 @@ fn stmt_may_break(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Break(_) => true,
         Stmt::Block(block) => block_may_break(block),
+        Stmt::Claim(c) => block_may_break(&c.body),
         Stmt::If(if_stmt) => {
             block_may_break(&if_stmt.then_block)
                 || if_stmt
@@ -3135,8 +3357,8 @@ fn reject_shared_view_backing(
             diags.error(
                 "cannot build a view over `@shared` memory: view access does not carry \
              the ceiling critical-section that direct access does, so it would be an \
-             unprotected race. Access the static directly, or back the view with \
-             non-`@shared` storage."
+             unprotected race. Access the static directly, take the view inside a \
+             `claim X { ... }` window, or back the view with non-`@shared` storage."
                     .to_string(),
                 "E405",
                 span,

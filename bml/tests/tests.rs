@@ -2913,6 +2913,24 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// `claim X { ... }` (unification: the masked window, CPU-side reclaim): one
+// cpsid/cpsie pair for the whole block, views/index-reads of the claimed
+// @shared static allowed inside, escapes and calls rejected (E614).
+assert_pass!(test_claim_view_ok, "claim_view.bml");
+assert_error!(
+    test_claim_not_shared_rejected,
+    "claim_not_shared.bml",
+    "E614"
+);
+assert_error!(test_claim_call_rejected, "claim_call.bml", "E614");
+assert_error!(test_claim_return_rejected, "claim_return.bml", "E614");
+assert_error!(test_claim_break_rejected, "claim_break.bml", "E614");
+assert_ir_contains!(
+    test_claim_emits_window,
+    "claim_view.bml",
+    "asm sideeffect \"cpsid i\""
+);
+
 // Call-graph context propagation (unification U3): an `Any` fn runs in its
 // callers' contexts, so the Any hop no longer launders ISR access past
 // E404/E402 or hides accessors from the derived ceiling.

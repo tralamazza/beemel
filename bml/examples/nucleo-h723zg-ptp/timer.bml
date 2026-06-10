@@ -24,7 +24,7 @@ import svd.rcc;
 import svd.tim2;
 import svd.nvic;
 
-export fn timer_init, fn timer_ticks;
+export fn timer_init, fn timer_ticks, fn timer_log_sum;
 
 // This module owns the TIM2 peripheral. It cannot own its RCC enable bit.
 owns TIM2;
@@ -32,6 +32,13 @@ owns TIM2;
 // Tick counter, ISR producer -> thread consumer. Bare `@shared`: the ceiling
 // is derived from the accessor contexts (here: 2).
 var TICKS: u32 @shared;
+
+// Multi-word state for the `claim` dogfood: the ISR logs recent tick counts
+// into a 4-slot ring; the thread drains all four atomically inside one
+// `claim` window (the masked counterpart of `reclaim` -- one cpsid/cpsie
+// pair, a view allowed inside). Without the window, a tick between slot
+// reads would yield a torn, inconsistent snapshot.
+var TICK_LOG: [u32; 4] @shared;
 
 fn timer_init() {
     // Enable the TIM2 clock in the shared RCC register.
@@ -58,6 +65,9 @@ fn tim2_isr() @isr("TIM2", priority = 2) {
     TIM2.SR.UIF = false;
     var t: u32 = TICKS;
     TICKS = t + 1;
+    // The ISR is the top accessor of both statics (derived ceiling 2): no
+    // critical section is emitted for these writes.
+    TICK_LOG[t & 3] = t;
 }
 
 // Thread-side reader. Annotated @context(thread) so this access contributes
@@ -66,4 +76,20 @@ fn tim2_isr() @isr("TIM2", priority = 2) {
 // derivation.
 fn timer_ticks() -> u32 @context(thread) {
     return TICKS;
+}
+
+// Atomic multi-word snapshot: sum the whole log inside one claim window so a
+// tick cannot land between the slot reads. The view over the @shared array
+// is only legal inside the window (E405 outside).
+fn timer_log_sum() -> u32 @context(thread) {
+    var sum: u32 = 0;
+    claim TICK_LOG {
+        const v = view(TICK_LOG);
+        var i: u32 = 0;
+        while i < 4 {
+            sum = sum + v[i];
+            i = i + 1;
+        }
+    }
+    return sum;
 }

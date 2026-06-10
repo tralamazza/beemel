@@ -1105,6 +1105,7 @@ impl<'a> Parser<'a> {
             TokenKind::If => self.parse_if_stmt().map(Stmt::If),
             TokenKind::Loop => self.parse_loop_stmt().map(Stmt::Loop),
             TokenKind::While => self.parse_while_stmt().map(Stmt::While),
+            TokenKind::Claim => self.parse_claim_stmt().map(Stmt::Claim),
             TokenKind::For => self.parse_for_stmt().map(|f| Stmt::For(Box::new(f))),
             TokenKind::Match => self.parse_match_stmt().map(Stmt::Match),
             TokenKind::AsmBody(text) => {
@@ -1235,6 +1236,15 @@ impl<'a> Parser<'a> {
         self.advance(); // loop
         let body = self.parse_block()?;
         Some(LoopStmt { body })
+    }
+
+    /// `claim X { ... }` -- a masked ownership window over the `@shared`
+    /// static `X` (the CPU-side counterpart of `reclaim`).
+    fn parse_claim_stmt(&mut self) -> Option<ClaimStmt> {
+        self.advance(); // claim
+        let name = self.parse_ident()?;
+        let body = self.parse_block()?;
+        Some(ClaimStmt { name, body })
     }
 
     fn parse_match_arms(&mut self) -> Option<(Expr, Vec<MatchArm>, Span)> {

@@ -240,6 +240,7 @@ fn fold_stmt(stmt: &mut Stmt, consts: &HashMap<String, i128>, array_lens: &HashM
             }
         }
         Stmt::Loop(s) => fold_block(&mut s.body, consts, array_lens),
+        Stmt::Claim(c) => fold_block(&mut c.body, consts, array_lens),
         Stmt::While(s) => {
             fold_expr(&mut s.cond, consts, array_lens);
             fold_block(&mut s.body, consts, array_lens);

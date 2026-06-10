@@ -1,0 +1,9 @@
+// A return inside a claim window would skip the block-end cpsie and leave
+// interrupts masked (E614).
+var BUF: [u8; 8] @shared;
+
+fn main() @context(thread) {
+    claim BUF {
+        return;
+    }
+}

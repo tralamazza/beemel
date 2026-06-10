@@ -212,6 +212,12 @@ fn scan_stmt<'p>(stmt: &'p Stmt, shared: &HashSet<&str>, out: &mut HashSet<&'p s
             }
         }
         Stmt::Loop(l) => scan_block(&l.body, shared, out),
+        Stmt::Claim(c) => {
+            if shared.contains(c.name.0.as_str()) {
+                out.insert(c.name.0.as_str());
+            }
+            scan_block(&c.body, shared, out);
+        }
         Stmt::While(w) => {
             scan_expr(&w.cond, shared, out);
             scan_block(&w.body, shared, out);
