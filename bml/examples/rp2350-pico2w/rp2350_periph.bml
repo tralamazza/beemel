@@ -1,0 +1,48 @@
+// Hand-written RP2350 peripheral declarations (datasheet 12.6 DMA, 7.5
+// RESETS) -- the minimal set the probe program needs. A generated SVD module
+// can replace this at board bring-up.
+
+// Central DMA controller, channel 0 + raw interrupt status.
+peripheral DMA at 0x50000000 {
+    reg CH0_READ_ADDR offset 0x000 {
+        field ADDR: u32 bit[0..31]
+    }
+    reg CH0_WRITE_ADDR offset 0x004 {
+        field ADDR: u32 bit[0..31]
+    }
+    reg CH0_TRANS_COUNT offset 0x008 {
+        field MODE: u32 bit[28..31]   // 0 = NORMAL (count down, halt)
+        field COUNT: u32 bit[0..27]   // number of bus transfers
+    }
+    // Control and status (table 1151). Writing this alias triggers the
+    // channel.
+    reg CH0_CTRL_TRIG offset 0x00c {
+        field AHB_ERROR: b1 bit[31]
+        field READ_ERROR: b1 bit[30]
+        field WRITE_ERROR: b1 bit[29]
+        field BUSY: b1 bit[26]        // busy-HIGH; see the polarity finding
+        field TREQ_SEL: u32 bit[17..22]  // 0x3f = PERMANENT (unpaced)
+        field CHAIN_TO: u32 bit[13..16]  // set to own channel = no chaining
+        field INCR_WRITE: b1 bit[6]
+        field INCR_READ: b1 bit[4]
+        field DATA_SIZE: u32 bit[2..3]   // 0 byte, 1 halfword, 2 word
+        field EN: b1 bit[0]
+    }
+    // Raw per-channel completion bits: set when a channel finishes its
+    // transfer sequence, regardless of interrupt enables. Write 1 to clear.
+    reg INTR offset 0x400 {
+        field CH0: b1 bit[0]
+    }
+}
+
+// Reset controller. NOTE the inverted gating: reset value 1 = peripheral
+// HELD IN RESET; software CLEARS the bit to enable -- the polarity
+// `enabled_by` cannot express yet (see rp2350.target).
+peripheral RESETS at 0x40020000 {
+    reg RESET offset 0x0 {
+        field DMA: b1 bit[2]
+    }
+    reg RESET_DONE offset 0x8 {
+        field DMA: b1 bit[2]          // read-only: high when out of reset
+    }
+}

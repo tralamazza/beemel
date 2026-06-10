@@ -1,0 +1,77 @@
+# RP2350 chip physics (base target) -- the cross-vendor falsification
+# exercise: does the regions/agents vocabulary, grown on the STM32H723, hold
+# for another vendor's silicon with no new keys? Transcribed from the RP2350
+# datasheet (sections 2.1 bus fabric, 2.2 address map, 7 resets, 12.6 DMA).
+#
+# NOTE the chip has NO internal flash: the XIP window is chip physics, the
+# flash SIZE is board physics. This file carries no [mem.flash]; the board
+# target (pico2w.target) includes this file and adds it -- a three-layer
+# chip/board/project split the include chain supports unchanged.
+#
+# FINDINGS from this transcription (recorded in doc/regions-agents-plan.md):
+# - enabled_by cannot express RP2350 gating: RESETS.RESET.DMA is
+#   CLEAR-to-enable (reset value 1 = held in reset), and the E609/E610
+#   machinery assumes set-to-enable polarity. Omitted here; vocabulary gap.
+# - The MPU is PMSAv8 (RBAR/RLAR), not the PMSAv7 sequence the compiler
+#   generates -- so has_mpu = false until v8-M MPU emission exists. (Moot in
+#   practice: no data cache, so no cacheable = false blocks arise.)
+# - CTRL_TRIG.BUSY is busy-HIGH; the done-high signal completes_by needs is
+#   the raw INTR bit (set on channel completion, readable without enabling
+#   the interrupt). The native polling idiom `while BUSY {}` (wait-while-set)
+#   is not yet a recognized E611 guard form.
+arch = armv7em
+cpu = cortex-m33
+priority_bits = 4
+has_fpu = true
+has_bitband = false
+has_mpu = false
+# Code runs from the XIP window; the board target's flash block covers this.
+vector_table_offset = 0x10000000
+data_block = sram
+
+# Main system SRAM: 512 KB, striped on address bits 3:2 across banks 0-7
+# (two 256 KB power domains; the striping is invisible to software layout).
+[mem.sram]
+base = 0x20000000
+size = 512K
+
+# SRAM8/9: 4 KB each, non-striped, directly after the striped region. Useful
+# as dedicated per-purpose banks (no striping contention).
+[mem.sram8]
+base = 0x20080000
+size = 4K
+
+[mem.sram9]
+base = 0x20081000
+size = 4K
+
+# The central DMA controller (16 channels; one agent -- channels share the
+# controller's reach, like the H7 DMA streams). Datasheet 2.1: the AHB5
+# crossbar gives the DMA read and write masters paths to ROM, XIP, SRAM, and
+# the APB/AHB peripherals. NOT reachable: SIO (0xd0000000) and the M33
+# private peripherals (0xe0000000) -- those are core-local, on dedicated
+# per-processor paths, not crossbar downstream ports. That exclusion is the
+# whole reach story on this chip (the opposite pole from the nRF52, whose
+# EasyDMA cannot even read flash).
+[agent.dma]
+kind = dma
+bus = 0x00000000..0x00008000, 0x10000000..0x20000000, 0x20000000..0x20082000, 0x40000000..0x60000000
+# Channel 0 address handoffs: READ_ADDR is where the agent reads, WRITE_ADDR
+# where it writes (full byte addresses, written verbatim -- same model as the
+# H7 MDMA SAR/DAR).
+handoff = DMA.CH0_READ_ADDR
+handoff = DMA.CH0_WRITE_ADDR
+# Raw per-channel completion bit (INTR, offset 0x400): set when the channel
+# finishes a transfer sequence, readable with interrupts disabled. Activates
+# the sound-reclaim guard (E611).
+completes_by = DMA.INTR.CH0
+# enabled_by deliberately ABSENT: see the polarity finding above.
+
+# The second Cortex-M33. A full crossbar master -- a genuine cpu-kind agent,
+# declared to probe the multi-core boundary the plan defers ("multi-core not
+# designed here"): nothing checks core1's accesses today, this line only
+# records that the sharer exists.
+[agent.core1]
+kind = cpu
+cached = false
+reach = *

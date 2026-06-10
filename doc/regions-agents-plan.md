@@ -729,6 +729,59 @@ refactor (direct typed indexing, no `*u32` index-read workaround), it is the
 prerequisite for retiring `@dma`, and it closes the last place an unchecked
 address reaches an agent.
 
+## Cross-vendor falsification: RP2350 (Pico 2 W)
+
+The model grew entirely on one chip, so the standing falsification question
+was whether the vocabulary is BML or secretly ST. Exercise: transcribe the
+RP2350 (datasheet sections 2.1/2.2/7/12.6, vendored at
+`~/Documents/rp2350-datasheet.pdf`) into `bml/examples/rp2350-pico2w/`
+(`rp2350.target` chip physics + `pico2w.target` board/project + `probe.bml`,
+compile-only; board bring-up -- IMAGE_DEF boot block, SWD flow -- is its own
+milestone, the user has a debug probe).
+
+**Held with zero new keys:**
+
+- The H723 idiom transposes wholesale: `owns DMA`, address handoffs
+  (`CH0_READ_ADDR`/`CH0_WRITE_ADDR`, full byte addresses verbatim),
+  `completes_by = DMA.INTR.CH0` (raw per-channel completion bit, done-high),
+  region placement, guarded reclaim. The probe compiled first try; the
+  deliberate mistakes fire the same errors (unguarded reclaim E611, handoff
+  without owns E605).
+- Bus windows express the opposite reach pole from the H7/nRF: a full
+  crossbar where DMA reaches everything EXCEPT the core-local segments (SIO
+  0xd0000000, M33 PPB 0xe0000000, on dedicated per-core paths). A reach claim
+  over an SIO-range block dies at target load -- verified.
+- The chip has no internal flash, so flash size is BOARD physics: a
+  three-layer chip/board/project split, and the include chain handled it
+  unchanged.
+- `cpu = cortex-m33` was a one-line cflags addition (we emit v7e-m, which
+  ARMv8-M Mainline executes).
+
+**Vocabulary gaps found (the point of the exercise):**
+
+1. **`enabled_by` assumes set-to-enable.** RP2350 gating is RESETS.RESET.DMA
+   = CLEAR-to-enable (reset value 1 = held in reset). E609/E610 cannot
+   express the inverted polarity; the base target omits enabled_by and the
+   probe's `RESETS.RESET.DMA = false` is unchecked physics. Fix direction: a
+   polarity marker (e.g. `enabled_by = !RESETS.RESET.DMA`), which would also
+   flip the E610 stomp direction.
+2. **MPU generation is PMSAv7-only.** The RP2350 M33 MPU is PMSAv8
+   (RBAR/RLAR); the generated RNR/RBAR/RASR sequence would program garbage.
+   `has_mpu = false` until v8-M emission exists (moot in practice here: no
+   data cache, so no `cacheable = false` blocks arise -- but the gap is
+   architectural, not theoretical).
+3. **E611 misses the wait-while-set idiom.** CTRL_TRIG.BUSY is busy-HIGH;
+   the native RP2350 poll is `while BUSY {}` -- rejected today (verified),
+   the mirror image of the accepted `while !flag {}`. Same fix family as the
+   compared-conditions backlog item: guard polarity forms.
+4. **core1 is a declarable but inert agent.** `[agent.core1] kind = cpu`
+   parses and validates; no check consumes a second cpu agent (multi-core is
+   the recorded deferred track). The declaration at least makes the sharer
+   visible in the physics file.
+
+Net: the model is not ST-shaped -- the failures are specific, fixable
+polarity/architecture gaps, not structural mismatches.
+
 ## Verification strategy (empirically validated)
 
 Probed 2026-06-08 against the local IKOS fork (interval-congruence domain) on

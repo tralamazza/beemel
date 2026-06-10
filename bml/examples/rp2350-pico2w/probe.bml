@@ -1,0 +1,60 @@
+// RP2350 falsification probe (compile-only for now; board bring-up is its
+// own milestone -- IMAGE_DEF boot block, picotool/SWD flow).
+//
+// A DMA channel-0 word copy SRC -> DST in the dma_buf region, written in the
+// regions/agents idiom grown on the H723: ownership of the controller,
+// release via the address handoffs, completion via the raw INTR bit, and a
+// guarded reclaim of the destination. Every check that protected the H723
+// example fires here with zero compiler changes (verified by the deliberate-
+// mistake variants in the plan doc notes): handoff writes without `owns` are
+// E605, an unguarded reclaim is E611, reach outside the declared blocks dies
+// at target load against the crossbar windows.
+import rp2350_periph;
+
+owns DMA;
+
+var SRC: [u32; 16] in dma_buf;
+var DST: [u32; 16] in dma_buf;
+var COPY_OK: u32;     // probe-visible result once consumed
+
+fn dma_setup() {
+    // Bring the DMA out of reset. INVERTED gating (clear-to-enable) -- the
+    // enabled_by/E609 machinery cannot express this polarity yet; this write
+    // is unchecked physics for now (recorded finding).
+    RESETS.RESET.DMA = false;
+
+    // Fill the source with a recognizable ramp.
+    var i: u32 = 0;
+    while i < 16 {
+        SRC[i] = 0xB0 + i;
+        i = i + 1;
+    }
+
+    // Program channel 0: 16 word transfers, unpaced, no chaining.
+    DMA.CH0_READ_ADDR = &SRC as u32;     // release: source side
+    DMA.CH0_WRITE_ADDR = &DST as u32;    // release: destination side
+    DMA.CH0_TRANS_COUNT.COUNT = 16;
+    DMA.CH0_CTRL_TRIG.TREQ_SEL = 0x3F;   // permanent request (mem-to-mem)
+    DMA.CH0_CTRL_TRIG.INCR_READ = true;
+    DMA.CH0_CTRL_TRIG.INCR_WRITE = true;
+    DMA.CH0_CTRL_TRIG.DATA_SIZE = 2;     // word
+    DMA.CH0_CTRL_TRIG.EN = true;         // trigger
+}
+
+// Consume the copy once the channel signals completion: the reclaim is gated
+// on the agent's completes_by flag (E611), exactly as on the H723.
+fn dma_poll() {
+    if DMA.INTR.CH0 {
+        const v = reclaim(DST);
+        if v[1] == 0xB1 {
+            COPY_OK = 1;
+        }
+    }
+}
+
+fn main() @context(thread) {
+    dma_setup();
+    loop {
+        dma_poll();
+    }
+}

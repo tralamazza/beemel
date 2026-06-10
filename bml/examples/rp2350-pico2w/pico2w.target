@@ -1,0 +1,22 @@
+# Raspberry Pi Pico 2 W -- board + project target.
+#
+# Layering: rp2350.target is chip physics; this file adds BOARD physics (the
+# external QSPI flash -- the chip has none, so flash size is a board fact)
+# and project policy (regions). Same include mechanism as the H723 split,
+# stretched to three layers without new vocabulary.
+include = rp2350.target
+
+# 4 MB QSPI flash, memory-mapped through the XIP window.
+[mem.flash]
+base = 0x10000000
+size = 4M
+
+# Project claim: which blocks this program actually hands to the DMA. The
+# chip's bus windows (rp2350.target) cross-check it at target load.
+[agent.dma]
+reach = sram, flash
+
+# DMA copy buffers live in main SRAM, shared with the DMA agent.
+[region.dma_buf]
+mem = sram
+agents = dma

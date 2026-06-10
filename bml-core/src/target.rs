@@ -834,9 +834,12 @@ impl Target {
             "cortex-m0" | "cortex-m0plus" | "cortex-m3" => (false, ""),
             "cortex-m4" => (true, "fpv4-sp-d16"),
             "cortex-m7" => (true, "fpv5-d16"),
+            // ARMv8-M Mainline; executes the v7e-m code we emit. Single-
+            // precision FPU (RP2350).
+            "cortex-m33" => (true, "fpv5-sp-d16"),
             other => {
                 return Err(format!(
-                    "unrecognized cpu `{other}` (expected cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, or cortex-m7)"
+                    "unrecognized cpu `{other}` (expected cortex-m0, cortex-m0plus, cortex-m3, cortex-m4, cortex-m7, or cortex-m33)"
                 ));
             }
         };
