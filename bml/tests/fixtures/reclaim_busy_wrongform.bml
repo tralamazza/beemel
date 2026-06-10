@@ -1,0 +1,22 @@
+// Polarity matters: `if BUSY { reclaim }` reclaims WHILE the agent is still
+// writing -- with completes_by = !BUSY this is precisely the unsafe
+// direction, rejected (E611).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field BUSY: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    if DMAC.SR.BUSY {
+        const v = reclaim(BUF);
+        return v[i] as u32;
+    }
+    return 0;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

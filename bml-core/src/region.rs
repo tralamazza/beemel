@@ -549,7 +549,8 @@ fn check_agent_enables(
             continue;
         };
         for enable_path in &agent.enabled_by {
-            match resolve_enable(enable_path, symbols) {
+            let (bare_path, inverted) = split_polarity(enable_path);
+            match resolve_enable(bare_path, symbols) {
                 None => {
                     diags.error(
                         format!(
@@ -562,17 +563,30 @@ fn check_agent_enables(
                     );
                 }
                 Some((ep, er, ef)) => {
-                    let enabled = writes
-                        .iter()
-                        .any(|w| enable_write_matches(w, &ep, &er, ef.as_deref()));
+                    // Normal polarity: the gate must be SET somewhere.
+                    // Inverted (`!P.R.F`, clear-to-enable -- e.g. a reset bit
+                    // held high at boot): it must be CLEARED somewhere.
+                    let enabled = if inverted {
+                        writes
+                            .iter()
+                            .any(|w| disables_field(w, &ep, &er, ef.as_deref()))
+                    } else {
+                        writes
+                            .iter()
+                            .any(|w| enable_write_matches(w, &ep, &er, ef.as_deref()))
+                    };
                     if !enabled {
+                        let action = if inverted { "cleared" } else { "set" };
                         diags.error(
                             format!(
                                 "agent `{}` is programmed here (handoff `{}.{}` written) but its \
-                                 enable `{enable_path}` is never set; writes to a clock-gated \
-                                 peripheral are silently dropped. Set it before programming the \
+                                 enable `{enable_path}` is never {action}; writes to a gated \
+                                 peripheral are silently dropped. {} it before programming the \
                                  agent.",
-                                agent.name, site.periph, site.reg
+                                agent.name,
+                                site.periph,
+                                site.reg,
+                                if inverted { "Clear" } else { "Set" }
                             ),
                             "E609",
                             site.span,
@@ -607,16 +621,36 @@ fn check_agent_clock_stomp(
             continue;
         }
         for enable_path in &agent.enabled_by {
-            let Some((ep, er, ef)) = resolve_enable(enable_path, symbols) else {
+            let (bare_path, inverted) = split_polarity(enable_path);
+            let Some((ep, er, ef)) = resolve_enable(bare_path, symbols) else {
                 continue; // a bad path is already reported by E609
             };
             for w in writes {
-                if disables_field(w, &ep, &er, ef.as_deref()) && !owners.contains(&w.span.file) {
+                // The stomp direction follows the polarity: a normal gate is
+                // stomped by CLEARING it, an inverted (clear-to-enable, e.g.
+                // reset bit) gate by SETTING it back. For the inverted case a
+                // field write with a non-clearing rhs counts as a possible
+                // set -- writing an agent's reset bit from a stranger module
+                // is suspect regardless of the computed value.
+                let stomps = if inverted {
+                    w.periph == ep
+                        && w.reg == er
+                        && w.field.as_deref() == ef.as_deref()
+                        && !w.rhs_disabling
+                } else {
+                    disables_field(w, &ep, &er, ef.as_deref())
+                };
+                if stomps && !owners.contains(&w.span.file) {
+                    let dir = if inverted {
+                        "re-asserting it"
+                    } else {
+                        "disabling it"
+                    };
                     diags.error(
                         format!(
-                            "`{enable_path}` is a clock gate of agent `{}`; disabling it from a \
-                             module that does not own the agent can silently stop it. Only the \
-                             module that owns the agent may gate its clock.",
+                            "`{enable_path}` gates agent `{}`; {dir} from a module that does \
+                             not own the agent can silently stop it. Only the module that owns \
+                             the agent may operate its gate.",
                             agent.name
                         ),
                         "E610",
@@ -723,6 +757,15 @@ fn check_handoff_port(
     }
     // Covered by a mix of TAG and non-TAG windows: either port works, nothing
     // to require.
+}
+
+/// Split an optional leading `!` (inverted polarity) off an `enabled_by` /
+/// `completes_by` path: `!RESETS.RESET.DMA` -> `(RESETS.RESET.DMA, true)`.
+/// Inverted enable = the gate is CLEAR-to-enable (e.g. a reset bit held high
+/// at boot); the E609/E610 directions flip accordingly.
+fn split_polarity(path: &str) -> (&str, bool) {
+    path.strip_prefix('!')
+        .map_or((path, false), |rest| (rest, true))
 }
 
 /// Resolve an `enabled_by` path (`P.R` or `P.R.F`) against the peripheral table.
@@ -895,9 +938,21 @@ fn fn_result_expr(body: &Block) -> Option<&Expr> {
 /// predicate (`mdma_done()` whose body returns the flag). `preds` resolves the
 /// latter; pass an empty map to recognize only direct reads (used to *build* the
 /// predicate set without recursing through predicates).
+/// Flip the polarity of a flag string: `"P.R.F"` <-> `"!P.R.F"`. Polarity
+/// rides on the string -- a `completes_by = !P.R.F` declaration means "done
+/// when the field is CLEAR" (e.g. the RP2350 DMA BUSY bit), and guard forms
+/// establish either the positive or the negated fact.
+fn negate_flag(f: &str) -> String {
+    f.strip_prefix('!')
+        .map_or_else(|| format!("!{f}"), str::to_string)
+}
+
 fn cond_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
     match e {
         Expr::Group(inner) => cond_flag(inner, preds),
+        // `!<flag>` tests the flag clear: the condition's truth is the
+        // NEGATED fact. Double negation normalizes (`!!F` -> `F`).
+        Expr::Unary(UnaryOp::Not, inner) => cond_flag(inner, preds).map(|f| negate_flag(&f)),
         Expr::FieldAccess(mid, (field, _)) => {
             if let Expr::FieldAccess(inner, (reg, _)) = mid.as_ref()
                 && let Expr::Ident((periph, _)) = inner.as_ref()
@@ -924,26 +979,31 @@ fn cond_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
 /// forms, which guard the REST of this block (see `check_reclaim_guards`).
 fn gscan_block(block: &Block, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
     for stmt in &block.stmts {
-        // `while !<flag> {}` (empty body): the loop exits only with the flag
-        // observed set, so it holds from after the loop to the end of the
-        // block.
+        // `while <cond> {}` (empty body): the loop exits only when the
+        // condition turned false, so the NEGATION of the condition's fact
+        // holds from after the loop to the end of the block. Covers both
+        // polarities: `while !DONE {}` establishes DONE, `while BUSY {}`
+        // establishes !BUSY (the wait-while-set idiom of busy-high flags).
         if let Stmt::While(w) = stmt
-            && let Some(flag) = negated_flag(&w.cond, &scan.preds)
+            && let Some(flag) = cond_flag(&w.cond, &scan.preds)
             && w.body.stmts.is_empty()
             && w.body.trailing.is_none()
         {
-            scan.guards.push((flag, rest_of_block(block, w.body.span)));
+            scan.guards
+                .push((negate_flag(&flag), rest_of_block(block, w.body.span)));
         }
-        // `if !<flag> { return; }` (early exit): past the if, the flag was
-        // observed set. Requires no else and a then-block that always
-        // terminates directly.
+        // `if <cond> { return; }` (early exit): past the if, the condition
+        // was observed false -- its negated fact holds for the rest of the
+        // block. Requires no else and a then-block that always terminates
+        // directly. Both polarities: `if !DONE { return; }` establishes
+        // DONE, `if BUSY { return; }` establishes !BUSY.
         if let Stmt::If(i) = stmt
-            && let Some(flag) = negated_flag(&i.cond, &scan.preds)
+            && let Some(flag) = cond_flag(&i.cond, &scan.preds)
             && i.else_branch.is_none()
             && i.then_block.has_direct_terminator()
         {
             scan.guards
-                .push((flag, rest_of_block(block, i.then_block.span)));
+                .push((negate_flag(&flag), rest_of_block(block, i.then_block.span)));
         }
         gscan_stmt(stmt, flags_of, scan);
     }
@@ -956,17 +1016,6 @@ fn gscan_block(block: &Block, flags_of: &HashMap<String, Vec<String>>, scan: &mu
 /// blocking-acquire form establishes its flag over.
 fn rest_of_block(block: &Block, upto: Span) -> Span {
     Span::new(block.span.file, upto.end, block.span.end)
-}
-
-/// The flag a NEGATED condition tests clear: `!<flag>` or `!done()`, possibly
-/// parenthesized. The complement of `cond_flag`, used by the blocking-acquire
-/// forms (`while !flag {}`, `if !flag { return; }`).
-fn negated_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
-    match e {
-        Expr::Group(inner) => negated_flag(inner, preds),
-        Expr::Unary(UnaryOp::Not, inner) => cond_flag(inner, preds),
-        _ => None,
-    }
 }
 
 fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {

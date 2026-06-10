@@ -1,0 +1,27 @@
+arch = armv7em
+cpu = cortex-m7
+vector_table_offset = 0x08000000
+data_block = sram
+
+[mem.flash]
+base = 0x08000000
+size = 256K
+
+[mem.sram]
+base = 0x20000000
+size = 64K
+
+[mem.dma_pool]
+base = 0x30000000
+size = 4K
+
+# Busy-HIGH completion (the RP2350 CTRL.BUSY idiom): `!` on completes_by
+# means the transfer is done when the field is CLEAR.
+[agent.dmac]
+kind = dma
+reach = dma_pool
+completes_by = !DMAC.SR.BUSY
+
+[region.pool]
+mem = dma_pool
+agents = dmac

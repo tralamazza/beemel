@@ -1,0 +1,20 @@
+// The reset bit is never cleared: the agent stays held in reset and the
+// handoff writes are silently dropped -- E609, inverted direction.
+// the handoff -- the inverted-polarity E609 presence check is satisfied.
+peripheral Rst at 0x40021000 {
+    reg CR offset 0x00 {
+        field MYDMARST: b1 bit[0]
+    }
+}
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[0..31]
+    }
+}
+
+owns MyDma;
+
+fn main() @context(thread) {
+
+    MyDma.DESCADDR = 0x20001000;
+}

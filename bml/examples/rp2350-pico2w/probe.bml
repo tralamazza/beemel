@@ -18,9 +18,9 @@ var DST: [u32; 16] in dma_buf;
 var COPY_OK: u32;     // probe-visible result once consumed
 
 fn dma_setup() {
-    // Bring the DMA out of reset. INVERTED gating (clear-to-enable) -- the
-    // enabled_by/E609 machinery cannot express this polarity yet; this write
-    // is unchecked physics for now (recorded finding).
+    // Bring the DMA out of reset. Inverted gating, now CHECKED physics:
+    // `enabled_by = !RESETS.RESET.DMA` makes E609 require this clearing
+    // write, and E610 rejects a stranger re-asserting the reset.
     RESETS.RESET.DMA = false;
 
     // Fill the source with a recognizable ramp.
@@ -39,6 +39,14 @@ fn dma_setup() {
     DMA.CH0_CTRL_TRIG.INCR_WRITE = true;
     DMA.CH0_CTRL_TRIG.DATA_SIZE = 2;     // word
     DMA.CH0_CTRL_TRIG.EN = true;         // trigger
+
+    // Native blocking acquire: BUSY is busy-HIGH (completes_by = !BUSY), so
+    // the wait-while-set loop is the accepted E611 guard form here.
+    while DMA.CH0_CTRL_TRIG.BUSY {}
+    const first = reclaim(DST);
+    if first[0] == 0xB0 {
+        COPY_OK = 2;
+    }
 }
 
 // Consume the copy once the channel signals completion: the reclaim is gated

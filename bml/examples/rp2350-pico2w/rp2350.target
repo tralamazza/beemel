@@ -8,17 +8,17 @@
 # target (pico2w.target) includes this file and adds it -- a three-layer
 # chip/board/project split the include chain supports unchanged.
 #
-# FINDINGS from this transcription (recorded in doc/regions-agents-plan.md):
-# - enabled_by cannot express RP2350 gating: RESETS.RESET.DMA is
-#   CLEAR-to-enable (reset value 1 = held in reset), and the E609/E610
-#   machinery assumes set-to-enable polarity. Omitted here; vocabulary gap.
-# - The MPU is PMSAv8 (RBAR/RLAR), not the PMSAv7 sequence the compiler
-#   generates -- so has_mpu = false until v8-M MPU emission exists. (Moot in
-#   practice: no data cache, so no cacheable = false blocks arise.)
-# - CTRL_TRIG.BUSY is busy-HIGH; the done-high signal completes_by needs is
-#   the raw INTR bit (set on channel completion, readable without enabling
-#   the interrupt). The native polling idiom `while BUSY {}` (wait-while-set)
-#   is not yet a recognized E611 guard form.
+# FINDINGS from this transcription (recorded in doc/regions-agents-plan.md).
+# Two of the three vocabulary gaps are now CLOSED by the `!` polarity marker:
+# - CLOSED: `enabled_by = !RESETS.RESET.DMA` expresses CLEAR-to-enable
+#   gating (reset value 1 = held in reset); E609 requires the clearing
+#   write, E610 rejects a stranger re-asserting the reset.
+# - CLOSED: `completes_by = !DMA.CH0_CTRL_TRIG.BUSY` expresses the busy-HIGH
+#   flag; the native `while BUSY {}` wait-while-set idiom is an accepted
+#   E611 guard (the raw INTR bit remains as the done-high alternative).
+# - OPEN: the MPU is PMSAv8 (RBAR/RLAR), not the PMSAv7 sequence the
+#   compiler generates -- has_mpu = false until v8-M MPU emission exists.
+#   (Moot in practice: no data cache, so no cacheable = false blocks arise.)
 arch = armv7em
 cpu = cortex-m33
 priority_bits = 4
@@ -64,8 +64,10 @@ handoff = DMA.CH0_WRITE_ADDR
 # Raw per-channel completion bit (INTR, offset 0x400): set when the channel
 # finishes a transfer sequence, readable with interrupts disabled. Activates
 # the sound-reclaim guard (E611).
-completes_by = DMA.INTR.CH0
-# enabled_by deliberately ABSENT: see the polarity finding above.
+completes_by = DMA.INTR.CH0, !DMA.CH0_CTRL_TRIG.BUSY
+# Clear-to-enable gating (`!` = inverted polarity): the DMA is held in reset
+# at boot; software clears the bit to enable it.
+enabled_by = !RESETS.RESET.DMA
 
 # The second Cortex-M33. A full crossbar master -- a genuine cpu-kind agent,
 # declared to probe the multi-core boundary the plan defers ("multi-core not

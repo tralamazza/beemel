@@ -1,0 +1,20 @@
+// Wait-while-set: with a busy-high completion flag (completes_by = !BUSY),
+// `while BUSY {}` exits only once the transfer is done -- the native idiom
+// of busy-flag hardware, accepted as a blocking acquire.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field BUSY: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    while DMAC.SR.BUSY {}
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

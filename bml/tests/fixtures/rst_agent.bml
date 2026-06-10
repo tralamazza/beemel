@@ -1,0 +1,22 @@
+// Owner module for the inverted E610 test: clears the agent's reset gate and
+// programs its handoff register.
+peripheral Rst at 0x40021000 {
+    reg CR offset 0x00 {
+        field MYDMARST: b1 bit[0]
+    }
+}
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[0..31]
+    }
+}
+export peripheral Rst;
+export peripheral MyDma;
+export fn rst_agent_setup;
+
+owns MyDma;
+
+fn rst_agent_setup() {
+    Rst.CR.MYDMARST = false;
+    MyDma.DESCADDR = 0x20001000;
+}

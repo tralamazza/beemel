@@ -2913,6 +2913,63 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// Inverted-polarity gates and completion flags (`!` prefix): RP2350-class
+// physics where the enable is CLEAR-to-enable (RESETS) and the completion
+// signal is busy-HIGH (CTRL.BUSY).
+#[test]
+fn test_enable_inverted_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("enable_inverted_ok.bml", Some("enable_inverted.target"));
+    assert!(
+        ok,
+        "clearing the inverted gate should satisfy E609; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_enable_inverted_missing_rejected() {
+    let (ok, stderr) = bml_build_with_target(
+        "enable_inverted_missing.bml",
+        Some("enable_inverted.target"),
+    );
+    assert!(
+        !ok,
+        "never clearing the inverted gate is E609; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E609"), "expected E609; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_clock_stomp_inverted_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("clock_stomp_inverted.bml", Some("enable_inverted.target"));
+    assert!(
+        !ok,
+        "a stranger re-asserting an inverted gate is E610; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E610"), "expected E610; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_waitset_ok() {
+    let (ok, stderr) = bml_build_with_target("reclaim_waitset.bml", Some("reclaim_busy.target"));
+    assert!(
+        ok,
+        "wait-while-set on a busy-high flag should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_reclaim_busy_wrongform_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_busy_wrongform.bml", Some("reclaim_busy.target"));
+    assert!(
+        !ok,
+        "reclaiming while the busy flag is SET is the unsafe direction; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
 // `claim X { ... }` (unification: the masked window, CPU-side reclaim): one
 // cpsid/cpsie pair for the whole block, views/index-reads of the claimed
 // @shared static allowed inside, escapes and calls rejected (E614).

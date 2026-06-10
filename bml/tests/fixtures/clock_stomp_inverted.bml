@@ -1,0 +1,9 @@
+// Stranger module RE-ASSERTING an inverted gate: setting the reset bit of an
+// agent it does not own silently stops the agent -- the E610 stomp direction
+// flips with the polarity.
+import rst_agent;
+
+fn main() @context(thread) {
+    rst_agent_setup();
+    Rst.CR.MYDMARST = true;
+}

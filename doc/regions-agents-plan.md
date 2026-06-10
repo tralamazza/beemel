@@ -759,28 +759,38 @@ milestone, the user has a debug probe).
 
 **Vocabulary gaps found (the point of the exercise):**
 
-1. **`enabled_by` assumes set-to-enable.** RP2350 gating is RESETS.RESET.DMA
-   = CLEAR-to-enable (reset value 1 = held in reset). E609/E610 cannot
-   express the inverted polarity; the base target omits enabled_by and the
-   probe's `RESETS.RESET.DMA = false` is unchecked physics. Fix direction: a
-   polarity marker (e.g. `enabled_by = !RESETS.RESET.DMA`), which would also
-   flip the E610 stomp direction.
+1. **`enabled_by` assumes set-to-enable.** CLOSED: the `!` polarity marker
+   (`enabled_by = !RESETS.RESET.DMA`) expresses clear-to-enable gating. E609
+   requires the clearing write; E610's stomp direction flips (a stranger
+   RE-ASSERTING the reset bit is the stomp; for the inverted case any
+   non-clearing field write by a stranger counts -- writing an agent's reset
+   bit from outside is suspect regardless of the computed value). The RP2350
+   target now declares it and the probe's reset-clear is checked physics
+   (verified: removing the clear is E609). Pinned by
+   `enable_inverted{_ok,_missing}.bml` + `clock_stomp_inverted.bml`.
 2. **MPU generation is PMSAv7-only.** The RP2350 M33 MPU is PMSAv8
    (RBAR/RLAR); the generated RNR/RBAR/RASR sequence would program garbage.
    `has_mpu = false` until v8-M emission exists (moot in practice here: no
    data cache, so no `cacheable = false` blocks arise -- but the gap is
    architectural, not theoretical).
-3. **E611 misses the wait-while-set idiom.** CTRL_TRIG.BUSY is busy-HIGH;
-   the native RP2350 poll is `while BUSY {}` -- rejected today (verified),
-   the mirror image of the accepted `while !flag {}`. Same fix family as the
-   compared-conditions backlog item: guard polarity forms.
+3. **E611 misses the wait-while-set idiom.** CLOSED: `completes_by =
+   !DMA.CH0_CTRL_TRIG.BUSY` declares a busy-HIGH flag (done-when-clear), and
+   the guard machinery is polarity-generic -- `cond_flag` normalizes `!` (a
+   negated condition yields the negated fact, double negation strips), every
+   blocking form establishes the NEGATION of its loop/exit condition, and
+   guards match flags as polarity-carrying strings. So `while BUSY {}`,
+   `if !BUSY { reclaim }`, and `if BUSY { return; }` all guard a `!BUSY`
+   flag, while `if BUSY { reclaim }` -- reclaiming while the agent still
+   writes -- is rejected (verified). Pinned by `reclaim_waitset.bml` /
+   `reclaim_busy_wrongform.bml`; the RP2350 probe uses the native idiom.
 4. **core1 is a declarable but inert agent.** `[agent.core1] kind = cpu`
    parses and validates; no check consumes a second cpu agent (multi-core is
    the recorded deferred track). The declaration at least makes the sharer
    visible in the physics file.
 
-Net: the model is not ST-shaped -- the failures are specific, fixable
-polarity/architecture gaps, not structural mismatches.
+Net: the model is not ST-shaped -- the failures were specific polarity /
+architecture gaps, and the two polarity gaps closed with a single `!` marker
+on the existing keys (PMSAv8 MPU emission remains the open one).
 
 ## Verification strategy (empirically validated)
 
