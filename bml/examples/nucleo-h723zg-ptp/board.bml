@@ -57,6 +57,14 @@ fn board_init() {
 // and pins, PHY probe, TX/RX rings, and the free-running PTP clock. After this
 // returns the role main loop only needs to poll link/RX and drive its own TX.
 //
+// KNOWN GAP (found empirically 2026-06-10): this bring-up is ONE-SHOT. If the
+// cable is unplugged at boot, the MAC/DMA come up against a dead link and stay
+// wedged after the cable returns -- phy_poll_link observes the link bit but
+// never re-runs autonegotiation-dependent MAC config or re-arms the DMA. RX
+// and TX both stay silent until reset. Link-up recovery is a driver follow-up
+// (re-read PHY speed/duplex on the down->up edge, reprogram MACCR, re-arm the
+// rings).
+//
 // The D2 AHB SRAM clock (where the stack/.data/.bss/DMA buffers live) is ungated
 // in startup before .data/.bss init -- see the [startup] section in
 // stm32h723zg.target.
