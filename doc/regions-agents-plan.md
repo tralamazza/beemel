@@ -716,7 +716,13 @@ packed layout.
     pair there, zero in the ISR). Pinned by `claim_view.bml` (+IR),
     `claim_{not_shared,call,return,break}.bml` (E614),
     `exec/claim_window.bml` (QEMU).
-  - *Slice U5: the composition -- `@shared in R` (E613 lifted).* DONE. The
+  - *Slice U5: the composition -- `@shared in R` (E613 lifted).* DONE,
+    hardware-validated on the NUCLEO: one readback shows all three composed
+    windows ran -- SCRATCH_CHECK=0xA0/DONE=1 (thread try-acquire),
+    SCRATCH_FIRST=0xA1 (blocking acquire), SCRATCH_ISR_SEEN=0xA2 (the ISR
+    consumer) -- with TICKS advancing and the TICK_LOG snapshot invariant
+    still exact (LOG_SUM = 4*TICKS - 10) while the ISR takes its own claim
+    window every tick. The
     mixed-sharer case (CPU contexts AND an async agent on one buffer)
     composes by NESTING the carriers: `apply_derived_move` turns
     `Shared(Array)` into `Shared(AgentShared(Array))`. Outside a `claim`
