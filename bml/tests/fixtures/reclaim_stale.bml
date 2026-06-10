@@ -1,0 +1,29 @@
+// E611 staleness: the second guard re-observes DONE after the buffer
+// was re-armed, with no clearing write -- the flag is still set from
+// the FIRST transfer.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+    reg ADDR offset 0x04 {
+        field A: u32 bit[0..31]
+    }
+}
+
+owns DMAC;
+
+var BUF: [u8; 32] in pool;
+var X: u32;
+
+fn main() @context(thread) {
+    DMAC.ADDR = &BUF as u32;
+    while !DMAC.SR.DONE {}
+    const v1 = reclaim(BUF);
+    X = v1[0] as u32;
+
+    DMAC.ADDR = &BUF as u32;
+    if DMAC.SR.DONE {
+        const v2 = reclaim(BUF);
+        X = v2[1] as u32;
+    }
+}

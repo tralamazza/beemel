@@ -3407,6 +3407,53 @@ fn test_shared_in_region_noclaim_rejected() {
     );
 }
 
+// E611 precision pair: compared guard forms (`== true`, `== false`,
+// `while F == false {}`) and the staleness rule (a second observation of a
+// consumed flag after a re-arm needs a clearing write in between).
+#[test]
+fn test_reclaim_cmp_eq_ok() {
+    let (ok, stderr) = bml_build_with_target("reclaim_cmp_eq.bml", Some("reclaim_release.target"));
+    assert!(ok, "`== true` is a valid guard; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_cmp_blocking_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_cmp_blocking.bml", Some("reclaim_release.target"));
+    assert!(
+        ok,
+        "`while F == false {{}}` is a valid acquire; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_reclaim_cmp_wrongpol_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_cmp_wrongpol.bml", Some("reclaim_release.target"));
+    assert!(!ok, "`== false` guards the CLEAR state; stderr:\n{stderr}");
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_stale_rejected() {
+    let (ok, stderr) = bml_build_with_target("reclaim_stale.bml", Some("reclaim_release.target"));
+    assert!(
+        !ok,
+        "re-observing a consumed flag after re-arm without clearing must fail; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_stale_cleared_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_stale_cleared.bml", Some("reclaim_release.target"));
+    assert!(
+        ok,
+        "clearing the flag between observations is the sound idiom; stderr:\n{stderr}"
+    );
+}
+
 // Per-buffer flag association: a direct delivery (`P.R = &BUF`) binds the
 // buffer to that register's channel, so its reclaim is guarded by THAT
 // channel's flags; indirect deliveries keep the conservative region union.

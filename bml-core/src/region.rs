@@ -1317,6 +1317,32 @@ fn check_reclaim_guards(
         }
     }
 
+    // Clearing writes for the staleness rule: any write touching a
+    // completion flag's OWN register counts as clearing it (covers W1C
+    // `INTR = 1`, event-register `= 0`, and RMW `= false` styles; a chip
+    // whose clear lives in a separate register -- the H7's IFCR -- will
+    // need declared vocabulary when a double-observation idiom appears).
+    let mut clears: Vec<(Span, String)> = Vec::new();
+    {
+        let mut flag_regs: Vec<(String, String, String)> = Vec::new(); // (P, R, flag)
+        for agent in &target.agents {
+            for f in agent.completes_by() {
+                let bare = f.strip_prefix('!').unwrap_or(f);
+                let parts: Vec<&str> = bare.split('.').collect();
+                if let [p, r, _] = parts.as_slice() {
+                    flag_regs.push(((*p).to_string(), (*r).to_string(), f.clone()));
+                }
+            }
+        }
+        for w in &writes {
+            for (p, r, f) in &flag_regs {
+                if &w.periph == p && &w.reg == r {
+                    clears.push((w.span, f.clone()));
+                }
+            }
+        }
+    }
+
     // Per-buffer flag association: a direct delivery (`P.R = &BUF`) binds
     // the buffer to that register's CHANNEL, so its reclaim must be guarded
     // by that channel's own completion flags -- not any flag of any agent
@@ -1373,7 +1399,7 @@ fn check_reclaim_guards(
                 ..GuardScan::default()
             };
             gscan_block(&f.body, &flags_of, &mut scan);
-            check_fn_reclaims(&scan, &releases, diags);
+            check_fn_reclaims(&scan, &releases, &clears, diags);
         }
     }
 }
@@ -1402,11 +1428,15 @@ fn released_between(
 fn check_fn_reclaims(
     scan: &GuardScan,
     releases: &[(Span, Vec<String>)],
+    clears: &[(Span, String)],
     diags: &mut DiagnosticBag,
 ) {
     // E611: every reclaim inside a guard span of one of its flags, with no
-    // release between the guard's start and the reclaim.
+    // release between the guard's start and the reclaim. `justified` keeps
+    // each guarded reclaim's clean (flag, guard) pairs for the staleness
+    // pass below.
     let mut guarded_reclaims: Vec<Span> = Vec::new();
+    let mut justified: Vec<(Span, Vec<(String, Span)>)> = Vec::new();
     for (rspan, flags) in &scan.reclaims {
         let contained: Vec<&(String, Span)> = scan
             .guards
@@ -1418,11 +1448,16 @@ fn check_fn_reclaims(
                     && rspan.end <= gspan.end
             })
             .collect();
-        let guarded = contained
+        let clean: Vec<(String, Span)> = contained
             .iter()
-            .any(|(_, gspan)| !released_between(releases, flags, *rspan, gspan.start, rspan.start));
-        if guarded {
+            .filter(|(_, gspan)| {
+                !released_between(releases, flags, *rspan, gspan.start, rspan.start)
+            })
+            .map(|(f, g)| (f.clone(), *g))
+            .collect();
+        if !clean.is_empty() {
             guarded_reclaims.push(*rspan);
+            justified.push((*rspan, clean));
         } else if contained.is_empty() {
             diags.error(
                 format!(
@@ -1439,6 +1474,48 @@ fn check_fn_reclaims(
                 "`reclaim` here is guarded, but the buffer was released back to the agent \
                  (handoff register written) after the completion check -- the observed \
                  completion covers the PREVIOUS transfer. Re-check the flag after re-arming."
+                    .to_string(),
+                "E611",
+                *rspan,
+            );
+        }
+    }
+
+    // E611 staleness (the W1C gap): a guard observing a flag that an EARLIER
+    // guarded reclaim in this function already consumed, with a release
+    // (re-arm) in between, sees the PREVIOUS transfer's completion unless
+    // the flag was cleared (some write to the flag's own register) between
+    // the two observations. First observations are trusted (boot-clear
+    // state); `!`-polarity flags are hardware-managed and exempt; the
+    // loop-back-edge variant of this bug is a recorded blind spot (lexical
+    // engine). Justifications are per (flag, guard) pair: a reclaim with at
+    // least one FRESH justification is fine.
+    for (i, (rspan, pairs)) in justified.iter().enumerate() {
+        let all_stale = !pairs.is_empty()
+            && pairs.iter().all(|(f, gspan)| {
+                if f.starts_with('!') {
+                    return false; // auto-clearing busy flags cannot go stale
+                }
+                justified.iter().take(i).any(|(r1, pairs1)| {
+                    r1.start < rspan.start
+                        && pairs1.iter().any(|(f1, _)| f1 == f)
+                        && releases.iter().any(|(rel, rflags)| {
+                            rel.file == rspan.file
+                                && r1.start < rel.start
+                                && rel.start < gspan.start
+                                && rflags.contains(f)
+                        })
+                        && !clears.iter().any(|(cspan, cf)| {
+                            cf == f
+                                && cspan.file == rspan.file
+                                && r1.start < cspan.start
+                                && cspan.start < gspan.start
+                        })
+                })
+            });
+        if all_stale {
+            diags.error(
+                "`reclaim` here re-observes a completion flag that an earlier reclaim already                  consumed, with the buffer re-armed in between and no clearing write to the                  flag's register -- the flag is still set from the PREVIOUS transfer. Clear it                  before (or right after) re-arming."
                     .to_string(),
                 "E611",
                 *rspan,
@@ -1569,6 +1646,17 @@ fn fn_result_expr(body: &Block) -> Option<&Expr> {
 /// rides on the string -- a `completes_by = !P.R.F` declaration means "done
 /// when the field is CLEAR" (e.g. the RP2350 DMA BUSY bit), and guard forms
 /// establish either the positive or the negated fact.
+/// The integer value of a comparison literal (`1`, `true`, `(0)`), or `None`
+/// for anything else.
+fn cmp_literal(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Group(inner) => cmp_literal(inner),
+        Expr::IntLiteral(v, _, _) => Some(*v),
+        Expr::BoolLiteral(b, _) => Some(u64::from(*b)),
+        _ => None,
+    }
+}
+
 fn negate_flag(f: &str) -> String {
     f.strip_prefix('!')
         .map_or_else(|| format!("!{f}"), str::to_string)
@@ -1580,6 +1668,25 @@ fn cond_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
         // `!<flag>` tests the flag clear: the condition's truth is the
         // NEGATED fact. Double negation normalizes (`!!F` -> `F`).
         Expr::Unary(UnaryOp::Not, inner) => cond_flag(inner, preds).map(|f| negate_flag(&f)),
+        // Compared forms (the status-word idiom): `flag == 1`/`== true` and
+        // `flag != 0`/`!= false` establish the flag; `flag == 0`/`== false`
+        // establishes its negation. `!= <nonzero>` is NOT accepted: for a
+        // multi-bit field it does not imply clear. Either operand order.
+        Expr::Binary(l, op @ (crate::ast::BinaryOp::Eq | crate::ast::BinaryOp::NotEq), r) => {
+            let (flag_side, lit_side) = match cmp_literal(l) {
+                Some(_) => (r.as_ref(), l.as_ref()),
+                None => (l.as_ref(), r.as_ref()),
+            };
+            let lit = cmp_literal(lit_side)?;
+            let flag = cond_flag(flag_side, preds)?;
+            match (op, lit != 0) {
+                (crate::ast::BinaryOp::Eq, true) | (crate::ast::BinaryOp::NotEq, false) => {
+                    Some(flag)
+                }
+                (crate::ast::BinaryOp::Eq, false) => Some(negate_flag(&flag)),
+                _ => None, // `!= nonzero` proves nothing about a wide field
+            }
+        }
         Expr::FieldAccess(mid, (field, _)) => {
             if let Expr::FieldAccess(inner, (reg, _)) = mid.as_ref()
                 && let Expr::Ident((periph, _)) = inner.as_ref()

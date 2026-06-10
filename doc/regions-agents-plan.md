@@ -1046,9 +1046,25 @@ packed layout.
     9.5M -> 10.8M across samples, CORE0_BEATS == COUNT>>16 (lossless
     heartbeats), COPY_OK = 1, and the cross-core claim invariant intact
     at PAIR ~21M windows with PAIR_BAD0 = PAIR_BAD1 = 0.
-  - *Remaining (smaller):* compared guard conditions;
-    flag staleness across transfers (a release BEFORE the guard whose flag
-    was never cleared -- needs W1C discipline modeling);
+  - *E611 precision pair -- DONE.* (1) Compared guard forms: `F == true` /
+    `F == <nonzero>` / `F != 0` establish the flag, `F == 0` / `== false`
+    its negation (either operand order, blocking forms compose: `while
+    F == false {}`); `!= <nonzero>` stays unrecognized -- for a multi-bit
+    field it does not imply clear. (2) Staleness (the W1C gap): a guard
+    re-observing a flag that an earlier guarded reclaim in the same
+    function already consumed, with a release (re-arm) in between, is
+    E611 unless some write touches the flag's own register between the
+    two observations (covers W1C `INTR = 1`, event `= 0`, and RMW
+    `= false` clear styles). First observations trusted (boot-clear);
+    `!`-polarity busy flags exempt (hardware-managed); per-(flag, guard)
+    justifications, so one fresh justification clears the reclaim.
+    Recorded: the loop-back-edge variant (re-arm + re-observe across one
+    lexical guard) is the same blind-spot class as E616's; a chip whose
+    clear lives in a SEPARATE register (the H7's IFCR) gets `cleared_by`
+    vocabulary only when a real double-observation idiom appears (usage
+    dictates declaration). Pinned by reclaim_cmp_{eq,blocking,wrongpol}
+    and reclaim_stale{,_cleared}.bml.
+  - *Remaining (smaller):*
     ETH link-up recovery in the H723 example driver.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
