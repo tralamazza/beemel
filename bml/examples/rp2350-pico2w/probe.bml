@@ -162,7 +162,7 @@ fn core1_launch() {
         var cmd: u32 = 0;
         if seq == 2 { cmd = 1; }
         if seq == 3 { cmd = 0x10000000; }                       // VTOR (shared table)
-        if seq == 4 { cmd = (&CORE1_STACK as u32) + 1024; }     // initial SP (stack top)
+        if seq == 4 { cmd = (&CORE1_STACK as u32) + 1024; }     // initial SP (stack top)  // core1 sp = top of its stack array; the add cannot wrap (linker places the array in SRAM) // bml-verify: ignore V130
         if seq == 5 { cmd = (&core1_main as u32) | 1; }         // entry PC (thumb bit)
         if cmd == 0 {
             while SIO.FIFO_ST.VLD {
@@ -178,7 +178,7 @@ fn core1_launch() {
         } else {
             seq = 0;
             var m: u32 = LAUNCH_MISS;
-            LAUNCH_MISS = m + 1;
+            LAUNCH_MISS = m + 1;  // free-running launch-attempt counter // bml-verify: ignore V130
         }
         LAUNCH_SEQ = seq;
     }
@@ -206,7 +206,7 @@ fn core1_start() {
         core1_reset();
         core1_launch();
         var t: u32 = LAUNCH_TRIES;
-        LAUNCH_TRIES = t + 1;
+        LAUNCH_TRIES = t + 1;  // free-running watchdog counter // bml-verify: ignore V130
         var i: u32 = 0;
         while !ok && i < 200000 {
             if SIO.FIFO_ST.VLD {
@@ -227,12 +227,12 @@ fn main() @context(thread) {
     loop {
         dma_poll();
         var a: u32 = ALIVE;
-        ALIVE = a + 1;
+        ALIVE = a + 1;  // free-running core1 loop counter; u32 wrap intended // bml-verify: ignore V130
         if SIO.FIFO_ST.VLD {
             const w = SIO.FIFO_RD.DATA;
             if (w & 0xFFFF0000) == 0xBEA70000 {
                 var b: u32 = CORE0_BEATS;
-                CORE0_BEATS = b + 1;
+                CORE0_BEATS = b + 1;  // free-running FIFO beat counter // bml-verify: ignore V130
             }
         }
         // Core0's side of the cross-core pair: same window, same invariant.
@@ -241,10 +241,10 @@ fn main() @context(thread) {
             var q: u32 = PAIR[1];
             if p != q {
                 var bad: u32 = PAIR_BAD0;
-                PAIR_BAD0 = bad + 1;
+                PAIR_BAD0 = bad + 1;  // invariant-violation tally; wrap irrelevant // bml-verify: ignore V130
             }
-            PAIR[0] = p + 1;
-            PAIR[1] = q + 1;
+            PAIR[0] = p + 1;  // contended PAIR slot increments; wrap intended // bml-verify: ignore V130
+            PAIR[1] = q + 1;  // contended PAIR slot increments; wrap intended // bml-verify: ignore V130
         }
     }
 }

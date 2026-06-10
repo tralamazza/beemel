@@ -2633,6 +2633,40 @@ fn test_verify_handoff_provenance_ok() {
     assert!(ok, "expected a clean verify exit; stderr:\n{stderr}");
 }
 
+// Interior-pointer handoff (&DESC + 16): provable only because the provenance
+// assume is tightened by the static's size (base <= block_end - sizeof).
+#[test]
+fn test_verify_handoff_offset_ok() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) =
+        bml_verify_args("verify_handoff_offset.bml", &["--target", &target]);
+    assert!(
+        ok && !stderr.contains("[V200]"),
+        "an interior offset within the static must be provable; stderr:\n{stderr}"
+    );
+}
+
+// One past the static (&DESC + 32): the base may sit at block_end - 32, so the
+// offset can land exactly on the block end -- unproven (V200 warning).
+#[test]
+fn test_verify_handoff_offset_oob_unproven() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (_ok, _stdout, stderr) =
+        bml_verify_args("verify_handoff_offset_oob.bml", &["--target", &target]);
+    assert!(
+        stderr.contains("[V200]"),
+        "an offset past the static must stay unproven; stderr:\n{stderr}"
+    );
+}
+
 // Handing an address outside the agent's reach (a DTCM address, below the
 // sram1-only reach) violates the reachability assert: IKOS reports a definite
 // assert violation and verify fails. This is the DTCM footgun caught at the

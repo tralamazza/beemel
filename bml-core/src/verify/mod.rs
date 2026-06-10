@@ -134,7 +134,7 @@ pub fn verify(
     // assert at handoff register writes.
     emitter.set_region_alignments(target.region_alignments());
     emitter.set_handoff_obligations(
-        region_addr_ranges(program, target),
+        region_addr_ranges(program, symbols, target),
         handoff_reach_bounds(target),
         region_ranges(target),
     );
@@ -312,10 +312,18 @@ const CHECK_KINDS: &[(i64, &str)] = &[
     (39, "free"),
 ];
 
-/// Region-placed static name -> `[lo, hi)` byte range of its region's mem block.
-/// The provenance assume at `&X as u32` uses this.
+/// Region-placed static name -> `[lo, hi)` range the static's BASE address can
+/// occupy. The provenance assume at `&X as u32` uses this.
+///
+/// The upper bound is tightened by the static's size: the linker places the
+/// whole static inside the region's mem block, so its base is at most
+/// `block_end - sizeof(X)`. Without the tightening, `&X + offset` handoffs
+/// (descriptor entries past the first, second buffers, tail pointers) are
+/// structurally unprovable -- the assume admits a base at the very end of the
+/// block, where any positive offset exceeds it.
 fn region_addr_ranges(
     program: &crate::ast::Program,
+    symbols: &SymbolTable,
     target: &Target,
 ) -> HashMap<String, (u64, u64)> {
     let mut map = HashMap::new();
@@ -325,7 +333,26 @@ fn region_addr_ranges(
             && let Some(region) = target.regions.iter().find(|r| &r.name == rname)
             && let Some(mem) = target.mem_blocks.iter().find(|m| m.name == region.mem)
         {
-            map.insert(s.name.0.clone(), (mem.base, mem.end()));
+            let mut hi = mem.end();
+            if let Some(sym) = symbols.statics.get(&s.name.0) {
+                // Strip storage wrappers (Shared/AgentShared/...) down to the
+                // value type before sizing.
+                let mut ty = &sym.ty;
+                loop {
+                    let inner = ty.inner();
+                    if std::ptr::eq(inner, ty) {
+                        break;
+                    }
+                    ty = inner;
+                }
+                let size = u64::from(crate::types::element_size(ty));
+                // A static larger than its block cannot link; keep the full
+                // range rather than fabricating an empty (vacuously true) one.
+                if size > 0 && size <= mem.end() - mem.base {
+                    hi = mem.end() - size + 1;
+                }
+            }
+            map.insert(s.name.0.clone(), (mem.base, hi));
         }
     }
     map
@@ -509,6 +536,15 @@ fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
             _ => continue,
         };
         if status == Status::Safe {
+            continue;
+        }
+        // Kind 0 ("unreachable") entries are dropped like Safe ones: bml
+        // encodes every verify obligation (range assumes, view bounds) as a
+        // branch-to-unreachable, so IKOS reports one such entry per
+        // obligation BY CONSTRUCTION -- on bml-generated IR they are
+        // encoding artifacts, not dead user code (~28 info findings burying
+        // the real report on the H7 example).
+        if entry.kind == 0 {
             continue;
         }
 

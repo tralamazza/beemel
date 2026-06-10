@@ -1,0 +1,23 @@
+// Offset handoff: the address handed to the agent is &DESC + 16, an interior
+// pointer (descriptor #2 of a table). Provable ONLY because the provenance
+// assume bounds the BASE by the static's size (base <= block_end - 32): with
+// a whole-region assume the base could sit at the very end of the block and
+// any positive offset would exceed it. This is the eth_dma tail-pointer
+// pattern reduced to a fixture.
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+}
+
+owns MyDma.DESCADDR;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn desc_addr(byte_off: u32) -> u32 {
+    return (&DESC as u32) + byte_off;
+}
+
+fn main() @context(thread) {
+    MyDma.DESCADDR = desc_addr(16);
+}

@@ -92,6 +92,9 @@ fn timer_log_sum() -> u32 @context(thread) {
         const v = view(TICK_LOG);
         var i: u32 = 0;
         while i < 4 {
+            // The drain SUM is an unbounded accumulator of tick values; u32
+            // wraparound is intended (the board invariant LOG_SUM=4*TICKS-10
+            // holds mod 2^32). // bml-verify: ignore V130
             sum = sum + v[i];
             i = i + 1;
         }

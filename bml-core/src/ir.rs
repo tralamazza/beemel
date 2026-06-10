@@ -952,9 +952,13 @@ impl IrEmitter {
 
         let fn_span = fn_def.name.1;
         let dbg_fn_suffix = if self.debug {
-            let id = self.new_dbg_id();
             let cu = self.cu_id.unwrap_or(0);
-            let file = self.cu_file_id.unwrap_or(0);
+            // The function's OWN file, not the compile unit's: DILocations
+            // inherit their file from the subprogram scope, so pinning every
+            // fn to the CU file mis-attributes multi-module findings (a
+            // timer.bml overflow reported in eth_dma.bml at the same line).
+            let file = self.dbg_file(fn_span.file);
+            let id = self.new_dbg_id();
             let line = if let Some(ref sm) = self.source_map {
                 sm.span_location(fn_span).start.line
             } else {

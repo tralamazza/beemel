@@ -1,0 +1,17 @@
+// Offset handoff past the static: &DESC + 32 is one past the 32-byte table.
+// The size-tightened assume admits base = block_end - 32, where the offset
+// lands exactly at the block end -- outside the agent's reach -- so the
+// reachability assert stays unproven (V200 warning).
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+}
+
+owns MyDma.DESCADDR;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    MyDma.DESCADDR = (&DESC as u32) + 32;
+}

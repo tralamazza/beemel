@@ -41,6 +41,8 @@ fn main() @context(thread) {
             LOG_SUM = timer_log_sum();
             const now = ptp_now();
             eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+            // Free-running heartbeat sequence; u32 wraparound is the
+            // protocol's behavior. // bml-verify: ignore V130
             seq = seq + 1;
         }
     }

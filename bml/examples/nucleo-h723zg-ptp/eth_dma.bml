@@ -311,10 +311,11 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     // DMA does not see the descriptor as owned until the rest is in place.
     TX_DESC[di].status = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
 
-    TX_DESC_INDEX = TX_DESC_INDEX + 1;
-    if TX_DESC_INDEX == TX_DESC_COUNT {
-        TX_DESC_INDEX = 0;
-    }
+    // Modulo wrap (not `if == COUNT { 0 }`): semantically identical, but the
+    // `urem` lets the verifier bound the index to [0, COUNT) across loop
+    // widening -- the equality wrap leaves it unbounded and every descriptor
+    // address derived from it unprovable.
+    TX_DESC_INDEX = (TX_DESC_INDEX + 1) % TX_DESC_COUNT;
 
     asm { dmb } : : : "memory";
 
@@ -370,8 +371,6 @@ fn eth_poll_rx() {
 
     rx_rearm(desc_word);
 
-    RX_DESC_INDEX = RX_DESC_INDEX + 1;
-    if RX_DESC_INDEX == RX_DESC_COUNT {
-        RX_DESC_INDEX = 0;
-    }
+    // Modulo wrap: see the TX_DESC_INDEX comment (verifier-friendly form).
+    RX_DESC_INDEX = (RX_DESC_INDEX + 1) % RX_DESC_COUNT;
 }
