@@ -2128,7 +2128,14 @@ fn check_expr(
             }
             // Check functions
             if let Some(fn_sym) = symbols.functions.get(name) {
-                if fn_sym.context != crate::context::Context::Any {
+                // Declared core entries are exempt from E408: the launch
+                // handshake takes their address for HARDWARE (another
+                // core's boot), not for a bml pointer call, so a concrete
+                // @context on the entry stays meaningful. Trusted: nothing
+                // stops the address being reused as a callback afterwards.
+                if fn_sym.context != crate::context::Context::Any
+                    && !symbols.entry_fns.contains(name)
+                {
                     diags.error(
                         format!("cannot take address of non-any-context function `{name}` -- only functions without @context restriction can be used as function pointers"),
                         "E408",

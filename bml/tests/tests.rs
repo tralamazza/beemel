@@ -3339,6 +3339,21 @@ assert_ir_contains!(
     "asm sideeffect \"cpsid i\""
 );
 
+// Pointer-call context closure: a stored function pointer travels
+// invisibly, so address-taken Any fns inherit the contexts of every
+// indirect-call site; declared core entries are exempt from E408.
+assert_error!(test_ctx_ptr_launder_rejected, "ctx_ptr_launder.bml", "E404");
+assert_pass!(test_ctx_ptr_thread_only_ok, "ctx_ptr_thread_ok.bml");
+
+#[test]
+fn test_entry_ctx_address_of_ok() {
+    let (ok, stderr) = bml_build_with_target("entry_ctx_ok.bml", Some("entry_ctx.target"));
+    assert!(
+        ok,
+        "taking a declared entry's address must be exempt from E408; stderr:\n{stderr}"
+    );
+}
+
 // Call-graph context propagation (unification U3): an `Any` fn runs in its
 // callers' contexts, so the Any hop no longer launders ISR access past
 // E404/E402 or hides accessors from the derived ceiling.

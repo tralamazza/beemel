@@ -20,6 +20,12 @@ pub struct SymbolTable {
     /// its known callers' contexts (empty = no known concrete caller). Closes
     /// the context-laundering hole in E404/E402 and feeds the derived ceiling.
     pub fn_possible_contexts: HashMap<String, Vec<Context>>,
+    /// Functions declared as core entry points in the target
+    /// (`[agent.X] entry = <fn>`). The launch handshake takes their address
+    /// and hands it to HARDWARE (another core's boot), not to a bml pointer
+    /// call, so E408's address-of rejection is waived for them even when
+    /// they carry a concrete `@context`. Empty without a target.
+    pub entry_fns: std::collections::HashSet<String>,
     /// Native byte order of the build target. Resolution is target-agnostic, so
     /// this is the default (little-endian) until a caller with a target sets it
     /// (e.g. `bml build`/`verify`); `bml check` runs without a target and keeps
@@ -132,6 +138,7 @@ impl Resolver {
                 enums: HashMap::new(),
                 import_aliases: HashMap::new(),
                 fn_possible_contexts: HashMap::new(),
+                entry_fns: std::collections::HashSet::new(),
                 target_endianness: crate::arch::Endianness::default(),
             },
         }

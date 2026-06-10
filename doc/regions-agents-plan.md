@@ -1022,8 +1022,26 @@ packed layout.
     has bit-banding) -- single-bit field writes on M3/M4 targets were
     definite V100s (verify_bitband.bml). The black-pill (F411) is the
     natural hardware validator when it gets wired.
-  - *Remaining (smaller):* pointer-call
-    context edges; compared guard conditions; per-buffer flag association;
+  - *Pointer-call context edges + E408 entry carve-out -- DONE.* The last
+    context-laundering vector: U3's propagation follows direct calls and
+    in-body `&f` mentions, but a pointer STORED in a static travels
+    invisibly (the initializer is in no function body), so an ISR calling
+    through a fn-ptr static ran the pointee as thread-only -- confirmed
+    live before the fix (E404 silent). Closure
+    (ceiling.rs::pointer_call_facts + propagate_contexts): every
+    ADDRESS-TAKEN Any fn (value-position mentions, INCLUDING item-level
+    initializers) inherits the contexts of every fn containing an INDIRECT
+    call (callee not a known fn name). Conservative: any stored pointer
+    could reach any pointer-call site; direct-call edges stay precise.
+    Pinned by ctx_ptr_launder.bml (E404) / ctx_ptr_thread_ok.bml.
+    Rider: declared core entries (`entry = <fn>`) are exempt from E408's
+    address-of rejection (SymbolTable.entry_fns, target-wired) -- the
+    launch handshake hands the address to HARDWARE, not to a bml call.
+    core1_main now carries @context(thread); side effect: core1's whole
+    body became a verify ENTRY POINT and got IKOS-analyzed for the first
+    time (five new intentional-wrap suppressions). Trusted, recorded: an
+    entry's address reused as an ordinary callback would dodge E408.
+  - *Remaining (smaller):* compared guard conditions;
     flag staleness across transfers (a release BEFORE the guard whose flag
     was never cleared -- needs W1C discipline modeling);
     ETH link-up recovery in the H723 example driver.

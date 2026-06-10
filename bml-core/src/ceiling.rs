@@ -64,6 +64,7 @@ pub fn propagate_contexts(
 ) -> HashMap<String, Vec<Context>> {
     let fn_names: HashSet<&str> = functions.keys().map(String::as_str).collect();
     let edges = fn_mentions(program, &fn_names);
+    let (address_taken, indirect_callers) = pointer_call_facts(program, &fn_names);
 
     let mut possible: HashMap<String, HashSet<Context>> = functions
         .iter()
@@ -92,6 +93,34 @@ pub fn propagate_contexts(
                 }
                 if let Some(set) = possible.get_mut(*callee) {
                     for c in &caller_set {
+                        changed |= set.insert(*c);
+                    }
+                }
+            }
+        }
+        // Pointer-call closure: a stored function pointer travels invisibly
+        // (a fn-ptr static breaks the mention chain), so every
+        // ADDRESS-TAKEN Any function inherits the contexts of every
+        // function that performs an INDIRECT call -- any stored pointer
+        // could reach any pointer-call site. Conservative by construction;
+        // direct calls and `&f`-in-body edges stay precise above.
+        let mut pool: HashSet<Context> = HashSet::new();
+        for caller in &indirect_callers {
+            if let Some(set) = possible.get(*caller) {
+                pool.extend(set.iter().copied());
+            }
+        }
+        if !pool.is_empty() {
+            for taken in &address_taken {
+                let Some(sym) = functions.get(*taken) else {
+                    continue;
+                };
+                if sym.context != Context::Any {
+                    continue; // concrete fns run in their own context (E408
+                    // keeps them out of pointers, entries excepted)
+                }
+                if let Some(set) = possible.get_mut(*taken) {
+                    for c in &pool {
                         changed |= set.insert(*c);
                     }
                 }
@@ -131,6 +160,253 @@ pub(crate) fn fn_mentions<'p>(
         }
     }
     out
+}
+
+/// Pointer-call facts for the closure in `propagate_contexts`:
+/// - which function names are ADDRESS-TAKEN anywhere (mentioned as a value,
+///   not as a direct callee -- includes static/const initializers, which are
+///   in no function body and so invisible to `fn_mentions`);
+/// - which functions contain an INDIRECT call (a callee that is not a known
+///   function name: a fn-pointer local, param, or static).
+fn pointer_call_facts<'p>(
+    program: &'p Program,
+    fn_names: &HashSet<&str>,
+) -> (HashSet<&'p str>, HashSet<&'p str>) {
+    let mut taken: HashSet<&'p str> = HashSet::new();
+    let mut indirect: HashSet<&'p str> = HashSet::new();
+    for item in &program.items {
+        match item {
+            Item::FnDef(f) => {
+                let mut has_indirect = false;
+                pcf_block(&f.body, fn_names, &mut taken, &mut has_indirect);
+                if has_indirect {
+                    indirect.insert(f.name.0.as_str());
+                }
+            }
+            // Item-level initializers can take addresses but cannot call.
+            Item::StaticDef(sd) => {
+                if let Some(init) = &sd.init {
+                    let mut sink = false;
+                    pcf_expr(init, fn_names, &mut taken, &mut sink);
+                }
+            }
+            Item::ConstDef(cd) => {
+                let mut sink = false;
+                pcf_expr(&cd.value, fn_names, &mut taken, &mut sink);
+            }
+            Item::Import(_)
+            | Item::Export(_)
+            | Item::Owns(_)
+            | Item::StructDef(_)
+            | Item::EnumDef(_)
+            | Item::PeripheralDef(_)
+            | Item::ExternFnDef(_)
+            | Item::ComptimeAssert(_) => {}
+        }
+    }
+    (taken, indirect)
+}
+
+fn pcf_block<'p>(
+    block: &'p Block,
+    fn_names: &HashSet<&str>,
+    taken: &mut HashSet<&'p str>,
+    indirect: &mut bool,
+) {
+    for stmt in &block.stmts {
+        pcf_stmt(stmt, fn_names, taken, indirect);
+    }
+    if let Some(t) = &block.trailing {
+        pcf_expr(t, fn_names, taken, indirect);
+    }
+}
+
+fn pcf_stmt<'p>(
+    stmt: &'p Stmt,
+    fn_names: &HashSet<&str>,
+    taken: &mut HashSet<&'p str>,
+    indirect: &mut bool,
+) {
+    match stmt {
+        Stmt::VarDecl(vd) => pcf_expr(&vd.init, fn_names, taken, indirect),
+        Stmt::Assign(a) => {
+            pcf_lvalue(&a.target, fn_names, taken, indirect);
+            pcf_expr(&a.value, fn_names, taken, indirect);
+        }
+        Stmt::CompoundAssign(ca) => {
+            pcf_lvalue(&ca.target, fn_names, taken, indirect);
+            pcf_expr(&ca.value, fn_names, taken, indirect);
+        }
+        Stmt::Expr(e) => pcf_expr(e, fn_names, taken, indirect),
+        Stmt::If(i) => {
+            pcf_expr(&i.cond, fn_names, taken, indirect);
+            pcf_block(&i.then_block, fn_names, taken, indirect);
+            if let Some(eb) = &i.else_branch {
+                pcf_stmt(eb, fn_names, taken, indirect);
+            }
+        }
+        Stmt::Loop(l) => pcf_block(&l.body, fn_names, taken, indirect),
+        Stmt::Claim(c) => pcf_block(&c.body, fn_names, taken, indirect),
+        Stmt::While(w) => {
+            pcf_expr(&w.cond, fn_names, taken, indirect);
+            pcf_block(&w.body, fn_names, taken, indirect);
+        }
+        Stmt::For(f) => {
+            pcf_expr(&f.start, fn_names, taken, indirect);
+            pcf_expr(&f.end, fn_names, taken, indirect);
+            if let Some(step) = &f.step {
+                pcf_expr(step, fn_names, taken, indirect);
+            }
+            pcf_block(&f.body, fn_names, taken, indirect);
+        }
+        Stmt::Match(m) => {
+            pcf_expr(&m.scrutinee, fn_names, taken, indirect);
+            for arm in &m.arms {
+                pcf_block(&arm.body, fn_names, taken, indirect);
+            }
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                pcf_expr(v, fn_names, taken, indirect);
+            }
+        }
+        Stmt::Asm(a) => {
+            for (_, target) in &a.outputs {
+                pcf_expr(target, fn_names, taken, indirect);
+            }
+            for (_, value) in &a.inputs {
+                pcf_expr(value, fn_names, taken, indirect);
+            }
+        }
+        Stmt::Assume(a) => pcf_expr(&a.cond, fn_names, taken, indirect),
+        Stmt::Assert(a) => pcf_expr(&a.cond, fn_names, taken, indirect),
+        Stmt::Block(b) => pcf_block(b, fn_names, taken, indirect),
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn pcf_lvalue<'p>(
+    lv: &'p crate::ast::LValue,
+    fn_names: &HashSet<&str>,
+    taken: &mut HashSet<&'p str>,
+    indirect: &mut bool,
+) {
+    use crate::ast::LValue;
+    match lv {
+        LValue::Name(_) => {}
+        LValue::Field(base, _) => pcf_lvalue(base, fn_names, taken, indirect),
+        LValue::Index(base, idx) => {
+            pcf_lvalue(base, fn_names, taken, indirect);
+            pcf_expr(idx, fn_names, taken, indirect);
+        }
+        LValue::Deref(e) => pcf_expr(e, fn_names, taken, indirect),
+    }
+}
+
+fn pcf_expr<'p>(
+    expr: &'p Expr,
+    fn_names: &HashSet<&str>,
+    taken: &mut HashSet<&'p str>,
+    indirect: &mut bool,
+) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => {}
+        // A bare function name in value position is an address-take.
+        Expr::Ident((name, _)) => {
+            if fn_names.contains(name.as_str()) {
+                taken.insert(name.as_str());
+            }
+        }
+        // The ONLY place callee position differs from value position: a
+        // direct call to a known function is an ordinary edge (fn_mentions
+        // covers it); anything else as callee is an indirect call.
+        Expr::Call(callee, args) => {
+            match callee.as_ref() {
+                Expr::Ident((name, _)) if fn_names.contains(name.as_str()) => {}
+                other => {
+                    *indirect = true;
+                    pcf_expr(other, fn_names, taken, indirect);
+                }
+            }
+            for a in args {
+                pcf_expr(a, fn_names, taken, indirect);
+            }
+        }
+        Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
+            pcf_expr(e, fn_names, taken, indirect);
+        }
+        Expr::Binary(l, _, r) | Expr::Index(l, r) => {
+            pcf_expr(l, fn_names, taken, indirect);
+            pcf_expr(r, fn_names, taken, indirect);
+        }
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            pcf_expr(base, fn_names, taken, indirect);
+            if let Some(l) = len {
+                pcf_expr(l, fn_names, taken, indirect);
+            }
+            if let Some(st) = stride {
+                pcf_expr(st, fn_names, taken, indirect);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            pcf_expr(base, fn_names, taken, indirect);
+            if let Some(c) = capacity {
+                pcf_expr(c, fn_names, taken, indirect);
+            }
+            pcf_expr(head, fn_names, taken, indirect);
+            pcf_expr(len, fn_names, taken, indirect);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            pcf_expr(base, fn_names, taken, indirect);
+            if let Some(o) = bit_offset {
+                pcf_expr(o, fn_names, taken, indirect);
+            }
+            if let Some(l) = len_bits {
+                pcf_expr(l, fn_names, taken, indirect);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                pcf_expr(e, fn_names, taken, indirect);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                pcf_expr(e, fn_names, taken, indirect);
+            }
+        }
+        Expr::Match(m) => {
+            pcf_expr(&m.scrutinee, fn_names, taken, indirect);
+            for arm in &m.arms {
+                pcf_block(&arm.body, fn_names, taken, indirect);
+            }
+        }
+        Expr::Block(b) => pcf_block(&b.block, fn_names, taken, indirect),
+        Expr::If(i) => {
+            pcf_expr(&i.cond, fn_names, taken, indirect);
+            pcf_block(&i.then_block, fn_names, taken, indirect);
+            pcf_expr(&i.else_branch, fn_names, taken, indirect);
+        }
+    }
 }
 
 /// Compute the derived ceiling for every `@shared` static (bare or pinned).

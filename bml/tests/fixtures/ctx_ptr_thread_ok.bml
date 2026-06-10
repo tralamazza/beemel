@@ -1,0 +1,15 @@
+// Positive: the stored pointer is only ever called from thread context, so
+// the closure adds nothing beyond Thread -- the thread-only access stays
+// legal.
+var COUNT: u32;
+
+fn bump() {
+    var x: u32 = COUNT;
+    COUNT = x + 1;
+}
+
+var CB: fn() -> void = &bump;
+
+fn main() @context(thread) {
+    CB();
+}

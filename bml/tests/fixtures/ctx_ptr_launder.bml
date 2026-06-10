@@ -1,0 +1,20 @@
+// Pointer-call context closure: the fn pointer is STORED in a static (the
+// initializer is in no function body, so mention edges cannot see it) and
+// called from an ISR. `bump` must inherit ISR context through the
+// address-taken/indirect-call closure -- its access to the implicitly
+// thread-only COUNT is the E404 race, previously invisible.
+var COUNT: u32;
+
+fn bump() {
+    var x: u32 = COUNT;
+    COUNT = x + 1;
+}
+
+var CB: fn() -> void = &bump;
+
+fn tick() @isr(priority = 2) {
+    CB();
+}
+
+fn main() @context(thread) {
+}

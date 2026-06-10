@@ -1,0 +1,14 @@
+// E408 exemption for declared entries: core_main carries @context(thread)
+// (its mainline IS a thread on the other core), and the launcher takes its
+// address for the hardware boot handshake.
+var ENTRY_ADDR: u32;
+
+fn core_main() @context(thread) {
+    loop {
+        asm { } : : : "memory";
+    }
+}
+
+fn main() @context(thread) {
+    ENTRY_ADDR = &core_main as u32;
+}

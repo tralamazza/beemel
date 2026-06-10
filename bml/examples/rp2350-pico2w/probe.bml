@@ -80,8 +80,10 @@ fn dma_poll() {
 
 // Core1's entry (bound by `entry = core1_main` in pico2w.target; everything
 // it mentions runs on core1 -- E615 keeps its statics partitioned from
-// core0's). UNANNOTATED (context Any): the launch handshake takes its
-// address, and E408 forbids taking a @context fn's address.
+// core0's). @context(thread): core1's mainline is its own thread context;
+// the launch handshake may take its address because declared entries are
+// exempt from E408 (the address goes to the other core's boot, not to a
+// bml pointer call).
 //
 // RESOLVED FINDING (2026-06-10): after a true POWER-ON boot, the launch is
 // first-try deterministic and indefinitely stable (core1 counting for
@@ -108,8 +110,8 @@ fn HardFault() {
     }
 }
 
-fn core1_main() {
-    CORE1_COUNT = 1000 + SIO.CPUID.CORE;
+fn core1_main() @context(thread) {
+    CORE1_COUNT = 1000 + SIO.CPUID.CORE;  // CPUID is 0/1; the +1000 cannot meaningfully wrap (MMIO havoc artifact) // bml-verify: ignore V130
     // Acknowledge over the inter-core FIFO -- the sanctioned cross-core
     // channel (E615's first real catch was core0 reading CORE1_COUNT
     // directly in an earlier version of this launch logic).
@@ -117,7 +119,7 @@ fn core1_main() {
     asm { sev } : : : "memory";
     loop {
         var c: u32 = CORE1_COUNT;
-        CORE1_COUNT = c + 1;
+        CORE1_COUNT = c + 1;  // free-running core1 loop counter; wrap intended // bml-verify: ignore V130
         // Discriminator: a FIFO heartbeat every 64Ki iterations. If beats
         // keep arriving while the SRAM counter freezes, core1 is alive and
         // its SRAM stores are the casualty; if both stop, core1 is dead.
@@ -131,10 +133,10 @@ fn core1_main() {
             var b: u32 = PAIR[1];
             if a != b {
                 var bad: u32 = PAIR_BAD1;
-                PAIR_BAD1 = bad + 1;
+                PAIR_BAD1 = bad + 1;  // invariant-violation tally; wrap irrelevant // bml-verify: ignore V130
             }
-            PAIR[0] = a + 1;
-            PAIR[1] = b + 1;
+            PAIR[0] = a + 1;  // contended PAIR slot increments; wrap intended // bml-verify: ignore V130
+            PAIR[1] = b + 1;  // contended PAIR slot increments; wrap intended // bml-verify: ignore V130
         }
         asm { } : : : "memory";
     }

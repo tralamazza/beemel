@@ -223,9 +223,17 @@ The compiler uses the ARM convention directly:
 E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
 propagates caller contexts through the call graph, so a helper called from an
 ISR is checked as ISR-context at its access sites (an `Any` hop cannot
-launder the access). Function pointers are the remaining blind spot: a
-pointer call is not connected to the calling site's context (taking `&f` in
-an ISR does count as an edge to `f`).
+launder the access). Function pointers are closed conservatively: taking
+`&f` in a function body is an edge to `f`, and any ADDRESS-TAKEN function
+(including through static initializers) additionally inherits the contexts
+of every function that performs an indirect call -- a stored pointer could
+reach any pointer-call site, so the pointee is checked in all of them.
+
+Declared core entries (`entry = <fn>` in the target) are exempt from the
+E408 address-of rejection even with a concrete `@context`: the launch
+handshake hands the address to hardware (another core's boot), not to a
+bml pointer call. Reusing an entry's address as an ordinary callback is
+not detected -- declared entries are trusted to be launch-only.
 
 Thread context accessing `@shared(...)` is always allowed -- the compiler
 will auto-insert a `cpsid i` / `cpsie i` critical section during codegen.

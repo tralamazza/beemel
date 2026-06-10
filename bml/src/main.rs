@@ -531,6 +531,12 @@ fn build_file(
     let mut symbols = resolver.resolve(&program, &mut diags, aliases);
     // The target's native byte order drives byte-order field diagnostics (E360).
     symbols.target_endianness = target.to_arch().endianness();
+    // Core entry points (E408 address-of exemption for the launch handshake).
+    symbols.entry_fns = target
+        .agents
+        .iter()
+        .filter_map(|a| a.entry.clone())
+        .collect();
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
@@ -767,6 +773,12 @@ fn verify_file(
     let mut symbols = resolver.resolve(&program, &mut diags, aliases);
     // The target's native byte order drives byte-order field diagnostics (E360).
     symbols.target_endianness = target.to_arch().endianness();
+    // Core entry points (E408 address-of exemption for the launch handshake).
+    symbols.entry_fns = target
+        .agents
+        .iter()
+        .filter_map(|a| a.entry.clone())
+        .collect();
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
