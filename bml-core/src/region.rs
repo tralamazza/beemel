@@ -135,6 +135,7 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
     }
     check_ownership_exclusivity(program, symbols, diags);
     check_handoff_writes(program, symbols, target, diags);
+    check_reclaim_guards(program, target, diags);
 }
 
 // ---- slice 1: placement -----------------------------------------------------
@@ -608,6 +609,265 @@ fn disables_field(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -> bool
     match ef {
         Some(f) => w.field.is_none() || w.field.as_deref() == Some(f),
         None => w.field.is_none(),
+    }
+}
+
+// ---- B v0: sound-reclaim guard (E611) ---------------------------------------
+
+/// Sound-reclaim guard. A `reclaim(BUF)` of a buffer an agent writes must be
+/// control-dependent on observing that agent's `completes_by` flag (the
+/// transfer-complete signal), else the CPU may read the buffer mid-transfer.
+///
+/// Sound, conservative v0: the reclaim must lie lexically inside the then-block
+/// of an `if <flag>` (so it runs only when the flag was tested set) -- proven by
+/// span containment, no flow-sensitive walk. NOT yet recognized (so conservatively
+/// rejected): helper-function predicates (`if mdma_done()`), `while !flag {}`
+/// busy-waits, and negated/compared conditions. Opt-in: only agents that declare
+/// `completes_by` are guarded; without it `reclaim` stays trusted.
+fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut DiagnosticBag) {
+    // static name -> the completion flags ("P.R.F") of the DMA/external agents
+    // that write its region.
+    let mut flags_of: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &program.items {
+        if let Item::StaticDef(s) = item
+            && let Some((rname, _)) = &s.region
+            && let Some(region) = target.regions.iter().find(|r| &r.name == rname)
+        {
+            let mut flags = Vec::new();
+            for aname in &region.agents {
+                if let Some(agent) = target.agents.iter().find(|a| &a.name == aname)
+                    && matches!(agent.kind, AgentKind::Dma | AgentKind::External)
+                {
+                    flags.extend(agent.completes_by.iter().cloned());
+                }
+            }
+            if !flags.is_empty() {
+                flags_of.insert(s.name.0.clone(), flags);
+            }
+        }
+    }
+    if flags_of.is_empty() {
+        return; // no agent declares a completion signal -> reclaim stays trusted
+    }
+
+    let mut scan = GuardScan::default();
+    for item in &program.items {
+        if let Item::FnDef(f) = item {
+            gscan_block(&f.body, &flags_of, &mut scan);
+        }
+    }
+
+    for (rspan, flags) in &scan.reclaims {
+        let guarded = scan.guards.iter().any(|(gflag, gspan)| {
+            flags.contains(gflag)
+                && gspan.file == rspan.file
+                && gspan.start <= rspan.start
+                && rspan.end <= gspan.end
+        });
+        if !guarded {
+            diags.error(
+                format!(
+                    "`reclaim` here is not guarded by a completion check: the agent may still be \
+                     writing the buffer. Wrap it in `if <flag> {{ ... }}` testing one of: {}.",
+                    flags.join(", ")
+                ),
+                "E611",
+                *rspan,
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct GuardScan {
+    /// `(completion-flag path, span of the then-block it guards)`.
+    guards: Vec<(String, Span)>,
+    /// `(reclaim span, the buffer's acceptable completion flags)`.
+    reclaims: Vec<(Span, Vec<String>)>,
+}
+
+/// If `e` is a bare read of a peripheral field (`P.R.F`, possibly parenthesized),
+/// return its `"P.R.F"` path -- the only `if` condition v0 treats as establishing
+/// "the flag is set" in the then-branch.
+fn cond_flag(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Group(inner) => cond_flag(inner),
+        Expr::FieldAccess(mid, (field, _)) => {
+            if let Expr::FieldAccess(inner, (reg, _)) = mid.as_ref()
+                && let Expr::Ident((periph, _)) = inner.as_ref()
+            {
+                Some(format!("{periph}.{reg}.{field}"))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Exhaustive walk collecting `if <flag>` guards and `reclaim` sites. Mirrors
+/// `walk_stmt`/`walk_expr` arm-for-arm so a new AST node breaks both at once.
+fn gscan_block(block: &Block, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
+    for stmt in &block.stmts {
+        gscan_stmt(stmt, flags_of, scan);
+    }
+    if let Some(t) = &block.trailing {
+        gscan_expr(t, flags_of, scan);
+    }
+}
+
+fn gscan_stmt(stmt: &Stmt, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
+    match stmt {
+        Stmt::If(i) => {
+            gscan_expr(&i.cond, flags_of, scan);
+            if let Some(flag) = cond_flag(&i.cond) {
+                scan.guards.push((flag, i.then_block.span));
+            }
+            gscan_block(&i.then_block, flags_of, scan);
+            if let Some(eb) = &i.else_branch {
+                gscan_stmt(eb, flags_of, scan);
+            }
+        }
+        Stmt::VarDecl(vd) => gscan_expr(&vd.init, flags_of, scan),
+        Stmt::Assign(a) => gscan_expr(&a.value, flags_of, scan),
+        Stmt::CompoundAssign(ca) => gscan_expr(&ca.value, flags_of, scan),
+        Stmt::Expr(e) => gscan_expr(e, flags_of, scan),
+        Stmt::Loop(l) => gscan_block(&l.body, flags_of, scan),
+        Stmt::While(w) => {
+            gscan_expr(&w.cond, flags_of, scan);
+            gscan_block(&w.body, flags_of, scan);
+        }
+        Stmt::For(f) => {
+            gscan_expr(&f.start, flags_of, scan);
+            gscan_expr(&f.end, flags_of, scan);
+            if let Some(step) = &f.step {
+                gscan_expr(step, flags_of, scan);
+            }
+            gscan_block(&f.body, flags_of, scan);
+        }
+        Stmt::Match(m) => {
+            gscan_expr(&m.scrutinee, flags_of, scan);
+            for arm in &m.arms {
+                gscan_block(&arm.body, flags_of, scan);
+            }
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                gscan_expr(v, flags_of, scan);
+            }
+        }
+        Stmt::Asm(a) => {
+            for (_, target) in &a.outputs {
+                gscan_expr(target, flags_of, scan);
+            }
+            for (_, value) in &a.inputs {
+                gscan_expr(value, flags_of, scan);
+            }
+        }
+        Stmt::Assume(a) => gscan_expr(&a.cond, flags_of, scan),
+        Stmt::Assert(a) => gscan_expr(&a.cond, flags_of, scan),
+        Stmt::Block(b) => gscan_block(b, flags_of, scan),
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+    }
+}
+
+fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::Ident(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => {}
+        Expr::Unary(_, e) | Expr::Group(e) | Expr::Cast(e, _) | Expr::FieldAccess(e, _) => {
+            gscan_expr(e, flags_of, scan);
+        }
+        Expr::Binary(l, _, r) | Expr::Index(l, r) => {
+            gscan_expr(l, flags_of, scan);
+            gscan_expr(r, flags_of, scan);
+        }
+        Expr::Call(callee, args) => {
+            gscan_expr(callee, flags_of, scan);
+            for a in args {
+                gscan_expr(a, flags_of, scan);
+            }
+        }
+        Expr::ViewNew {
+            base,
+            len,
+            stride,
+            reclaim,
+            span,
+        } => {
+            if *reclaim
+                && let Expr::Ident((name, _)) = base.as_ref()
+                && let Some(flags) = flags_of.get(name)
+            {
+                scan.reclaims.push((*span, flags.clone()));
+            }
+            gscan_expr(base, flags_of, scan);
+            if let Some(l) = len {
+                gscan_expr(l, flags_of, scan);
+            }
+            if let Some(s) = stride {
+                gscan_expr(s, flags_of, scan);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            gscan_expr(base, flags_of, scan);
+            if let Some(c) = capacity {
+                gscan_expr(c, flags_of, scan);
+            }
+            gscan_expr(head, flags_of, scan);
+            gscan_expr(len, flags_of, scan);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            gscan_expr(base, flags_of, scan);
+            if let Some(o) = bit_offset {
+                gscan_expr(o, flags_of, scan);
+            }
+            if let Some(l) = len_bits {
+                gscan_expr(l, flags_of, scan);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                gscan_expr(e, flags_of, scan);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                gscan_expr(e, flags_of, scan);
+            }
+        }
+        Expr::Match(m) => {
+            gscan_expr(&m.scrutinee, flags_of, scan);
+            for arm in &m.arms {
+                gscan_block(&arm.body, flags_of, scan);
+            }
+        }
+        Expr::Block(b) => gscan_block(&b.block, flags_of, scan),
+        Expr::If(i) => {
+            gscan_expr(&i.cond, flags_of, scan);
+            if let Some(flag) = cond_flag(&i.cond) {
+                scan.guards.push((flag, i.then_block.span));
+            }
+            gscan_block(&i.then_block, flags_of, scan);
+            gscan_expr(&i.else_branch, flags_of, scan);
+        }
     }
 }
 

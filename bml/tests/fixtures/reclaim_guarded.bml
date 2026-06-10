@@ -1,0 +1,21 @@
+// A reclaim gated on the agent's completion flag is accepted (E611 satisfied):
+// the reclaim is only reached when DMAC.SR.DONE is observed set.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    if DMAC.SR.DONE {
+        const v = reclaim(BUF);
+        return v[i] as u32;
+    }
+    return 0;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

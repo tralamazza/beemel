@@ -75,5 +75,8 @@ handoff = Ethernet_DMA.DMACRxDTPR
 [agent.mdma]
 kind = dma
 reach = dma_pool, dtcm
+# Channel transfer-complete flag. Declaring it activates the sound-reclaim guard
+# (E611): a reclaim of MDMA's output must be gated on observing this bit.
+completes_by = MDMA.MDMA_C0ISR.CTCIF0
 handoff = MDMA.MDMA_C0SAR
 handoff = MDMA.MDMA_C0DAR

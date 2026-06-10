@@ -535,14 +535,29 @@ packed layout.
   yields a bounds-checked `view` over agent-shared memory, the explicit
   handshake-acknowledged escape. Dogfooding also found that a plain `view(x)`
   silently bypassed E326 over agent-shared memory; the contiguous `view` is now
-  tightened to reject it (E335, points to `reclaim`). Trusted for now (the
-  reclaim asserts the handshake happened). **Future "B" (planned):** make it
-  sound by requiring the reclaim be dominated by the agent's completion-flag poll
-  -- the same control-flow-domination analysis, turning the assertion into a
-  checked fact. Not yet tightened: ring/strided/bits over agent-shared (no
-  reclaim form yet). `reclaim` is `Expr::ViewNew { reclaim: true }`; checker only,
-  zero IR change (lowers like `view`). Pinned by `view_agent_shared.bml` (E335),
-  `reclaim_plain_array.bml` (E335), `view_over_dma.bml` (reclaim ok).
+  tightened to reject it (E335, points to `reclaim`). `reclaim` is
+  `Expr::ViewNew { reclaim: true }`; checker only, zero IR change (lowers like
+  `view`). Pinned by `view_agent_shared.bml` (E335), `reclaim_plain_array.bml`
+  (E335), `view_over_dma.bml` (reclaim ok).
+- *Sound reclaim (direction "B", v0).* DONE. An agent declares its
+  transfer-complete signal in the target -- `completes_by = P.R.F` (mirrors
+  `enabled_by`); declaring it activates the guard, leaving `reclaim` trusted
+  otherwise. `region.rs::check_reclaim_guards` (E611) then requires every
+  `reclaim(BUF)` of that agent's buffer to be control-dependent on observing the
+  flag. v0 is sound but conservative via **span containment**: the reclaim must
+  lie lexically in the then-block of an `if <flag>` (proven by span, no
+  flow-sensitive walk). NOT yet recognized (so conservatively rejected): helper
+  predicates (`if mdma_done()` -- needs inter-procedural), `while !flag {}`
+  busy-waits, negated/compared conditions, and per-buffer association (v0 assumes
+  one async agent per region). The full B (control-flow domination across those
+  forms) is the follow-up. Pinned by `reclaim_guarded.bml`/`reclaim_unguarded.bml`
+  (E611); dogfooded on `copy_dma.bml` (guarded on `MDMA.MDMA_C0ISR.CTCIF0`).
+- *Toward unifying with the ceiling protocol.* The two concurrency disciplines
+  (ceiling = mutual exclusion for CPU contexts; release/reclaim = ownership
+  transfer for async agents) are one concept -- region ownership -- with the
+  transfer mechanism derived from the sharer set (instant priority-raise for CPU
+  contexts, signal-gated handshake for agents). B is the shared engine; the plan
+  is to build it, show the ceiling reduces to its instant case, then fold them.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

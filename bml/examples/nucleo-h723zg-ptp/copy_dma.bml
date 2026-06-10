@@ -23,9 +23,13 @@ fn copy_setup() {
     MDMA.MDMA_C0DAR = &SCRATCH as u32;  // dest: the DTCM scratch buffer
 }
 
-// Consume MDMA's output after the transfer completes. `reclaim` hands the buffer
-// back to the CPU as a bounds-checked view.
+// Consume MDMA's output. The `reclaim` is gated on the channel transfer-complete
+// flag (the agent's `completes_by`), so it is only reached once MDMA is done --
+// the sound-reclaim guard (E611) rejects an unguarded reclaim.
 fn scratch_byte(i: u32) -> u32 {
-    const v = reclaim(SCRATCH);
-    return v[i] as u32;
+    if MDMA.MDMA_C0ISR.CTCIF0 {
+        const v = reclaim(SCRATCH);
+        return v[i] as u32;
+    }
+    return 0;
 }

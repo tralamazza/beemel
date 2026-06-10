@@ -1,0 +1,18 @@
+// An unguarded reclaim is rejected (E611): the agent declares a completion flag
+// (DMAC.SR.DONE), so the reclaim must be control-dependent on observing it.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_any(i: u32) -> u32 {
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_any(0);
+}

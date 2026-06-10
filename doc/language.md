@@ -521,9 +521,11 @@ DMA/external agent touches is `AgentShared`: its rvalue index-read is blocked
 it. `reclaim(arr)` is the explicit, handshake-acknowledged escape: once the
 agent's transfer has completed, it yields the same bounds-checked `view` to
 consume the result. It is the *reclaim* counterpart to the handoff write (the
-*release*). Trusted in v1 (the reclaim asserts the handshake happened); a future
-step verifies it is dominated by the agent's completion-flag poll. Only the
-contiguous `view` form is tightened; `ring`/`bits` over agent-shared are not yet.
+*release*). If the agent declares a `completes_by` flag in the target, the
+reclaim must be guarded by observing it -- it must sit in the then-block of an
+`if <flag>` (E611), so the CPU cannot read mid-transfer; without `completes_by`
+the reclaim stays trusted. Only the contiguous `view` form is tightened;
+`ring`/`bits` over agent-shared are not yet.
 
 **Limitations (v1).** Strided linear views exist with a *compile-time* stride;
 runtime-valued strides, strided bit views, and segmented (scatter/gather) views

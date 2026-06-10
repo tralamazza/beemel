@@ -2840,6 +2840,25 @@ assert_error!(
     "E335"
 );
 
+// Sound-reclaim guard (B v0, E611): when the agent declares a `completes_by`
+// flag, a `reclaim` gated on it (`if DMAC.SR.DONE { reclaim }`) is accepted, but
+// an unguarded one is rejected -- the CPU could read mid-transfer.
+#[test]
+fn test_reclaim_guarded_ok() {
+    let (ok, stderr) = bml_build_with_target("reclaim_guarded.bml", Some("reclaim_guard.target"));
+    assert!(ok, "a guarded reclaim should build; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_unguarded_rejected() {
+    let (ok, stderr) = bml_build_with_target("reclaim_unguarded.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "an unguarded reclaim should fail when completes_by is declared; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
 // Derived-Move: the same array placed in an agent-shared region (no `@dma`
 // adjective) is wrapped in `Type::AgentShared` at resolution because the region
 // has a DMA agent, so the rvalue index-read is rejected with the same E326. The

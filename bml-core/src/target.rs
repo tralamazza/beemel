@@ -133,6 +133,12 @@ pub struct Agent {
     pub handoffs: Vec<Handoff>,
     /// Register paths that must be enabled for the agent to operate (clock gates).
     pub enabled_by: Vec<String>,
+    /// Register/field paths whose *set* state signals the agent has finished a
+    /// transfer (e.g. a DMA transfer-complete flag). Declaring it activates the
+    /// sound-reclaim guard (E611): a `reclaim` of a buffer this agent writes must
+    /// be control-dependent on observing one of these. Empty = `reclaim` stays
+    /// trusted (unchecked).
+    pub completes_by: Vec<String>,
 }
 
 impl Agent {
@@ -294,6 +300,7 @@ impl Target {
                                 access: AgentAccess::ReadWrite,
                                 handoffs: Vec::new(),
                                 enabled_by: Vec::new(),
+                                completes_by: Vec::new(),
                             });
                             target.agents.len() - 1
                         };
@@ -997,6 +1004,7 @@ fn parse_agent_kv(agent: &mut Agent, key: &str, val: &str, line_num: usize) -> R
         }
         "handoff" => agent.handoffs.push(parse_handoff(val, line_num)?),
         "enabled_by" => agent.enabled_by = parse_list(val),
+        "completes_by" => agent.completes_by = parse_list(val),
         _ => {
             return Err(format!("line {}: unknown agent key `{key}`", line_num + 1));
         }
