@@ -1,0 +1,20 @@
+// Blocking acquire: `while !<flag> {}` exits only with the completion flag
+// observed set, so the flag holds for the rest of the block and the reclaim
+// after it is accepted (E611 satisfied).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    while !DMAC.SR.DONE {}
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

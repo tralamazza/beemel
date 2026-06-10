@@ -651,13 +651,30 @@ packed layout.
     exceptions (SysTick/PendSV/...) use SHPR, not modeled; a user-written
     reset handler gets no generated NVIC programming (same as
     startup_init/MPU). Pinned by `isr_priority_program.bml`.
+  - *Slice U2: blocking-acquire guard forms.* DONE, hardware-validated. E611
+    now accepts the full acquire vocabulary, all by span containment:
+    `if <flag> {}` (try-acquire, the v0 form), `while !<flag> {}` busy-wait
+    (blocking acquire -- the lock-style form the fold needs; body must be
+    EMPTY, since a non-empty body could hide a `break` exiting with the flag
+    clear), and `if !<flag> { return; }` (early-exit acquire; no else, then
+    must `has_direct_terminator`). The blocking forms establish the flag for
+    the REST of the enclosing block (`rest_of_block` span; same soundness
+    level as the then-block form -- code in the span could clear the flag,
+    that is the full flow-sensitive B). Predicates compose (`while !done()
+    {}`). Dogfooded: `copy_dma.bml` does a blocking acquire right after
+    triggering (`while !mdma_done() {} reclaim`) AND keeps the try-acquire in
+    `copy_poll` -- both validated on the NUCLEO in one program
+    (SCRATCH_FIRST=0xA1, SCRATCH_DONE=1). Pinned by
+    `reclaim_busywait{,_helper,_body}.bml`, `reclaim_earlyexit.bml`,
+    `reclaim_before_wait.bml` (ordering negative).
   - *Remaining for the fold:* express both disciplines as one ownership
     representation (the `@shared` window = instant acquire/release pair, the
     agent window = handoff-release/flag-guarded-reclaim); a reclaim-shaped
     escape for CPU-shared data (views over `@shared` are rejected today for
     exactly the reason views over agent-shared were before `reclaim` -- the
     symmetric construct is a view valid within a masked window); call-graph
-    context propagation; B's blocking-acquire guard forms (`while !flag {}`).
+    context propagation; compared guard conditions; per-buffer flag
+    association.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

@@ -1,0 +1,23 @@
+// Blocking acquire through a completion predicate: `while !done() {}` where
+// `done` returns the flag resolves to the same guard (E611 satisfied).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn done() -> b1 {
+    return DMAC.SR.DONE;
+}
+
+fn read_done(i: u32) -> u32 {
+    while !done() {}
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

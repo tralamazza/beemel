@@ -2913,6 +2913,53 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// B broadening: blocking-acquire guard forms. The busy-wait (`while !flag {}`,
+// empty body) and the early exit (`if !flag { return; }`) establish the flag
+// for the rest of the block; misordered or break-capable variants stay E611.
+#[test]
+fn test_reclaim_busywait_ok() {
+    let (ok, stderr) = bml_build_with_target("reclaim_busywait.bml", Some("reclaim_guard.target"));
+    assert!(ok, "a busy-wait acquire should build; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_busywait_helper_ok() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_busywait_helper.bml", Some("reclaim_guard.target"));
+    assert!(
+        ok,
+        "a predicate busy-wait acquire should build; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_reclaim_earlyexit_ok() {
+    let (ok, stderr) = bml_build_with_target("reclaim_earlyexit.bml", Some("reclaim_guard.target"));
+    assert!(ok, "an early-exit acquire should build; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_busywait_nonempty_body_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_busywait_body.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "a busy-wait with a body could hide a break; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_reclaim_before_wait_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("reclaim_before_wait.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "a reclaim before the wait is unguarded; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
+}
+
 // Port-select check (E612): a handoff with `port_by F TAG` hands its address to
 // an agent whose master port is software-selected (the H7 MDMA's TCM access via
 // MDMA_CxTBR.DBUS). The address's mem block, against the agent's tagged bus

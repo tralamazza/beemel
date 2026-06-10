@@ -756,11 +756,24 @@ fn disables_field(w: &PeriphWrite, ep: &str, er: &str, ef: Option<&str>) -> bool
 /// control-dependent on observing that agent's `completes_by` flag (the
 /// transfer-complete signal), else the CPU may read the buffer mid-transfer.
 ///
-/// Sound, conservative v0: the reclaim must lie lexically inside the then-block
-/// of an `if <flag>` (so it runs only when the flag was tested set) -- proven by
-/// span containment, no flow-sensitive walk. NOT yet recognized (so conservatively
-/// rejected): helper-function predicates (`if mdma_done()`), `while !flag {}`
-/// busy-waits, and negated/compared conditions. Opt-in: only agents that declare
+/// Sound, conservative, proven by span containment (no flow-sensitive walk).
+/// Accepted acquire forms, each establishing the flag over a span the reclaim
+/// must lie in:
+/// - `if <flag> { reclaim }` (try-acquire): the then-block span. `<flag>` may
+///   be the field read or a completion predicate (`if mdma_done()`).
+/// - `while !<flag> {} ... reclaim` (blocking acquire): the rest of the
+///   enclosing block after the loop. The body must be EMPTY (the canonical
+///   busy-wait) -- a non-empty body could hide a `break` that exits with the
+///   flag still clear, so it stays conservatively rejected.
+/// - `if !<flag> { return; } reclaim` (early-exit acquire): the rest of the
+///   enclosing block, when the then-block always terminates directly
+///   (`has_direct_terminator`) and there is no else branch.
+///
+/// "Rest of the block" is sound at the same level as the then-block form:
+/// code inside the span could clear the flag after it was observed; tracking
+/// that is the full flow-sensitive B. Still rejected: compared conditions
+/// (`flag == true`), waits with non-empty bodies, per-buffer association
+/// (one async agent per region). Opt-in: only agents that declare
 /// `completes_by` are guarded; without it `reclaim` stays trusted.
 fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut DiagnosticBag) {
     // static name -> the completion flags ("P.R.F") of the DMA/external agents
@@ -819,7 +832,8 @@ fn check_reclaim_guards(program: &Program, target: &Target, diags: &mut Diagnost
             diags.error(
                 format!(
                     "`reclaim` here is not guarded by a completion check: the agent may still be \
-                     writing the buffer. Wrap it in `if <flag> {{ ... }}` testing one of: {}.",
+                     writing the buffer. Guard it with `if <flag> {{ ... }}`, a `while !<flag> \
+                     {{}}` busy-wait, or `if !<flag> {{ return; }}` before it, testing one of: {}.",
                     flags.join(", ")
                 ),
                 "E611",
@@ -882,12 +896,52 @@ fn cond_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
 
 /// Exhaustive walk collecting `if <flag>` guards and `reclaim` sites. Mirrors
 /// `walk_stmt`/`walk_expr` arm-for-arm so a new AST node breaks both at once.
+/// The block walk additionally probes each statement for the blocking-acquire
+/// forms, which guard the REST of this block (see `check_reclaim_guards`).
 fn gscan_block(block: &Block, flags_of: &HashMap<String, Vec<String>>, scan: &mut GuardScan) {
     for stmt in &block.stmts {
+        // `while !<flag> {}` (empty body): the loop exits only with the flag
+        // observed set, so it holds from after the loop to the end of the
+        // block.
+        if let Stmt::While(w) = stmt
+            && let Some(flag) = negated_flag(&w.cond, &scan.preds)
+            && w.body.stmts.is_empty()
+            && w.body.trailing.is_none()
+        {
+            scan.guards.push((flag, rest_of_block(block, w.body.span)));
+        }
+        // `if !<flag> { return; }` (early exit): past the if, the flag was
+        // observed set. Requires no else and a then-block that always
+        // terminates directly.
+        if let Stmt::If(i) = stmt
+            && let Some(flag) = negated_flag(&i.cond, &scan.preds)
+            && i.else_branch.is_none()
+            && i.then_block.has_direct_terminator()
+        {
+            scan.guards
+                .push((flag, rest_of_block(block, i.then_block.span)));
+        }
         gscan_stmt(stmt, flags_of, scan);
     }
     if let Some(t) = &block.trailing {
         gscan_expr(t, flags_of, scan);
+    }
+}
+
+/// The span from just after `upto` to the end of `block` -- the region a
+/// blocking-acquire form establishes its flag over.
+fn rest_of_block(block: &Block, upto: Span) -> Span {
+    Span::new(block.span.file, upto.end, block.span.end)
+}
+
+/// The flag a NEGATED condition tests clear: `!<flag>` or `!done()`, possibly
+/// parenthesized. The complement of `cond_flag`, used by the blocking-acquire
+/// forms (`while !flag {}`, `if !flag { return; }`).
+fn negated_flag(e: &Expr, preds: &HashMap<String, String>) -> Option<String> {
+    match e {
+        Expr::Group(inner) => negated_flag(inner, preds),
+        Expr::Unary(UnaryOp::Not, inner) => cond_flag(inner, preds),
+        _ => None,
     }
 }
 

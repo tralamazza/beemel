@@ -1,0 +1,22 @@
+// Early-exit acquire: `if !<flag> { return ...; }` always leaves the function
+// when the flag is clear, so past it the flag was observed set and the
+// reclaim is accepted (E611 satisfied).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    if !DMAC.SR.DONE {
+        return 0;
+    }
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}

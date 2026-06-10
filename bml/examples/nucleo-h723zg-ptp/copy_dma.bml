@@ -27,6 +27,7 @@ var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM, AXI side)
 var SCRATCH: [u8; 64] in tcm_scratch;   // MDMA writes this (DTCM, AHBS side)
 var SCRATCH_CHECK: u32;                  // CPU-visible: first reclaimed byte
 var SCRATCH_DONE: u32;                   // CPU-visible: set once the copy is consumed
+var SCRATCH_FIRST: u32;                  // CPU-visible: byte [1] via the blocking acquire
 
 fn copy_setup() {
     // Enable the MDMA peripheral clock (shared RCC register).
@@ -58,6 +59,14 @@ fn copy_setup() {
     MDMA.MDMA_C0TCR.SWRM = true;          // software request mode (mem-to-mem)
     MDMA.MDMA_C0CR.EN = true;             // enable the channel
     MDMA.MDMA_C0CR.SWRQ = true;           // trigger the transfer
+
+    // Blocking acquire (B broadening): the empty busy-wait exits only with
+    // the completion flag observed set, which establishes it for the rest of
+    // this block -- so this reclaim needs no `if` (E611 accepts the
+    // lock-style acquire; copy_poll below keeps the try-acquire form).
+    while !mdma_done() {}
+    const first = reclaim(SCRATCH);
+    SCRATCH_FIRST = first[1] as u32;
 }
 
 // A completion predicate: returns the channel transfer-complete flag. The

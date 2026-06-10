@@ -1,0 +1,23 @@
+// Soundness edge: a busy-wait with a NON-EMPTY body is conservatively
+// rejected -- the body could hide a `break` that exits with the flag still
+// clear. Only the canonical empty `while !<flag> {}` counts (E611).
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn read_done(i: u32) -> u32 {
+    var spins: u32 = 0;
+    while !DMAC.SR.DONE {
+        spins = spins + 1;
+    }
+    const v = reclaim(BUF);
+    return v[i] as u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = read_done(0);
+}
