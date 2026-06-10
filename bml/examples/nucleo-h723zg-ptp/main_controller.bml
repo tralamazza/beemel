@@ -25,6 +25,7 @@ fn main() @context(thread) {
     loop {
         phy_poll_link();
         eth_poll_rx();
+        copy_poll();
         if timer_expired() {
             const now = ptp_now();
             eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);

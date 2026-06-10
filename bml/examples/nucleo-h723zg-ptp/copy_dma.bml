@@ -1,35 +1,64 @@
-// Stage 2 dogfood: a SECOND DMA agent (MDMA) with two handoffs -- a source
-// address register (C0SAR, what it reads) and a destination (C0DAR, what it
-// writes). Confirmed the handoff machinery generalizes to a non-ETH agent
-// (E605 fired on both until this module declared ownership).
+// Stage 2/3: a second DMA agent (MDMA) doing a real mem-to-mem copy
+// COPY_SRC (D2 dma_pool) -> SCRATCH (DTCM), then the CPU consumes the result via
+// a sound-reclaim guarded on the channel transfer-complete flag.
+//
+// COPY_SRC is in dma_shared (eth+mdma region); the CPU fills it before releasing
+// it to MDMA via the C0SAR handoff. SCRATCH is in the scratch region; MDMA writes
+// it, and the CPU reads it back only through `reclaim(SCRATCH)` once
+// MDMA.MDMA_C0ISR.CTCIF0 is observed set (E611).
+//
+// FINDING (hardware bringup): scratch was first placed in DTCM, but the MDMA
+// write errored (C0ESR.TED=1) -- the H7 TCMs are CPU-private, no DMA reaches
+// them. The target's `reach` is a *trusted* claim the bus matrix can falsify;
+// scratch now lives in D2, which MDMA does reach. Validated on the NUCLEO:
+// SCRATCH holds the copied ramp and the guarded reclaim returns it.
 import svd.mdma;
+import svd.rcc;
 
-export fn copy_setup, fn scratch_byte;
+export fn copy_setup, fn copy_poll;
 
 owns MDMA;
 
-// MDMA's destination buffer, in DTCM (the scratch region). Placed in a region a
-// DMA agent writes, so derived-Move wraps it AgentShared: direct index-reads are
-// blocked (E326), and viewing it is blocked too (E335) -- the agent may still
-// own it. The model has the *release* (the handoff write hands MDMA the address)
-// and now the *reclaim*: once the transfer completes, `reclaim(SCRATCH)` yields a
-// bounds-checked view to consume the result. (Trusted for now: the reclaim
-// asserts the handshake happened; verifying it follows the completion poll is
-// the future "B" soundness step.)
-var SCRATCH: [u8; 64] in scratch;
+var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM)
+var SCRATCH: [u8; 64] in scratch;       // MDMA writes this (DTCM)
+var SCRATCH_CHECK: u32;                  // CPU-visible: first reclaimed byte
+var SCRATCH_DONE: u32;                   // CPU-visible: set once the copy is consumed
 
 fn copy_setup() {
-    MDMA.MDMA_C0SAR = 0x30007000;       // source in dma_pool (ETH RX data)
-    MDMA.MDMA_C0DAR = &SCRATCH as u32;  // dest: the DTCM scratch buffer
+    // Enable the MDMA peripheral clock (shared RCC register).
+    RCC.C1_AHB3ENR.MDMAEN = true;
+
+    // Fill the source with a recognizable ramp (0xA0, 0xA1, ...). The CPU writes
+    // it before handing it to MDMA; index-writes to agent-shared memory are
+    // allowed (only the rvalue index-read is blocked).
+    var i: u32 = 0;
+    while i < 64 {
+        COPY_SRC[i] = (0xA0 + i) as u8;
+        i = i + 1;
+    }
+    asm { dsb } : : : "memory";
+
+    // Program MDMA channel 0: 64-byte mem-to-mem copy, byte size, src+dst
+    // incrementing, one software-triggered whole transfer.
+    MDMA.MDMA_C0SAR = &COPY_SRC as u32;   // release: hand MDMA the source
+    MDMA.MDMA_C0DAR = &SCRATCH as u32;    // release: hand MDMA the destination
+    MDMA.MDMA_C0BNDTR.BNDT = 64;          // 64 bytes in the block
+    MDMA.MDMA_C0TCR.SINC = 2;             // source address increments
+    MDMA.MDMA_C0TCR.DINC = 2;             // destination address increments
+    MDMA.MDMA_C0TCR.TLEN = 63;            // buffer length = TLEN+1 = 64 bytes
+    MDMA.MDMA_C0TCR.TRGM = 3;             // whole-transfer trigger
+    MDMA.MDMA_C0TCR.SWRM = true;          // software request mode (mem-to-mem)
+    MDMA.MDMA_C0CR.EN = true;             // enable the channel
+    MDMA.MDMA_C0CR.SWRQ = true;           // trigger the transfer
 }
 
-// Consume MDMA's output. The `reclaim` is gated on the channel transfer-complete
-// flag (the agent's `completes_by`), so it is only reached once MDMA is done --
-// the sound-reclaim guard (E611) rejects an unguarded reclaim.
-fn scratch_byte(i: u32) -> u32 {
+// Consume MDMA's output once it signals complete. The reclaim is gated on the
+// transfer-complete flag (the agent's `completes_by`), so the bounds-checked read
+// only runs after MDMA is done -- the sound-reclaim guard (E611).
+fn copy_poll() {
     if MDMA.MDMA_C0ISR.CTCIF0 {
         const v = reclaim(SCRATCH);
-        return v[i] as u32;
+        SCRATCH_CHECK = v[0] as u32;
+        SCRATCH_DONE = 1;
     }
-    return 0;
 }

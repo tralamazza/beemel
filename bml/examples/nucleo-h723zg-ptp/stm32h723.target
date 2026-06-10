@@ -47,12 +47,6 @@ size = 28K
 base = 0x30007000
 size = 4K
 
-# DTCM: tightly-coupled to the CPU. MDMA reaches it; the ETH DMA does NOT (it is
-# behind the CPU bus). This asymmetry is the Stage-3 reach probe.
-[mem.dtcm]
-base = 0x20000000
-size = 128K
-
 # The ETH DMA engine. It reaches dma_pool (D2 SRAM) and not the TCMs. Its
 # descriptor base + tail-pointer registers are handoffs: source writes the full
 # descriptor byte address to each register; the reserved low 2 bits are
@@ -74,7 +68,7 @@ handoff = Ethernet_DMA.DMACRxDTPR
 # it reads ETH RX data); a later stage adds an AXI/TCM scratch it writes to.
 [agent.mdma]
 kind = dma
-reach = dma_pool, dtcm
+reach = dma_pool
 # Channel transfer-complete flag. Declaring it activates the sound-reclaim guard
 # (E611): a reclaim of MDMA's output must be gated on observing this bit.
 completes_by = MDMA.MDMA_C0ISR.CTCIF0

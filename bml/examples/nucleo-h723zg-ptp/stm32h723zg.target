@@ -15,5 +15,5 @@ mem = dma_pool
 agents = eth, mdma
 
 [region.scratch]
-mem = dtcm
+mem = dma_pool
 agents = mdma
