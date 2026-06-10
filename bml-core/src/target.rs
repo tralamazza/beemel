@@ -30,6 +30,11 @@ pub struct Target {
     /// is enabling a RAM clock (e.g. STM32H7 D2 SRAM) when the stack lives in a
     /// clock-gated SRAM, since `reset_handler` touches RAM before `main` runs.
     pub startup_init: Vec<(u64, u64)>,
+    /// Literal words from `[boot_block]`, emitted verbatim by the linker
+    /// script directly after the vector table. Chip-agnostic mechanism for
+    /// boot metadata the boot ROM scans flash for; the canonical consumer is
+    /// the RP2350 `IMAGE_DEF` block (datasheet 5.9.5). Empty = no section.
+    pub boot_block: Vec<u32>,
     /// Named memory blocks from `[mem.*]` sections. Generalizes the flat
     /// `flash_*`/`ram_*` pair: on parts with multiple RAMs of differing
     /// reachability (TCM vs AHB SRAM), each block is named so regions and agent
@@ -222,6 +227,7 @@ enum Section {
     Top,
     Interrupts,
     Startup,
+    BootBlock,
     Mem(usize),
     Agent(usize),
     Region(usize),
@@ -244,6 +250,7 @@ impl Default for Target {
             data_block: None,
             interrupts: HashMap::new(),
             startup_init: Vec::new(),
+            boot_block: Vec::new(),
             mem_blocks: Vec::new(),
             agents: Vec::new(),
             regions: Vec::new(),
@@ -380,6 +387,7 @@ impl Target {
                     _ => match header {
                         "interrupts" => Section::Interrupts,
                         "startup" => Section::Startup,
+                        "boot_block" => Section::BootBlock,
                         other => {
                             return Err(format!(
                                 "line {}: unknown section `[{other}]`",
@@ -477,6 +485,17 @@ impl Target {
                     ));
                 }
                 target.startup_init.push((addr, mask));
+                continue;
+            }
+            // In [boot_block] section: one literal 32-bit word per line.
+            if let Section::BootBlock = section {
+                let word = parse_int(line).map_err(|_| {
+                    format!("line {}: invalid boot_block word `{line}`", line_num + 1)
+                })?;
+                let word = u32::try_from(word).map_err(|_| {
+                    format!("line {}: boot_block word must fit in 32 bits", line_num + 1)
+                })?;
+                target.boot_block.push(word);
                 continue;
             }
             // Top-level key = value
@@ -1001,6 +1020,18 @@ SECTIONS
             );
         }
 
+        // Boot metadata words ([boot_block]), emitted verbatim directly after
+        // the vector table -- inside the boot ROM's flash scan window (the
+        // RP2350 IMAGE_DEF must start within the first 4 kB).
+        let mut boot_block = String::new();
+        if !self.boot_block.is_empty() {
+            boot_block.push_str("  .boot_block :\n  {\n");
+            for w in &self.boot_block {
+                let _ = writeln!(boot_block, "    LONG(0x{w:08X})");
+            }
+            let _ = writeln!(boot_block, "  }} > {}\n", flash.name);
+        }
+
         let flash_name = &flash.name;
         let ram_name = &ram.name;
         format!(
@@ -1018,7 +1049,7 @@ SECTIONS
     KEEP(*(.vector_table))
   }} > {flash_name}
 
-  .text :
+{boot_block}  .text :
   {{
     *(.text*)
     *(.rodata*)
@@ -1663,6 +1694,48 @@ agents = eth_dma
             "{narrow}\n[agent.eth_dma]\nbus = 0x20000000..0x20020000, 0x30000000..0x30008000\n"
         );
         t(&widened);
+    }
+
+    #[test]
+    fn boot_block_words_emitted_after_vector_table() {
+        // [boot_block] words land verbatim in a .boot_block output section in
+        // the code block, directly after the vector table (the RP2350
+        // IMAGE_DEF must start within the boot ROM's 4 kB scan window).
+        let src = "\
+arch = armv7em
+vector_table_offset = 0x10000000
+data_block = sram
+[boot_block]
+0xffffded3
+0x10210142
+0x000001ff
+0x00000000
+0xab123579
+[mem.flash]
+base = 0x10000000
+size = 4M
+[mem.sram]
+base = 0x20000000
+size = 512K
+";
+        let target = t(src);
+        assert_eq!(target.boot_block.len(), 5);
+        assert_eq!(target.boot_block[0], 0xFFFF_DED3);
+        let ld = target.generate_linker_script();
+        let vt = ld.find(".vector_table").unwrap();
+        let bb = ld.find(".boot_block").unwrap();
+        let text = ld.find(".text").unwrap();
+        assert!(
+            vt < bb && bb < text,
+            "boot_block between table and text:\n{ld}"
+        );
+        assert!(ld.contains("LONG(0xAB123579)"), "got:\n{ld}");
+    }
+
+    #[test]
+    fn boot_block_bad_word_is_error() {
+        let err = Target::parse("arch = armv7em\n[boot_block]\nnope\n").unwrap_err();
+        assert!(err.contains("boot_block word"), "got: {err}");
     }
 
     #[test]

@@ -16,6 +16,7 @@ owns DMA;
 var SRC: [u32; 16] in dma_buf;
 var DST: [u32; 16] in dma_buf;
 var COPY_OK: u32;     // probe-visible result once consumed
+var ALIVE: u32;       // probe-visible liveness counter (main loop heartbeat)
 
 fn dma_setup() {
     // Bring the DMA out of reset. Inverted gating, now CHECKED physics:
@@ -64,5 +65,7 @@ fn main() @context(thread) {
     dma_setup();
     loop {
         dma_poll();
+        var a: u32 = ALIVE;
+        ALIVE = a + 1;
     }
 }

@@ -29,6 +29,18 @@ has_mpu = false
 vector_table_offset = 0x10000000
 data_block = sram
 
+# Minimum Arm IMAGE_DEF (datasheet 5.9.5.1), placed by the linker directly
+# after the vector table -- inside the boot ROM's 4 kB flash scan window. No
+# entry-point item, so the bootrom enters via the Cortex-M vector table at
+# the image start (SP at +0, reset handler at +4), which is exactly the
+# table the compiler generates.
+[boot_block]
+0xffffded3
+0x10210142
+0x000001ff
+0x00000000
+0xab123579
+
 # Main system SRAM: 512 KB, striped on address bits 3:2 across banks 0-7
 # (two 256 KB power domains; the striping is invisible to software layout).
 [mem.sram]

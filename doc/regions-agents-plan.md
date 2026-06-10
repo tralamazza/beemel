@@ -792,6 +792,26 @@ Net: the model is not ST-shaped -- the failures were specific polarity /
 architecture gaps, and the two polarity gaps closed with a single `!` marker
 on the existing keys (PMSAv8 MPU emission remains the open one).
 
+**Board bring-up: DONE, hardware-validated on the Pico 2 W.** One new
+chip-agnostic mechanism: `[boot_block]` in the target file -- literal words
+the generated linker script emits in a `.boot_block` section directly after
+the vector table. The RP2350 content is the 5-word minimum Arm IMAGE_DEF
+(datasheet 5.9.5.1: 0xffffded3, 0x10210142, 0x000001ff, 0x00000000,
+0xab123579), which lands at flash+0x44 -- inside the boot ROM's 4 kB scan
+window -- and, having no entry-point item, makes the bootrom enter via the
+Cortex-M vector table the compiler already generates (SP at +0, reset at
++4). No other boot work was needed: no clock setup (DMA runs on the boot
+clocks), no SRAM ungating, no startup_init. Flashed via picotool (BOOTSEL),
+validated over SWD with the Raspberry Pi Debug Probe + the raspberrypi
+openocd fork (homebrew openocd 0.12 has no rp2350.cfg; built from source at
+/tmp/rpi-openocd). First flash worked: DST holds the DMA-copied ramp
+(b0 b1 b2 b3), COPY_OK shows both ownership windows ran (the busy-wait
+blocking acquire AND the INTR-guarded poll), ALIVE advances (~30M/s). The
+full pipeline -- IMAGE_DEF boot, .data/.bss init, clear-to-enable RESETS,
+handoff release, polarity-guarded reclaim -- validated on second-vendor
+silicon. Pinned by `boot_block_words_emitted_after_vector_table` /
+`boot_block_bad_word_is_error` (target.rs).
+
 ## Verification strategy (empirically validated)
 
 Probed 2026-06-08 against the local IKOS fork (interval-congruence domain) on
