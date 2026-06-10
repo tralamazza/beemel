@@ -23,24 +23,113 @@
 //! place):
 //! - Name-based: a body mentioning identifier S counts as an access even if
 //!   a local shadows the static.
-//! - Direct contexts only: an `Any`-context function contributes nothing.
-//!   Its own accesses are always wrapped in a critical section (`Any` is
-//!   conservative in `needs_critical_section`), but the contexts of its
-//!   callers are not propagated -- the same blind spot the declared form has
-//!   today. Call-graph context propagation is the recorded follow-up.
+//! - `Any`-context functions contribute the contexts of their known callers
+//!   (`propagate_contexts` below); with no known concrete caller they
+//!   contribute nothing -- their own accesses always take the conservative
+//!   critical section (`Any` in `needs_critical_section`).
 //! - A bare `@shared` static mentioned by no concrete-context function gets
 //!   the thread level (255): only thread/`Any` code touches it, and both
 //!   already take the conservative critical section.
 
 use crate::ast::{Block, Expr, Item, LValue, Program, Stmt, StorageAnnotation};
 use crate::context::Context;
+use crate::resolver::FnSymbol;
 use std::collections::{HashMap, HashSet};
+
+/// Propagate caller contexts through the call graph into `Any`-context
+/// functions: an `Any` function runs in whatever context its callers run in,
+/// so its possible-context set is the union of theirs (computed to fixpoint;
+/// `Any`-through-`Any` chains converge). Concrete functions keep exactly
+/// their declared context -- E403 already forbids cross-context calls, so a
+/// `@context(thread)` body cannot run in ISR context.
+///
+/// This closes the context-laundering hole: an unannotated helper called from
+/// an ISR used to look context-free at its access sites, hiding the ISR from
+/// E404/E402 and from the derived-ceiling computation.
+///
+/// Call edges are collected here from the AST (the resolver's
+/// `FnSymbol.callees` is filled by a later pass), reusing the same exhaustive
+/// mention scan as the ceiling derivation: any mention of a function name in
+/// a body counts as an edge. That over-approximates address-taking
+/// (`&helper`) as a call -- the safe direction, since taking an fn's address
+/// in an ISR strongly implies invoking it there. The remaining blind spot,
+/// deliberate: a pointer CALL whose pointee was taken elsewhere is not
+/// connected to the calling site's context. Same acceptance as today;
+/// recorded in the plan doc.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn propagate_contexts(
+    program: &Program,
+    functions: &HashMap<String, FnSymbol>,
+) -> HashMap<String, Vec<Context>> {
+    let fn_names: HashSet<&str> = functions.keys().map(String::as_str).collect();
+    let mut edges: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for item in &program.items {
+        if let Item::FnDef(f) = item {
+            let mut mentioned = HashSet::new();
+            scan_block(&f.body, &fn_names, &mut mentioned);
+            edges.insert(f.name.0.as_str(), mentioned);
+        }
+    }
+
+    let mut possible: HashMap<String, HashSet<Context>> = functions
+        .iter()
+        .map(|(name, f)| {
+            let mut set = HashSet::new();
+            if f.context != Context::Any {
+                set.insert(f.context);
+            }
+            (name.clone(), set)
+        })
+        .collect();
+
+    loop {
+        let mut changed = false;
+        for (caller, callees) in &edges {
+            let Some(caller_set) = possible.get(*caller) else {
+                continue;
+            };
+            let caller_set: Vec<Context> = caller_set.iter().copied().collect();
+            for callee in callees {
+                let Some(callee_sym) = functions.get(*callee) else {
+                    continue;
+                };
+                if callee_sym.context != Context::Any {
+                    continue; // concrete callee runs in its own context
+                }
+                if let Some(set) = possible.get_mut(*callee) {
+                    for c in &caller_set {
+                        changed |= set.insert(*c);
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    possible
+        .into_iter()
+        .map(|(name, set)| {
+            let mut v: Vec<Context> = set.into_iter().collect();
+            v.sort_by_key(|c| c.level());
+            (name, v)
+        })
+        .collect()
+}
 
 /// Compute the derived ceiling for every `@shared` static (bare or pinned).
 /// The resolver consults this for bare `@shared`; pinned ones keep their
-/// declared value.
+/// declared value. `possible` is the propagated context map: an `Any`
+/// function contributes the contexts it can actually run in (its known
+/// callers), not nothing.
 #[must_use]
-pub fn derive_shared_ceilings(program: &Program) -> HashMap<String, u8> {
+#[allow(clippy::implicit_hasher)]
+pub fn derive_shared_ceilings(
+    program: &Program,
+    possible: &HashMap<String, Vec<Context>>,
+) -> HashMap<String, u8> {
     let mut shared: HashSet<&str> = HashSet::new();
     for item in &program.items {
         if let Item::StaticDef(s) = item
@@ -61,24 +150,28 @@ pub fn derive_shared_ceilings(program: &Program) -> HashMap<String, u8> {
 
     for item in &program.items {
         if let Item::FnDef(f) = item {
-            let ctx = if let Some(isr) = &f.isr {
-                Context::Isr(isr.priority)
-            } else {
-                match f.context {
-                    crate::ast::ContextExpr::Thread => Context::Thread,
-                    crate::ast::ContextExpr::Any => Context::Any,
-                }
+            // The contexts this body can run in: its declared context, or --
+            // for an `Any` fn -- its propagated caller contexts. An `Any` fn
+            // with no known concrete caller contributes nothing (its accesses
+            // always take the conservative critical section anyway).
+            let Some(contexts) = possible.get(&f.name.0) else {
+                continue;
             };
-            if ctx == Context::Any {
-                continue; // conservative CS regardless; no exclusion info
-            }
+            let Some(level) = contexts
+                .iter()
+                .filter(|c| **c != Context::Any)
+                .map(|c| c.level())
+                .min()
+            else {
+                continue;
+            };
             let mut mentioned = HashSet::new();
             scan_block(&f.body, &shared, &mut mentioned);
             for name in mentioned {
                 // Mentioned names are pre-filtered to the shared set, so the
                 // entry always exists; a quiet skip keeps this panic-free.
                 if let Some(entry) = ceilings.get_mut(name) {
-                    *entry = (*entry).min(ctx.level());
+                    *entry = (*entry).min(level);
                 }
             }
         }

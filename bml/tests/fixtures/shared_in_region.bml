@@ -1,0 +1,9 @@
+// `@shared` + `in <region>` does not compose yet: the Shared wrapper would
+// displace the derived AgentShared carrier (dropping the agent discipline),
+// and a reclaim view would escape the ceiling critical section. Rejected
+// loudly (E613) instead of safe-by-accident.
+var BUF: [u8; 32] @shared in pool;
+
+fn main() @context(thread) {
+    BUF[0] = 1;
+}

@@ -667,14 +667,37 @@ packed layout.
     (SCRATCH_FIRST=0xA1, SCRATCH_DONE=1). Pinned by
     `reclaim_busywait{,_helper,_body}.bml`, `reclaim_earlyexit.bml`,
     `reclaim_before_wait.bml` (ordering negative).
+  - *Slice U3: call-graph context propagation + composition guards.* DONE.
+    Driven by the mixed-sharer probes (falsification first): (1) direct ISR
+    access to a region static was already E404; (2) the SAME access through
+    an unannotated helper built silently -- an `Any` hop laundered the ISR
+    out of E404/E402 and out of the derived ceiling (a pre-existing soundness
+    hole in the ceiling protocol itself, not just regions: ISR(1)-via-helper
+    let a pinned-or-derived top accessor skip its critical section while
+    still preemptible); (3) `@shared in R` silently displaced the derived
+    AgentShared carrier and was only safe by accident. Fixes:
+    `ceiling.rs::propagate_contexts` (call edges from the same exhaustive
+    mention scan as the derivation -- `&f` counts as an edge, the safe
+    direction; fixpoint union of caller contexts into `Any` fns; stored as
+    `SymbolTable::fn_possible_contexts`), consumed by the ceiling derivation
+    (`Any` fns now contribute their known callers) and by E404/E402 in
+    borrow.rs (an `Any` body reachable from an ISR is checked as that ISR).
+    `@shared` + `in <region>` is now rejected loudly (E613) until the
+    composed construct exists. Blind spot, recorded: pointer CALLS are not
+    connected to the call site's context. Pinned by
+    `ctx_launder_{isr,ok,shared_pin}.bml`, `region_isr_launder.bml` (the
+    motivating ISR-vs-thread race over agent-shared memory, now E404),
+    `shared_in_region.bml` (E613), `shared_derived_propagated.bml` (the
+    soundness fix visible in IR: the top accessor now takes its cpsid when a
+    higher-priority ISR reaches the static through a helper).
   - *Remaining for the fold:* express both disciplines as one ownership
     representation (the `@shared` window = instant acquire/release pair, the
     agent window = handoff-release/flag-guarded-reclaim); a reclaim-shaped
     escape for CPU-shared data (views over `@shared` are rejected today for
     exactly the reason views over agent-shared were before `reclaim` -- the
-    symmetric construct is a view valid within a masked window); call-graph
-    context propagation; compared guard conditions; per-buffer flag
-    association.
+    symmetric construct is a view valid within a masked window, which is
+    also what a sound `@shared in R` composition needs); pointer-call
+    context edges; compared guard conditions; per-buffer flag association.
 
 **Why this is the next slice.** It unblocks the `eth_dma.bml` descriptor-struct
 refactor (direct typed indexing, no `*u32` index-read workaround), it is the

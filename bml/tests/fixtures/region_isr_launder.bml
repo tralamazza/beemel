@@ -1,0 +1,28 @@
+// The mixed-sharer hole that motivated the propagation slice: agent-shared
+// BUF (region with a DMA agent) consumed from BOTH the thread and -- through
+// the unannotated helper -- an ISR. That is an ISR-vs-thread race over the
+// agent's buffer; region statics are implicitly thread-only (E404), and
+// propagation sees through the Any hop.
+peripheral DMAC at 0x40020000 {
+    reg SR offset 0x00 {
+        field DONE: b1 bit[0]
+    }
+}
+
+var BUF: [u8; 32] in pool;
+
+fn consume() -> u32 {
+    if DMAC.SR.DONE {
+        const v = reclaim(BUF);
+        return v[0] as u32;
+    }
+    return 0;
+}
+
+fn grab() @isr(priority = 2) {
+    var x: u32 = consume();
+}
+
+fn main() @context(thread) {
+    var y: u32 = consume();
+}

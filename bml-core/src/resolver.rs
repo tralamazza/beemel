@@ -15,6 +15,11 @@ pub struct SymbolTable {
     pub structs: HashMap<String, StructInfo>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
     pub import_aliases: HashMap<String, AliasInfo>,
+    /// Possible run contexts per function (`ceiling.rs::propagate_contexts`):
+    /// a concrete fn maps to its declared context, an `Any` fn to the union of
+    /// its known callers' contexts (empty = no known concrete caller). Closes
+    /// the context-laundering hole in E404/E402 and feeds the derived ceiling.
+    pub fn_possible_contexts: HashMap<String, Vec<Context>>,
     /// Native byte order of the build target. Resolution is target-agnostic, so
     /// this is the default (little-endian) until a caller with a target sets it
     /// (e.g. `bml build`/`verify`); `bml check` runs without a target and keeps
@@ -86,9 +91,6 @@ pub struct FieldSymbol {
 
 pub struct Resolver {
     table: SymbolTable,
-    /// Derived ceilings for `@shared` statics (ceiling.rs), computed at the
-    /// start of `resolve` and consumed when materializing bare `@shared`.
-    derived_ceilings: HashMap<String, u8>,
 }
 
 impl Default for Resolver {
@@ -109,9 +111,9 @@ impl Resolver {
                 structs: HashMap::new(),
                 enums: HashMap::new(),
                 import_aliases: HashMap::new(),
+                fn_possible_contexts: HashMap::new(),
                 target_endianness: crate::arch::Endianness::default(),
             },
-            derived_ceilings: HashMap::new(),
         }
     }
 
@@ -122,9 +124,6 @@ impl Resolver {
         aliases: HashMap<String, AliasInfo>,
     ) -> SymbolTable {
         self.table.import_aliases = aliases;
-        // Derive ceilings for bare `@shared` statics from the accessor
-        // contexts (pure AST pass); collect_static materializes them.
-        self.derived_ceilings = crate::ceiling::derive_shared_ceilings(program);
 
         for item in &program.items {
             match item {
@@ -142,6 +141,28 @@ impl Resolver {
                 // Defines no symbol; checked separately (owns by the region
                 // pass, comptime_assert during type checking).
                 ast::Item::Owns(_) | ast::Item::ComptimeAssert(_) => {}
+            }
+        }
+
+        // Context propagation + derived ceilings. Runs after the items loop
+        // (it needs every function's declared context in the table), before
+        // the pass-2 type resolution (pass 2c re-wraps static types from the
+        // storage patched here, replacing the provisional ceiling
+        // collect_static used).
+        self.table.fn_possible_contexts =
+            crate::ceiling::propagate_contexts(program, &self.table.functions);
+        let derived =
+            crate::ceiling::derive_shared_ceilings(program, &self.table.fn_possible_contexts);
+        for (name, sym) in &mut self.table.statics {
+            for ann in &mut sym.storage {
+                if let StorageAnnotation::Shared(ceiling @ None) = ann {
+                    *ceiling = Some(
+                        derived
+                            .get(name)
+                            .copied()
+                            .unwrap_or_else(|| Context::Thread.level()),
+                    );
+                }
             }
         }
 
@@ -252,30 +273,19 @@ impl Resolver {
             return;
         }
 
-        // Materialize bare `@shared` (ceiling None) to the derived value, so
-        // every consumer downstream (type wrapper, E402, critical-section
-        // emission) sees a concrete ceiling. Pinned ceilings pass through.
-        let mut storage = s.storage.clone();
-        for ann in &mut storage {
-            if let StorageAnnotation::Shared(ceiling @ None) = ann {
-                *ceiling = Some(
-                    self.derived_ceilings
-                        .get(&name)
-                        .copied()
-                        .unwrap_or_else(|| crate::context::Context::Thread.level()),
-                );
-            }
-        }
-
+        // Bare `@shared` keeps ceiling None here; resolve() patches it to the
+        // derived value after the items loop (the derivation needs every
+        // function's callees), and pass 2c re-wraps the type from the patched
+        // storage. The wrap below is therefore provisional for bare `@shared`.
         let base_ty =
             crate::types::resolve_type_expr(&s.ty, &self.table.structs, &self.table.enums);
-        let wrapped_ty = wrap_with_storage(base_ty, &storage);
+        let wrapped_ty = wrap_with_storage(base_ty, &s.storage);
 
         self.table.statics.insert(
             name,
             StaticSymbol {
                 ty: wrapped_ty,
-                storage,
+                storage: s.storage.clone(),
             },
         );
     }
@@ -685,11 +695,14 @@ fn wrap_with_storage(
                 ty = Type::Exclusive(Box::new(ty));
             }
             StorageAnnotation::Shared(ceiling) => {
-                // None (bare `@shared`) is materialized to the derived value
-                // in `collect_static` before this runs.
+                // None only during the provisional wrap in collect_static
+                // (bare `@shared` before derivation); resolve() patches the
+                // storage and pass 2c re-wraps with the real value. The
+                // thread level stands in until then -- nothing reads the
+                // number from the type in between (decisions read storage).
                 ty = Type::Shared(
                     Box::new(ty),
-                    ceiling.expect("bare @shared ceiling derived during collect_static"),
+                    ceiling.unwrap_or_else(|| Context::Thread.level()),
                 );
             }
             // `@dma` and `@external` are distinct keywords (different intent)

@@ -2913,6 +2913,44 @@ fn test_reclaim_nonpredicate_guard_rejected() {
     assert!(stderr.contains("E611"), "expected E611; stderr:\n{stderr}");
 }
 
+// Call-graph context propagation (unification U3): an `Any` fn runs in its
+// callers' contexts, so the Any hop no longer launders ISR access past
+// E404/E402 or hides accessors from the derived ceiling.
+assert_error!(test_ctx_launder_isr_rejected, "ctx_launder_isr.bml", "E404");
+assert_pass!(test_ctx_launder_thread_only_ok, "ctx_launder_ok.bml");
+assert_error!(
+    test_ctx_launder_shared_pin_rejected,
+    "ctx_launder_shared_pin.bml",
+    "E402"
+);
+assert_ir_contains!(
+    test_shared_derived_propagated_cs,
+    "shared_derived_propagated.bml",
+    "asm sideeffect \"cpsid i\""
+);
+
+#[test]
+fn test_region_isr_launder_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("region_isr_launder.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "ISR-vs-thread consumption of agent-shared memory through an Any helper \
+         must be rejected; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E404"), "expected E404; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_shared_in_region_rejected() {
+    let (ok, stderr) = bml_build_with_target("shared_in_region.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok,
+        "@shared + in <region> does not compose yet and must be loud; stderr:\n{stderr}"
+    );
+    assert!(stderr.contains("E613"), "expected E613; stderr:\n{stderr}");
+}
+
 // B broadening: blocking-acquire guard forms. The busy-wait (`while !flag {}`,
 // empty body) and the early exit (`if !flag { return; }`) establish the flag
 // for the rest of the block; misordered or break-capable variants stay E611.

@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Context {
     Thread,
     Isr(u8), // NVIC priority: lower = higher actual priority (ARM convention)

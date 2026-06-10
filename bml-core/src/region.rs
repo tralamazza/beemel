@@ -199,6 +199,30 @@ fn check_placement(s: &StaticDef, target: &Target, diags: &mut DiagnosticBag) {
             s.name.1,
         );
     }
+
+    // E613: `@shared` + `in <region>` does not compose yet. The `Shared` type
+    // wrapper displaces the derived `AgentShared` carrier (dropping the agent
+    // discipline), and a reclaim view would escape the ceiling critical
+    // section the CPU side needs -- today the combination is only safe by
+    // accident (the Shared wrapper happens to block indexing too). Reject it
+    // loudly; the composed window (a view valid within a masked section) is
+    // the unification fold's remaining construct.
+    if s.storage
+        .iter()
+        .any(|a| matches!(a, StorageAnnotation::Shared(_)))
+    {
+        diags.error(
+            format!(
+                "`{}` is `@shared` and placed `in {region_name}`: combining the CPU ceiling \
+                 discipline with agent-shared placement is not modeled yet. Keep the \
+                 agent-shared consumption in one CPU context (the context checks enforce \
+                 this), or move the CPU-shared data out of the region.",
+                s.name.0
+            ),
+            "E613",
+            s.name.1,
+        );
+    }
 }
 
 /// A " (known regions: a, b)" suffix for the diagnostic, or a hint when the

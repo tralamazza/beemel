@@ -1,0 +1,17 @@
+// The laundered form of an E402 ceiling violation: the pinned ceiling is 3,
+// and `bump` -- context Any -- is reachable from the priority-1 ISR, which
+// outranks the pin. Without propagation the Any hop hid the violation.
+var COUNT: u32 @shared(ceiling = 3);
+
+fn bump() {
+    var x: u32 = COUNT;
+    COUNT = x + 1;
+}
+
+fn fast() @isr(priority = 1) {
+    bump();
+}
+
+fn main() @context(thread) {
+    bump();
+}

@@ -164,7 +164,7 @@ fn check_expr(
         Expr::Ident((name, span)) => {
             // Check if this is a static access that needs borrow validation
             if let Some(sym) = symbols.statics.get(name) {
-                check_static_access(name, span, sym, current_fn, current_ctx, diags);
+                check_static_access(name, span, sym, current_fn, current_ctx, symbols, diags);
             }
         }
 
@@ -326,7 +326,7 @@ fn check_lvalue(
         LValue::Name((name, span)) => {
             // Check static access
             if let Some(sym) = symbols.statics.get(name) {
-                check_static_access(name, span, sym, current_fn, current_ctx, diags);
+                check_static_access(name, span, sym, current_fn, current_ctx, symbols, diags);
             }
         }
         LValue::Field(base, _) => {
@@ -349,14 +349,33 @@ fn check_static_access(
     sym: &crate::resolver::StaticSymbol,
     current_fn: &str,
     current_ctx: Context,
+    symbols: &SymbolTable,
     diags: &mut DiagnosticBag,
 ) {
-    // If no storage annotation, the static is implicitly thread-only
-    if sym.storage.is_empty() && current_ctx.is_isr() {
+    // The ISR contexts this body can actually run in: its own (if it IS an
+    // ISR), or -- for an `Any` fn -- the ISR contexts among its propagated
+    // callers (`fn_possible_contexts`). The latter closes the
+    // context-laundering hole: an unannotated helper called from an ISR runs
+    // in ISR context even though its own annotation says nothing.
+    let isr_contexts: Vec<Context> = match current_ctx {
+        Context::Isr(_) => vec![current_ctx],
+        Context::Any => symbols
+            .fn_possible_contexts
+            .get(current_fn)
+            .map(|v| v.iter().copied().filter(|c| c.is_isr()).collect())
+            .unwrap_or_default(),
+        Context::Thread => Vec::new(),
+    };
+
+    // If no storage annotation, the static is implicitly thread-only.
+    if sym.storage.is_empty() && !isr_contexts.is_empty() {
+        let how = if current_ctx.is_isr() {
+            format!("cannot access from ISR `{current_fn}`")
+        } else {
+            format!("`{current_fn}` is reachable from ISR context (call-graph propagation)")
+        };
         diags.error(
-            format!(
-                "global `{name}` has no annotations and is thread-only; cannot access from ISR `{current_fn}`"
-            ),
+            format!("global `{name}` has no annotations and is thread-only; {how}"),
             "E404",
             *span,
         );
@@ -378,14 +397,28 @@ fn check_static_access(
             }
             StorageAnnotation::Shared(ceiling) => {
                 // Concrete after resolution (bare `@shared` is materialized to
-                // the derived ceiling, which every accessor satisfies by
-                // construction -- E402 can only fire against a pinned value).
+                // the derived ceiling, which every accessor -- including the
+                // propagated ones -- satisfies by construction; E402 can only
+                // fire against a pinned value).
                 let ceiling = ceiling.expect("@shared ceiling materialized at resolve");
                 let level = current_ctx.level();
                 if !current_ctx.can_access(ceiling) {
                     diags.error(
                         format!(
                             "global `{name}` has @shared(ceiling={ceiling}), but current priority is {level} (lower = higher priority in ARM)"
+                        ),
+                        "E402",
+                        *span,
+                    );
+                } else if let Some(bad) = isr_contexts.iter().find(|c| !c.can_access(ceiling)) {
+                    // The laundered version of the same violation: this `Any`
+                    // body can run in an ISR that outranks the pinned ceiling.
+                    diags.error(
+                        format!(
+                            "global `{name}` has @shared(ceiling={ceiling}), but `{current_fn}` \
+                             is reachable from ISR priority {} (lower = higher priority in ARM; \
+                             call-graph propagation)",
+                            bad.level()
                         ),
                         "E402",
                         *span,

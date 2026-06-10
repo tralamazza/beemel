@@ -1,0 +1,17 @@
+// Control for the propagation: the same Any helper touching an unannotated
+// static is fine when every caller is thread-context -- propagation must not
+// reject what was always safe.
+var COUNT: u32;
+
+fn bump() {
+    var x: u32 = COUNT;
+    COUNT = x + 1;
+}
+
+fn advance() {
+    bump();
+}
+
+fn main() @context(thread) {
+    advance();
+}

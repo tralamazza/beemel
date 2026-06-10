@@ -1,0 +1,22 @@
+// Soundness fix pinned: the bare @shared counter is accessed directly by the
+// priority-2 ISR and via the Any helper from the priority-1 ISR. Propagation
+// makes the helper contribute priority 1, so the derived ceiling is 1 and the
+// priority-2 ISR's direct access NEEDS a critical section (it can be
+// preempted by the priority-1 accessor). Before propagation the helper
+// contributed nothing, the ceiling derived to 2, and the cpsid was unsoundly
+// skipped.
+var counter: u32 @shared;
+
+fn bump() {
+    var x: u32 = counter;
+    counter = x + 1;
+}
+
+fn fast() @isr(priority = 1) {
+    bump();
+}
+
+fn slow() @isr(priority = 2) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

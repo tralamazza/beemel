@@ -1,0 +1,18 @@
+// Context laundering, closed by call-graph propagation: `bump` carries no
+// annotation (context Any), but it is called from an ISR, so its access to
+// the unannotated (implicitly thread-only) COUNT runs in ISR context -- the
+// exact race E404 exists to stop, previously hidden by the Any hop.
+var COUNT: u32;
+
+fn bump() {
+    var x: u32 = COUNT;
+    COUNT = x + 1;
+}
+
+fn tick() @isr(priority = 2) {
+    bump();
+}
+
+fn main() @context(thread) {
+    bump();
+}

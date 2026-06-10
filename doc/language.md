@@ -191,6 +191,14 @@ The compiler uses the ARM convention directly:
 | ISR cannot call `@context(thread)` functions | E403 |
 | Thread cannot call `@isr(...)` functions | E403 |
 | Unannotated module `var` -- implicitly thread-only | E404 |
+| `@shared` combined with `in <region>` -- not modeled yet | E613 |
+
+E402 and E404 see through unannotated (`Any`-context) helpers: the compiler
+propagates caller contexts through the call graph, so a helper called from an
+ISR is checked as ISR-context at its access sites (an `Any` hop cannot
+launder the access). Function pointers are the remaining blind spot: a
+pointer call is not connected to the calling site's context (taking `&f` in
+an ISR does count as an edge to `f`).
 
 Thread context accessing `@shared(...)` is always allowed -- the compiler
 will auto-insert a `cpsid i` / `cpsie i` critical section during codegen.
@@ -212,8 +220,9 @@ functions that mention the static, so E402 cannot fire and the top accessor
 skips the critical section automatically. `@shared(ceiling=N)` pins the
 number instead; it behaves as before (an accessor that outranks the pin is
 E402 -- the pin disagreeing with usage). `Any`-context functions contribute
-nothing to the derivation (their accesses always take the conservative
-critical section); the contexts of their callers are not propagated.
+the contexts of their known callers, propagated through the call graph; an
+`Any` function with no known concrete caller contributes nothing (its
+accesses always take the conservative critical section).
 
 ```
 @shared(ceiling = 2):
