@@ -96,6 +96,13 @@ pub struct IrEmitter {
     /// observed imprecise-BusFault source (H723 ETH tail pointers,
     /// 2026-06-11). Completion, not just ordering -- a `dmb` is not enough.
     handoff_regs: std::collections::HashSet<String>,
+    /// Registers containing a declared clock gate (`enabled_by`, as
+    /// `(periph, reg)`). A write to one is followed by a volatile read-back
+    /// of the same register: the first peripheral write issued while an
+    /// enable is still propagating is silently dropped by the bus (observed
+    /// on the H723: the TIM2 PSC write vanished when a scheduling change
+    /// closed the gap after the RCC enable). The read forces completion.
+    gate_regs: std::collections::HashSet<(String, String)>,
     /// Region name -> `[lo, hi)` byte range of its mem block. In verify mode, a
     /// write to an `addr in R` struct field (an in-memory handoff) asserts the
     /// stored address is in `R`'s range. Empty outside verify.
@@ -351,6 +358,7 @@ impl IrEmitter {
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             handoff_regs: std::collections::HashSet::new(),
+            gate_regs: std::collections::HashSet::new(),
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
@@ -409,6 +417,7 @@ impl IrEmitter {
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
             handoff_regs: std::collections::HashSet::new(),
+            gate_regs: std::collections::HashSet::new(),
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
@@ -429,6 +438,19 @@ impl IrEmitter {
     /// `Target::startup_init`.
     pub fn set_handoff_regs(&mut self, regs: std::collections::HashSet<String>) {
         self.handoff_regs = regs;
+    }
+
+    /// Install the declared clock gates (`enabled_by` paths, `!`-prefix
+    /// stripped: read-back is about write propagation, not polarity).
+    pub fn set_enable_gates(&mut self, paths: &[String]) {
+        for p in paths {
+            let p = p.trim_start_matches('!');
+            let parts: Vec<&str> = p.split('.').collect();
+            if parts.len() == 3 {
+                self.gate_regs
+                    .insert((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
     }
 
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
@@ -3809,6 +3831,7 @@ impl IrEmitter {
                         ptr_ty = self.ptr_type()
                     ));
                     self.emit_handoff_completion(periph_name, &field.0);
+                    self.emit_gate_readback(periph_name, &field.0, addr);
                     return val_reg.to_string();
                 }
                 // Peripheral field write: GPIOA.ODR.ODR3 = val
@@ -3829,6 +3852,7 @@ impl IrEmitter {
                             "store volatile i32 {alias_val}, ptr inttoptr ({ptr_ty} {alias} to ptr){dbg}",
                             ptr_ty = self.arch.ptr_type()
                         ));
+                        self.emit_gate_readback(periph_name, &reg_field.0, addr);
                         return alias_val;
                     }
                     // Fallback RMW write
@@ -3885,6 +3909,7 @@ impl IrEmitter {
                         ptr_ty = self.ptr_type()
                     ));
                     self.emit_handoff_completion(periph_name, &reg_field.0);
+                    self.emit_gate_readback(periph_name, &reg_field.0, addr);
                     return new_val;
                 }
                 // Struct field write: GEP + store. Resolve the base to the
@@ -4253,6 +4278,22 @@ impl IrEmitter {
     fn emit_handoff_completion(&mut self, periph: &str, reg: &str) {
         if self.handoff_regs.contains(&format!("{periph}.{reg}")) {
             self.line("call void asm sideeffect \"dsb\", \"~{memory}\"()");
+        }
+    }
+
+    /// Volatile read-back after a write to a register holding a declared
+    /// clock gate (see `gate_regs`): forces the enable write to complete
+    /// before the newly-clocked peripheral is touched.
+    fn emit_gate_readback(&mut self, periph: &str, reg: &str, addr: u64) {
+        if self
+            .gate_regs
+            .contains(&(periph.to_string(), reg.to_string()))
+        {
+            let r = self.new_reg();
+            self.line(&format!(
+                "{r} = load volatile i32, ptr inttoptr ({ptr_ty} {addr} to ptr)",
+                ptr_ty = self.ptr_type()
+            ));
         }
     }
 

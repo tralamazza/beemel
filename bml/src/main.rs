@@ -595,6 +595,13 @@ fn build_file(
             .map(|h| h.register.clone())
             .collect(),
     );
+    emitter.set_enable_gates(
+        &target
+            .agents
+            .iter()
+            .flat_map(|a| a.enabled_by.clone())
+            .collect::<Vec<_>>(),
+    );
     emitter.set_mpu_regions(target.mpu_regions());
     emitter.set_mpu_flavor(target.mpu_flavor());
     emitter.set_cross_core_locks(

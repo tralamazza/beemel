@@ -3600,6 +3600,36 @@ fn test_plain_ptr_stays_nonvolatile() {
     );
 }
 
+// A write to a register holding a declared clock gate is followed by a
+// derived volatile read-back (write-propagation: the first write to the
+// newly-clocked peripheral is otherwise droppable). Non-gate registers
+// get no read-back.
+#[test]
+fn test_gate_write_readback() {
+    let ir = bml_ir_with_target("gate_readback.bml", Some("enable.target"));
+    // Clk.CR = 0x40021000 = 1073876992. The field RMW already loads the
+    // register once BEFORE the store; the derived read-back is a second
+    // volatile load AFTER it.
+    let gate_load = "load volatile i32, ptr inttoptr (i32 1073876992 to ptr)";
+    // On this target the b1 gate write lowers through the bit-band alias
+    // (0x42420000 = 1111621632); the read-back targets the CANONICAL
+    // register address either way.
+    let store = "ptr inttoptr (i32 1111621632 to ptr)";
+    let store_at = ir.find(store).unwrap_or_else(|| {
+        panic!("expected gate store in IR:\n{ir}");
+    });
+    assert!(
+        ir[store_at..].contains(gate_load),
+        "expected volatile read-back AFTER the gate store:\n{ir}"
+    );
+    // The handoff register write (MyDma.DESCADDR, 0x40030000 = 1073938432)
+    // is not a gate: no read-back of it anywhere.
+    assert!(
+        !ir.contains("load volatile i32, ptr inttoptr (i32 1073938432 to ptr)"),
+        "non-gate register must not get a read-back:\n{ir}"
+    );
+}
+
 #[test]
 fn test_agent_ptr_escape_arg_rejected() {
     let (ok, stderr) =

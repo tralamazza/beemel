@@ -141,6 +141,11 @@ Key reference (agent level):
   (the nRF/RP2350 RESETS style). Drives E609 (enable presence before the
   agent is programmed) and E610 (a non-owning module disabling -- or for
   `!`, re-asserting -- the gate).
+  Lowering: a write to a register holding a declared gate is followed by a
+  derived volatile read-back -- the first write to a newly-clocked
+  peripheral is silently dropped while the enable propagates (observed on
+  the H723: the TIM2 PSC write vanished when an instruction-scheduling
+  change closed the gap). The read forces completion.
 - `entry = <fn>` (cpu agents) -- the secondary core's entry function;
   pinned to its core for core-reach, exempt from E408's address-of rule
   (the launch hands the address to hardware), and its prologue re-programs
@@ -452,14 +457,11 @@ indefinitely under the derived volatile.
 
 ## Open items
 
-- **Clock-enable propagation read-back** (found on silicon 2026-06-11): a
-  peripheral register write issued too soon after setting the RCC enable
-  bit is silently dropped by the bus (the TIM2 PSC=47999 write vanished
-  when a compiler-scheduling change closed the instruction gap; the timer
-  ran 48,000x fast). The driver-level idiom is read-the-enable-back
-  (timer.bml). The target file already declares gates (`enabled_by`,
-  E609/E610); deriving the read-back after writes to a declared gate is
-  the same shape as the derived handoff `dsb`.
+- **Gates on non-agent peripherals**: the derived enable read-back covers
+  DECLARED gates (`enabled_by`, an agent property). The gate that actually
+  bit on silicon (TIM2EN -- TIM2 is no agent) has no declaration site, so
+  plain peripherals still rely on the manual read-back idiom (timer.bml).
+  Candidate vocabulary when a second case appears: `enabled_by` on `owns`.
 - ETH link-up recovery in the H723 example driver.
 - Deferred until a consumer appears: `addr` as a general (non-field) type;
   reads re-establishing the in-region fact; placement inference (`in` as
