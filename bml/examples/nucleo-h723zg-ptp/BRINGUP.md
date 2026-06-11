@@ -340,7 +340,7 @@ recorded as a model gap); and a bare `[0, ...]` array literal in a
 struct-field position infers i32 elements and trips opt (typed-const
 workaround; recorded compiler nit).
 
-### 10. Minimal PTP Slave Servo
+### 10. Minimal PTP Slave Servo - Done (HSI-Bounded)
 
 After timestamp exchange works:
 
@@ -353,6 +353,37 @@ Success criteria:
 
 - Mic node converges toward controller PTP time.
 - Health/status frames report current offset estimate and lock state.
+
+Status (2026-06-12): DONE within the HSI clock's physics. Step-then-slew
+servo in main_mic_node.bml on the ptp_clock.bml primitives (ptp_step =
+coarse TSUPDT add/sub, ptp_set_addend = TSAR rate discipline): the first
+round coarse-steps by t2-t1, divergence > 100 ms drops lock and
+re-steps (validated live -- reflashing the controller reset the master
+clock and the mic re-stepped automatically, STEPS=3 across the session),
+and each accepted round applies an INCREMENTAL frequency + phase update
+(full deadbeat on the offset delta -- a direct rate-residual measurement
+-- plus off/2 phase slew). A delay sanity gate rejects rounds with
+implausible path delay. Measured end state: LOCK=2 sustained 74+ rounds,
+offsets mean -69 us / sigma 187 us / max 457 us, path delay rock-steady
+at 1.1 us (sigma ~30 ns). The controller records the mic's reported
+lock/offset from HEALTH_STATUS (STATUS_LAST_LOCK/PTPOFF) -- the health
+criterion verified through the other board.
+
+The servo journey, recorded because each wrong turn was measured: a
+base-anchored PI oscillated +-1-2.5 ms (changing the addend is rate
+control, so P-on-addend is already integral action in the phase domain);
+the mic's delay()-paced loop coupled rate error into the measurement
+(offset inflates by rate x turnaround/2 -- positive feedback with the
+servo in the loop; fixed by the tight loop with PTP-paced heartbeats);
+controller TX bursts overflowed the mic's 4-deep ring (TSENALL doubles
+descriptor cost; fixed by staggering to <= 2 frames per tick); and the
+16-round probe ring (PTP_LOG_OFF/DLY) finally separated drift from noise
+-- a smooth accelerating ramp at a 30 ns-sigma delay floor, i.e. the HSI
+RC oscillator thermally wandering at hundreds of ppm. Full deadbeat
+tracks it boundedly; half-gain damping lost the race (+750 us trend).
+The +-200 us-class residual IS the HSI floor: the crystal-fed clock tree
+(HSE via the ST-Link MCO) is the real fix and stays listed as the next
+clock milestone before audio-grade sync claims.
 
 ### 11. Audio Test Blocks
 

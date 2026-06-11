@@ -3,7 +3,7 @@
 import svd.ethernet_mac;
 
 export struct PtpTime;
-export fn ptp_init, fn ptp_now;
+export fn ptp_init, fn ptp_now, fn ptp_step, fn ptp_set_addend, fn ptp_base_addend;
 
 struct PtpTime {
     seconds: u32,
@@ -57,4 +57,49 @@ fn ptp_now() -> PtpTime {
     const seconds = Ethernet_MAC.MACSTSR.TSS;
     const nanoseconds = Ethernet_MAC.MACSTNR.TSSS;
     return PtpTime { seconds: seconds, nanoseconds: nanoseconds };
+}
+
+// ─── Servo primitives (milestone 10) ────────────────────────────────────────
+// Physics only: the PI policy that decides WHEN and BY HOW MUCH lives in the
+// slave role (main_mic_node.bml).
+
+fn ptp_base_addend() -> u32 {
+    return PTP_ADDEND;
+}
+
+// Coarse system-time step by (s, ns), added or subtracted. RM0468 subtract
+// encoding (digital rollover, TSCTRLSSR set): STSUR = 2^32 - s - 1 and
+// STNUR.TSSS = 10^9 - ns when ns != 0; with ns == 0 the seconds are
+// subtracted exactly (no borrow).
+fn ptp_step(s: u32, ns: u32, subtract: b1) {
+    if subtract {
+        if ns != 0 {
+            // bml-verify: ignore V130
+            Ethernet_MAC.MACSTSUR.TSS = 0 - s - 1;
+            // ns in (0, 1e9) at every caller. // bml-verify: ignore V130
+            Ethernet_MAC.MACSTNUR.TSSS = 1000000000 - ns;
+        } else {
+            // bml-verify: ignore V130
+            Ethernet_MAC.MACSTSUR.TSS = 0 - s;
+            Ethernet_MAC.MACSTNUR.TSSS = 0;
+        }
+        Ethernet_MAC.MACSTNUR.ADDSUB = true;
+    } else {
+        Ethernet_MAC.MACSTSUR.TSS = s;
+        Ethernet_MAC.MACSTNUR.TSSS = ns;
+        Ethernet_MAC.MACSTNUR.ADDSUB = false;
+    }
+    Ethernet_MAC.MACTSCR.TSUPDT = true;
+    while Ethernet_MAC.MACTSCR.TSUPDT {
+        asm { }
+    }
+}
+
+// Rate discipline: load a new addend into the accumulator.
+fn ptp_set_addend(a: u32) {
+    Ethernet_MAC.MACTSAR.TSAR = a;
+    Ethernet_MAC.MACTSCR.TSADDREG = true;
+    while Ethernet_MAC.MACTSCR.TSADDREG {
+        asm { }
+    }
 }

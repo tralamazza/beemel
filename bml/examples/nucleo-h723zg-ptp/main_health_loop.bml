@@ -43,7 +43,7 @@ fn main() @context(thread) {
             const mtype = prod_rx_take();
             if mtype == MSG_HEALTH_PING {
                 const now = ptp_now();
-                eth_send_status(BOARD_ID, prod_rx_seq(), now.seconds, now.nanoseconds);
+                eth_send_status(BOARD_ID, prod_rx_seq(), now.seconds, now.nanoseconds, 0, 0);
                 // Free-running counter; wrap intended. // bml-verify: ignore V130
                 LT_STATUS_SENT = LT_STATUS_SENT + 1;
             }

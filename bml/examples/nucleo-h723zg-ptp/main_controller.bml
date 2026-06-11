@@ -27,6 +27,8 @@ var STATUS_SEEN: u32;        // HEALTH_STATUS frames consumed
 var STATUS_LAST_BOARD: u32;  // sender board id
 var STATUS_LAST_SEQ: u32;    // echoed ping sequence
 var STATUS_LAST_RX: u32;     // sender's RX_PACKET_COUNT (payload word 3)
+var STATUS_LAST_LOCK: u32;   // sender's PTP lock state (payload word 2)
+var STATUS_LAST_PTPOFF: u32; // sender's PTP offset estimate, i32 ns (word 6)
 
 // Milestone 9, grandmaster side: two-step Sync every 8th tick; answer
 // Delay_Req with Delay_Resp carrying the request's RX hardware timestamp.
@@ -85,6 +87,8 @@ fn main() @context(thread) {
                 STATUS_LAST_BOARD = prod_rx_board();
                 STATUS_LAST_SEQ = prod_rx_seq();
                 STATUS_LAST_RX = prod_rx_pay(3);
+                STATUS_LAST_LOCK = prod_rx_pay(2);
+                STATUS_LAST_PTPOFF = prod_rx_pay(6);
             }
         }
         const t = timer_ticks();
@@ -92,11 +96,21 @@ fn main() @context(thread) {
             last_tick = t;
             LOG_SUM = timer_log_sum();
             const now = ptp_now();
-            eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
-            // Two-step Sync every 8th tick (milestone 9): event frame,
-            // collect the egress timestamp from the descriptor write-back,
-            // publish it in Follow_Up.
-            if (t & 7) == 2 {
+            // TX is STAGGERED so no tick bursts more than 2 frames: with
+            // TSENALL every frame costs TWO RX descriptors (data + context)
+            // at the receiver, and the mic's ring is 4 deep -- a 4-frame
+            // burst dropped context descriptors and the mic's count-based
+            // t2 association then paired the Sync with the NEXT frame's
+            // timestamp (millisecond servo spikes, found on the wire).
+            // Even ticks: Sync + Follow_Up. Odd ticks: heartbeat (+ ping
+            // every 4th).
+            if (t & 1) != 0 {
+                eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+            }
+            // Two-step Sync every 2nd tick (milestone 10 raised the
+            // cadence for servo convergence): event frame, collect the
+            // egress timestamp from the write-back, publish in Follow_Up.
+            if (t & 1) == 0 {
                 // bml-verify: ignore V130
                 ptp_seq = ptp_seq + 1;
                 eth_send_ptp(PTP_SYNC, ptp_seq, 0, 0, true);
@@ -109,8 +123,8 @@ fn main() @context(thread) {
                     PTP_T1_MISS = PTP_T1_MISS + 1;
                 }
             }
-            // HEALTH_PING every 4th tick (milestone 8).
-            if (t & 3) == 0 {
+            // HEALTH_PING every 4th tick (odd phase; see stagger note).
+            if (t & 3) == 1 {
                 // Free-running probe sequence; wrap intended. // bml-verify: ignore V130
                 ping_seq = ping_seq + 1;
                 eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);

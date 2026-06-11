@@ -802,12 +802,13 @@ fn eth_send_ping(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     eth_send_product(2, board_id, seq, seconds, nanoseconds, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
-// HEALTH_STATUS payload: fw build, PHY state, PTP state (0 = free-running),
-// RX frames, TX frames, RX timestamps, audio-test blocks (none yet), 0.
-fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32) {
+// HEALTH_STATUS payload: fw build, PHY state, PTP lock state, RX frames,
+// TX frames, RX timestamps, PTP offset estimate (i32 ns, raw bits), 0.
+fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32,
+                   ptp_offset: u32, ptp_lock: u32) {
     eth_send_product(3, board_id, echo_seq, seconds, nanoseconds,
-        FW_BUILD, phy_state(), 0, RX_PACKET_COUNT, TX_FRAME_COUNT,
-        RX_TIMESTAMP_COUNT, 0, 0);
+        FW_BUILD, phy_state(), ptp_lock, RX_PACKET_COUNT, TX_FRAME_COUNT,
+        RX_TIMESTAMP_COUNT, ptp_offset, 0);
 }
 
 // MAC loopback (MACCR.LM): TX loops to RX inside the MAC. Single-board

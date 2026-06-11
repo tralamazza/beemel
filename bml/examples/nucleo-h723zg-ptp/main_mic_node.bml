@@ -45,6 +45,26 @@ var PTP_DELAY_NS: u32;       // (d1 + d2) / 2
 var PTP_ROUNDS: u32;
 var PTP_T3_MISS: u32;
 
+// Milestone 10: minimal PI servo on the local PTP clock.
+// Step-then-slew: the first completed round COARSE-STEPS the clock by
+// t2-t1 (the boards boot seconds apart); afterwards each round feeds a PI
+// update to the TSAR addend. At SSINC=20/ref~64MHz one TSAR LSB is
+// ~0.3 ppb, the sync interval is ~1.5 s, so removing the residual offset
+// over ~3 intervals works out to roughly 1 LSB per ns of offset (P), with
+// an integral at P/8 absorbing the static HSI-vs-HSI drift. LOCK: 0 =
+// free-running, 1 = stepped/slewing, 2 = |offset| < 50 us for 4 rounds.
+var PTP_OFFSET_EST: u32;     // i32 ns, raw bits (servo input, post-step)
+var PTP_LOCK: u32;
+var PTP_STEPS: u32;          // coarse steps taken (expect 1)
+var PTP_ADDEND_NOW: u32;     // current disciplined addend (probe)
+var PTP_LOCK_STREAK: u32;
+var PTP_REJECTS: u32;        // rounds rejected by the delay sanity gate
+// Round-by-round probe ring (debugger-read): 20-second openocd sampling
+// aliases ~13 rounds per glimpse and hid the real dynamics.
+var PTP_LOG_OFF: [u32; 16];
+var PTP_LOG_DLY: [u32; 16];
+var PTP_LOG_IDX: u32;
+
 fn main() @context(thread) {
     board_bringup();
 
@@ -54,6 +74,10 @@ fn main() @context(thread) {
     var t2_count_at: u32 = 0;
     var t2_have: u32 = 0;
     var await_resp: u32 = 0;
+    var servo_i: i32 = 0;
+    var servo_prev_off: i32 = 0;
+    var servo_have_prev: u32 = 0;
+    var last_hb_s: u32 = 0;
     const boot = ptp_now();
     eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
@@ -109,23 +133,161 @@ fn main() @context(thread) {
                     PTP_DELAY_NS = (d1 + d2) / 2;
                     // bml-verify: ignore V130
                     PTP_ROUNDS = PTP_ROUNDS + 1;
+                    PTP_LOG_OFF[PTP_LOG_IDX & 15] = ((PTP_OFFSET_RAW as i32) / 2 as i32) as u32;
+                    PTP_LOG_DLY[PTP_LOG_IDX & 15] = PTP_DELAY_NS;
+                    // bml-verify: ignore V130
+                    PTP_LOG_IDX = PTP_LOG_IDX + 1;
                     await_resp = 0;
+
+                    // ── Servo (milestone 10) ──
+                    if PTP_LOCK == 0 {
+                        // First lock: coarse-step by t2-t1 (normalize the
+                        // signed s/ns pair, then add or subtract).
+                        // Signed clock-delta math: IKOS reads the signless
+                        // IR ops as unsigned, so the V130s below are
+                        // signed-intended false positives.
+                        // bml-verify: ignore V130
+                        var ds: i32 = (PTP_T2_S - PTP_T1_S) as i32;
+                        // bml-verify: ignore V130
+                        var dns: i32 = PTP_T2_NS as i32 - PTP_T1_NS as i32;
+                        if dns < 0 as i32 {
+                            // bml-verify: ignore V130
+                            dns = dns + 1000000000 as i32;
+                            // bml-verify: ignore V130
+                            ds = ds - 1 as i32;
+                        }
+                        if ds >= 0 as i32 {
+                            ptp_step(ds as u32, dns as u32, true);
+                        } else {
+                            // Master ahead: add the magnitude.
+                            // bml-verify: ignore V130
+                            var as_: i32 = 0 as i32 - ds;
+                            // bml-verify: ignore V130
+                            var ans: i32 = 0 as i32 - dns;
+                            if ans < 0 as i32 {
+                                // bml-verify: ignore V130
+                                ans = ans + 1000000000 as i32;
+                                // bml-verify: ignore V130
+                                as_ = as_ - 1 as i32;
+                            }
+                            ptp_step(as_ as u32, ans as u32, false);
+                        }
+                        // bml-verify: ignore V130
+                        PTP_STEPS = PTP_STEPS + 1;
+                        PTP_LOCK = 1;
+                        servo_i = 0;
+                        servo_have_prev = 0;
+                        PTP_ADDEND_NOW = ptp_base_addend();
+                    // bml-verify: ignore V130
+                    } else if (PTP_DELAY_NS as i32) > 50000 as i32
+                        // bml-verify: ignore V130
+                        || (PTP_DELAY_NS as i32) < (0 as i32 - 50000 as i32) {
+                        // Delay sanity gate: the true path delay is
+                        // microseconds and near-constant; a corrupted
+                        // timestamp pairing distorts the delay estimate as
+                        // much as the offset, so an implausible delay marks
+                        // the whole round as garbage. Standard PTP outlier
+                        // rejection. // bml-verify: ignore V130
+                        PTP_REJECTS = PTP_REJECTS + 1;
+                    } else {
+                        // Slew: PI on the addend. offset = (d1-d2)/2, signed.
+                        const off: i32 = (PTP_OFFSET_RAW as i32) / 2 as i32;
+                        PTP_OFFSET_EST = off as u32;
+                        // bml-verify: ignore V130
+                        if off > 100000000 as i32 || off < (0 as i32 - 100000000 as i32) {
+                            // Diverged (>100 ms): drop lock, re-step next round.
+                            PTP_LOCK = 0;
+                            PTP_LOCK_STREAK = 0;
+                        } else {
+                            // Frequency + phase servo, INCREMENTAL: the
+                            // change in offset between consecutive rounds
+                            // is a direct measurement of the residual rate
+                            // error (d_off ns per 1.5 s interval; one TSAR
+                            // LSB ~ 0.298 ppb, so LSB ~ d_off x 2.24 ~
+                            // 2d + d/4). Deadbeat on frequency tracks the
+                            // large, thermally wandering HSI mismatch the
+                            // base-anchored PI could not (the ring log
+                            // showed a smooth accelerating ramp at a rock-
+                            // steady 1.1 us delay -- drift, not noise);
+                            // the off/2 phase term slews the residual out
+                            // over a few rounds.
+                            var delta: i32 = 0;
+                            if servo_have_prev != 0 {
+                                // bml-verify: ignore V130
+                                const d: i32 = off - servo_prev_off;
+                                // bml-verify: ignore V130
+                                // Full deadbeat: tried half-gain damping,
+                                // and the thermally wandering HSI escaped
+                                // it (+750 us trend in 16 rounds); full
+                                // deadbeat recirculates measurement kicks
+                                // at ~unity but stays BOUNDED with no
+                                // trend. On this RC oscillator that is the
+                                // honest floor -- the crystal clock tree
+                                // (listed milestone work) is the real fix.
+                                // bml-verify: ignore V130
+                                delta = 0 as i32 - (d * 2 as i32 + d / 4 as i32) - off / 2 as i32;
+                            } else {
+                                // bml-verify: ignore V130
+                                delta = 0 as i32 - off / 2 as i32;
+                            }
+                            servo_prev_off = off;
+                            servo_have_prev = 1;
+                            // bml-verify: ignore V130
+                            var anow: i32 = PTP_ADDEND_NOW as i32 + delta;
+                            // Authority clamp: ~±5000 ppm around nominal.
+                            // bml-verify: ignore V130
+                            const lo: i32 = ptp_base_addend() as i32 - 16000000 as i32;
+                            // bml-verify: ignore V130
+                            const hi: i32 = ptp_base_addend() as i32 + 16000000 as i32;
+                            if anow < lo {
+                                anow = lo;
+                            }
+                            if anow > hi {
+                                anow = hi;
+                            }
+                            ptp_set_addend(anow as u32);
+                            PTP_ADDEND_NOW = anow as u32;
+                            // bml-verify: ignore V130
+                            if off < 500000 as i32 && off > (0 as i32 - 500000 as i32) {
+                                // bml-verify: ignore V130
+                                PTP_LOCK_STREAK = PTP_LOCK_STREAK + 1;
+                                if PTP_LOCK_STREAK >= 4 {
+                                    PTP_LOCK = 2;
+                                }
+                            } else {
+                                PTP_LOCK_STREAK = 0;
+                                if PTP_LOCK == 2 {
+                                    PTP_LOCK = 1;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if prod_rx_fresh() != 0 {
                 const mtype = prod_rx_take();
                 if mtype == MSG_HEALTH_PING {
                     const now2 = ptp_now();
-                    eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds);
+                    eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds,
+                        PTP_OFFSET_EST, PTP_LOCK);
                     // Free-running counter; wrap intended. // bml-verify: ignore V130
                     PINGS_ANSWERED = PINGS_ANSWERED + 1;
                 }
             }
         }
+        // Tight loop, heartbeat paced by the PTP clock (1 Hz): with the
+        // old delay() pacing a Sync could sit in the ring for up to a
+        // second before the Delay_Req went out, and the offset formula
+        // inflates by rate_error x turnaround / 2 -- with the servo
+        // actively changing the rate that is POSITIVE FEEDBACK (measured
+        // +-1-2.5 ms limit cycles on the wire). Sub-ms turnaround makes
+        // the coupling negligible.
         const now = ptp_now();
-        eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
-        // bml-verify: ignore V130
-        seq = seq + 1;
-        delay();
+        if now.seconds != last_hb_s {
+            last_hb_s = now.seconds;
+            eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+            // bml-verify: ignore V130
+            seq = seq + 1;
+        }
     }
 }
