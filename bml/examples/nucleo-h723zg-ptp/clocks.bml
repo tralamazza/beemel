@@ -1,0 +1,107 @@
+// Clock tree: HSE (bypass) -> PLL1 -> 64 MHz SYSCLK.
+//
+// Why: the PTP servo floor measured in milestone 10 (~187 us sigma) is the HSI
+// itself -- a +/-1% RC oscillator whose frequency wanders hundreds of ppm with
+// the die's own self-heating. The NUCLEO-H723ZG has no MCU crystal fitted by
+// default; its HSE input is the 8 MHz MCO output of the on-board ST-LINK
+// (UM2407).
+//
+// MEASURED (2026-06-11): that MCO is NOT crystal-accurate. Board A's PLL'd
+// 64 MHz reads +1610 ppm against NTP wall clock, and the two boards differ
+// by ~5600 ppm -- RC-class accuracy, consistent with the ST-LINK F723's
+// HSI16/2 rather than its 25 MHz USB crystal. What this switch still buys is
+// the thing the servo actually needs: the reference now lives on a separate,
+// lightly-loaded die instead of wandering with the H723's own workload heat.
+// Rate ACCURACY is the servo's job (authority clamp sized for two +/-1%
+// references); rate STABILITY is what sets the lock floor.
+//
+// The PLL is deliberately configured to the SAME 64 MHz the HSI delivered:
+//   HSE 8 MHz / DIVM1=1 -> ref1_ck 8 MHz (PLL1RGE=3: 8..16 MHz band)
+//   x DIVN=32           -> VCO 256 MHz   (wide VCO, PLL1VCOSEL=0: 192..836 MHz)
+//   / DIVP=4            -> pll1_p_ck 64 MHz = SYSCLK
+// All bus prescalers stay at their reset /1, so hclk, the TIM2 kernel clock,
+// and the ETH PTP reference are all still 64 MHz: the TIM2 PSC math and
+// PTP_SSINC are untouched, and no flash-latency or VOS change is needed.
+// Bonus: PTP_ADDEND = 2^32 * 1e9 / (64e6 * 20) = 0xC8000000 is now EXACT.
+//
+// Every step is verified by reading hardware state back (HSERDY, PLL1RDY,
+// SWS) with a bounded spin -- if the ST-LINK MCO is absent the board stays on
+// HSI and reports the failing step in CLK_STATUS instead of hanging.
+
+import svd.rcc;
+
+export fn clk_init_hse_pll;
+
+// SWD-visible bring-up result. 0 = clk_init_hse_pll never ran.
+const CLK_ERR_HSE: u32 = 1;     // HSERDY timeout -- still on HSI
+const CLK_ERR_PLL: u32 = 2;     // PLL1RDY timeout -- still on HSI
+const CLK_ERR_SWITCH: u32 = 3;  // SWS never showed PLL1 -- state uncertain
+const CLK_OK_PLL1: u32 = 4;     // SYSCLK = 64 MHz from PLL1(HSE)
+var CLK_STATUS: u32;
+
+// RCC.CFGR.SW / SWS encoding (RM0468): 0 = HSI, 1 = CSI, 2 = HSE, 3 = PLL1.
+const SW_PLL1: u32 = 3;
+// RCC.PLLCKSELR.PLLSRC encoding: 0 = HSI, 1 = CSI, 2 = HSE, 3 = none.
+const PLLSRC_HSE: u32 = 2;
+
+const PLL_DIVM1: u32 = 1;   // ref1_ck = HSE / 1 = 8 MHz
+const PLL_DIVN: u32 = 32;   // VCO = 256 MHz
+const PLL_DIVP: u32 = 4;    // pll1_p_ck = 64 MHz
+
+comptime_assert(8 * PLL_DIVN / PLL_DIVM1 / PLL_DIVP == 64);  // MHz
+comptime_assert(8 * PLL_DIVN / PLL_DIVM1 >= 192);  // wide-VCO floor, MHz
+comptime_assert(PLL_DIVP % 2 == 0);  // odd DIVP1 division is not allowed
+
+// HSE bypass-ready and PLL lock are each well under a millisecond; these
+// budgets are tens of milliseconds at 64 MHz. Hitting one means the clock
+// source is genuinely absent, not slow.
+const CLK_READY_TIMEOUT: u32 = 1000000;
+
+fn clk_init_hse_pll() {
+    // Bypass must be selected while HSE is off; there is no crystal to drive.
+    RCC.CR.HSEBYP = true;
+    RCC.CR.HSEON = true;
+    var spin: u32 = 0;
+    while spin < CLK_READY_TIMEOUT && !RCC.CR.HSERDY {
+        // Guard bounds spin < 1e6 before the add. // bml-verify: ignore V130
+        spin = spin + 1;
+    }
+    if !RCC.CR.HSERDY {
+        CLK_STATUS = CLK_ERR_HSE;
+        return;
+    }
+
+    // PLL1 is still off out of reset, so its configuration is writable.
+    RCC.PLLCKSELR.PLLSRC = PLLSRC_HSE;
+    RCC.PLLCKSELR.DIVM1 = PLL_DIVM1;
+    RCC.PLLCFGR.PLL1RGE = 3;
+    RCC.PLLCFGR.PLL1VCOSEL = false;
+    RCC.PLLCFGR.PLL1FRACEN = false;
+    RCC.PLLCFGR.DIVP1EN = true;
+    RCC.PLL1DIVR.DIVN1 = PLL_DIVN - 1;
+    RCC.PLL1DIVR.DIVP1 = PLL_DIVP - 1;
+
+    RCC.CR.PLL1ON = true;
+    spin = 0;
+    while spin < CLK_READY_TIMEOUT && !RCC.CR.PLL1RDY {
+        // Guard bounds spin < 1e6 before the add. // bml-verify: ignore V130
+        spin = spin + 1;
+    }
+    if !RCC.CR.PLL1RDY {
+        CLK_STATUS = CLK_ERR_PLL;
+        return;
+    }
+
+    RCC.CFGR.SW = SW_PLL1;
+    spin = 0;
+    while spin < CLK_READY_TIMEOUT && RCC.CFGR.SWS != SW_PLL1 {
+        // Guard bounds spin < 1e6 before the add. // bml-verify: ignore V130
+        spin = spin + 1;
+    }
+    if RCC.CFGR.SWS != SW_PLL1 {
+        CLK_STATUS = CLK_ERR_SWITCH;
+        return;
+    }
+
+    CLK_STATUS = CLK_OK_PLL1;
+}

@@ -45,14 +45,14 @@ var PTP_DELAY_NS: u32;       // (d1 + d2) / 2
 var PTP_ROUNDS: u32;
 var PTP_T3_MISS: u32;
 
-// Milestone 10: minimal PI servo on the local PTP clock.
+// Milestone 10 + clock-tree rework: servo on the local PTP clock.
 // Step-then-slew: the first completed round COARSE-STEPS the clock by
-// t2-t1 (the boards boot seconds apart); afterwards each round feeds a PI
-// update to the TSAR addend. At SSINC=20/ref~64MHz one TSAR LSB is
-// ~0.3 ppb, the sync interval is ~1.5 s, so removing the residual offset
-// over ~3 intervals works out to roughly 1 LSB per ns of offset (P), with
-// an integral at P/8 absorbing the static HSI-vs-HSI drift. LOCK: 0 =
-// free-running, 1 = stepped/slewing, 2 = |offset| < 50 us for 4 rounds.
+// t2-t1 (the boards boot seconds apart); afterwards each round feeds a
+// two-state PI update to the TSAR addend (rate integral + non-accumulated
+// proportional term -- see the servo block for the tuning and for why the
+// HSI-era deadbeat was retired with the MCO clock tree). LOCK: 0 =
+// free-running, 1 = stepped/slewing, 2 = |offset| in the lock window for
+// 4 consecutive rounds.
 var PTP_OFFSET_EST: u32;     // i32 ns, raw bits (servo input, post-step)
 var PTP_LOCK: u32;
 var PTP_STEPS: u32;          // coarse steps taken (expect 1)
@@ -74,10 +74,14 @@ fn main() @context(thread) {
     var t2_count_at: u32 = 0;
     var t2_have: u32 = 0;
     var await_resp: u32 = 0;
-    var servo_i: i32 = 0;
-    var servo_prev_off: i32 = 0;
-    var servo_have_prev: u32 = 0;
+    // PI integral state: the learned rate error, as a TSAR-LSB offset from
+    // the base addend. Survives re-steps (a step is a phase event; the rate
+    // knowledge stays valid).
+    var servo_freq: i32 = 0;
     var last_hb_s: u32 = 0;
+    // Mirror of the hardware TSAR (ptp_init loaded the base); the servo
+    // accumulates on this across rounds AND across re-steps.
+    PTP_ADDEND_NOW = ptp_base_addend();
     const boot = ptp_now();
     eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
@@ -175,9 +179,12 @@ fn main() @context(thread) {
                         // bml-verify: ignore V130
                         PTP_STEPS = PTP_STEPS + 1;
                         PTP_LOCK = 1;
-                        servo_i = 0;
-                        servo_have_prev = 0;
-                        PTP_ADDEND_NOW = ptp_base_addend();
+                        // A step is a PHASE event: servo_freq (the learned
+                        // rate) is deliberately NOT reset. The first version
+                        // reset the addend bookkeeping to base here, which
+                        // made the first post-step servo write yank the
+                        // hardware back to ~nominal, re-creating the full
+                        // reference drift every time.
                     // bml-verify: ignore V130
                     } else if (PTP_DELAY_NS as i32) > 50000 as i32
                         // bml-verify: ignore V130
@@ -199,46 +206,57 @@ fn main() @context(thread) {
                             PTP_LOCK = 0;
                             PTP_LOCK_STREAK = 0;
                         } else {
-                            // Frequency + phase servo, INCREMENTAL: the
-                            // change in offset between consecutive rounds
-                            // is a direct measurement of the residual rate
-                            // error (d_off ns per 1.5 s interval; one TSAR
-                            // LSB ~ 0.298 ppb, so LSB ~ d_off x 2.24 ~
-                            // 2d + d/4). Deadbeat on frequency tracks the
-                            // large, thermally wandering HSI mismatch the
-                            // base-anchored PI could not (the ring log
-                            // showed a smooth accelerating ramp at a rock-
-                            // steady 1.1 us delay -- drift, not noise);
-                            // the off/2 phase term slews the residual out
-                            // over a few rounds.
-                            var delta: i32 = 0;
-                            if servo_have_prev != 0 {
+                            // Two-state PI on the addend. REGIME CHANGE
+                            // (2026-06-11, with the clk_init_hse_pll MCO
+                            // reference): the milestone-10 full deadbeat +
+                            // accumulated phase term was the right answer
+                            // to the thermally wandering on-die HSI, but
+                            // against the now-stable off-die reference it
+                            // limit-cycled at +/-650 us (sigma 332 us)
+                            // while the path delay sat at a clean 28 ns
+                            // sigma -- pure servo dynamics recirculating
+                            // its own kicks, not measurement noise. A
+                            // damped PI averages instead.
+                            //
+                            // Plant gain: one TSAR LSB ~ 0.298 ppb, rounds
+                            // ~0.376 s apart, so 1 LSB held one round moves
+                            // the offset G ~ 0.112 ns. servo_freq is the
+                            // integral (Ki = 1); the proportional term
+                            // (Kp = 6, NOT accumulated) rides on top of it
+                            // each round. alpha = Kp*G = 0.67, beta = Ki*G
+                            // = alpha^2/4: critically damped, poles 0.665
+                            // double, settles in ~3 rounds. Gains are this
+                            // hot because the noise budget is inverted from
+                            // a normal PTP setup: measurement noise is tiny
+                            // (delay sigma ~30 ns) while the reference
+                            // random-walks ~200 ppm/min, so the loop should
+                            // chase every measurement.
+                            // bml-verify: ignore V130
+                            servo_freq = servo_freq - off;
+                            // Anti-windup: bound the integral by the same
+                            // authority the output clamp grants.
+                            // bml-verify: ignore V130
+                            if servo_freq < (0 as i32 - 70000000 as i32) {
                                 // bml-verify: ignore V130
-                                const d: i32 = off - servo_prev_off;
-                                // bml-verify: ignore V130
-                                // Full deadbeat: tried half-gain damping,
-                                // and the thermally wandering HSI escaped
-                                // it (+750 us trend in 16 rounds); full
-                                // deadbeat recirculates measurement kicks
-                                // at ~unity but stays BOUNDED with no
-                                // trend. On this RC oscillator that is the
-                                // honest floor -- the crystal clock tree
-                                // (listed milestone work) is the real fix.
-                                // bml-verify: ignore V130
-                                delta = 0 as i32 - (d * 2 as i32 + d / 4 as i32) - off / 2 as i32;
-                            } else {
-                                // bml-verify: ignore V130
-                                delta = 0 as i32 - off / 2 as i32;
+                                servo_freq = 0 as i32 - 70000000 as i32;
                             }
-                            servo_prev_off = off;
-                            servo_have_prev = 1;
+                            if servo_freq > 70000000 as i32 {
+                                servo_freq = 70000000 as i32;
+                            }
                             // bml-verify: ignore V130
-                            var anow: i32 = PTP_ADDEND_NOW as i32 + delta;
-                            // Authority clamp: ~±5000 ppm around nominal.
+                            var anow: i32 = ptp_base_addend() as i32 + servo_freq - off * 6 as i32;
+                            // Authority clamp: ~±2.1% around nominal. The
+                            // PTP references are 64 MHz PLL'd from each
+                            // board's ST-LINK MCO, which is MEASURED to be
+                            // RC-class in accuracy (+1610 ppm vs NTP wall
+                            // clock on board A; boards differ by ~5600 ppm).
+                            // The old ±16e6 (~±4768 ppm) clamp railed
+                            // against that and the servo could never null
+                            // the rate. ±70e6 covers two ±1% references.
                             // bml-verify: ignore V130
-                            const lo: i32 = ptp_base_addend() as i32 - 16000000 as i32;
+                            const lo: i32 = ptp_base_addend() as i32 - 70000000 as i32;
                             // bml-verify: ignore V130
-                            const hi: i32 = ptp_base_addend() as i32 + 16000000 as i32;
+                            const hi: i32 = ptp_base_addend() as i32 + 70000000 as i32;
                             if anow < lo {
                                 anow = lo;
                             }
@@ -247,8 +265,10 @@ fn main() @context(thread) {
                             }
                             ptp_set_addend(anow as u32);
                             PTP_ADDEND_NOW = anow as u32;
+                            // Lock window 250 us ~ 3 sigma of the measured
+                            // floor (sigma 84 us at the 0.376 s cadence).
                             // bml-verify: ignore V130
-                            if off < 500000 as i32 && off > (0 as i32 - 500000 as i32) {
+                            if off < 250000 as i32 && off > (0 as i32 - 250000 as i32) {
                                 // bml-verify: ignore V130
                                 PTP_LOCK_STREAK = PTP_LOCK_STREAK + 1;
                                 if PTP_LOCK_STREAK >= 4 {

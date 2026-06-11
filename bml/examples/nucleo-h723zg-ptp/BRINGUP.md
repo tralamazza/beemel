@@ -385,6 +385,74 @@ The +-200 us-class residual IS the HSI floor: the crystal-fed clock tree
 (HSE via the ST-Link MCO) is the real fix and stays listed as the next
 clock milestone before audio-grade sync claims.
 
+### 10b. Clock Tree (HSE/PLL1) -- Done, with a falsified premise
+
+Status: Done (2026-06-11). `clocks.bml` brings up HSE (bypass, the
+ST-LINK MCO) -> PLL1 (DIVM1=1, x32, /4) -> the SAME 64 MHz SYSCLK the
+HSI delivered, so no flash-latency/VOS change and the TIM2/PTP_SSINC
+math is untouched; with a true 64 MHz reference PTP_ADDEND=0xC8000000
+is exact by construction. Every stage is readback-gated with a bounded
+spin and reports into a SWD-visible CLK_STATUS instead of hanging.
+Both boards: CLK_STATUS=4, RCC.CFGR SWS=PLL1 confirmed live.
+
+THE PREMISE WAS WRONG, and measuring that was the milestone's real
+yield. The plan assumed the ST-LINK MCO is crystal-derived (UM2407
+suggests as much). Measured against NTP wall clock via low-latency SWD
+sampling (openocd server + socket, ~1 ms read jitter):
+
+- board A reads +1.4..+1.9e3 ppm, board B +7.4..+7.8e3 ppm -- RC-class
+  ACCURACY (a crystal is never 1600 ppm off; consistent with the
+  ST-LINK F723's HSI16/2, not its 25 MHz USB crystal);
+- consecutive 60 s windows scatter by 100-300 ppm on BOTH boards
+  (measurement noise ~25 ppm) -- RC-class STABILITY. The wander, not
+  the offset, is what bounds PTP: no servo can remove rate wander that
+  accrues within a sync interval.
+
+Bugs the new clock exposed (each pinned by a live-register experiment):
+
+- `ptp_step` subtract encoding: "STSUR = 2^32-s-1" subtracts ONE SECOND
+  TOO MUCH. SWD pokes on a live clock: asked -100 ms, got -1.097 s;
+  with `2^32-s` got -97 ms exact (hardware handles the ns borrow).
+  Masked in milestone 10 because every overshot step was followed by a
+  corrective +1 s step (the "STEPS=3" session was really step pairs).
+- Addend bookkeeping across re-steps: resetting PTP_ADDEND_NOW to base
+  on a step made the first post-step servo write yank the hardware
+  addend back to ~nominal, re-creating the full drift. A step is a
+  phase event; the learned rate must survive it.
+- Servo authority clamp +-16e6 (~4768 ppm) could not reach the real
+  ~5600 ppm board-to-board rate difference -- the addend railed and
+  offsets ramped to the divergence gate forever. Widened to +-70e6
+  (covers two +-1% RC references). TSAR-halving over SWD (rate measured
+  0.501x) proved the addend path itself was healthy before widening.
+
+Servo regime change: the milestone-10 full deadbeat, the right answer
+to a smoothly wandering on-die HSI, limit-cycled at sigma 332 us
+against the new reference while path delay sat at 28 ns sigma -- pure
+servo dynamics. Replaced with a two-state PI (rate integral
+`servo_freq` + non-accumulated proportional term), tuned critically
+damped from the plant gain G = 0.298 ppb/LSB x sync interval. The
+noise budget is inverted from a normal PTP setup: measurement noise is
+~30 ns while the reference random-walks ~200 ppm/min, so the loop
+chases every measurement.
+
+With wander dominant the floor is rate-wander x sync-interval, and the
+Sync cadence became the lever (TIM2 ARR 1000 -> 250, Sync every 2nd
+tick), confirmed by the scaling:
+
+| sync interval | servo            | sigma   | max     |
+|---------------|------------------|---------|---------|
+| 1.5 s         | deadbeat (M10)   | 332 us  | 676 us  |
+| 0.75 s        | PI Kp=3 Ki=1/2   | 225 us  | 463 us  |
+| 0.376 s       | PI Kp=6 Ki=1     | 84 us   | 238 us  |
+
+End state: LOCK=2, STREAK 220+, STEPS=1, REJECTS=0, lock window
+tightened 500 us -> 250 us (~3 sigma). Honest conclusion: stock
+NUCLEO-H723ZG cannot do better than the ~100 us class regardless of
+clock tree, because BOTH available references (on-die HSI, ST-LINK
+MCO) are RC; audio-grade sync (~20 us = one 48 kHz sample) needs the
+unpopulated X3 crystal or an external clock. The PLL bring-up itself
+is correct, validated, and required for that future hardware anyway.
+
 ### 11. Audio Test Blocks
 
 Before real microphones, simulate audio blocks from the mic node.

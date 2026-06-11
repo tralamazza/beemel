@@ -53,11 +53,16 @@ fn timer_init() {
     while !RCC.C1_APB1LENR.TIM2EN {
     }
 
-    // Free-running periodic counter. PSC/ARR are not clock-tree-calibrated
-    // (this drives the heartbeat cadence, not timekeeping); each update event
-    // now raises IRQ 28 instead of being polled.
+    // Free-running periodic counter (~0.188 s tick: 64 MHz / 48000 / 251);
+    // this drives cadence, not timekeeping. Cut from the original ~0.75 s
+    // for the clock-tree rework: the ST-LINK MCO reference wanders
+    // ~200 ppm/min (measured 2026-06-11), the PTP offset floor is
+    // rate-wander x sync-interval, and Sync goes out every 2nd tick -- a
+    // faster tick directly shrinks the floor (sigma scaled ~linearly with
+    // the interval when halved). Burst stagger (<= 2 frames/tick) is
+    // unchanged. Each update event raises IRQ 28 instead of being polled.
     TIM2.PSC = 47999;
-    TIM2.ARR = 1000;
+    TIM2.ARR = 250;
     TIM2.SR.UIF = false;
     TIM2.DIER.UIE = true;
 

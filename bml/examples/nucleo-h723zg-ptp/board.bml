@@ -6,6 +6,7 @@
 
 import svd.scb;
 import cache;
+import clocks;
 import eth_dma;
 import phy_lan8742;
 import ptp_clock;
@@ -69,6 +70,10 @@ fn board_init() {
 // in startup before .data/.bss init -- see the [startup] section in
 // stm32h723zg.target.
 fn board_bringup() {
+    // Clock tree first: everything after this (PHY autoneg waits, TIM2, the
+    // PTP addend) assumes the final 64 MHz SYSCLK. Falls back to HSI loudly
+    // (clocks.CLK_STATUS) if the ST-LINK MCO is missing.
+    clk_init_hse_pll();
     board_init();
     eth_init_clocks_and_pins();
     phy_probe();

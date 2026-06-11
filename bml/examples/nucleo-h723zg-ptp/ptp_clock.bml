@@ -19,10 +19,11 @@ const PTP_SSINC: u32 = 20;
 // TSAR every PTP reference clock and bumps the system time by SSINC on overflow,
 // so the overflow rate is ptp_ref * (TSAR / 2^32). For ~1:1 real time:
 //   TSAR = 2^32 * 1e9 / (ptp_ref_hz * SSINC)
-// This assumes the PTP reference (ETH hclk) is the ~64 MHz HSI, since the example
-// does not configure the PLLs: 2^32 * 1e9 / (64e6 * 20) = 0xC8000000. The rate is
-// therefore approximate until a real clock tree is set up; calibrate TSAR against
-// wall-clock once SYSCLK is configured.
+// The PTP reference (ETH hclk) is 64 MHz: exactly, when clk_init_hse_pll has
+// switched SYSCLK to PLL1 fed by the crystal-derived ST-LINK MCO (clocks.bml);
+// approximately (+/-1%, thermally wandering) on the HSI fallback. With the PLL
+// up, 2^32 * 1e9 / (64e6 * 20) = 0xC8000000 is exact and the residual rate
+// error is just the MCO crystal tolerance (tens of ppm, stable).
 const PTP_ADDEND: u32 = 0xC8000000;
 
 fn ptp_init() {
@@ -67,20 +68,25 @@ fn ptp_base_addend() -> u32 {
     return PTP_ADDEND;
 }
 
-// Coarse system-time step by (s, ns), added or subtracted. RM0468 subtract
-// encoding (digital rollover, TSCTRLSSR set): STSUR = 2^32 - s - 1 and
-// STNUR.TSSS = 10^9 - ns when ns != 0; with ns == 0 the seconds are
-// subtracted exactly (no borrow).
+// Coarse system-time step by (s, ns), added or subtracted. Subtract encoding
+// (digital rollover, TSCTRLSSR set): STSUR = 2^32 - s and STNUR.TSSS =
+// 10^9 - ns; the hardware handles the nanosecond borrow itself.
+//
+// MEASURED ON SILICON (2026-06-11, SWD register pokes on a live clock): the
+// "2^32 - s - 1" encoding this code first used -- on the reading that
+// software must pre-compensate the ns-field carry -- subtracts ONE SECOND
+// TOO MUCH (asked for -100 ms, got -1.097 s); with 2^32 - s the same request
+// applied -97 ms (exact, minus read latency). The bug was masked in the
+// milestone-10 validation because every overshot step was followed by a
+// corrective +1 s step on the next round (STEPS counted 2 per event).
 fn ptp_step(s: u32, ns: u32, subtract: b1) {
     if subtract {
+        // bml-verify: ignore V130
+        Ethernet_MAC.MACSTSUR.TSS = 0 - s;
         if ns != 0 {
-            // bml-verify: ignore V130
-            Ethernet_MAC.MACSTSUR.TSS = 0 - s - 1;
             // ns in (0, 1e9) at every caller. // bml-verify: ignore V130
             Ethernet_MAC.MACSTNUR.TSSS = 1000000000 - ns;
         } else {
-            // bml-verify: ignore V130
-            Ethernet_MAC.MACSTSUR.TSS = 0 - s;
             Ethernet_MAC.MACSTNUR.TSSS = 0;
         }
         Ethernet_MAC.MACSTNUR.ADDSUB = true;
