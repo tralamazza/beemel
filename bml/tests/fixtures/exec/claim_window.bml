@@ -1,5 +1,6 @@
 // claim end to end: a @shared array is filled and summed inside one masked
-// window; values survive the cpsid/cpsie pair and the view reads the stores.
+// window (BASEPRI to the derived ceiling on this v7-M target); values
+// survive the mask save/restore and the view reads the stores.
 import harness.semihost;
 
 var BUF: [u8; 4] @shared;

@@ -178,7 +178,7 @@ USART1 = 37
 | `@naked` | Functions | No LLVM `"interrupt"` attribute, no default return. Emits `unreachable` fallback. Full manual control of prologue/epilogue via inline asm. |
 | `@section("name")` | Functions, statics | Places the item in the named linker section (e.g. `.ram_code`) |
 | `@exclusive(fn)` | Statics | Single-context ownership, only `fn` may access |
-| `@shared` | Statics | Auto critical section via `cpsid i` / `cpsie i`; the ceiling is derived from the accessor contexts |
+| `@shared` | Statics | Auto critical section; the ceiling is derived from the accessor contexts and picks the mask (BASEPRI to the ceiling on v7-M, `cpsid i`/`cpsie i` on v6-M or without a real ISR ceiling) |
 | `@shared(ceiling=N)` | Statics | Same, with the ceiling pinned to `N` (an accessor that outranks the pin is E402) |
 | `@dma` | Statics | DMA-accessible RAM |
 | `@external` | Statics | External/C-accessible RAM |
@@ -244,7 +244,12 @@ bml pointer call. Reusing an entry's address as an ordinary callback is
 not detected -- declared entries are trusted to be launch-only.
 
 Thread context accessing `@shared(...)` is always allowed -- the compiler
-will auto-insert a `cpsid i` / `cpsie i` critical section during codegen.
+auto-inserts a critical section during codegen. On ARMv7(E)-M with a real
+ISR ceiling the mask is BASEPRI_MAX raised to the ceiling (saved/restored),
+so ISRs above the ceiling -- which cannot touch the data -- keep running.
+The global `cpsid i`/`cpsie i` mask is the fallback: ARMv6-M (no BASEPRI),
+ceiling 0 (BASEPRI=0 means masking disabled), or a thread-only accessor set
+(derived ceiling 255 is a sentinel, not an ISR priority).
 
 Functions without an `@` annotation have context `Any` (callable from
 any priority level). When an `Any`-context function accesses a `@shared`
@@ -272,8 +277,9 @@ accesses always take the conservative critical section).
 Per-access critical sections make each single access atomic, but a
 multi-word operation (draining a log, snapshotting a struct) can still be
 torn between accesses, and views over `@shared` are rejected outright
-(E405). `claim X { ... }` is the block form: one `cpsid i`/`cpsie i` pair
-around the whole window, inside which `X` is its inner type -- views and
+(E405). `claim X { ... }` is the block form: one mask pair (same
+instrument selection as per-access sections) around the whole window,
+inside which `X` is its inner type -- views and
 index-reads allowed -- and per-access critical sections are suppressed (the
 mask already covers every access, including to other `@shared` statics).
 
@@ -291,9 +297,9 @@ fn drain() -> u32 @context(thread) {
 ```
 
 Restrictions (E614): the target must be a `@shared` static; the body may not
-contain function calls (a callee's own critical sections would `cpsie`
-inside the window and unmask it early) or escape the window (`return`, or a
-`break`/`continue` of an outer loop -- both would skip the unmask).
+contain function calls (a callee's own critical sections would restore the
+mask inside the window and open it early) or escape the window (`return`,
+or a `break`/`continue` of an outer loop -- both would skip the restore).
 `break`/`continue` of loops fully inside the window are fine. A view built
 over the claimed static must not leave the window either (E616): assigning
 it -- or an inside binding holding it -- to a binding declared outside the

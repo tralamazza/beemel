@@ -118,8 +118,9 @@ pub enum Stmt {
     Assert(AssertStmt),
     /// `claim X { ... }`: a masked ownership window over the `@shared` static
     /// `X` -- the CPU-side counterpart of `reclaim`. The block runs inside one
-    /// `cpsid i`/`cpsie i` pair, and within it `X` is its inner type (views
-    /// and index-reads allowed). See `doc/regions-agents.md`.
+    /// mask pair (BASEPRI raised to the static's ceiling on v7-M, cpsid/cpsie
+    /// otherwise), and within it `X` is its inner type (views and index-reads
+    /// allowed). See `doc/regions-agents.md`.
     Claim(ClaimStmt),
 }
 

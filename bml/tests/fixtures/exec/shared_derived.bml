@@ -1,6 +1,6 @@
 // Bare @shared (derived ceiling), end to end: a thread accessor and an ISR
-// accessor coexist; the thread access takes the conservative critical section
-// and the value survives the cpsid/cpsie pair. (The ISR never fires under
+// accessor coexist; the thread access takes its critical section (BASEPRI to
+// the derived ceiling) and the value survives the mask save/restore. (The ISR never fires under
 // QEMU here -- this pins the lowering of derived-ceiling accesses, not
 // preemption behavior.)
 import harness.semihost;

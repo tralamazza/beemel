@@ -1,0 +1,59 @@
+// BASEPRI window semantics, end to end on the QEMU Cortex-M3: the claim of
+// `counter` (derived ceiling 3 from the priority-3 contender) raises BASEPRI
+// to 0x30, NOT the global mask. Both IRQs are pended inside the window:
+// the priority-1 NON-contender preempts immediately (under the old cpsid
+// lowering it could not -- this is the latency win the lowering exists for),
+// while the priority-3 contender stays masked until the window closes.
+import harness.semihost;
+
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field BITS: u32 bit[0..31]
+    }
+    reg ISPR offset 0x100 {
+        field BITS: u32 bit[0..31]
+    }
+}
+
+var counter: u32 @shared;
+var hi_seen: u32 @shared;
+var lo_seen: u32 @shared;
+
+// IRQ 0: does not touch `counter`, so it is no contender of the window.
+fn hi() @isr(priority = 1) {
+    hi_seen = 1;
+}
+
+// IRQ 1: the contender the window must exclude.
+fn lo() @isr(priority = 3) {
+    var x: u32 = counter;
+    counter = x + 1;
+    lo_seen = 1;
+}
+
+fn main() @context(thread) {
+    NVIC.ISER = 3;
+    var in_hi: u32 = 0;
+    var in_lo: u32 = 0;
+    claim counter {
+        NVIC.ISPR = 3;
+        // The pending bit clears at exception entry; the thread only runs
+        // again after the ISR returns, so observing it clear means hi ran.
+        var p: u32 = NVIC.ISPR.BITS;
+        while (p & 1) != 0 {
+            p = NVIC.ISPR.BITS;
+        }
+        in_hi = hi_seen;
+        in_lo = lo_seen;
+    }
+    // Window closed: the contender is delivered now.
+    var q: u32 = NVIC.ISPR.BITS;
+    while (q & 2) != 0 {
+        q = NVIC.ISPR.BITS;
+    }
+    expect_u32(in_hi, 1);
+    expect_u32(in_lo, 0);
+    expect_u32(lo_seen, 1);
+    expect_u32(counter, 1);
+    done();
+}

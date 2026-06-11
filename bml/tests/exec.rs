@@ -245,12 +245,18 @@ fn write_generated(name: &str, source: &str) -> PathBuf {
 // ─── smoke ──────────────────────────────────────────────────────────────────
 assert_exec!(exec_smoke, "smoke.bml");
 
-// Bare `@shared` (derived ceiling): the thread access runs inside the
-// conservative cpsid/cpsie critical section and the value survives.
+// Bare `@shared` (derived ceiling): the thread access runs inside its
+// critical section (BASEPRI to the ceiling on this v7-M target) and the
+// value survives the save/mask/restore.
 assert_exec!(exec_shared_derived, "shared_derived.bml");
 
 // `claim` window: fill + view-sum a @shared array inside one masked block.
 assert_exec!(exec_claim_window, "claim_window.bml");
+
+// BASEPRI window semantics with real interrupt delivery: a non-contender
+// ISR above the ceiling preempts INSIDE the claim window; the contender
+// stays pended until the window closes.
+assert_exec!(exec_basepri_window, "basepri_window.bml");
 
 // ─── integer wrapping (design-decisions.md §8) ───────────────────────────────
 assert_exec!(exec_wrapping, "wrapping.bml");

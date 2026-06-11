@@ -1,0 +1,15 @@
+// Ceiling 0 cannot use BASEPRI: its hardware encoding is BASEPRI=0, which
+// means "masking disabled". The priority-2 accessor falls back to the
+// global cpsid mask -- the only lock that excludes a priority-0 contender.
+
+var counter: u32 @shared;
+
+fn top() @isr(priority = 0) {
+    var x: u32 = counter;
+    counter = x + 1;
+}
+
+fn low() @isr(priority = 2) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

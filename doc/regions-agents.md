@@ -255,10 +255,12 @@ the sharer set.
   register in between (W1C staleness; first observations trusted,
   `!`-polarity busy flags exempt -- hardware-managed).
 - **`claim X { }`** -- the masked window, the CPU-side reclaim: one
-  cpsid/cpsie pair; inside, the `@shared` static is its inner type
+  mask pair (BASEPRI raised to the static's ceiling on v7-M so unrelated
+  higher-priority ISRs keep running; cpsid/cpsie on v6-M or without a
+  real ISR ceiling); inside, the `@shared` static is its inner type
   (views/index-reads legal) and per-access critical sections are
   suppressed. E614 rejects non-`@shared` targets, calls inside (a callee's
-  CS would unmask early), and escapes (`return`/outer `break`).
+  CS would open the window early), and escapes (`return`/outer `break`).
 - **Composition `@shared in R`** -- the carriers nest:
   `Shared(AgentShared(Array))`. Outside a claim everything is blocked
   including reclaim, so the masked window is required *by construction*;
@@ -273,7 +275,7 @@ the sharer set.
 - **Cross-core `claim`** -- with declared spinlock physics, a cross-core
   `@shared` static is legal iff every access sits inside its claim window
   (E615 relaxes to require-window); the lowering adds spin-acquire after
-  the cpsid and release before the cpsie. Spinning masked is sound: the
+  the mask and release before the restore. Spinning masked is sound: the
   holder is the other core. Silicon proof: tens of millions of contended
   windows on the Pico with zero in-window invariant violations.
 

@@ -1283,20 +1283,55 @@ assert_error!(
 );
 assert_error!(test_bitwise_non_int, "bitwise_non_int_error.bml", "E317");
 
-// Critical section codegen tests
-assert_ir_contains!(
-    test_shared_cs_thread,
-    "shared_cs_thread.bml",
-    "asm sideeffect \"cpsid i\""
-);
+// Critical section codegen tests. On v7-M (the default test target,
+// priority_bits=4) a real ISR ceiling lowers to BASEPRI_MAX = ceiling << 4
+// with save/restore -- ISRs above the ceiling keep running. cpsid is the
+// fallback (v6-M, ceiling 0, thread-level sentinel 255).
+// (One #[test] per fixture: parallel tests on the same fixture race on the
+// shared --save-temps .ll file.)
+#[test]
+fn test_shared_cs_thread_basepri() {
+    let ir = bml_ir("shared_cs_thread.bml");
+    assert!(
+        ir.contains("asm sideeffect \"msr basepri_max, $0\", \"r,~{memory}\"(i32 32)"),
+        "expected BASEPRI_MAX mask to ceiling 2 (hw 0x20):\n{ir}"
+    );
+    assert!(
+        ir.contains("asm sideeffect \"msr basepri, $0\", \"r,~{memory}\"(i32 %"),
+        "expected saved-BASEPRI restore:\n{ir}"
+    );
+    assert!(
+        !ir.contains("asm sideeffect \"cpsid i\""),
+        "global mask must not be used when BASEPRI applies:\n{ir}"
+    );
+}
 assert_ir_contains!(
     test_shared_cs_isr_low,
     "shared_cs_isr_low.bml",
-    "asm sideeffect \"cpsid i\""
+    "asm sideeffect \"msr basepri_max, $0\", \"r,~{memory}\"(i32 32)"
 );
-assert_ir_not_contains!(
-    test_shared_cs_isr_same,
-    "shared_cs_isr_same.bml",
+#[test]
+fn test_shared_cs_isr_same_no_cs() {
+    let ir = bml_ir("shared_cs_isr_same.bml");
+    assert!(
+        !ir.contains("asm sideeffect \"cpsid i\"") && !ir.contains("msr basepri_max"),
+        "ceiling-priority accessor must take no critical section at all:\n{ir}"
+    );
+}
+// Ceiling 0 encodes to BASEPRI=0 = masking disabled: global mask fallback.
+#[test]
+fn test_shared_cs_ceiling0_cpsid_fallback() {
+    let ir = bml_ir("shared_cs_ceiling0.bml");
+    assert!(
+        ir.contains("asm sideeffect \"cpsid i\"") && !ir.contains("msr basepri_max"),
+        "ceiling 0 must fall back to the global mask:\n{ir}"
+    );
+}
+// ARMv6-M has no BASEPRI: a real ISR ceiling still lowers to cpsid there.
+assert_ir_contains_target!(
+    test_shared_cs_v6m_cpsid,
+    "shared_cs_v6m.bml",
+    "isr_v6m.target",
     "asm sideeffect \"cpsid i\""
 );
 
@@ -1317,16 +1352,22 @@ assert_ir_contains_target!(
 
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
 // accessor contexts, and the lowering matches the hand-declared equivalent.
-assert_ir_not_contains!(
-    test_shared_derived_isr_top,
-    "shared_derived_isr_top.bml",
-    "asm sideeffect \"cpsid i\""
-);
+#[test]
+fn test_shared_derived_isr_top() {
+    let ir = bml_ir("shared_derived_isr_top.bml");
+    assert!(
+        !ir.contains("asm sideeffect \"cpsid i\"") && !ir.contains("msr basepri_max"),
+        "derived-ceiling top accessor must take no critical section:\n{ir}"
+    );
+}
 assert_ir_contains!(
     test_shared_derived_low_isr_cs,
     "shared_derived_low_isr_cs.bml",
-    "asm sideeffect \"cpsid i\""
+    "asm sideeffect \"msr basepri_max, $0\", \"r,~{memory}\"(i32 16)"
 );
+// Thread-only accessor set: the derived ceiling is the 255 thread-level
+// sentinel, not a real ISR priority -- BASEPRI=0xF0 would mask almost
+// nothing, so the conservative global mask stays.
 assert_ir_contains!(
     test_shared_derived_thread,
     "shared_derived_thread.bml",
@@ -3336,7 +3377,7 @@ assert_error!(test_claim_break_rejected, "claim_break.bml", "E614");
 assert_ir_contains!(
     test_claim_emits_window,
     "claim_view.bml",
-    "asm sideeffect \"cpsid i\""
+    "asm sideeffect \"msr basepri_max, $0\", \"r,~{memory}\"(i32 32)"
 );
 
 // Pointer-call context closure: a stored function pointer travels
@@ -3367,7 +3408,7 @@ assert_error!(
 assert_ir_contains!(
     test_shared_derived_propagated_cs,
     "shared_derived_propagated.bml",
-    "asm sideeffect \"cpsid i\""
+    "asm sideeffect \"msr basepri_max, $0\", \"r,~{memory}\"(i32 16)"
 );
 
 #[test]

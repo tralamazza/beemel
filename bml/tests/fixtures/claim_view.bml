@@ -1,7 +1,8 @@
 // `claim X { ... }`: the masked ownership window over a @shared static (the
 // CPU-side reclaim). Inside, X is its inner type: views and index-reads are
-// allowed, and the whole block runs under ONE cpsid/cpsie pair (per-access
-// critical sections inside are suppressed -- the mask covers them).
+// allowed, and the whole block runs under ONE mask pair (BASEPRI to the
+// ceiling here; per-access critical sections inside are suppressed -- the
+// mask covers them).
 var BUF: [u8; 8] @shared;
 
 fn tick() @isr(priority = 2) {

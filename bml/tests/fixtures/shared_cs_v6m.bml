@@ -1,0 +1,14 @@
+// ARMv6-M has no BASEPRI: even a real ISR ceiling (derived 1 here) must
+// fall back to the global cpsid mask. Pairs with isr_v6m.target.
+
+var counter: u32 @shared;
+
+fn fast() @isr(priority = 1) {
+    var x: u32 = counter;
+    counter = x + 1;
+}
+
+fn slow() @isr(priority = 2) {
+    var x: u32 = counter;
+    counter = x + 1;
+}

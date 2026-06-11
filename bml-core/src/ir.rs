@@ -1838,20 +1838,26 @@ impl IrEmitter {
 
             Stmt::Claim(c) => {
                 // One masked window for the whole block (the CPU-side
-                // `reclaim`; see ast::Stmt::Claim). A plain cpsid/cpsie pair
-                // is sound: the checker rejects calls and escapes inside
-                // (E614), so nothing can unmask early or skip the leave, and
+                // `reclaim`; see ast::Stmt::Claim). One mask pair is sound:
+                // the checker rejects calls and escapes inside (E614), so
+                // nothing can drop the mask early or skip the leave, and
                 // per-access critical sections inside are suppressed
-                // (claim_depth). A nested claim adds no second pair.
+                // (claim_depth). A nested claim adds no second pair. The
+                // mask is BASEPRI to the static's ceiling on v7-M (local
+                // contenders are bounded by the ceiling by definition),
+                // PRIMASK otherwise.
                 //
                 // CROSS-CORE statics additionally take their hardware
                 // spinlock (read = try-acquire, 0 = held; write = release),
                 // at any nesting depth -- the mask only excludes this core.
                 // Spinning with interrupts masked is sound: the holder is
                 // the other core, whose progress does not need our IRQs.
-                if self.claim_depth == 0 {
-                    crate::arch::arm::emit_critical_enter(self);
-                }
+                let cs = if self.claim_depth == 0 {
+                    let ceiling = Self::shared_ceiling(&c.name.0, symbols);
+                    Some(crate::arch::arm::emit_critical_enter(self, ceiling))
+                } else {
+                    None
+                };
                 self.claim_depth += 1;
                 self.claimed_statics.push(c.name.0.clone());
                 let lock_addr = self
@@ -1890,8 +1896,8 @@ impl IrEmitter {
                 }
                 self.claimed_statics.pop();
                 self.claim_depth -= 1;
-                if self.claim_depth == 0 {
-                    crate::arch::arm::emit_critical_leave(self);
+                if let Some(token) = cs {
+                    crate::arch::arm::emit_critical_leave(self, token);
                 }
                 (None, body_term)
             }
@@ -2094,14 +2100,13 @@ impl IrEmitter {
                     {
                         self.emit_verify_forget_shared_static(name, sym.ty.inner());
                     }
-                    let needs_cs = self.static_needs_critical_section(name, symbols);
-                    if needs_cs {
-                        crate::arch::arm::emit_critical_enter(self);
-                    }
+                    let cs = self
+                        .critical_section_ceiling(name, symbols)
+                        .map(|ceiling| crate::arch::arm::emit_critical_enter(self, Some(ceiling)));
                     let reg = self.new_reg();
                     self.line(&format!("{reg} = load {ty}, ptr @{name}"));
-                    if needs_cs {
-                        crate::arch::arm::emit_critical_leave(self);
+                    if let Some(token) = cs {
+                        crate::arch::arm::emit_critical_leave(self, token);
                     }
                     return reg;
                 }
@@ -3726,14 +3731,13 @@ impl IrEmitter {
                 if let Some(sym) = symbols.statics.get(name) {
                     let target_ty = sym.ty.inner().clone();
                     let ty = llvm_type(&target_ty);
-                    let needs_cs = self.static_needs_critical_section(name, symbols);
                     let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &target_ty);
-                    if needs_cs {
-                        crate::arch::arm::emit_critical_enter(self);
-                    }
+                    let cs = self
+                        .critical_section_ceiling(name, symbols)
+                        .map(|ceiling| crate::arch::arm::emit_critical_enter(self, Some(ceiling)));
                     self.line(&format!("store {ty} {val_reg}, ptr @{name}{dbg}"));
-                    if needs_cs {
-                        crate::arch::arm::emit_critical_leave(self);
+                    if let Some(token) = cs {
+                        crate::arch::arm::emit_critical_leave(self, token);
                     }
                     return val_reg;
                 }
@@ -4191,21 +4195,40 @@ impl IrEmitter {
         ));
     }
 
-    fn static_needs_critical_section(&self, name: &str, symbols: &SymbolTable) -> bool {
+    /// `Some(ceiling)` when this access needs its own critical section; the
+    /// ceiling picks the mask instrument (BASEPRI to the ceiling on v7-M,
+    /// PRIMASK otherwise -- see `arm::emit_critical_enter`).
+    fn critical_section_ceiling(&self, name: &str, symbols: &SymbolTable) -> Option<u8> {
         // Inside a `claim` window everything is already masked; a per-access
-        // pair here would cpsie early and break the window.
+        // pair here would drop the mask early and break the window.
         if self.claim_depth > 0 {
-            return false;
+            return None;
         }
         if let Some(sym) = symbols.statics.get(name) {
             for ann in &sym.storage {
                 if let StorageAnnotation::Shared(ceiling) = ann {
                     let ceiling = ceiling.expect("@shared ceiling materialized at resolve");
-                    return self.current_ctx.needs_critical_section(ceiling);
+                    return self
+                        .current_ctx
+                        .needs_critical_section(ceiling)
+                        .then_some(ceiling);
                 }
             }
         }
-        false
+        None
+    }
+
+    /// Ceiling of a `@shared` static for `claim` windows: unlike per-access
+    /// sections the window is emitted unconditionally, so this only selects
+    /// the mask instrument. `None` (not `@shared`, or no materialized
+    /// ceiling) selects the conservative PRIMASK mask.
+    fn shared_ceiling(name: &str, symbols: &SymbolTable) -> Option<u8> {
+        symbols.statics.get(name).and_then(|sym| {
+            sym.storage.iter().find_map(|ann| match ann {
+                StorageAnnotation::Shared(ceiling) => *ceiling,
+                _ => None,
+            })
+        })
     }
 
     pub(crate) fn line(&mut self, s: &str) {

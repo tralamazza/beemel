@@ -1094,7 +1094,8 @@ fn check_block(
             // `claim X { ... }`: a masked ownership window over the `@shared`
             // static X (the CPU-side reclaim). Inside the body X is its inner
             // type -- views and index-reads allowed -- via a patched symbol
-            // table; the lowering wraps the block in one cpsid/cpsie pair.
+            // table; the lowering wraps the block in one mask pair (BASEPRI to
+            // the ceiling on v7-M, cpsid/cpsie otherwise).
             // Restrictions (E614): the target must be a `@shared` static, and
             // the body may not contain calls or escape the window (return, or
             // break/continue of an outer loop) -- a call could unmask early
@@ -1419,8 +1420,9 @@ fn check_match_coverage(
 /// Enforce the `claim` body restrictions (E614): no function calls, no
 /// `return`, and no `break`/`continue` that would exit the claim block
 /// (`loop_depth` tracks loops fully inside it, whose break/continue are
-/// fine). A call's own per-access critical sections would `cpsie` inside the
-/// window and unmask it early; an escape would skip the unmask entirely.
+/// fine). A call's own per-access critical sections would restore the mask
+/// inside the window and open it early; an escape would skip the restore
+/// entirely.
 /// Exhaustive walk (no catch-all), mirroring the other Stmt/Expr walkers.
 fn check_claim_restrictions(
     block: &ast::Block,
@@ -1475,8 +1477,8 @@ fn claim_restrict_stmt(
         }
         Stmt::Return(_) => {
             diags.error(
-                "`return` inside a `claim` block would leave interrupts masked (the window's \
-                 cpsie is at the block end). Move the return outside the claim.",
+                "`return` inside a `claim` block would leave the window's mask in place (the \
+                 restore is at the block end). Move the return outside the claim.",
                 "E614",
                 *claim_span,
             );
@@ -1484,8 +1486,9 @@ fn claim_restrict_stmt(
         Stmt::Break(span) | Stmt::Continue(span) => {
             if loop_depth == 0 {
                 diags.error(
-                    "`break`/`continue` here exits the `claim` block and would skip its cpsie \
-                     (interrupts stay masked). Restructure so the claim block runs to its end.",
+                    "`break`/`continue` here exits the `claim` block and would skip its mask \
+                     restore (the window never closes). Restructure so the claim block runs \
+                     to its end.",
                     "E614",
                     *span,
                 );
@@ -1528,8 +1531,8 @@ fn claim_restrict_expr(expr: &Expr, claim_span: &crate::source::Span, diags: &mu
         Expr::Call(callee, args) => {
             diags.error(
                 "function calls inside a `claim` block are not allowed: a callee's own \
-                 critical sections would cpsie inside the window and unmask it early. Hoist \
-                 the call out of the claim.",
+                 critical sections would restore the mask inside the window and open it \
+                 early. Hoist the call out of the claim.",
                 "E614",
                 callee.span(),
             );
@@ -1606,7 +1609,7 @@ fn claim_restrict_expr(expr: &Expr, claim_span: &crate::source::Span, diags: &mu
 /// `claim` window. Inside the window `X` is its inner type and views over it
 /// are legal, but the descriptor is only trustworthy while the window's mask
 /// holds -- assigned to a binding declared OUTSIDE the body it would outlive
-/// the cpsie. Value copies out (`outer = v[0] as u32`) are the point of the
+/// the window's mask restore. Value copies out (`outer = v[0] as u32`) are the point of the
 /// window and stay legal; what may not leave is the CAPABILITY: a
 /// view/ring/bits expression whose base is `X`, or a binding holding one
 /// (lexical taint through inside-declared `const`s). Addresses cast to

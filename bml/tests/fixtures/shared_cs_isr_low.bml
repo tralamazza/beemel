@@ -1,4 +1,5 @@
-// ISR(priority=3) accessing @shared(ceiling=2) -- 3 > 2 → needs critical section
+// ISR(priority=3) accessing @shared(ceiling=2) -- 3 > 2 → needs a critical
+// section (BASEPRI_MAX to the ceiling on this v7-M target).
 
 var counter: u32 @shared(ceiling = 2);
 

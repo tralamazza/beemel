@@ -63,18 +63,71 @@ pub fn bitband_alias(addr: u64, bits: &BitSpec) -> Option<u64> {
     }
 }
 
-pub fn emit_critical_enter(e: &mut IrEmitter) {
-    let reg = e.new_reg();
-    e.line(&format!(
-        "{reg} = call i32 asm sideeffect \"cpsid i\", \"={{r12}},~{{memory}}\"()"
-    ));
+/// How the matching `emit_critical_leave` undoes an `emit_critical_enter`.
+pub enum CsToken {
+    /// Global mask (`cpsid i`); leave re-enables with `cpsie i`.
+    Primask,
+    /// BASEPRI ceiling mask; holds the SSA register with the caller's
+    /// BASEPRI, restored on leave.
+    Basepri(String),
 }
 
-pub fn emit_critical_leave(e: &mut IrEmitter) {
-    let reg = e.new_reg();
+/// Mask out exactly the contenders. With a real ISR ceiling on ARMv7(E)-M
+/// this raises BASEPRI to the ceiling's hardware priority: ISRs above the
+/// ceiling cannot touch the data and keep running, where a PRIMASK mask
+/// would add latency to interrupts that have no business being blocked.
+/// `BASEPRI_MAX` (not BASEPRI) so entering from an already-masked context can
+/// only tighten, never loosen -- an Any-context fn called from a
+/// higher-priority ISR stays safe.
+///
+/// Falls back to the global `cpsid i` mask when:
+/// - the arch is ARMv6-M (BASEPRI does not exist there),
+/// - the ceiling is 0 (its hardware encoding is BASEPRI=0, which means
+///   "masking disabled" -- only the global mask excludes priority-0
+///   contenders),
+/// - the ceiling is not a real ISR priority (the 255 thread-level sentinel,
+///   or no ceiling known at all).
+///
+/// Known limitation: Cortex-M7 r0p1 (erratum 837070) needs MSR BASEPRI
+/// wrapped in cpsid/cpsie; no shipped target uses that revision.
+pub fn emit_critical_enter(e: &mut IrEmitter, ceiling: Option<u8>) -> CsToken {
+    let is_real_isr_prio = |c: u8| c > 0 && u16::from(c) < (1u16 << u16::from(e.priority_bits));
+    let hw = match ceiling {
+        Some(c) if !matches!(e.arch, crate::arch::Arch::Armv6m) && is_real_isr_prio(c) => {
+            u32::from(c) << (8 - u32::from(e.priority_bits))
+        }
+        _ => {
+            let reg = e.new_reg();
+            e.line(&format!(
+                "{reg} = call i32 asm sideeffect \"cpsid i\", \"={{r12}},~{{memory}}\"()"
+            ));
+            return CsToken::Primask;
+        }
+    };
+    let saved = e.new_reg();
     e.line(&format!(
-        "{reg} = call i32 asm sideeffect \"cpsie i\", \"={{r12}},~{{memory}}\"()"
+        "{saved} = call i32 asm sideeffect \"mrs $0, basepri\", \"=r\"()"
     ));
+    e.line(&format!(
+        "call void asm sideeffect \"msr basepri_max, $0\", \"r,~{{memory}}\"(i32 {hw})"
+    ));
+    CsToken::Basepri(saved)
+}
+
+pub fn emit_critical_leave(e: &mut IrEmitter, token: CsToken) {
+    match token {
+        CsToken::Basepri(saved) => {
+            e.line(&format!(
+                "call void asm sideeffect \"msr basepri, $0\", \"r,~{{memory}}\"(i32 {saved})"
+            ));
+        }
+        CsToken::Primask => {
+            let reg = e.new_reg();
+            e.line(&format!(
+                "{reg} = call i32 asm sideeffect \"cpsie i\", \"={{r12}},~{{memory}}\"()"
+            ));
+        }
+    }
 }
 
 pub fn emit_tailchain_prologue(e: &mut IrEmitter, has_calls: bool) {
