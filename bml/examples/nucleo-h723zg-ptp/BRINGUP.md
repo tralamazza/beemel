@@ -215,7 +215,7 @@ Success criteria:
 - The controller role can be flashed to one NUCLEO and the mic-node role to the
   other. Build verified; on-hardware flash of both boards pending.
 
-### 8. Product Layer 2 Health Protocol - Protocol Done (Loopback-Validated)
+### 8. Product Layer 2 Health Protocol - Done (Two-Board Validated)
 
 Define a small custom product protocol on ethertype `0x88b5`.
 
@@ -253,9 +253,24 @@ are implemented; `SYNC_STATUS`/`AUDIO_TEST_BLOCK` are defined but not yet
 produced. Validated single-board under MAC loopback (`MACCR.LM`,
 `main_health_loop.bml`): ping -> looped ping -> status reply -> looped
 status -> recorded, with PINGS_SENT == STATUS_SENT == STATUS_SEEN in
-lockstep and the status payload's RX counter arithmetically exact. The
-two-board on-wire exchange needs a second NUCLEO (or a root-privileged
-host injector) and is the remaining step.
+lockstep and the status payload's RX counter arithmetically exact.
+
+Two-board validation (2026-06-12, two NUCLEOs direct-cabled, no switch,
+auto-MDIX; both probed over their own ST-Links by adapter serial): the
+controller's STATUS_SEEN equals the mic node's PINGS_ANSWERED exactly
+(3 == 3, then 7 == 7 after a 60-second soak), STATUS_LAST_BOARD = 2,
+and the echoed sequence tracks the controller's ping counter. Zero
+faults on either board. Known pacing note: the mic services one frame
+per `delay()` loop, so it misses pings when its 4-deep ring overflows
+-- fine for this milestone, must poll faster for PTP.
+
+A fourth silicon finding came out of bringing this up (bisected V1-V3
+live on the wire): with DMACIER RIE/NIE set and DMACSR.RI never
+acknowledged, the TX-active controller took an imprecise BusFault
+within seconds of real RX traffic; IOC alone was clean, and per-frame
+W1C acknowledge (now in eth_poll_rx) is clean. The RX-only bench
+tolerated latched RI for thousands of frames, so the micro-mechanism
+is recorded, not understood.
 
 Two findings from this milestone, both caught by the toolchain:
 

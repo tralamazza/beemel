@@ -455,6 +455,16 @@ fn eth_poll_rx() {
         }
     }
 
+    // Acknowledge the receive-complete status (W1C; the standard EQOS
+    // acknowledge). Bisected on two-board traffic (2026-06-11): with
+    // RIE/NIE set and RI never acknowledged, the TX-active controller
+    // took an imprecise BusFault within seconds of real RX traffic;
+    // IOC alone was clean, and per-frame acknowledge is clean. The
+    // RX-only bench tolerated latched RI, so the precise micro-mechanism
+    // (held interrupt line x concurrent TX?) is unresolved -- recorded,
+    // not understood. RI is also the rx channel's completes_by: this
+    // clear doubles as the E611 staleness rule's clearing write.
+    Ethernet_DMA.DMACSR.RI = true;
     rx_rearm(desc_word);
 
     // Modulo wrap: see the TX_DESC_INDEX comment (verifier-friendly form).
