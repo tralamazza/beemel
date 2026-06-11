@@ -114,6 +114,21 @@ Success criteria:
 - Firmware detects LAN8742 at PHY address `0` on tested NUCLEO hardware.
 - Firmware polls link after autonegotiation and reports link up.
 
+KNOWN GAP -- no link-bounce recovery (observed live 2026-06-11, cost an
+hour of false regression hunting): on a Nucleo the peer board's NRST
+also hard-resets its PHY, so resetting board B bounces the link for
+board A. If board A is mid-TX when the link drops, the EQOS TX queue
+stalls permanently and `tx_wait_idle` spins forever. The wedge
+SIGNATURE, for next time: TX_FRAME_COUNT frozen (the next eth_send_*
+never queues), DMACSR = TBU + RBU + RI (TX suspended; RX ring exhausted
+behind the dead main loop), no HardFault, peer's frames still arriving
+(RBU proves the link recovered -- only the MAC/DMA state did not).
+WORKAROUND until real link-up recovery lands: reset/flash the
+TX-active node (the controller) LAST, so its bring-up runs against a
+stable link. The real fix is the backlog item: detect the link
+down->up edge in phy_poll_link and re-initialize MACCR + re-arm the
+TX/RX rings.
+
 ### 4. TX Heartbeat - Done
 
 In BML:
