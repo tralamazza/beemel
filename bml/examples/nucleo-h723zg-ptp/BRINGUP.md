@@ -467,30 +467,38 @@ Probe statics: `BENCH_DEF_{FRAMES,CYC_SUM,CYC_MAX,LAST}` /
 `BENCH_BML_*` (eth_dma.bml), `BENCH_LAT_DEF` / `BENCH_LAT_OTHER`
 (timer.bml). Addresses via `llvm-nm main_bench.elf | grep BENCH`.
 
-Measured (64 MHz HSI, ~460 B frames, >2,000 frames per run, 2026-06-11,
-WITH the agent-pointer volatile lowering -- both legs read the frame
-through volatile loads now):
+Three disciplines, alternating per frame: DEF (global lock + copy to
+staging + parse the copy), PTR (in-place parse through the raw agent
+pointer -- volatile loads, the sound boundary tool), and VIEW (in-place
+parse through a `reclaim` view justified by the rx channel's declared
+`completes_by` flag, DMACSR.RI -- inside the window the agent is
+excluded, so the reads are plain non-volatile loads the optimizer may
+hoist and combine).
 
-| Metric                          | DEF (cpsid+copy) | BML (in place) |
-|---------------------------------|------------------|----------------|
-| Avg cycles/frame                | 4,937            | 4,604 (-7%)    |
-| Max cycles/frame                | 5,278            | 5,004          |
-| Extra RAM                       | +512 B           | 0              |
-| Max innocent-ISR entry latency  | 76.0 us          | 0.8 us (92x)   |
-| Masking on the payload path     | whole window     | none           |
+Measured (64 MHz HSI, ~460 B frames, 767 frames per leg in one 2-minute
+flood, 2026-06-11, agent-pointer volatile lowering active):
 
-The max DEF latency equals the DEF window length (4,937 cycles = 77 us)
-to within noise: the worst case is the timer update landing as the lock
-closes.
+| Metric                   | DEF (lock+copy) | PTR (volatile) | VIEW (reclaim) |
+|--------------------------|-----------------|----------------|----------------|
+| Avg cycles/frame         | 4,943           | 4,617 (-7%)    | 4,262 (-14%)   |
+| Max cycles/frame         | 5,133           | 5,009          | 4,530          |
+| Extra RAM                | +512 B          | 0              | 0              |
+| Max innocent-ISR latency | 76.2 us         | 0.8 us         | 0.8 us (92x)   |
+| Masking on payload path  | whole window    | none           | none           |
 
-Pre-volatile numbers for the record: DEF 5,044 / BML 4,276 (-18%). The
-soundness fix costs the pure-read leg ~8% on this access pattern -- a
-byte-at-a-time raw-pointer walk is volatile's worst case, every load
-pinned. That is the intended shape of the model: the raw-pointer detour
-is the sound-but-slower BOUNDARY tool, while a `reclaim` view consume
-(window-justified, hence non-volatile and fully optimizable) is the
-advertised fast path. Adding that third leg to the bench is the natural
-next refinement.
+The triangulation that proves the model's claim: the VIEW leg (4,262)
+matches the PRE-volatile raw-pointer number (4,276, within 0.3%) -- the
+window-justified path recovers the entire volatile cost, by proof
+instead of by luck. Volatile at the unguarded boundary, optimizable
+inside the proof.
+
+Getting DMACSR.RI to latch took two pieces of EQOS physics, both now in
+the driver: the status bit is gated by its DMACIER enable (RIE+NIE set,
+NVIC line stays off -- status only), and it only latches for frames
+whose RX descriptor was armed with the read-format IOC bit (RDES3 bit
+30; the write-back format reuses that bit as CTXT). The rx channel's
+`completes_by = Ethernet_DMA.DMACSR.RI` is declared in
+stm32h723.target.
 
 Caveats: both legs are compiled by bml, so this isolates the DISCIPLINE
 cost (lock scope + duplicate buffer), not compiler codegen quality; an

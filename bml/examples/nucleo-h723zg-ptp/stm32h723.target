@@ -88,6 +88,9 @@ handoff = Ethernet_DMA.DMACTxDTPR
 [agent.eth.rx]
 handoff = Ethernet_DMA.DMACRxDLAR
 handoff = Ethernet_DMA.DMACRxDTPR
+# Receive-complete status (sticky, W1C, sets per completed frame whether or
+# not the interrupt is enabled): the E611 guard for reclaiming RX buffers.
+completes_by = Ethernet_DMA.DMACSR.RI
 
 # Stage 2: a general-purpose mem-to-mem agent. Two handoffs -- C0SAR is the
 # address it reads from, C0DAR the address it writes to. Reaches dma_pool (where

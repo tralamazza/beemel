@@ -91,6 +91,11 @@ const RX_DESC_CTXT: u32 = 0x40000000;
 const RX_DESC_FD: u32 = 0x20000000;
 const RX_DESC_LD: u32 = 0x10000000;
 const RX_DESC_BUF1V: u32 = 0x01000000;
+// Read-format RDES3 IOC (bit 30): without it the EQOS does not latch
+// DMACSR.RI for the completed frame, and RI is the rx channel's declared
+// completes_by -- the E611 reclaim guard. (Write-back bit 30 is CTXT; the
+// read and write-back formats reuse the bit differently.)
+const RX_DESC_IOC: u32 = 0x40000000;
 const RX_DESC_ERROR: u32 = 0x00008000;
 const RX_DESC_LEN_MASK: u32 = 0x00007FFF;
 const RX_BUFFER_LEN: u32 = 512;
@@ -257,19 +262,19 @@ fn eth_init_rx() {
     RX_DESC[0].buf1 = rx_buffer_addr(0);
     RX_DESC[0]._res1 = 0;
     RX_DESC[0].buf2 = 0;
-    RX_DESC[0].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[0].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     RX_DESC[1].buf1 = rx_buffer_addr(1);
     RX_DESC[2].buf1 = rx_buffer_addr(2);
     RX_DESC[2]._res1 = 0;
     RX_DESC[2].buf2 = 0;
-    RX_DESC[2].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[2].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     RX_DESC[3].buf1 = rx_buffer_addr(3);
     RX_DESC[3]._res1 = 0;
     RX_DESC[3].buf2 = 0;
-    RX_DESC[3].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[3].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     RX_DESC[1]._res1 = 0;
     RX_DESC[1].buf2 = 0;
-    RX_DESC[1].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[1].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     RX_DESC_INDEX = 0;
     RX_PACKET_COUNT = 0;
     RX_LAST_LEN = 0;
@@ -292,6 +297,12 @@ fn eth_init_rx() {
     // Promiscuous receive keeps first RX bring-up independent from host-side MAC
     // addressing and lets us inspect any raw frame sent from the Mac.
     Ethernet_MAC.MACPFR.PR = true;
+    // RIE+NIE so DMACSR.RI (the rx channel's declared completes_by, the
+    // E611 reclaim guard) actually latches: on this EQOS the status bit
+    // is gated by its enable. The NVIC ETH line stays disabled -- status
+    // only, no ISR.
+    Ethernet_DMA.DMACIER.RIE = true;
+    Ethernet_DMA.DMACIER.NIE = true;
     Ethernet_DMA.DMACRxCR.SR = true;
     Ethernet_MAC.MACCR.RE = true;
 }
@@ -398,7 +409,7 @@ fn rx_rearm(desc_word: u32) {
     RX_DESC[desc_index].buf1 = rx_buffer_addr(desc_index);
     RX_DESC[desc_index]._res1 = 0;
     RX_DESC[desc_index].buf2 = 0;
-    RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
     // The completion dsb after this tail-pointer write (the posted-Device-
     // write BusFault fix, see BRINGUP.md) is now DERIVED: DMACRxDTPR is a
@@ -481,6 +492,13 @@ var BENCH_BML_FRAMES: u32;
 var BENCH_BML_CYC_SUM: u32;
 var BENCH_BML_CYC_MAX: u32;
 var BENCH_BML_LAST: u32;
+var BENCH_ROT: u32;          // dispatched data frames (drives leg rotation;
+                             // separate from per-leg counters so a failed
+                             // guard cannot starve the rotation)
+var BENCH_VIEW_FRAMES: u32;
+var BENCH_VIEW_CYC_SUM: u32;
+var BENCH_VIEW_CYC_MAX: u32;
+var BENCH_VIEW_LAST: u32;
 
 fn eth_bench_init() @context(thread) {
     dwt_init();
@@ -536,6 +554,37 @@ fn bench_consume_bml(len: u32) @context(thread) {
     BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
 }
 
+// Third leg, the model-idiomatic FAST PATH: a reclaim view justified by
+// the agent's declared completes_by flag (DMACSR.RI, E611). Inside the
+// window the agent is excluded, so view reads are plain non-volatile
+// loads the optimizer may hoist, combine, and unroll -- volatile at the
+// unguarded boundary (the raw-pointer legs), optimizable inside the
+// proof. The W1C clear after consumption re-arms the guard (the E611
+// staleness rule wants a clearing write between observations).
+fn bench_consume_view(base: u32, len: u32) @context(thread) {
+    if Ethernet_DMA.DMACSR.RI {
+        const t0 = dwt_cycles();
+        const v = reclaim(RX_BUFFER);
+        var sum: u32 = 0;
+        var j: u32 = 0;
+        while j < len {
+            // bml-verify: ignore V130
+            sum = sum + (v[base + j] as u32);
+            j = j + 1;
+        }
+        const t1 = dwt_cycles();
+        Ethernet_DMA.DMACSR.RI = true;
+        BENCH_VIEW_LAST = sum;
+        const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
+        // bml-verify: ignore V130
+        BENCH_VIEW_CYC_SUM = BENCH_VIEW_CYC_SUM + dt;
+        if dt > BENCH_VIEW_CYC_MAX {
+            BENCH_VIEW_CYC_MAX = dt;
+        }
+        BENCH_VIEW_FRAMES = BENCH_VIEW_FRAMES + 1;
+    }
+}
+
 // eth_poll_rx with the consumption swapped for the alternating bench legs.
 fn eth_bench_poll() @context(thread) {
     const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
@@ -553,10 +602,16 @@ fn eth_bench_poll() @context(thread) {
         if len > 512 {
             len = 512;
         }
-        if ((BENCH_DEF_FRAMES + BENCH_BML_FRAMES) & 1) == 0 {
+        const which = BENCH_ROT % 3;
+        BENCH_ROT = BENCH_ROT + 1; // wrap irrelevant for % 3 rotation // bml-verify: ignore V130
+        if which == 0 {
             bench_consume_defensive(len);
-        } else {
+        }
+        if which == 1 {
             bench_consume_bml(len);
+        }
+        if which == 2 {
+            bench_consume_view(RX_DESC_INDEX * RX_BUFFER_LEN, len);
         }
     }
 
