@@ -215,7 +215,7 @@ Success criteria:
 - The controller role can be flashed to one NUCLEO and the mic-node role to the
   other. Build verified; on-hardware flash of both boards pending.
 
-### 8. Product Layer 2 Health Protocol - Next
+### 8. Product Layer 2 Health Protocol - Protocol Done (Loopback-Validated)
 
 Define a small custom product protocol on ethertype `0x88b5`.
 
@@ -246,6 +246,32 @@ Success criteria:
 - Mic node replies `HEALTH_STATUS`.
 - Status includes board ID, firmware/build marker, PHY state, PTP state, RX/TX
   counters, timestamp counters, and audio-test counters once they exist.
+
+Status (2026-06-11): the 74-byte fixed frame (`ProductMsg`, magic "BMH1",
+all fields `@be`), send/parse/dispatch, and the controller/mic role wiring
+are implemented; `SYNC_STATUS`/`AUDIO_TEST_BLOCK` are defined but not yet
+produced. Validated single-board under MAC loopback (`MACCR.LM`,
+`main_health_loop.bml`): ping -> looped ping -> status reply -> looped
+status -> recorded, with PINGS_SENT == STATUS_SENT == STATUS_SEEN in
+lockstep and the status payload's RX counter arithmetically exact. The
+two-board on-wire exchange needs a second NUCLEO (or a root-privileged
+host injector) and is the remaining step.
+
+Two findings from this milestone, both caught by the toolchain:
+
+- `bml verify` flagged a definite V100 in `rx_get8`: computing the buffer
+  base as integer arithmetic inside a helper loses the provenance assume.
+  Restructured to index from `&RX_BUFFER` directly; the error (and the
+  V110/V113 noise with it) disappeared.
+- The TX OWN-bit spin (`tx_wait_idle`) compiled to an infinite `b .`:
+  raw-pointer loads of agent-mutated memory are plain LLVM loads, and the
+  optimizer hoisted the load out of the empty loop -- the DMA is a
+  concurrent writer the optimizer cannot see. Found on hardware
+  (TX_FRAME_COUNT frozen at 5, PC parked on the self-branch). Driver-level
+  fix: asm volatile load in the spin. The compiler-level fix (volatile
+  lowering for agent-region access) is an open model item -- the same
+  latent hazard sits under every raw-pointer read of DMA-written memory,
+  including the RX OWN check, which currently survives by inlining luck.
 
 ### 9. Layer 2 PTP Skeleton
 

@@ -2,7 +2,7 @@
 
 import svd.ethernet_mac;
 
-export fn phy_probe, fn phy_poll_link;
+export fn phy_probe, fn phy_poll_link, fn phy_state;
 
 const PHY_ADDR_UNKNOWN: u32 = 0xFFFFFFFF;
 const PHY_READ_INVALID: u32 = 0xFFFFFFFF;
@@ -139,4 +139,9 @@ fn phy_poll_link() {
     if PHY_ADDR != PHY_ADDR_UNKNOWN {
         update_link_state();
     }
+}
+
+// Probe/protocol accessor: the module-local PHY state for HEALTH_STATUS.
+fn phy_state() -> u32 {
+    return PHY_STATE;
 }

@@ -15,6 +15,9 @@ target, SVD, PHY, ETH DMA, PTP, and board bring-up code:
 
 - `controller` (`main_controller.bml`): switch/controller stand-in, board id 1.
 - `mic_node` (`main_mic_node.bml`): mic-board stand-in, board id 2.
+- `main_health_loop.bml`: milestone-8 health protocol under MAC loopback
+  (single-board request/response validation) -- build manually, see the file
+  header.
 - `main_bench.bml`: RX consumption bench (defensive idiom vs compiler-assisted,
   measured on live traffic) -- build manually, see BRINGUP.md "RX Consumption
   Bench".

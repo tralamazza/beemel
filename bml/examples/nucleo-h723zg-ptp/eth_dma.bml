@@ -10,10 +10,13 @@ import svd.ethernet_mac;
 import svd.ethernet_dma;
 import svd.ethernet_mtl;
 
-export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx, fn eth_bench_init, fn eth_bench_poll;
+export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx, fn eth_bench_init, fn eth_bench_poll,
+       fn eth_send_hello, fn eth_send_ping, fn eth_send_status, fn eth_loopback_enable,
+       fn prod_rx_fresh, fn prod_rx_take, fn prod_rx_board, fn prod_rx_seq, fn prod_rx_pay;
 
 import dwt;
 import timer;
+import phy_lan8742;
 
 const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
 
@@ -197,25 +200,25 @@ fn eth_zero_ecc() {
     var tb: *u32 = &TX_BUFFER as *u32;
     var i: u32 = 0;
     while i < 32 {
-        tb[i] = 0;
+        tb[i] = 0; // constant-trip zero loop // bml-verify: ignore V101
         i = i + 1;
     }
     var td: *u32 = &TX_DESC as *u32;
     var j: u32 = 0;
     while j < 8 {
-        td[j] = 0;
+        td[j] = 0; // constant-trip zero loop // bml-verify: ignore V101
         j = j + 1;
     }
     var rb: *u32 = &RX_BUFFER as *u32;
     var k: u32 = 0;
     while k < 512 {
-        rb[k] = 0;
+        rb[k] = 0; // constant-trip zero loop // bml-verify: ignore V101
         k = k + 1;
     }
     var rd: *u32 = &RX_DESC as *u32;
     var m: u32 = 0;
     while m < 16 {
-        rd[m] = 0;
+        rd[m] = 0; // constant-trip zero loop // bml-verify: ignore V101
         m = m + 1;
     }
     asm { dsb } : : : "memory";
@@ -344,6 +347,7 @@ fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u3
 }
 
 fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+    tx_wait_idle();
     const len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
     const di = TX_DESC_INDEX;
 
@@ -367,11 +371,18 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
+    // Free-running TX counter; wrap intended. // bml-verify: ignore V130
+    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
 }
 
+// Index from the static's own address-of so the verify-mode provenance
+// assume stays attached (computing the buffer base as u32 arithmetic in a
+// helper loses it -- that was a definite V100 plus pointer warnings).
 fn rx_get8(index: u32) -> u32 {
-    const buffer = rx_buffer_addr(RX_DESC_INDEX) as *u8;
-    return buffer[index] as u32;
+    const buffer = &RX_BUFFER as *u8;
+    // Max index is exactly 3*512 + 511 = 2047 in the 2048-byte buffer; the
+    // boundary-exact sum is past the interval domain. // bml-verify: ignore V101, V113
+    return buffer[RX_DESC_INDEX * RX_BUFFER_LEN + index] as u32;
 }
 
 // An agent-shared static (placed in a DMA-mutated region) can be index-assigned
@@ -417,6 +428,20 @@ fn eth_poll_rx() {
         RX_LAST_SRC0 = (rx_get8(6) << 24) | (rx_get8(7) << 16) | (rx_get8(8) << 8) | rx_get8(9);
         RX_LAST_SRC1 = (rx_get8(10) << 8) | rx_get8(11);
         RX_PACKET_COUNT = RX_PACKET_COUNT + 1;
+        // Product protocol dispatch (milestone 8): magic at offset 14
+        // separates product frames from legacy heartbeats and stray traffic.
+        if RX_LAST_ETHERTYPE == HEARTBEAT_ETHERTYPE && rx_get32_be(14) == PROD_MAGIC {
+            PROD_RX_TYPE = rx_get32_be(18);
+            PROD_RX_BOARD = rx_get32_be(22);
+            PROD_RX_SEQ = rx_get32_be(26);
+            var pi: u32 = 0;
+            while pi < 8 {
+                PROD_RX_PAY[pi] = rx_get32_be(42 + pi * 4);
+                pi = pi + 1;
+            }
+            PROD_RX_COUNT = PROD_RX_COUNT + 1;
+            PROD_RX_FRESH = 1;
+        }
     }
 
     rx_rearm(desc_word);
@@ -468,44 +493,27 @@ fn bench_consume_defensive(len: u32) @context(thread) {
     const t0 = dwt_cycles();
     var i: u32 = 0;
     while i < len {
-        BSTAGING[i] = rx_get8(i) as u8;
+        BSTAGING[i] = rx_get8(i) as u8; // i < len <= 512 // bml-verify: ignore V101
         i = i + 1;
     }
     var sum: u32 = 0;
     var j: u32 = 0;
     while j < len {
         // bml-verify: ignore V130
-        sum = sum + (BSTAGING[j] as u32);
+        sum = sum + (BSTAGING[j] as u32); // j < len <= 512 // bml-verify: ignore V101
         j = j + 1;
     }
     const t1 = dwt_cycles();
     asm { cpsie i } : : : "memory";
     timer_bench_mark(0);
     BENCH_DEF_LAST = sum;
-    const dt = t1 - t0;
+    const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
     // bml-verify: ignore V130
     BENCH_DEF_CYC_SUM = BENCH_DEF_CYC_SUM + dt;
     if dt > BENCH_DEF_CYC_MAX {
         BENCH_DEF_CYC_MAX = dt;
     }
     BENCH_DEF_FRAMES = BENCH_DEF_FRAMES + 1;
-}
-
-fn bench_consume_bml_window(lo: u32, hi: u32) @context(thread) {
-    const t0 = dwt_cycles();
-    var sum: u32 = 0;
-    var j: u32 = lo;
-    while j < hi {
-        // bml-verify: ignore V130
-        sum = sum + rx_get8(j);
-        j = j + 1;
-    }
-    const t1 = dwt_cycles();
-    BENCH_BML_LAST = sum;
-    const dt = t1 - t0;
-    // bml-verify: ignore V130
-    BENCH_BML_CYC_SUM = BENCH_BML_CYC_SUM + dt;
-    BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
 }
 
 fn bench_consume_bml(len: u32) @context(thread) {
@@ -519,7 +527,7 @@ fn bench_consume_bml(len: u32) @context(thread) {
     }
     const t1 = dwt_cycles();
     BENCH_BML_LAST = sum;
-    const dt = t1 - t0;
+    const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
     // bml-verify: ignore V130
     BENCH_BML_CYC_SUM = BENCH_BML_CYC_SUM + dt;
     if dt > BENCH_BML_CYC_MAX {
@@ -554,4 +562,156 @@ fn eth_bench_poll() @context(thread) {
 
     rx_rearm(desc_word);
     RX_DESC_INDEX = (RX_DESC_INDEX + 1) % RX_DESC_COUNT;
+}
+
+// ─── Product Layer 2 health protocol (BRINGUP.md milestone 8) ───────────────
+//
+// One fixed 74-byte frame shape on ethertype 0x88B5 for every message type.
+// The magic ("BMH1") differs from the legacy heartbeat magic ("BMLPTP") in
+// its first four bytes, so the RX dispatch can tell them apart at offset 14.
+// Message types: 1 BOOT_HELLO, 2 HEALTH_PING, 3 HEALTH_STATUS, 4 SYNC_STATUS,
+// 5 AUDIO_TEST_BLOCK (the last two are not produced yet).
+
+const PROD_MAGIC: u32 = 0x424D4831;   // "BMH1": magic + version in one word
+const FW_BUILD: u32 = 0x20260611;     // build marker reported in HEALTH_STATUS
+
+struct ProductMsg @repr(packed) {
+    dst: [u8; 6],
+    src: [u8; 6],
+    ethertype: u16 @be,
+    magic: u32 @be,
+    msg_type: u32 @be,
+    board_id: u32 @be,
+    seq: u32 @be,
+    ptp_seconds: u32 @be,
+    ptp_nanoseconds: u32 @be,
+    payload_len: u32 @be,
+    p0: u32 @be,
+    p1: u32 @be,
+    p2: u32 @be,
+    p3: u32 @be,
+    p4: u32 @be,
+    p5: u32 @be,
+    p6: u32 @be,
+    p7: u32 @be,
+}
+comptime_assert(sizeof(ProductMsg) == 74);
+
+var TX_FRAME_COUNT: u32;     // all transmitted frames (heartbeat + product)
+
+// RX dispatch mailbox: eth_poll_rx fills it from a valid product frame and
+// sets FRESH; the role's main loop consumes via prod_rx_take(). Single
+// mailbox, polled mains -- a second frame before the take overwrites (the
+// counters still advance; fine for a polled bring-up protocol).
+var PROD_RX_FRESH: u32;
+var PROD_RX_TYPE: u32;
+var PROD_RX_BOARD: u32;
+var PROD_RX_SEQ: u32;
+var PROD_RX_PAY: [u32; 8];
+var PROD_RX_COUNT: u32;      // product frames accepted (probe-visible)
+
+fn prod_rx_fresh() -> u32 {
+    return PROD_RX_FRESH;
+}
+
+// Consume the mailbox: returns the message type and clears FRESH.
+fn prod_rx_take() -> u32 {
+    PROD_RX_FRESH = 0;
+    return PROD_RX_TYPE;
+}
+
+fn prod_rx_board() -> u32 {
+    return PROD_RX_BOARD;
+}
+
+fn prod_rx_seq() -> u32 {
+    return PROD_RX_SEQ;
+}
+
+fn prod_rx_pay(i: u32) -> u32 {
+    return PROD_RX_PAY[i & 7];
+}
+
+// The single TX_BUFFER is reused for every frame: wait until the previous
+// descriptor is no longer DMA-owned before overwriting it. Bounded by wire
+// speed (a 74-byte frame is ~6 us at 100 Mbps).
+fn tx_desc_get32(word_index: u32) -> u32 {
+    const desc = &TX_DESC as *u32;
+    return desc[word_index];
+}
+
+// FINDING (2026-06-11): the OWN-bit spin MUST be a volatile read. Raw
+// pointer loads of agent-mutated memory compile to plain LLVM loads, and
+// the optimizer hoisted the load out of this empty loop -- once OWN was
+// observed set, the loop became `b .` and the controller froze at
+// TX_FRAME_COUNT=5. The DMA is a concurrent writer the optimizer cannot
+// see; until the compiler lowers agent-region access as volatile (open
+// item), the spin reads through an asm volatile load.
+fn tx_wait_idle() {
+    const prev = (TX_DESC_INDEX + TX_DESC_COUNT - 1) % TX_DESC_COUNT;
+    const addr = tx_desc_addr(prev * TX_DESC_WORDS + 3);
+    var status: u32 = TX_DESC_OWN;
+    while (status & TX_DESC_OWN) != 0 {
+        asm { ldr $0, [$1] } : "=r"(status) : "r"(addr) : "memory";
+    }
+}
+
+fn eth_send_product(msg_type: u32, board_id: u32, seq: u32, seconds: u32, nanoseconds: u32,
+                    q0: u32, q1: u32, q2: u32, q3: u32, q4: u32, q5: u32, q6: u32, q7: u32) {
+    tx_wait_idle();
+    var frame = ProductMsg {
+        dst: BROADCAST,
+        src: SRC_MAC,
+        ethertype: HEARTBEAT_ETHERTYPE as u16,
+        magic: PROD_MAGIC,
+        msg_type: msg_type,
+        board_id: board_id,
+        seq: seq,
+        ptp_seconds: seconds,
+        ptp_nanoseconds: nanoseconds,
+        payload_len: 32,
+        p0: q0, p1: q1, p2: q2, p3: q3, p4: q4, p5: q5, p6: q6, p7: q7
+    };
+    const tx = &TX_BUFFER as *mut ProductMsg;
+    *tx = frame;
+    const len = sizeof(ProductMsg);
+    const di = TX_DESC_INDEX;
+    TX_DESC[di].buf1 = &TX_BUFFER as u32;
+    TX_DESC[di].buf2 = 0;
+    TX_DESC[di].control = len & TX_DESC_LEN_MASK;
+    TX_DESC[di].status = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
+    asm { dmb } : : : "memory";
+    TX_DESC_INDEX = (TX_DESC_INDEX + 1) % TX_DESC_COUNT;
+    const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
+    Ethernet_DMA.DMACTxDTPR = next_desc_addr;
+    // Free-running TX counter; wrap intended. // bml-verify: ignore V130
+    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
+}
+
+fn eth_send_hello(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+    eth_send_product(1, board_id, seq, seconds, nanoseconds, FW_BUILD, 0, 0, 0, 0, 0, 0, 0);
+}
+
+fn eth_send_ping(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+    eth_send_product(2, board_id, seq, seconds, nanoseconds, 0, 0, 0, 0, 0, 0, 0, 0);
+}
+
+// HEALTH_STATUS payload: fw build, PHY state, PTP state (0 = free-running),
+// RX frames, TX frames, RX timestamps, audio-test blocks (none yet), 0.
+fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32) {
+    eth_send_product(3, board_id, echo_seq, seconds, nanoseconds,
+        FW_BUILD, phy_state(), 0, RX_PACKET_COUNT, TX_FRAME_COUNT,
+        RX_TIMESTAMP_COUNT, 0, 0);
+}
+
+// MAC loopback (MACCR.LM): TX loops to RX inside the MAC. Single-board
+// validation of the full request/response path without a peer or a
+// root-privileged host injector.
+fn eth_loopback_enable() {
+    Ethernet_MAC.MACCR.LM = true;
+}
+
+fn rx_get32_be(off: u32) -> u32 {
+    return (rx_get8(off) << 24) | (rx_get8(off + 1) << 16)
+         | (rx_get8(off + 2) << 8) | rx_get8(off + 3);
 }

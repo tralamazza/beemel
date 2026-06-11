@@ -21,6 +21,13 @@ const BOARD_ID: u32 = 1;
 // heartbeat (taken under a `claim` window in timer.bml).
 var LOG_SUM: u32;
 
+// Milestone 8 probe state: last HEALTH_STATUS seen from a mic node.
+const MSG_HEALTH_STATUS: u32 = 3;
+var STATUS_SEEN: u32;        // HEALTH_STATUS frames consumed
+var STATUS_LAST_BOARD: u32;  // sender board id
+var STATUS_LAST_SEQ: u32;    // echoed ping sequence
+var STATUS_LAST_RX: u32;     // sender's RX_PACKET_COUNT (payload word 3)
+
 fn main() @context(thread) {
     board_bringup();
     timer_init();
@@ -31,17 +38,36 @@ fn main() @context(thread) {
     // heartbeat whenever the count moved -- ISR producer, thread consumer,
     // protection derived from the accessor contexts.
     var seq: u32 = 0;
+    var ping_seq: u32 = 0;
     var last_tick: u32 = 0;
+    const boot = ptp_now();
+    eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
         phy_poll_link();
         eth_poll_rx();
         copy_poll();
+        // Milestone 8 dispatch: record any HEALTH_STATUS reply.
+        if prod_rx_fresh() != 0 {
+            const mtype = prod_rx_take();
+            if mtype == MSG_HEALTH_STATUS {
+                STATUS_SEEN = STATUS_SEEN + 1;
+                STATUS_LAST_BOARD = prod_rx_board();
+                STATUS_LAST_SEQ = prod_rx_seq();
+                STATUS_LAST_RX = prod_rx_pay(3);
+            }
+        }
         const t = timer_ticks();
         if t != last_tick {
             last_tick = t;
             LOG_SUM = timer_log_sum();
             const now = ptp_now();
             eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+            // HEALTH_PING every 4th tick (milestone 8).
+            if (t & 3) == 0 {
+                // Free-running probe sequence; wrap intended. // bml-verify: ignore V130
+                ping_seq = ping_seq + 1;
+                eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
+            }
             // Free-running heartbeat sequence; u32 wraparound is the
             // protocol's behavior. // bml-verify: ignore V130
             seq = seq + 1;

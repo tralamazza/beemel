@@ -15,13 +15,29 @@ import phy_lan8742;
 // apart. Becomes a real protocol header field in milestone 8.
 const BOARD_ID: u32 = 2;
 
+// Milestone 8: answer every HEALTH_PING with a HEALTH_STATUS that echoes
+// the ping's sequence number.
+const MSG_HEALTH_PING: u32 = 2;
+var PINGS_ANSWERED: u32;
+
 fn main() @context(thread) {
     board_bringup();
 
     var seq: u32 = 0;
+    const boot = ptp_now();
+    eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
         phy_poll_link();
         eth_poll_rx();
+        if prod_rx_fresh() != 0 {
+            const mtype = prod_rx_take();
+            if mtype == MSG_HEALTH_PING {
+                const now2 = ptp_now();
+                eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds);
+                // Free-running counter; wrap intended. // bml-verify: ignore V130
+                PINGS_ANSWERED = PINGS_ANSWERED + 1;
+            }
+        }
         const now = ptp_now();
         eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
         seq = seq + 1;

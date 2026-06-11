@@ -424,6 +424,16 @@ each recorded when found:
 
 ## Open items
 
+- **Volatile lowering for agent-region access** (found on silicon
+  2026-06-11): raw-pointer loads of agent-mutated memory compile to plain
+  LLVM loads, so an OWN-bit spin loop was hoisted into an infinite `b .`
+  -- the agent is a concurrent writer the optimizer cannot see. The same
+  hazard sits under every raw-pointer read of DMA-written memory and is
+  only kept latent by inlining luck. Candidate fixes: lower accesses with
+  agent-region provenance as volatile, and/or lift the agent-shared
+  index-read ban (its replacement, the raw-pointer detour, is exactly the
+  unprotected idiom). Driver-level mitigation today: asm volatile loads in
+  spin loops (eth_dma.bml tx_wait_idle).
 - ETH link-up recovery in the H723 example driver.
 - Deferred until a consumer appears: `addr` as a general (non-field) type;
   reads re-establishing the in-region fact; placement inference (`in` as
