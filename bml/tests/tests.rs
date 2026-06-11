@@ -3569,6 +3569,67 @@ fn test_reset_word_init_and_no_dsb() {
     );
 }
 
+// Agent-pointer volatile lowering + E620 (the H723 hoisted-spin finding):
+// accesses through a raw pointer into agent-shared memory are volatile --
+// the agent is a concurrent writer the optimizer cannot see -- and such a
+// pointer must not escape the function that derived it (outside, the
+// taint is invisible and the volatile lowering is silently lost).
+#[test]
+fn test_agent_ptr_volatile_lowering() {
+    let ir = bml_ir_with_target("agent_ptr_volatile.bml", Some("reclaim_guard.target"));
+    assert!(
+        ir.contains("store volatile i32 %"),
+        "store through agent pointer must be volatile:\n{ir}"
+    );
+    assert!(
+        ir.contains("load volatile i32, ptr %"),
+        "loads through agent pointer (the OWN spin) must be volatile:\n{ir}"
+    );
+}
+
+#[test]
+fn test_plain_ptr_stays_nonvolatile() {
+    let ir = bml_ir("plain_ptr_no_volatile.bml");
+    assert!(
+        ir.contains("load i16, ptr %") && !ir.contains("load volatile i16"),
+        "pointer into plain RAM must stay non-volatile:\n{ir}"
+    );
+    assert!(
+        !ir.contains("store volatile i16"),
+        "store through plain pointer must stay non-volatile:\n{ir}"
+    );
+}
+
+#[test]
+fn test_agent_ptr_escape_arg_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("agent_ptr_escape_arg.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok && stderr.contains("E620"),
+        "expected E620; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_agent_ptr_escape_return_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("agent_ptr_escape_return.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok && stderr.contains("E620"),
+        "expected E620; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_agent_ptr_escape_asm_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("agent_ptr_escape_asm.bml", Some("reclaim_guard.target"));
+    assert!(
+        !ok && stderr.contains("E620"),
+        "expected E620; stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn test_chan_assoc_cross_rejected() {
     let (ok, stderr) = bml_build_with_target("chan_assoc_cross.bml", Some("chan_assoc.target"));

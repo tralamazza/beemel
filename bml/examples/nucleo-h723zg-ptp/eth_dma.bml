@@ -640,19 +640,16 @@ fn tx_desc_get32(word_index: u32) -> u32 {
     return desc[word_index];
 }
 
-// FINDING (2026-06-11): the OWN-bit spin MUST be a volatile read. Raw
-// pointer loads of agent-mutated memory compile to plain LLVM loads, and
-// the optimizer hoisted the load out of this empty loop -- once OWN was
-// observed set, the loop became `b .` and the controller froze at
-// TX_FRAME_COUNT=5. The DMA is a concurrent writer the optimizer cannot
-// see; until the compiler lowers agent-region access as volatile (open
-// item), the spin reads through an asm volatile load.
+// FINDING (2026-06-11), now closed in the compiler: this OWN-bit spin once
+// compiled to an infinite `b .` -- the load was a plain LLVM load and the
+// optimizer hoisted it out of the empty loop (the DMA is a concurrent
+// writer it cannot see). The compiler now lowers every access through a
+// raw pointer into agent-shared memory as VOLATILE (and E620 keeps such
+// pointers from escaping the deriving function), so the plain read below
+// is sound again. Falsified on the board both ways.
 fn tx_wait_idle() {
     const prev = (TX_DESC_INDEX + TX_DESC_COUNT - 1) % TX_DESC_COUNT;
-    const addr = tx_desc_addr(prev * TX_DESC_WORDS + 3);
-    var status: u32 = TX_DESC_OWN;
-    while (status & TX_DESC_OWN) != 0 {
-        asm { ldr $0, [$1] } : "=r"(status) : "r"(addr) : "memory";
+    while (tx_desc_get32(prev * TX_DESC_WORDS + 3) & TX_DESC_OWN) != 0 {
     }
 }
 

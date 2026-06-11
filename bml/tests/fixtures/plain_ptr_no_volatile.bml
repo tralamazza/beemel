@@ -1,0 +1,13 @@
+// Control for agent_ptr_volatile.bml: a raw pointer into a PLAIN static
+// has no concurrent agent, so accesses stay non-volatile and optimizable.
+// u16 pointee so the assertion cannot collide with the (volatile) i32
+// reset-handler init loops or critical-section machinery.
+
+var WORDS: [u16; 4];
+var OUT: u32;
+
+fn main() @context(thread) {
+    var p: *u16 = &WORDS as *u16;
+    p[1] = 7;
+    OUT = p[2] as u32;
+}

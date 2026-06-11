@@ -38,6 +38,11 @@ pub struct IrEmitter {
     alloca_counter: u32,
     verify_mode: bool,
     current_fn_name: String,
+    /// Locals in the current function holding raw pointers into agent-shared
+    /// memory (`region::agent_ptr_locals`). Accesses through them are lowered
+    /// volatile: the agent is a concurrent writer the optimizer cannot see
+    /// (a hoisted OWN-bit spin became an infinite branch on the H723).
+    agent_ptr_locals: std::collections::HashSet<String>,
     preempt: Option<PreemptInfo>,
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
@@ -331,6 +336,7 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: false,
             current_fn_name: String::new(),
+            agent_ptr_locals: std::collections::HashSet::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -388,6 +394,7 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: true,
             current_fn_name: String::new(),
+            agent_ptr_locals: std::collections::HashSet::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -1053,6 +1060,7 @@ impl IrEmitter {
         self.counter = 0;
         self.alloca_counter = 0;
         self.current_fn_name.clone_from(&fn_def.name.0);
+        self.agent_ptr_locals = crate::region::agent_ptr_locals(&fn_def.body, symbols);
         let fn_sym = symbols.functions.get(&fn_def.name.0);
         let is_isr = fn_sym.is_some_and(|s| s.context.is_isr());
         let is_naked = fn_sym.is_some_and(|s| s.naked);
@@ -2148,6 +2156,7 @@ impl IrEmitter {
                 use crate::ast::UnaryOp;
                 match op {
                     UnaryOp::Deref => {
+                        let vol = self.vol_expr(inner, symbols);
                         let inner_reg = self.emit_expr(inner, symbols, fn_name);
                         let pointee_ty = match self.expr_type(inner, symbols) {
                             Type::Ptr(inner) | Type::ConstPtr(inner) => *inner,
@@ -2156,7 +2165,7 @@ impl IrEmitter {
                         let llty = llvm_type(&pointee_ty);
                         let dbg = self.dbg_loc(expr.span());
                         let reg = self.new_reg();
-                        self.line(&format!("{reg} = load {llty}, ptr {inner_reg}{dbg}"));
+                        self.line(&format!("{reg} = load{vol} {llty}, ptr {inner_reg}{dbg}"));
                         reg
                     }
                     UnaryOp::AddrOf | UnaryOp::AddrOfMut => {
@@ -2713,7 +2722,9 @@ impl IrEmitter {
                     self.line(&format!("{reg} = trunc i8 {masked} to i1"));
                     reg
                 } else if crate::types::is_ptr(&base_ty) {
-                    // Pointer index: GEP + load
+                    // Pointer index: GEP + load (volatile when the base is an
+                    // agent pointer -- see vol_expr).
+                    let vol = self.vol_expr(base, symbols);
                     let base_reg = self.emit_expr(base, symbols, fn_name);
                     let idx_reg = self.emit_expr(index, symbols, fn_name);
                     let idx_ty = self.expr_type(index, symbols);
@@ -2728,7 +2739,7 @@ impl IrEmitter {
                         llvm_type(&idx_ty)
                     ));
                     let reg = self.new_reg();
-                    self.line(&format!("{reg} = load {ll_elem}, ptr {gep}{dbg}"));
+                    self.line(&format!("{reg} = load{vol} {ll_elem}, ptr {gep}{dbg}"));
                     reg
                 } else if matches!(&base_ty, Type::Array(_, _)) {
                     // Array value: get lvalue pointer, GEP, load
@@ -4095,6 +4106,9 @@ impl IrEmitter {
                     }
                     _ => return val_reg.to_string(),
                 };
+                // Volatile when storing through an agent pointer (vol_lvalue;
+                // the array arm is a direct static access, never tainted).
+                let vol = self.vol_lvalue(base);
                 let idx_reg = self.emit_expr(index, symbols, fn_name);
                 let idx_ty = self.expr_type(index, symbols);
                 let gep = self.new_reg();
@@ -4104,10 +4118,11 @@ impl IrEmitter {
                     llvm_type(&idx_ty)
                 ));
                 let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &elem_ty);
-                self.line(&format!("store {ll_elem} {val_reg}, ptr {gep}{dbg}"));
+                self.line(&format!("store{vol} {ll_elem} {val_reg}, ptr {gep}{dbg}"));
                 val_reg
             }
             LValue::Deref(inner) => {
+                let vol = self.vol_expr(inner, symbols);
                 let ptr_reg = self.emit_expr(inner, symbols, fn_name);
                 let inner_ty = self.expr_type(inner, symbols);
                 let pointee_ty = match &inner_ty {
@@ -4116,7 +4131,7 @@ impl IrEmitter {
                 };
                 let llty = llvm_type(&pointee_ty);
                 let val_reg = self.coerce_int(val_reg.to_string(), val_ty, &pointee_ty);
-                self.line(&format!("store {llty} {val_reg}, ptr {ptr_reg}{dbg}"));
+                self.line(&format!("store{vol} {llty} {val_reg}, ptr {ptr_reg}{dbg}"));
                 val_reg
             }
         }
@@ -4212,6 +4227,26 @@ impl IrEmitter {
     /// `Some(ceiling)` when this access needs its own critical section; the
     /// ceiling picks the mask instrument (BASEPRI to the ceiling on v7-M,
     /// PRIMASK otherwise -- see `arm::emit_critical_enter`).
+    /// `" volatile"` when the expression is an agent pointer (tainted local
+    /// or direct cast of an agent-shared static's address): the agent
+    /// mutates the pointee concurrently, so the access must not be hoisted,
+    /// merged, or eliminated.
+    fn vol_expr(&self, e: &ast::Expr, symbols: &SymbolTable) -> &'static str {
+        if crate::region::is_agent_ptr_expr(e, &self.agent_ptr_locals, symbols) {
+            " volatile"
+        } else {
+            ""
+        }
+    }
+
+    fn vol_lvalue(&self, lv: &ast::LValue) -> &'static str {
+        if matches!(lv, ast::LValue::Name((n, _)) if self.agent_ptr_locals.contains(n)) {
+            " volatile"
+        } else {
+            ""
+        }
+    }
+
     /// `dsb` after a store to a declared handoff register (see
     /// `handoff_regs`). Emitted in verify mode too: IKOS treats the asm call
     /// as opaque, same as the critical-section masks.

@@ -375,6 +375,7 @@ Empirical IKOS facts the encodings are built on (measured, not assumed):
 | E617 | `@extent` declaration shape |
 | E618 | extent unit cross-check (`when P.R.F = V` not established at arming) |
 | E619 | fixed-block extent: delivered buffer smaller than the block |
+| E620 | agent pointer escapes the deriving function (volatile lowering would be lost) |
 
 (E606 and E613 were retired: the encoding axis no longer exists; `@shared
 in R` now composes.)
@@ -422,18 +423,43 @@ each recorded when found:
 - In reserve: black-pill (F411 -- the bit-band hwaddrs silicon check),
   nRF52840 dongle (EasyDMA everywhere; needs SWD pads wired).
 
+## Agent pointers: volatile lowering and E620
+
+Raw pointers cast from an agent-shared static's address (`&X as *T` where
+`X` lives in an agent-mutated region) point at memory with a concurrent
+writer the optimizer cannot see: a plain load of an OWN bit was hoisted
+out of a spin loop into an infinite `b .` on the H723 (2026-06-11). The
+model closes this in two halves:
+
+- **Lowering**: every load/store through an agent pointer is `volatile`.
+  The taint is per-function and syntactic: seeded at `&X as *T` (pointer
+  casts only -- `&X as u32` is the handoff delivery idiom and deliberately
+  exits the taint), propagated through local assignment to a fixpoint.
+  Views stay non-volatile: inside a justified claim/reclaim window the
+  agent is excluded, so window reads keep full optimization -- volatile at
+  the unguarded boundary, optimizable inside the proof.
+- **E620**: an agent pointer must not escape the deriving function (call
+  argument, return, store through memory or into a static, array/struct
+  literal element, asm input, view/ring/bits capture) -- outside, the
+  taint is invisible and the volatile lowering would be silently lost.
+
+Known limit (recorded): laundering the address through integer arithmetic
+(`(&X as u32 + off) as *T`) defeats the syntactic taint.
+
+Falsified on the board both ways: the plain-read OWN spin froze the
+controller at TX_FRAME_COUNT=5 under the old lowering and runs
+indefinitely under the derived volatile.
+
 ## Open items
 
-- **Volatile lowering for agent-region access** (found on silicon
-  2026-06-11): raw-pointer loads of agent-mutated memory compile to plain
-  LLVM loads, so an OWN-bit spin loop was hoisted into an infinite `b .`
-  -- the agent is a concurrent writer the optimizer cannot see. The same
-  hazard sits under every raw-pointer read of DMA-written memory and is
-  only kept latent by inlining luck. Candidate fixes: lower accesses with
-  agent-region provenance as volatile, and/or lift the agent-shared
-  index-read ban (its replacement, the raw-pointer detour, is exactly the
-  unprotected idiom). Driver-level mitigation today: asm volatile loads in
-  spin loops (eth_dma.bml tx_wait_idle).
+- **Clock-enable propagation read-back** (found on silicon 2026-06-11): a
+  peripheral register write issued too soon after setting the RCC enable
+  bit is silently dropped by the bus (the TIM2 PSC=47999 write vanished
+  when a compiler-scheduling change closed the instruction gap; the timer
+  ran 48,000x fast). The driver-level idiom is read-the-enable-back
+  (timer.bml). The target file already declares gates (`enabled_by`,
+  E609/E610); deriving the read-back after writes to a declared gate is
+  the same shape as the derived handoff `dsb`.
 - ETH link-up recovery in the H723 example driver.
 - Deferred until a consumer appears: `addr` as a general (non-field) type;
   reads re-establishing the in-region fact; placement inference (`in` as

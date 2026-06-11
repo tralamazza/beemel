@@ -1,0 +1,9 @@
+// E620: an agent pointer as an asm input operand escapes the taint's
+// visibility (the asm body can stash the address anywhere).
+
+var DESC: [u32; 4] in pool;
+
+fn main() @context(thread) {
+    const p = &DESC as *u32;
+    asm { nop } : : "r"(p) : "memory";
+}

@@ -1,0 +1,14 @@
+// E620: returning an agent pointer escapes the deriving function.
+
+var DESC: [u32; 4] in pool;
+var SINK: u32;
+
+fn descp() -> *u32 {
+    const p = &DESC as *u32;
+    return p;
+}
+
+fn main() @context(thread) {
+    const q = descp();
+    SINK = q[0];
+}

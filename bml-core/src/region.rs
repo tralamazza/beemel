@@ -2637,3 +2637,253 @@ fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)
         _ => {}
     }
 }
+
+// ─── Agent-pointer taint (volatile lowering + E620) ─────────────────────────
+//
+// Raw pointers cast from the address of an agent-shared static (`&X as *T`
+// where `X` lives in an agent-mutated region) point at memory with a
+// concurrent writer the optimizer cannot see: a plain LLVM load of such
+// memory may be hoisted out of a loop, turning an OWN-bit spin into an
+// infinite branch (observed on the H723, 2026-06-11). The emitter therefore
+// lowers every access through such a pointer as `volatile`, and the checker
+// (E620) keeps the pointer from escaping the deriving function -- escaped
+// pointers would be dereferenced where the taint is invisible, losing the
+// volatile lowering silently.
+//
+// Known limit (documented in doc/regions-agents.md): laundering the address
+// through integer arithmetic (`(&X as u32 + off) as *T`) defeats the
+// syntactic taint; the idiomatic direct-cast forms are what the lowering
+// and E620 cover.
+
+use crate::ast;
+use std::collections::HashSet as TaintSet;
+
+/// True when the static's type carries `AgentShared` in its storage wrapping.
+#[must_use]
+pub fn static_is_agent_shared(name: &str, symbols: &SymbolTable) -> bool {
+    fn ty_has(t: &Type) -> bool {
+        if matches!(t, Type::AgentShared(_)) {
+            return true;
+        }
+        let inner = t.inner();
+        if std::ptr::eq(inner, t) {
+            false
+        } else {
+            ty_has(inner)
+        }
+    }
+    symbols.statics.get(name).is_some_and(|s| ty_has(&s.ty))
+}
+
+/// Classifier: does this expression evaluate to an agent pointer? Either a
+/// tainted local, or a (possibly cast-wrapped) address-of of an agent-shared
+/// static (including `&X[i]` / `&X.f`). Classifier, so the catch-all is fine.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn is_agent_ptr_expr(e: &ast::Expr, locals: &TaintSet<String>, symbols: &SymbolTable) -> bool {
+    match e {
+        ast::Expr::Ident((n, _)) => locals.contains(n),
+        ast::Expr::Group(i) => is_agent_ptr_expr(i, locals, symbols),
+        // Only pointer-typed casts stay in the taint: `&BUF as u32` is the
+        // handoff delivery idiom (an integer, checked by the handoff
+        // machinery), and integer casts deliberately exit the taint -- the
+        // documented laundering limit.
+        ast::Expr::Cast(i, ty_expr) => {
+            let target = crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
+            crate::types::is_ptr(&target) && is_agent_ptr_expr(i, locals, symbols)
+        }
+        ast::Expr::Unary(ast::UnaryOp::AddrOf | ast::UnaryOp::AddrOfMut, inner) => {
+            match inner.as_ref() {
+                ast::Expr::Ident((n, _)) => static_is_agent_shared(n, symbols),
+                ast::Expr::Index(b, _) | ast::Expr::FieldAccess(b, _) => {
+                    matches!(b.as_ref(), ast::Expr::Ident((n, _)) if static_is_agent_shared(n, symbols))
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The set of locals in `body` holding agent pointers: seeded by
+/// `&agent_static as *T` initializers/assignments, propagated through
+/// local-to-local assignment, iterated to a fixpoint (use-before-def
+/// textual order inside loops). Monotone -- once tainted, always tainted;
+/// over-tainting only costs an extra `volatile`.
+#[must_use]
+pub fn agent_ptr_locals(body: &ast::Block, symbols: &SymbolTable) -> TaintSet<String> {
+    let mut set = TaintSet::new();
+    loop {
+        let before = set.len();
+        apl_block(body, symbols, &mut set);
+        if set.len() == before {
+            return set;
+        }
+    }
+}
+
+fn apl_block(b: &ast::Block, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+    for stmt in &b.stmts {
+        apl_stmt(stmt, symbols, set);
+    }
+    if let Some(t) = &b.trailing {
+        apl_expr(t, symbols, set);
+    }
+}
+
+// Exhaustive Stmt walker (no catch-all; see hacking.md Code conventions).
+fn apl_stmt(stmt: &ast::Stmt, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+    match stmt {
+        ast::Stmt::VarDecl(v) => {
+            apl_expr(&v.init, symbols, set);
+            if is_agent_ptr_expr(&v.init, set, symbols) {
+                set.insert(v.name.0.clone());
+            }
+        }
+        ast::Stmt::Assign(a) => {
+            apl_expr(&a.value, symbols, set);
+            if let ast::LValue::Name((n, _)) = &a.target
+                && is_agent_ptr_expr(&a.value, set, symbols)
+            {
+                set.insert(n.clone());
+            }
+        }
+        ast::Stmt::CompoundAssign(c) => apl_expr(&c.value, symbols, set),
+        ast::Stmt::Expr(e) => apl_expr(e, symbols, set),
+        ast::Stmt::If(i) => {
+            apl_expr(&i.cond, symbols, set);
+            apl_block(&i.then_block, symbols, set);
+            if let Some(e) = &i.else_branch {
+                apl_stmt(e, symbols, set);
+            }
+        }
+        ast::Stmt::Loop(l) => apl_block(&l.body, symbols, set),
+        ast::Stmt::While(w) => {
+            apl_expr(&w.cond, symbols, set);
+            apl_block(&w.body, symbols, set);
+        }
+        ast::Stmt::For(f) => {
+            apl_expr(&f.start, symbols, set);
+            apl_expr(&f.end, symbols, set);
+            if let Some(st) = &f.step {
+                apl_expr(st, symbols, set);
+            }
+            apl_block(&f.body, symbols, set);
+        }
+        ast::Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                apl_expr(v, symbols, set);
+            }
+        }
+        ast::Stmt::Break(_) | ast::Stmt::Continue(_) => {}
+        ast::Stmt::Block(b) => apl_block(b, symbols, set),
+        ast::Stmt::Match(m) => {
+            apl_expr(&m.scrutinee, symbols, set);
+            for arm in &m.arms {
+                apl_block(&arm.body, symbols, set);
+            }
+        }
+        ast::Stmt::Asm(a) => {
+            for (_, e) in &a.inputs {
+                apl_expr(e, symbols, set);
+            }
+        }
+        ast::Stmt::Assume(a) => apl_expr(&a.cond, symbols, set),
+        ast::Stmt::Assert(a) => apl_expr(&a.cond, symbols, set),
+        ast::Stmt::Claim(c) => apl_block(&c.body, symbols, set),
+    }
+}
+
+// Exhaustive Expr walker: only block-bearing expressions can declare locals,
+// but every arm recurses so nested block expressions are reached anywhere.
+fn apl_expr(e: &ast::Expr, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+    match e {
+        ast::Expr::IntLiteral(..)
+        | ast::Expr::FloatLiteral(..)
+        | ast::Expr::BoolLiteral(..)
+        | ast::Expr::StringLiteral(..)
+        | ast::Expr::NullLiteral(..)
+        | ast::Expr::Ident(_)
+        | ast::Expr::SizeOf(..)
+        | ast::Expr::EnumVariant { .. } => {}
+        ast::Expr::Unary(_, i) | ast::Expr::Group(i) | ast::Expr::Cast(i, _) => {
+            apl_expr(i, symbols, set);
+        }
+        ast::Expr::Binary(l, _, r) => {
+            apl_expr(l, symbols, set);
+            apl_expr(r, symbols, set);
+        }
+        ast::Expr::Call(callee, args) => {
+            apl_expr(callee, symbols, set);
+            for a in args {
+                apl_expr(a, symbols, set);
+            }
+        }
+        ast::Expr::FieldAccess(b, _) => apl_expr(b, symbols, set),
+        ast::Expr::Index(b, i) => {
+            apl_expr(b, symbols, set);
+            apl_expr(i, symbols, set);
+        }
+        ast::Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            apl_expr(base, symbols, set);
+            if let Some(l) = len {
+                apl_expr(l, symbols, set);
+            }
+            if let Some(st) = stride {
+                apl_expr(st, symbols, set);
+            }
+        }
+        ast::Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            apl_expr(base, symbols, set);
+            if let Some(c) = capacity {
+                apl_expr(c, symbols, set);
+            }
+            apl_expr(head, symbols, set);
+            apl_expr(len, symbols, set);
+        }
+        ast::Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            apl_expr(base, symbols, set);
+            if let Some(o) = bit_offset {
+                apl_expr(o, symbols, set);
+            }
+            if let Some(l) = len_bits {
+                apl_expr(l, symbols, set);
+            }
+        }
+        ast::Expr::ArrayInit(elems, _) => {
+            for el in elems {
+                apl_expr(el, symbols, set);
+            }
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, v) in fields {
+                apl_expr(v, symbols, set);
+            }
+        }
+        ast::Expr::Match(m) => {
+            apl_expr(&m.scrutinee, symbols, set);
+            for arm in &m.arms {
+                apl_block(&arm.body, symbols, set);
+            }
+        }
+        ast::Expr::Block(b) => apl_block(&b.block, symbols, set),
+        ast::Expr::If(i) => {
+            apl_expr(&i.cond, symbols, set);
+            apl_block(&i.then_block, symbols, set);
+            apl_expr(&i.else_branch, symbols, set);
+        }
+    }
+}

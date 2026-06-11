@@ -267,11 +267,16 @@ Two findings from this milestone, both caught by the toolchain:
   raw-pointer loads of agent-mutated memory are plain LLVM loads, and the
   optimizer hoisted the load out of the empty loop -- the DMA is a
   concurrent writer the optimizer cannot see. Found on hardware
-  (TX_FRAME_COUNT frozen at 5, PC parked on the self-branch). Driver-level
-  fix: asm volatile load in the spin. The compiler-level fix (volatile
-  lowering for agent-region access) is an open model item -- the same
-  latent hazard sits under every raw-pointer read of DMA-written memory,
-  including the RX OWN check, which currently survives by inlining luck.
+  (TX_FRAME_COUNT frozen at 5, PC parked on the self-branch). Now closed
+  in the compiler: accesses through raw pointers into agent-shared memory
+  lower as volatile, E620 keeps such pointers from escaping the deriving
+  function, and the plain-read spin is sound again (falsified on the board
+  both ways). A third silicon find came out of validating that fix: the
+  TIM2 PSC=47999 write was silently dropped when a scheduling change
+  closed the gap after the RCC clock-enable -- first-write-after-enable is
+  lost while the enable propagates. Fix: read the enable bit back before
+  touching the peripheral (timer.bml); deriving that read-back from the
+  target's declared gates is an open model item.
 
 ### 9. Layer 2 PTP Skeleton
 

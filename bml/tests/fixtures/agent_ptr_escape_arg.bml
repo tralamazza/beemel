@@ -1,0 +1,14 @@
+// E620: an agent pointer passed as a call argument escapes the deriving
+// function -- the callee's accesses would not be lowered volatile.
+
+var DESC: [u32; 4] in pool;
+var SINK: u32;
+
+fn peek(q: *u32) {
+    SINK = q[0];
+}
+
+fn main() @context(thread) {
+    const p = &DESC as *u32;
+    peek(p);
+}

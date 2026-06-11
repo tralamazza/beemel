@@ -43,8 +43,15 @@ var TICKS: u32 @shared;
 var TICK_LOG: [u32; 4] @shared;
 
 fn timer_init() {
-    // Enable the TIM2 clock in the shared RCC register.
+    // Enable the TIM2 clock in the shared RCC register, then READ IT BACK:
+    // the enable takes bus cycles to propagate, and the first peripheral
+    // write issued before it lands is silently dropped (found 2026-06-11:
+    // a compiler-scheduling change closed the instruction gap and the
+    // PSC=47999 write vanished -- TIM2 ran at PSC=0, a 48,000x ISR storm).
+    // The read forces the write to complete before the timer is touched.
     RCC.C1_APB1LENR.TIM2EN = true;
+    while !RCC.C1_APB1LENR.TIM2EN {
+    }
 
     // Free-running periodic counter. PSC/ARR are not clock-tree-calibrated
     // (this drives the heartbeat cadence, not timekeeping); each update event

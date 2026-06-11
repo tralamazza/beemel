@@ -1,0 +1,18 @@
+// Accesses through a raw pointer into agent-shared memory lower as
+// VOLATILE: the agent writes the pointee concurrently, so loads must not
+// be hoisted (a hoisted OWN-bit spin became an infinite `b .` on the
+// H723) and stores must not be merged or eliminated. Pairs with
+// reclaim_guard.target (region `pool`, DMA agent).
+
+var DESC: [u32; 4] in pool;
+var SINK: u32;
+
+fn main() @context(thread) {
+    var p: *u32 = &DESC as *u32;
+    p[0] = 123;
+    // The OWN-bit spin that motivated the rule: without volatile the load
+    // is hoisted and the loop never observes the agent's write-back.
+    while (p[3] & 0x80000000) != 0 {
+    }
+    SINK = p[1];
+}

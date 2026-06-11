@@ -122,6 +122,7 @@ impl Checker {
             }
             if let ast::Item::FnDef(fn_def) = item {
                 check_fn(fn_def, symbols, diags);
+                check_agent_ptr_escape(fn_def, symbols, diags);
             }
         }
         check_comptime_asserts(program, symbols, diags);
@@ -3866,5 +3867,243 @@ fn unsuffixed_literal_fits(expr: &Expr, target_ty: &Type) -> bool {
             elems.len() == *n && elems.iter().all(|e| unsuffixed_literal_fits(e, elem))
         }
         _ => false,
+    }
+}
+
+/// E620: a raw pointer into agent-shared memory must not escape the function
+/// that derived it. Accesses through such a pointer are lowered `volatile`
+/// (the agent mutates the pointee concurrently; a hoisted OWN-bit spin became
+/// an infinite branch on real hardware), and the taint that drives that
+/// lowering is per-function and syntactic -- an escaped pointer would be
+/// dereferenced where the taint is invisible, silently losing the volatile.
+/// Escapes: call argument, return value, store into a static or through any
+/// non-local lvalue, array/struct literal element, asm input operand, and
+/// view/ring/bits descriptor capture (agent views go through `reclaim`).
+fn check_agent_ptr_escape(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    let taint = crate::region::agent_ptr_locals(&fn_def.body, symbols);
+    let ape = |e: &ast::Expr| crate::region::is_agent_ptr_expr(e, &taint, symbols);
+    ape_block(&fn_def.body, &ape, symbols, diags, fn_def.ret.is_some());
+}
+
+fn ape_err(diags: &mut DiagnosticBag, span: crate::source::Span, what: &str) {
+    let msg = format!(
+        "raw pointer into agent-shared memory escapes via {what}: outside the deriving \
+             function the agent-pointer taint is invisible and accesses lose the volatile \
+             lowering that makes concurrent-agent memory sound. Keep the pointer local; pass \
+             the static or an index instead.",
+    );
+    diags.error(&msg, "E620", span);
+}
+
+fn ape_block(
+    b: &ast::Block,
+    ape: &dyn Fn(&ast::Expr) -> bool,
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+    fn_returns: bool,
+) {
+    for stmt in &b.stmts {
+        ape_stmt(stmt, ape, symbols, diags, fn_returns);
+    }
+    if let Some(t) = &b.trailing {
+        if fn_returns && ape(t) {
+            ape_err(diags, t.span(), "the function's trailing return value");
+        }
+        ape_expr(t, ape, symbols, diags, fn_returns);
+    }
+}
+
+// Exhaustive Stmt walker (no catch-all; see hacking.md Code conventions).
+fn ape_stmt(
+    stmt: &ast::Stmt,
+    ape: &dyn Fn(&ast::Expr) -> bool,
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+    fn_returns: bool,
+) {
+    match stmt {
+        ast::Stmt::VarDecl(v) => ape_expr(&v.init, ape, symbols, diags, fn_returns),
+        ast::Stmt::Assign(a) => {
+            if ape(&a.value) {
+                match &a.target {
+                    ast::LValue::Name((n, _)) => {
+                        if symbols.statics.contains_key(n) {
+                            ape_err(diags, a.value.span(), "a store into a static");
+                        }
+                    }
+                    ast::LValue::Field(..) | ast::LValue::Index(..) | ast::LValue::Deref(_) => {
+                        ape_err(diags, a.value.span(), "a store through memory");
+                    }
+                }
+            }
+            ape_expr(&a.value, ape, symbols, diags, fn_returns);
+        }
+        ast::Stmt::CompoundAssign(c) => ape_expr(&c.value, ape, symbols, diags, fn_returns),
+        ast::Stmt::Expr(e) => ape_expr(e, ape, symbols, diags, fn_returns),
+        ast::Stmt::If(i) => {
+            ape_expr(&i.cond, ape, symbols, diags, fn_returns);
+            ape_block(&i.then_block, ape, symbols, diags, fn_returns);
+            if let Some(e) = &i.else_branch {
+                ape_stmt(e, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Stmt::Loop(l) => ape_block(&l.body, ape, symbols, diags, fn_returns),
+        ast::Stmt::While(w) => {
+            ape_expr(&w.cond, ape, symbols, diags, fn_returns);
+            ape_block(&w.body, ape, symbols, diags, fn_returns);
+        }
+        ast::Stmt::For(f) => {
+            ape_expr(&f.start, ape, symbols, diags, fn_returns);
+            ape_expr(&f.end, ape, symbols, diags, fn_returns);
+            if let Some(st) = &f.step {
+                ape_expr(st, ape, symbols, diags, fn_returns);
+            }
+            ape_block(&f.body, ape, symbols, diags, fn_returns);
+        }
+        ast::Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                if ape(v) {
+                    ape_err(diags, v.span(), "`return`");
+                }
+                ape_expr(v, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Stmt::Break(_) | ast::Stmt::Continue(_) => {}
+        ast::Stmt::Block(b) => ape_block(b, ape, symbols, diags, fn_returns),
+        ast::Stmt::Match(m) => {
+            ape_expr(&m.scrutinee, ape, symbols, diags, fn_returns);
+            for arm in &m.arms {
+                ape_block(&arm.body, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Stmt::Asm(a) => {
+            for (_, e) in &a.inputs {
+                if ape(e) {
+                    ape_err(diags, e.span(), "an asm input operand");
+                }
+                ape_expr(e, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Stmt::Assume(a) => ape_expr(&a.cond, ape, symbols, diags, fn_returns),
+        ast::Stmt::Assert(a) => ape_expr(&a.cond, ape, symbols, diags, fn_returns),
+        ast::Stmt::Claim(c) => ape_block(&c.body, ape, symbols, diags, fn_returns),
+    }
+}
+
+// Exhaustive Expr walker (no catch-all): flags escapes at call arguments,
+// literal elements, and descriptor captures; recurses everywhere else.
+fn ape_expr(
+    e: &ast::Expr,
+    ape: &dyn Fn(&ast::Expr) -> bool,
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+    fn_returns: bool,
+) {
+    match e {
+        ast::Expr::IntLiteral(..)
+        | ast::Expr::FloatLiteral(..)
+        | ast::Expr::BoolLiteral(..)
+        | ast::Expr::StringLiteral(..)
+        | ast::Expr::NullLiteral(..)
+        | ast::Expr::Ident(_)
+        | ast::Expr::SizeOf(..)
+        | ast::Expr::EnumVariant { .. } => {}
+        ast::Expr::Unary(_, i) | ast::Expr::Group(i) | ast::Expr::Cast(i, _) => {
+            ape_expr(i, ape, symbols, diags, fn_returns);
+        }
+        ast::Expr::Binary(l, _, r) => {
+            ape_expr(l, ape, symbols, diags, fn_returns);
+            ape_expr(r, ape, symbols, diags, fn_returns);
+        }
+        ast::Expr::Call(callee, args) => {
+            for a in args {
+                if ape(a) {
+                    ape_err(diags, a.span(), "a call argument");
+                }
+                ape_expr(a, ape, symbols, diags, fn_returns);
+            }
+            ape_expr(callee, ape, symbols, diags, fn_returns);
+        }
+        ast::Expr::FieldAccess(b, _) => ape_expr(b, ape, symbols, diags, fn_returns),
+        ast::Expr::Index(b, i) => {
+            ape_expr(b, ape, symbols, diags, fn_returns);
+            ape_expr(i, ape, symbols, diags, fn_returns);
+        }
+        ast::Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            if ape(base) {
+                ape_err(diags, base.span(), "a view descriptor capture");
+            }
+            ape_expr(base, ape, symbols, diags, fn_returns);
+            if let Some(l) = len {
+                ape_expr(l, ape, symbols, diags, fn_returns);
+            }
+            if let Some(st) = stride {
+                ape_expr(st, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            if ape(base) {
+                ape_err(diags, base.span(), "a ring descriptor capture");
+            }
+            ape_expr(base, ape, symbols, diags, fn_returns);
+            if let Some(c) = capacity {
+                ape_expr(c, ape, symbols, diags, fn_returns);
+            }
+            ape_expr(head, ape, symbols, diags, fn_returns);
+            ape_expr(len, ape, symbols, diags, fn_returns);
+        }
+        ast::Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            if ape(base) {
+                ape_err(diags, base.span(), "a bits descriptor capture");
+            }
+            ape_expr(base, ape, symbols, diags, fn_returns);
+            if let Some(o) = bit_offset {
+                ape_expr(o, ape, symbols, diags, fn_returns);
+            }
+            if let Some(l) = len_bits {
+                ape_expr(l, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::ArrayInit(elems, _) => {
+            for el in elems {
+                if ape(el) {
+                    ape_err(diags, el.span(), "an array literal element");
+                }
+                ape_expr(el, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, v) in fields {
+                if ape(v) {
+                    ape_err(diags, v.span(), "a struct literal field");
+                }
+                ape_expr(v, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::Match(m) => {
+            ape_expr(&m.scrutinee, ape, symbols, diags, fn_returns);
+            for arm in &m.arms {
+                ape_block(&arm.body, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::Block(b) => ape_block(&b.block, ape, symbols, diags, fn_returns),
+        ast::Expr::If(i) => {
+            ape_expr(&i.cond, ape, symbols, diags, fn_returns);
+            ape_block(&i.then_block, ape, symbols, diags, fn_returns);
+            ape_expr(&i.else_branch, ape, symbols, diags, fn_returns);
+        }
     }
 }
