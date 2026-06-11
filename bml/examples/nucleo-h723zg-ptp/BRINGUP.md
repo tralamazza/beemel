@@ -467,18 +467,30 @@ Probe statics: `BENCH_DEF_{FRAMES,CYC_SUM,CYC_MAX,LAST}` /
 `BENCH_BML_*` (eth_dma.bml), `BENCH_LAT_DEF` / `BENCH_LAT_OTHER`
 (timer.bml). Addresses via `llvm-nm main_bench.elf | grep BENCH`.
 
-Measured (64 MHz HSI, ~460 B frames, >2,000 frames per run, 2026-06-11):
+Measured (64 MHz HSI, ~460 B frames, >2,000 frames per run, 2026-06-11,
+WITH the agent-pointer volatile lowering -- both legs read the frame
+through volatile loads now):
 
 | Metric                          | DEF (cpsid+copy) | BML (in place) |
 |---------------------------------|------------------|----------------|
-| Avg cycles/frame                | 5,044            | 4,276 (-18%)   |
-| Max cycles/frame                | 5,413            | 4,540          |
+| Avg cycles/frame                | 4,937            | 4,604 (-7%)    |
+| Max cycles/frame                | 5,278            | 5,004          |
 | Extra RAM                       | +512 B           | 0              |
-| Max innocent-ISR entry latency  | 79.5 us          | 0.8 us (98x)   |
+| Max innocent-ISR entry latency  | 76.0 us          | 0.8 us (92x)   |
 | Masking on the payload path     | whole window     | none           |
 
-The max DEF latency equals the DEF window length (5,044 cycles = 79.0 us)
-exactly: the worst case is the timer update landing as the lock closes.
+The max DEF latency equals the DEF window length (4,937 cycles = 77 us)
+to within noise: the worst case is the timer update landing as the lock
+closes.
+
+Pre-volatile numbers for the record: DEF 5,044 / BML 4,276 (-18%). The
+soundness fix costs the pure-read leg ~8% on this access pattern -- a
+byte-at-a-time raw-pointer walk is volatile's worst case, every load
+pinned. That is the intended shape of the model: the raw-pointer detour
+is the sound-but-slower BOUNDARY tool, while a `reclaim` view consume
+(window-justified, hence non-volatile and fully optimizable) is the
+advertised fast path. Adding that third leg to the bench is the natural
+next refinement.
 
 Caveats: both legs are compiled by bml, so this isolates the DISCIPLINE
 cost (lock scope + duplicate buffer), not compiler codegen quality; an
