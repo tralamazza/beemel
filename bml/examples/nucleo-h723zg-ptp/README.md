@@ -15,6 +15,12 @@ target, SVD, PHY, ETH DMA, PTP, and board bring-up code:
 
 - `controller` (`main_controller.bml`): switch/controller stand-in, board id 1.
 - `mic_node` (`main_mic_node.bml`): mic-board stand-in, board id 2.
+- `main_bench.bml`: RX consumption bench (defensive idiom vs compiler-assisted,
+  measured on live traffic) -- build manually, see BRINGUP.md "RX Consumption
+  Bench".
+
+All roles import `fault.bml`, a HardFault recorder whose probe statics turn a
+silent park into forensics (see BRINGUP.md "HardFault Recorder").
 
 Both currently send the same raw heartbeat and differ only by the board id byte
 in the payload. Flash `controller` to one NUCLEO and `mic_node` to the other.

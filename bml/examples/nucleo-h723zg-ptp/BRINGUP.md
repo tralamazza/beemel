@@ -313,6 +313,144 @@ After network timing is stable:
 - Timestamp the first sample of each DMA block with the disciplined PTP clock.
 - Stream real audio blocks using the same frame format as `AUDIO_TEST_BLOCK`.
 
+## HardFault Recorder
+
+`fault.bml` binds the HardFault vector slot (by function name, slot 3) and
+records the fault state into probe-visible statics, then parks WITHOUT
+growing the stack so the exception frame stays recoverable:
+
+| Static       | Meaning                                                  |
+|--------------|----------------------------------------------------------|
+| `FAULT_WHO`  | 0 clean; `0xDEADFA17` = recorder fired                   |
+| `FAULT_VECT` | ICSR.VECTACTIVE (3 = HardFault)                          |
+| `FAULT_CFSR` | raw CFSR (bit 10 IMPRECISERR, bit 9 PRECISERR)           |
+| `FAULT_HFSR` | raw HFSR (`0x40000000` = FORCED escalation)              |
+| `FAULT_BFAR` | bus fault address (valid only if CFSR bit 15)            |
+| `FAULT_MMFAR`| memmanage address (valid only if CFSR bit 7)             |
+| `FAULT_MSP`  | MSP at handler entry                                     |
+
+Workflow: get addresses with `llvm-nm <role>.elf | grep FAULT_`, poll
+`FAULT_WHO` over openocd; on a hit, `mdw <FAULT_MSP> 16` recovers the
+stacked frame -- the pc/xpsr pair is marked by xpsr bit 24 (Thumb). For an
+IMPRECISE fault the stacked pc is a skid a few instructions past the
+faulting store; strongly-ordered/PPB accesses (e.g. DWT reads) drain the
+write buffer, so skids tend to land just after them regardless of where
+the bad write was issued.
+
+The recorder was validated by injection: a deliberate buffered store to the
+unclocked FMC region at a known tick reproduced the exact production
+signature (CFSR=0x0400, HFSR=FORCED) and the stacked pc localized the
+poison store to an 11-instruction skid.
+
+## Finding: Posted Tail-Pointer Write Bus Fault - Fixed
+
+Symptom: rare imprecise BusFault (CFSR=0x0400, escalated to HardFault),
+first seen once at tick 96 on the controller; became reproducible within
+seconds once the bench consumed full frames under a broadcast flood.
+
+Bisection (each variant flood-tested on the board):
+
+| Variant                              | Result | Theory killed            |
+|--------------------------------------|--------|--------------------------|
+| Poll + rearm, no consume             | clean  | rearm machinery alone    |
+| Consume 16 B/frame                   | clean  |                          |
+| Consume 256 B/frame                  | dies   |                          |
+| Consume bytes 0..127 only            | clean  | -                        |
+| Consume bytes 128..255 only          | clean  | deep-offset / FCS reads  |
+| Consume 0..255 (both halves)         | dies   | => duration, not offset  |
+| No TIM2 ISR at all                   | dies   | ISR involvement          |
+| 4-descriptor ring                    | dies   | ring starvation          |
+| ETH regs strongly-ordered (MPU)      | clean  | => buffered-write class  |
+| `dsb` after tail writes only         | clean  | CONFIRMED FIX            |
+
+Root cause: the write to `DMACRxDTPR`/`DMACTxDTPR` is a posted (buffered)
+Device write. With long CPU read bursts keeping the bus busy, the posted
+write could stay in flight and complete with an error response, surfacing
+as an imprecise BusFault unrelated to the executing instruction. The fix is
+a `dsb` immediately after each tail-pointer write (`rx_rearm`,
+`eth_send_heartbeat`) -- completion, not just ordering (`dmb` alone is not
+enough). Validated: bench 2,162 frames and controller 977 frames
+flood-clean where the unfixed driver died within 24 frames.
+
+Negative knowledge worth keeping:
+
+- RAMECC2 monitor flags (0x48023024 = 0x3) latch on CLEAN runs too -- they
+  are noise from the reset handler's byte-wise `.bss` zeroing RMW-ing
+  ECC-uninitialized SRAM1 words, not a fault signal. Do not chase them.
+- The ETH `dma_shared` statics are still word-zeroed before first use
+  (`eth_zero_ecc`): the ECC fault theory was falsified, but the zeroing
+  removes that diagnostic noise and is correct hygiene on ECC RAM.
+- ETH DMACSR showed no fatal-bus-error bit through all of this: the failing
+  transaction was always the CPU's, never the DMA master's.
+
+Instrument gotchas (cost real time):
+
+- `llvm-objdump` on LINKED elves silently decodes wide Thumb-2 as
+  `<unknown>` -- pass `--triple=thumbv7em-none-eabi`.
+- This openocd build drops commands chained after `init` in a single `-c`
+  string; pass each command as its own `-c` flag.
+- The Mac's link-local address on the test interface can rebind after the
+  board resets bounce the link; bind the flood sender with `IP_BOUND_IF`
+  (option 25) instead of a fixed source address.
+
+## RX Consumption Bench
+
+`main_bench.bml` measures two disciplines for the same job ("consume a
+received frame safely"), alternating per data frame over the same live
+traffic:
+
+- DEF leg (defensive idiom): `cpsid` around the whole consumption + copy
+  into a 512 B staging buffer + parse the copy.
+- BML leg: parse in place, ZERO masking -- the OWN-bit guard the agent
+  model already checks is the safety proof.
+
+TIM2 runs at 5 kHz as the innocent-ISR jitter probe: its entry latency is
+TIM2.CNT at ISR entry (PSC=0, 15.6 ns units), bucketed by whether a DEF
+window was open. Cycle counts per leg come from DWT.CYCCNT (`dwt.bml`).
+
+Build (build.sh only knows controller|mic_node):
+
+```sh
+../../../target/debug/bml build --target stm32h723zg.target main_bench.bml
+ld.lld -T main_bench.ld main_bench.o -o main_bench.elf
+openocd -f interface/stlink.cfg -f target/stm32h7x.cfg   -c "program main_bench.elf verify reset exit"
+```
+
+Traffic (board MAC is promiscuous; any broadcast works):
+
+```python
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.setsockopt(socket.IPPROTO_IP, 25, socket.if_nametoindex('en8'))
+payload = bytes(range(256)) + bytes(160)   # ~460 B frames on the wire
+while True:
+    s.sendto(payload, ('169.254.255.255', 47777)); time.sleep(0.05)
+```
+
+Probe statics: `BENCH_DEF_{FRAMES,CYC_SUM,CYC_MAX,LAST}` /
+`BENCH_BML_*` (eth_dma.bml), `BENCH_LAT_DEF` / `BENCH_LAT_OTHER`
+(timer.bml). Addresses via `llvm-nm main_bench.elf | grep BENCH`.
+
+Measured (64 MHz HSI, ~460 B frames, >2,000 frames per run, 2026-06-11):
+
+| Metric                          | DEF (cpsid+copy) | BML (in place) |
+|---------------------------------|------------------|----------------|
+| Avg cycles/frame                | 5,044            | 4,276 (-18%)   |
+| Max cycles/frame                | 5,413            | 4,540          |
+| Extra RAM                       | +512 B           | 0              |
+| Max innocent-ISR entry latency  | 79.5 us          | 0.8 us (98x)   |
+| Masking on the payload path     | whole window     | none           |
+
+The max DEF latency equals the DEF window length (5,044 cycles = 79.0 us)
+exactly: the worst case is the timer update landing as the lock closes.
+
+Caveats: both legs are compiled by bml, so this isolates the DISCIPLINE
+cost (lock scope + duplicate buffer), not compiler codegen quality; an
+expert-C leg (same algorithm, clang -O2, hand-placed BASEPRI) is future
+work and a different question. The per-byte accessor call (`rx_get8`)
+inflates both legs' absolute numbers equally.
+
 ## Out Of Scope For First Bring-Up
 
 - IPv4/UDP.
