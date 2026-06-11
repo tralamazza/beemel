@@ -1,0 +1,39 @@
+// NUCLEO-H723ZG: ETH RX consumption bench role.
+//
+// Receives live broadcast traffic (the MAC is promiscuous) and consumes
+// each data frame with one of two disciplines, alternating per frame:
+// the defensive idiom (global interrupt lock + copy to a staging buffer)
+// vs the compiler-assisted one (in-place parse, no mask -- the OWN-bit
+// guard is the proof). TIM2 runs at 5 kHz as the innocent-ISR jitter
+// probe. See the bench section in eth_dma.bml for the legs and metrics.
+//
+// Build (mirrors build.sh, which only knows controller|mic_node):
+//   bml build --target stm32h723zg.target main_bench.bml
+//   ld.lld -T main_bench.ld main_bench.o -o main_bench.elf
+//
+// Probe statics (llvm-nm for addresses): BENCH_DEF_* / BENCH_BML_* in
+// eth_dma.bml, BENCH_LAT_DEF / BENCH_LAT_OTHER in timer.bml, FAULT_* in
+// fault.bml. Traffic source: UDP broadcast flood on the host's en8.
+
+import board;
+import fault;
+import eth_dma;
+import ptp_clock;
+import phy_lan8742;
+import timer;
+import copy_dma;
+
+fn main() @context(thread) {
+    board_bringup();
+    timer_init();
+    // tim2_isr's copy_isr_peek reads MDMA registers every tick; without
+    // copy_setup the MDMA clock is off and that read is a bus access to an
+    // unclocked AHB3 peripheral. Same init the controller does.
+    copy_setup();
+    eth_bench_init();
+
+    loop {
+        phy_poll_link();
+        eth_bench_poll();
+    }
+}

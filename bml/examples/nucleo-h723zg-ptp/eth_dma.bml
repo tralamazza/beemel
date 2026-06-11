@@ -10,7 +10,10 @@ import svd.ethernet_mac;
 import svd.ethernet_dma;
 import svd.ethernet_mtl;
 
-export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx;
+export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx, fn eth_bench_init, fn eth_bench_poll;
+
+import dwt;
+import timer;
 
 const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
 
@@ -58,8 +61,8 @@ comptime_assert(sizeof(RxDesc) == 16);
 
 var TX_BUFFER: [u8; 128] in dma_shared;
 var TX_DESC: [TxDesc; 2] in dma_shared;
-var RX_BUFFER: [u8; 1024] in dma_shared;
-var RX_DESC: [RxDesc; 2] in dma_shared;
+var RX_BUFFER: [u8; 2048] in dma_shared;
+var RX_DESC: [RxDesc; 4] in dma_shared;
 var TX_DESC_INDEX: u32;
 var RX_DESC_INDEX: u32;
 var RX_PACKET_COUNT: u32;
@@ -78,7 +81,7 @@ const TX_DESC_OWN: u32 = 0x80000000;
 const TX_DESC_FD: u32 = 0x20000000;
 const TX_DESC_LD: u32 = 0x10000000;
 const TX_DESC_LEN_MASK: u32 = 0x00003FFF;
-const RX_DESC_COUNT: u32 = 2;
+const RX_DESC_COUNT: u32 = 4;
 const RX_DESC_WORDS: u32 = 4;
 const RX_DESC_OWN: u32 = 0x80000000;
 const RX_DESC_CTXT: u32 = 0x40000000;
@@ -184,7 +187,42 @@ fn eth_init_clocks_and_pins() {
     }
 }
 
+// The D2 SRAM behind dma_shared is ECC-protected and deliberately
+// uninitialized at startup (region memory takes no initializer). Words
+// whose ECC was never established are bus-error mines: the bench's
+// full-frame consumption hit imprecise bus faults within seconds, with
+// RAMECC2 monitor flags latched. Word-writes establish valid ECC, so
+// every ETH static gets a word-wise zeroing pass before first use.
+fn eth_zero_ecc() {
+    var tb: *u32 = &TX_BUFFER as *u32;
+    var i: u32 = 0;
+    while i < 32 {
+        tb[i] = 0;
+        i = i + 1;
+    }
+    var td: *u32 = &TX_DESC as *u32;
+    var j: u32 = 0;
+    while j < 8 {
+        td[j] = 0;
+        j = j + 1;
+    }
+    var rb: *u32 = &RX_BUFFER as *u32;
+    var k: u32 = 0;
+    while k < 512 {
+        rb[k] = 0;
+        k = k + 1;
+    }
+    var rd: *u32 = &RX_DESC as *u32;
+    var m: u32 = 0;
+    while m < 16 {
+        rd[m] = 0;
+        m = m + 1;
+    }
+    asm { dsb } : : : "memory";
+}
+
 fn eth_init_tx() {
+    eth_zero_ecc();
 
     Ethernet_MAC.MACA0LR.ADDRLO = 0x00000002;
     Ethernet_MAC.MACA0HR.ADDRHI = 0x00003A72;
@@ -218,6 +256,14 @@ fn eth_init_rx() {
     RX_DESC[0].buf2 = 0;
     RX_DESC[0].status = RX_DESC_OWN | RX_DESC_BUF1V;
     RX_DESC[1].buf1 = rx_buffer_addr(1);
+    RX_DESC[2].buf1 = rx_buffer_addr(2);
+    RX_DESC[2]._res1 = 0;
+    RX_DESC[2].buf2 = 0;
+    RX_DESC[2].status = RX_DESC_OWN | RX_DESC_BUF1V;
+    RX_DESC[3].buf1 = rx_buffer_addr(3);
+    RX_DESC[3]._res1 = 0;
+    RX_DESC[3].buf2 = 0;
+    RX_DESC[3].status = RX_DESC_OWN | RX_DESC_BUF1V;
     RX_DESC[1]._res1 = 0;
     RX_DESC[1].buf2 = 0;
     RX_DESC[1].status = RX_DESC_OWN | RX_DESC_BUF1V;
@@ -321,6 +367,7 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
+    asm { dsb } : : : "memory";
 }
 
 fn rx_get8(index: u32) -> u32 {
@@ -344,6 +391,10 @@ fn rx_rearm(desc_word: u32) {
     RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
     Ethernet_DMA.DMACRxDTPR = rx_desc_addr(desc_word);
+    // Drain the write buffer: the tail-pointer write is a posted Device
+    // write, and leaving it in flight while the bus stays busy was the
+    // imprecise-BusFault source (E1-E8 bisection, 2026-06-11).
+    asm { dsb } : : : "memory";
 }
 
 fn eth_poll_rx() {
@@ -372,5 +423,136 @@ fn eth_poll_rx() {
     rx_rearm(desc_word);
 
     // Modulo wrap: see the TX_DESC_INDEX comment (verifier-friendly form).
+    RX_DESC_INDEX = (RX_DESC_INDEX + 1) % RX_DESC_COUNT;
+}
+
+// ─── ETH RX consumption bench ────────────────────────────────────────────────
+//
+// Two disciplines for the SAME job ("consume a received frame safely"),
+// alternating per data frame over the same live traffic so the comparison
+// controls for traffic variance:
+//
+//  DEF leg -- what a defensive programmer writes: a global interrupt lock
+//  around the whole consumption (fear of anything racing), and a memcpy of
+//  the frame into a private staging buffer before parsing it ("the DMA
+//  might touch it"). Costs: the copy itself, 512 B of duplicate RAM, and
+//  EVERY interrupt in the system blocked for the whole window.
+//
+//  BML leg -- what the compiler's analysis admits: the OWN-bit guard
+//  already proves the descriptor's buffer is CPU-owned (the same guard
+//  eth_poll_rx trusts), so the frame is parsed IN PLACE with no mask at
+//  all. The TIM2 jitter probe (timer.bml) keeps running through it.
+//
+// Cycle counts come from DWT.CYCCNT (dwt.bml); per-leg sums/maxes are
+// debugger-read. BENCH_*_LAST anchors the parse result so the sum loop
+// cannot be optimized away (and lets the probe cross-check both legs
+// computed the same sum for the same traffic).
+
+var BSTAGING: [u8; 512];        // the defensive leg's duplicate buffer
+var BENCH_DEF_FRAMES: u32;
+var BENCH_DEF_CYC_SUM: u32;     // unbounded accumulators; u32 wrap intended
+var BENCH_DEF_CYC_MAX: u32;
+var BENCH_DEF_LAST: u32;
+var BENCH_BML_FRAMES: u32;
+var BENCH_BML_CYC_SUM: u32;
+var BENCH_BML_CYC_MAX: u32;
+var BENCH_BML_LAST: u32;
+
+fn eth_bench_init() @context(thread) {
+    dwt_init();
+    timer_bench_rate();
+}
+
+fn bench_consume_defensive(len: u32) @context(thread) {
+    timer_bench_mark(1);
+    asm { cpsid i } : : : "memory";
+    const t0 = dwt_cycles();
+    var i: u32 = 0;
+    while i < len {
+        BSTAGING[i] = rx_get8(i) as u8;
+        i = i + 1;
+    }
+    var sum: u32 = 0;
+    var j: u32 = 0;
+    while j < len {
+        // bml-verify: ignore V130
+        sum = sum + (BSTAGING[j] as u32);
+        j = j + 1;
+    }
+    const t1 = dwt_cycles();
+    asm { cpsie i } : : : "memory";
+    timer_bench_mark(0);
+    BENCH_DEF_LAST = sum;
+    const dt = t1 - t0;
+    // bml-verify: ignore V130
+    BENCH_DEF_CYC_SUM = BENCH_DEF_CYC_SUM + dt;
+    if dt > BENCH_DEF_CYC_MAX {
+        BENCH_DEF_CYC_MAX = dt;
+    }
+    BENCH_DEF_FRAMES = BENCH_DEF_FRAMES + 1;
+}
+
+fn bench_consume_bml_window(lo: u32, hi: u32) @context(thread) {
+    const t0 = dwt_cycles();
+    var sum: u32 = 0;
+    var j: u32 = lo;
+    while j < hi {
+        // bml-verify: ignore V130
+        sum = sum + rx_get8(j);
+        j = j + 1;
+    }
+    const t1 = dwt_cycles();
+    BENCH_BML_LAST = sum;
+    const dt = t1 - t0;
+    // bml-verify: ignore V130
+    BENCH_BML_CYC_SUM = BENCH_BML_CYC_SUM + dt;
+    BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
+}
+
+fn bench_consume_bml(len: u32) @context(thread) {
+    const t0 = dwt_cycles();
+    var sum: u32 = 0;
+    var j: u32 = 0;
+    while j < len {
+        // bml-verify: ignore V130
+        sum = sum + rx_get8(j);
+        j = j + 1;
+    }
+    const t1 = dwt_cycles();
+    BENCH_BML_LAST = sum;
+    const dt = t1 - t0;
+    // bml-verify: ignore V130
+    BENCH_BML_CYC_SUM = BENCH_BML_CYC_SUM + dt;
+    if dt > BENCH_BML_CYC_MAX {
+        BENCH_BML_CYC_MAX = dt;
+    }
+    BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
+}
+
+// eth_poll_rx with the consumption swapped for the alternating bench legs.
+fn eth_bench_poll() @context(thread) {
+    const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
+    asm { dmb } : : : "memory";
+    const desc3 = rx_desc_get32(desc_word + 3);
+
+    if (desc3 & RX_DESC_OWN) != 0 {
+        return;
+    }
+
+    if (desc3 & RX_DESC_CTXT) != 0 {
+        RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
+    } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
+        var len: u32 = desc3 & RX_DESC_LEN_MASK;
+        if len > 512 {
+            len = 512;
+        }
+        if ((BENCH_DEF_FRAMES + BENCH_BML_FRAMES) & 1) == 0 {
+            bench_consume_defensive(len);
+        } else {
+            bench_consume_bml(len);
+        }
+    }
+
+    rx_rearm(desc_word);
     RX_DESC_INDEX = (RX_DESC_INDEX + 1) % RX_DESC_COUNT;
 }

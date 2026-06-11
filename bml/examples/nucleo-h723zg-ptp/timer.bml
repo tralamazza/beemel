@@ -25,7 +25,8 @@ import svd.tim2;
 import svd.nvic;
 import copy_dma;
 
-export fn timer_init, fn timer_ticks, fn timer_log_sum;
+export fn timer_init, fn timer_ticks, fn timer_log_sum,
+       fn timer_bench_rate, fn timer_bench_mark;
 
 // This module owns the TIM2 peripheral. It cannot own its RCC enable bit.
 owns TIM2;
@@ -61,8 +62,45 @@ fn timer_init() {
     TIM2.CR1.CEN = true;
 }
 
+// ETH bench jitter probe (eth_dma.bml `eth_bench_poll`): TIM2 is the
+// INNOCENT high-rate ISR whose entry latency the bench measures. CNT counts
+// up from 0 after the update event, so its value at ISR entry IS the
+// delivery latency in timer-clock ticks (64 MHz kernel clock = 15.6 ns
+// each once timer_bench_rate() drops PSC to 0). The thread marks its
+// defensive windows via BENCH_IN_DEF so each observation lands in the
+// right bucket. Writers: this ISR only; readers: the debugger probe.
+var BENCH_IN_DEF: u32 @shared;  // thread sets 1 around the defensive leg
+var BENCH_LAT_DEF: u32 @exclusive(tim2_isr);    // max latency in DEF windows
+var BENCH_LAT_OTHER: u32 @exclusive(tim2_isr);  // max latency elsewhere
+
+// Re-rate TIM2 for the bench role: PSC 0 (full 64 MHz resolution for the
+// latency read), 5 kHz update rate so windows of tens of microseconds get
+// sampled. TICKS then counts at 5 kHz -- the bench does not heartbeat.
+fn timer_bench_rate() @context(thread) {
+    TIM2.CR1.CEN = false;
+    TIM2.PSC = 0;
+    TIM2.ARR = 12799;
+    TIM2.SR.UIF = false;
+    TIM2.CR1.CEN = true;
+}
+
+fn timer_bench_mark(active: u32) @context(thread) {
+    BENCH_IN_DEF = active;
+}
+
 // The vector-table slot comes from `[interrupts] TIM2 = 28` in the target.
 fn tim2_isr() @isr("TIM2", priority = 2) {
+    // Latency sample FIRST: CNT has been counting since the update event.
+    var lat: u32 = (TIM2.CNT.CNT_H << 16) | TIM2.CNT.CNT_L;
+    if BENCH_IN_DEF != 0 {
+        if lat > BENCH_LAT_DEF {
+            BENCH_LAT_DEF = lat;
+        }
+    } else {
+        if lat > BENCH_LAT_OTHER {
+            BENCH_LAT_OTHER = lat;
+        }
+    }
     TIM2.SR.UIF = false;
     var t: u32 = TICKS;
     TICKS = t + 1;
