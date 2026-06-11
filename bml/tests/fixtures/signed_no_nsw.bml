@@ -1,0 +1,12 @@
+// Runtime codegen of signed arithmetic must stay flag-free: BML defines
+// two's-complement wrap, and `nsw` would license UB-based optimization.
+// The nsw tag exists ONLY in the verify IR (see verify_signed_math.bml).
+fn diff(a: i32, b: i32) -> i32 {
+    return a - b;
+}
+
+fn main() @context(thread) {
+    var r: i32 = diff(5 as i32, 7 as i32);
+    var n: i32 = -r;
+    var keep = n;
+}

@@ -1,0 +1,9 @@
+// Differential proof that signed semantics actually reach IKOS: INT_MAX + 1
+// does NOT overflow in the unsigned reading (0x7FFFFFFF + 1 = 0x80000000),
+// so the plain/unsigned pipeline would pass this. The `nsw` tag on signed
+// ops makes it a definite signed-int-overflow (V130 sio, verify fails).
+fn main() @context(thread) {
+    var x: i32 = 2147483647 as i32;
+    var y: i32 = x + 1 as i32;
+    assert(y != 0 as i32);
+}

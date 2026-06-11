@@ -1,0 +1,16 @@
+// Signed (iN) add/sub/mul/neg are tagged `nsw` in the VERIFY IR only, so
+// IKOS runs its SIGNED overflow check with branch narrowing instead of
+// reading the signless ops as unsigned. Without the tag, `5 - 7` here
+// reported a DEFINITE unsigned-int-underflow error and `dns + 1e9` a
+// definite overflow; with it the whole function proves with no
+// suppressions, including the assert on the wrapped-borrow result.
+fn main() @context(thread) {
+    var a: u32 = 5;
+    var dns: i32 = a as i32 - 7 as i32;
+    if dns < 0 as i32 {
+        dns = dns + 1000000000 as i32;
+    }
+    var neg: i32 = -dns;
+    assert(dns < 1000000000 as i32);
+    assert(neg > 0 as i32 - 1000000000 as i32);
+}

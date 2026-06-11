@@ -80,11 +80,13 @@ fn ptp_base_addend() -> u32 {
 // milestone-10 validation because every overshot step was followed by a
 // corrective +1 s step on the next round (STEPS counted 2 per event).
 fn ptp_step(s: u32, ns: u32, subtract: b1) {
+    // Caller contract: ns is a nanosecond field, < 1e9 (both callers pass a
+    // normalized borrow result). Makes the 1e9 - ns encoding provable.
+    assume(ns < 1000000000);
     if subtract {
-        // bml-verify: ignore V130
-        Ethernet_MAC.MACSTSUR.TSS = 0 - s;
+        // Two's complement of the seconds: definitional wrap.
+        Ethernet_MAC.MACSTSUR.TSS = 0 -% s;
         if ns != 0 {
-            // ns in (0, 1e9) at every caller. // bml-verify: ignore V130
             Ethernet_MAC.MACSTNUR.TSSS = 1000000000 - ns;
         } else {
             Ethernet_MAC.MACSTNUR.TSSS = 0;

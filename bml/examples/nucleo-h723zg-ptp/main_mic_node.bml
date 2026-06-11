@@ -123,17 +123,24 @@ fn main() @context(thread) {
                 if pt == PTP_DELAY_RESP && ptp_rx_seq() == sync_seq && await_resp != 0 {
                     PTP_T4_S = ptp_rx_ts_s();
                     PTP_T4_NS = ptp_rx_ts_ns();
-                    // All four collected: publish the raw deltas.
-                    // bml-verify: ignore V130
-                    const d1 = (PTP_T2_NS - PTP_T1_NS) + (PTP_T2_S - PTP_T1_S) * 1000000000;
-                    // bml-verify: ignore V130
-                    const d2 = (PTP_T4_NS - PTP_T3_NS) + (PTP_T4_S - PTP_T3_S) * 1000000000;
+                    // All four collected: publish the raw deltas. The
+                    // nanosecond fields are < 1e9 by hardware (digital
+                    // rollover, TSCTRLSSR); captured into locals and stated
+                    // as assumes so the signed borrow math in the step
+                    // branch PROVES instead of being suppressed (assuming on
+                    // the static narrows only that load, not the cell).
+                    const t1ns = PTP_T1_NS;
+                    const t2ns = PTP_T2_NS;
+                    assume(t1ns < 1000000000);
+                    assume(t2ns < 1000000000);
+                    // The deltas are two's-complement u32 by protocol (valid
+                    // while they stay under a second): wrap ops, not bugs.
+                    const d1 = (t2ns -% t1ns) +% (PTP_T2_S -% PTP_T1_S) *% 1000000000;
+                    const d2 = (PTP_T4_NS -% PTP_T3_NS) +% (PTP_T4_S -% PTP_T3_S) *% 1000000000;
                     PTP_D1_NS = d1;
                     PTP_D2_NS = d2;
-                    // bml-verify: ignore V130
-                    PTP_OFFSET_RAW = d1 - d2;
-                    // bml-verify: ignore V130
-                    PTP_DELAY_NS = (d1 + d2) / 2;
+                    PTP_OFFSET_RAW = d1 -% d2;
+                    PTP_DELAY_NS = (d1 +% d2) / 2;
                     PTP_ROUNDS +%= 1;
                     PTP_LOG_OFF[PTP_LOG_IDX & 15] = ((PTP_OFFSET_RAW as i32) / 2 as i32) as u32;
                     PTP_LOG_DLY[PTP_LOG_IDX & 15] = PTP_DELAY_NS;
@@ -143,33 +150,27 @@ fn main() @context(thread) {
                     // ── Servo (milestone 10) ──
                     if PTP_LOCK == 0 {
                         // First lock: coarse-step by t2-t1 (normalize the
-                        // signed s/ns pair, then add or subtract).
-                        // Signed clock-delta math: IKOS reads the signless
-                        // IR ops as unsigned, so the V130s below are
-                        // signed-intended false positives.
-                        // bml-verify: ignore V130
-                        var ds: i32 = (PTP_T2_S - PTP_T1_S) as i32;
-                        // bml-verify: ignore V130
-                        var dns: i32 = PTP_T2_NS as i32 - PTP_T1_NS as i32;
+                        // signed s/ns pair, then add or subtract). The ns
+                        // half PROVES under the assumes above; the seconds
+                        // half is a genuine full-range u32 boot-time delta,
+                        // so its INT_MIN edge cases (one value in 2^32) are
+                        // wrap-tolerated -- a garbage step is corrected by
+                        // the divergence gate on the next round.
+                        var ds: i32 = (PTP_T2_S -% PTP_T1_S) as i32;
+                        var dns: i32 = t2ns as i32 - t1ns as i32;
                         if dns < 0 as i32 {
-                            // bml-verify: ignore V130
                             dns = dns + 1000000000 as i32;
-                            // bml-verify: ignore V130
-                            ds = ds - 1 as i32;
+                            ds = ds -% 1 as i32;
                         }
                         if ds >= 0 as i32 {
                             ptp_step(ds as u32, dns as u32, true);
                         } else {
                             // Master ahead: add the magnitude.
-                            // bml-verify: ignore V130
-                            var as_: i32 = 0 as i32 - ds;
-                            // bml-verify: ignore V130
+                            var as_: i32 = 0 as i32 -% ds;
                             var ans: i32 = 0 as i32 - dns;
                             if ans < 0 as i32 {
-                                // bml-verify: ignore V130
                                 ans = ans + 1000000000 as i32;
-                                // bml-verify: ignore V130
-                                as_ = as_ - 1 as i32;
+                                as_ = as_ -% 1 as i32;
                             }
                             ptp_step(as_ as u32, ans as u32, false);
                         }
@@ -181,9 +182,7 @@ fn main() @context(thread) {
                         // made the first post-step servo write yank the
                         // hardware back to ~nominal, re-creating the full
                         // reference drift every time.
-                    // bml-verify: ignore V130
                     } else if (PTP_DELAY_NS as i32) > 50000 as i32
-                        // bml-verify: ignore V130
                         || (PTP_DELAY_NS as i32) < (0 as i32 - 50000 as i32) {
                         // Delay sanity gate: the true path delay is
                         // microseconds and near-constant; a corrupted
@@ -195,7 +194,6 @@ fn main() @context(thread) {
                         // Slew: PI on the addend. offset = (d1-d2)/2, signed.
                         const off: i32 = (PTP_OFFSET_RAW as i32) / 2 as i32;
                         PTP_OFFSET_EST = off as u32;
-                        // bml-verify: ignore V130
                         if off > 100000000 as i32 || off < (0 as i32 - 100000000 as i32) {
                             // Diverged (>100 ms): drop lock, re-step next round.
                             PTP_LOCK = 0;
@@ -226,19 +224,24 @@ fn main() @context(thread) {
                             // (delay sigma ~30 ns) while the reference
                             // random-walks ~200 ppm/min, so the loop should
                             // chase every measurement.
-                            // bml-verify: ignore V130
+                            // Loop invariant, established by init (0) and
+                            // re-established by the anti-windup clamp below
+                            // every iteration; stated for the verifier
+                            // because widening across this loop's havoc
+                            // points loses it. With it, the integral update
+                            // is provably overflow-free: |servo_freq| <=
+                            // 7e7, |off| < 1e8 (divergence gate).
+                            assume(servo_freq <= 70000000 as i32);
+                            assume(servo_freq >= 0 as i32 - 70000000 as i32);
                             servo_freq = servo_freq - off;
                             // Anti-windup: bound the integral by the same
                             // authority the output clamp grants.
-                            // bml-verify: ignore V130
                             if servo_freq < (0 as i32 - 70000000 as i32) {
-                                // bml-verify: ignore V130
                                 servo_freq = 0 as i32 - 70000000 as i32;
                             }
                             if servo_freq > 70000000 as i32 {
                                 servo_freq = 70000000 as i32;
                             }
-                            // bml-verify: ignore V130
                             var anow: i32 = ptp_base_addend() as i32 + servo_freq - off * 6 as i32;
                             // Authority clamp: ~±2.1% around nominal. The
                             // PTP references are 64 MHz PLL'd from each
@@ -248,9 +251,7 @@ fn main() @context(thread) {
                             // The old ±16e6 (~±4768 ppm) clamp railed
                             // against that and the servo could never null
                             // the rate. ±70e6 covers two ±1% references.
-                            // bml-verify: ignore V130
                             const lo: i32 = ptp_base_addend() as i32 - 70000000 as i32;
-                            // bml-verify: ignore V130
                             const hi: i32 = ptp_base_addend() as i32 + 70000000 as i32;
                             if anow < lo {
                                 anow = lo;
@@ -262,7 +263,6 @@ fn main() @context(thread) {
                             PTP_ADDEND_NOW = anow as u32;
                             // Lock window 250 us ~ 3 sigma of the measured
                             // floor (sigma 84 us at the 0.376 s cadence).
-                            // bml-verify: ignore V130
                             if off < 250000 as i32 && off > (0 as i32 - 250000 as i32) {
                                 PTP_LOCK_STREAK +%= 1;
                                 if PTP_LOCK_STREAK >= 4 {

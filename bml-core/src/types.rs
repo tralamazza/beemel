@@ -563,6 +563,11 @@ pub fn is_int(ty: &Type) -> bool {
 }
 
 #[must_use]
+pub fn is_signed_int(ty: &Type) -> bool {
+    matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64)
+}
+
+#[must_use]
 pub fn is_float(ty: &Type) -> bool {
     matches!(ty, Type::F16 | Type::F32 | Type::F64)
 }

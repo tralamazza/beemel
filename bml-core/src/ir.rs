@@ -2206,7 +2206,16 @@ impl IrEmitter {
                                 self.line(&format!("{reg} = fneg {inner_llvm} {inner_reg}"));
                             }
                             UnaryOp::Neg => {
-                                self.line(&format!("{reg} = sub {inner_llvm} 0, {inner_reg}"));
+                                // Signed negation gets `nsw` in verify IR
+                                // (sio instead of uio false positives; see
+                                // the Binary arm). Runtime IR stays plain.
+                                let nsw =
+                                    if self.verify_mode && crate::types::is_signed_int(&inner_ty) {
+                                        " nsw"
+                                    } else {
+                                        ""
+                                    };
+                                self.line(&format!("{reg} = sub{nsw} {inner_llvm} 0, {inner_reg}"));
                             }
                             UnaryOp::Not => {
                                 self.line(&format!("{reg} = xor i1 {inner_reg}, true"));
@@ -2431,8 +2440,27 @@ impl IrEmitter {
                         "{reg} = {llvm_op} {result_ty} {left_reg}, {right_reg}{dbg}"
                     ));
                 } else {
+                    // VERIFY IR ONLY: tag signed add/sub/mul with `nsw` so
+                    // IKOS runs its SIGNED overflow check (sio) with branch
+                    // narrowing, instead of reading the signless op as
+                    // unsigned and flagging every legitimate negative value
+                    // (uio false positives -- measured: plain `5 - 7` as i32
+                    // reports a definite unsigned underflow; with nsw the
+                    // same op proves clean and a real i32 overflow still
+                    // reports sio). The RUNTIME IR stays flag-free: BML
+                    // defines wrap, and nsw would license UB-based
+                    // optimization. Wrap ops (`+%`) stay unflagged even on
+                    // signed types -- wrap is their declared semantics.
+                    let nsw = if self.verify_mode
+                        && matches!(op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
+                        && crate::types::is_signed_int(&left_ty)
+                    {
+                        " nsw"
+                    } else {
+                        ""
+                    };
                     self.line(&format!(
-                        "{reg} = {llvm_op} {lty} {left_reg}, {right_reg}{dbg}"
+                        "{reg} = {llvm_op}{nsw} {lty} {left_reg}, {right_reg}{dbg}"
                     ));
                 }
                 reg

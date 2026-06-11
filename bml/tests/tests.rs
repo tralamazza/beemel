@@ -2132,6 +2132,27 @@ fn test_verify_dbz() {
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 
+// Signed-typed arithmetic is tagged `nsw` in the verify IR, flipping IKOS
+// from the unsigned reading (which flagged `5 - 7` as i32 as a definite
+// underflow) to the signed check with branch narrowing: bounded signed math
+// proves with zero suppressions...
+assert_verify_pass!(test_verify_signed_math, "verify_signed_math.bml");
+// ...while a definite i32 overflow (INT_MAX + 1) goes red -- a true
+// differential, because the unsigned reading would have passed it.
+assert_verify_fail!(test_verify_sio_definite, "verify_sio_definite.bml");
+
+// The nsw tag must NOT appear in runtime codegen (BML defines wrap; nsw
+// would license UB-based optimization).
+#[test]
+fn test_signed_runtime_ir_has_no_nsw() {
+    let ir = bml_ir("signed_no_nsw.bml");
+    assert!(ir.contains("sub i32"), "expected sub i32 in IR:\n{ir}");
+    assert!(
+        !ir.contains("nsw") && !ir.contains("nuw"),
+        "runtime IR must not carry overflow flags:\n{ir}"
+    );
+}
+
 // Same overflow DECLARED with `+%`: the V130 finding is dropped (wrap is
 // intent, carried via Program::wrap_spans, no ignore comment involved) and
 // the wrapped value still proves (`assert(b == 0)` holds in machine
