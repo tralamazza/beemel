@@ -457,6 +457,12 @@ indefinitely under the derived volatile.
 
 ## Open items
 
+- **Masked/sub-field extents**: `@extent(addr_field)` reads the WHOLE
+  descriptor word as the byte count, but hardware packs control bits into
+  the same word (EQOS TDES2 = B1L length in bits 13:0 plus TTSE/IOC in
+  the top bits) -- setting TTSE made a definite false V200. Candidate
+  form: `@extent(buf1, mask 0x3FFF)`. Suppressed-with-comment in the
+  example until then.
 - **Gates on non-agent peripherals**: the derived enable read-back covers
   DECLARED gates (`enabled_by`, an agent property). The gate that actually
   bit on silicon (TIM2EN -- TIM2 is no agent) has no declaration site, so

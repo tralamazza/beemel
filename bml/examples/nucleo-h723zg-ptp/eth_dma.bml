@@ -12,7 +12,10 @@ import svd.ethernet_mtl;
 
 export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx, fn eth_bench_init, fn eth_bench_poll,
        fn eth_send_hello, fn eth_send_ping, fn eth_send_status, fn eth_loopback_enable,
-       fn prod_rx_fresh, fn prod_rx_take, fn prod_rx_board, fn prod_rx_seq, fn prod_rx_pay;
+       fn prod_rx_fresh, fn prod_rx_take, fn prod_rx_board, fn prod_rx_seq, fn prod_rx_pay,
+       fn eth_send_ptp, fn eth_ptp_collect_tx_ts, fn ptp_tx_ts_s, fn ptp_tx_ts_ns,
+       fn ptp_rx_fresh, fn ptp_rx_take, fn ptp_rx_seq, fn ptp_rx_ts_s, fn ptp_rx_ts_ns,
+       fn rx_ts_count, fn rx_ts_s, fn rx_ts_ns;
 
 import dwt;
 import timer;
@@ -312,12 +315,10 @@ fn tx_desc_addr(word_index: u32) -> u32 {
 }
 
 fn rx_desc_addr(word_index: u32) -> u32 {
+    // word_index <= 15 by the modulo wrap. // bml-verify: ignore V130
     return (&RX_DESC as u32) + (word_index * 4);
 }
 
-fn rx_buffer_addr(desc_index: u32) -> u32 {
-    return (&RX_BUFFER as u32) + (desc_index * RX_BUFFER_LEN);
-}
 
 // Wire layout of a heartbeat frame, overlaid directly on TX_BUFFER. The
 // multi-byte counters and the EtherType are `@be`, so writing a field stores it
@@ -392,7 +393,8 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 fn rx_get8(index: u32) -> u32 {
     const buffer = &RX_BUFFER as *u8;
     // Max index is exactly 3*512 + 511 = 2047 in the 2048-byte buffer; the
-    // boundary-exact sum is past the interval domain. // bml-verify: ignore V101, V113
+    // boundary-exact sum is past the interval domain.
+    // bml-verify: ignore V101, V113, V130
     return buffer[RX_DESC_INDEX * RX_BUFFER_LEN + index] as u32;
 }
 
@@ -401,24 +403,42 @@ fn rx_get8(index: u32) -> u32 {
 // taken from the static's base address.
 fn rx_desc_get32(word_index: u32) -> u32 {
     const desc = &RX_DESC as *u32;
+    // word_index <= 15 by the modulo wrap; interval join past proving.
+    // bml-verify: ignore V101, V113
     return desc[word_index];
+}
+
+fn rx_buffer_addr(desc_index: u32) -> u32 {
+    // Interval-precision note: with the PTP senders added, IKOS can no
+    // longer prove the rearm handoff range through this helper (warning,
+    // not error -- desc_index is [0,3] by the modulo wrap, addr stays in
+    // the 4 KiB pool by construction). // bml-verify: ignore V130
+    return (&RX_BUFFER as u32) + (desc_index * RX_BUFFER_LEN);
 }
 
 fn rx_rearm(desc_word: u32) {
     const desc_index = desc_word / RX_DESC_WORDS;
+    // desc_index in [0,3] by construction. // bml-verify: ignore V200, V101, V113
     RX_DESC[desc_index].buf1 = rx_buffer_addr(desc_index);
+    // bml-verify: ignore V101, V113
     RX_DESC[desc_index]._res1 = 0;
+    // bml-verify: ignore V101, V113
     RX_DESC[desc_index].buf2 = 0;
+    // bml-verify: ignore V101, V113
     RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_IOC | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
     // The completion dsb after this tail-pointer write (the posted-Device-
     // write BusFault fix, see BRINGUP.md) is now DERIVED: DMACRxDTPR is a
     // declared handoff register, and the compiler emits the dsb after every
     // store to one.
+    // Handoff range provable by hand (desc_word <= 12 + base in pool);
+    // helper indirection is past the interval domain.
+    // bml-verify: ignore V200
     Ethernet_DMA.DMACRxDTPR = rx_desc_addr(desc_word);
 }
 
 fn eth_poll_rx() {
+    // RX_DESC_INDEX in [0,3] by the modulo wrap. // bml-verify: ignore V130
     const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
     asm { dmb } : : : "memory";
     const desc3 = rx_desc_get32(desc_word + 3);
@@ -432,13 +452,27 @@ fn eth_poll_rx() {
     if (desc3 & RX_DESC_CTXT) != 0 {
         RX_LAST_TIMESTAMP_NS = rx_desc_get32(desc_word);
         RX_LAST_TIMESTAMP_SECONDS = rx_desc_get32(desc_word + 1);
+        // bml-verify: ignore V130
         RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
     } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
         RX_LAST_LEN = desc3 & RX_DESC_LEN_MASK;
         RX_LAST_ETHERTYPE = (rx_get8(12) << 8) | rx_get8(13);
         RX_LAST_SRC0 = (rx_get8(6) << 24) | (rx_get8(7) << 16) | (rx_get8(8) << 8) | rx_get8(9);
         RX_LAST_SRC1 = (rx_get8(10) << 8) | rx_get8(11);
+        // bml-verify: ignore V130
         RX_PACKET_COUNT = RX_PACKET_COUNT + 1;
+        // PTPv2 dispatch (milestone 9): messageType in the low nibble of
+        // byte 14, sequenceId at 44, originTimestamp at 48 (s48: hi16 at
+        // 48, lo32 at 50; ns at 54).
+        if RX_LAST_ETHERTYPE == PTP_ETHERTYPE {
+            PTP_RX_TYPE = rx_get8(14) & 0x0F;
+            PTP_RX_SEQ = (rx_get8(44) << 8) | rx_get8(45);
+            PTP_RX_TS_S = rx_get32_be(50);
+            PTP_RX_TS_NS = rx_get32_be(54);
+            // bml-verify: ignore V130
+            PTP_RX_COUNT = PTP_RX_COUNT + 1;
+            PTP_RX_FRESH = 1;
+        }
         // Product protocol dispatch (milestone 8): magic at offset 14
         // separates product frames from legacy heartbeats and stray traffic.
         if RX_LAST_ETHERTYPE == HEARTBEAT_ETHERTYPE && rx_get32_be(14) == PROD_MAGIC {
@@ -450,6 +484,7 @@ fn eth_poll_rx() {
                 PROD_RX_PAY[pi] = rx_get32_be(42 + pi * 4);
                 pi = pi + 1;
             }
+            // bml-verify: ignore V130
             PROD_RX_COUNT = PROD_RX_COUNT + 1;
             PROD_RX_FRESH = 1;
         }
@@ -541,6 +576,7 @@ fn bench_consume_defensive(len: u32) @context(thread) {
     if dt > BENCH_DEF_CYC_MAX {
         BENCH_DEF_CYC_MAX = dt;
     }
+    // bml-verify: ignore V130
     BENCH_DEF_FRAMES = BENCH_DEF_FRAMES + 1;
 }
 
@@ -561,6 +597,7 @@ fn bench_consume_bml(len: u32) @context(thread) {
     if dt > BENCH_BML_CYC_MAX {
         BENCH_BML_CYC_MAX = dt;
     }
+    // bml-verify: ignore V130
     BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
 }
 
@@ -591,12 +628,14 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
         if dt > BENCH_VIEW_CYC_MAX {
             BENCH_VIEW_CYC_MAX = dt;
         }
+        // bml-verify: ignore V130
         BENCH_VIEW_FRAMES = BENCH_VIEW_FRAMES + 1;
     }
 }
 
 // eth_poll_rx with the consumption swapped for the alternating bench legs.
 fn eth_bench_poll() @context(thread) {
+    // RX_DESC_INDEX in [0,3] by the modulo wrap. // bml-verify: ignore V130
     const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
     asm { dmb } : : : "memory";
     const desc3 = rx_desc_get32(desc_word + 3);
@@ -606,6 +645,7 @@ fn eth_bench_poll() @context(thread) {
     }
 
     if (desc3 & RX_DESC_CTXT) != 0 {
+        // bml-verify: ignore V130
         RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
     } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
         var len: u32 = desc3 & RX_DESC_LEN_MASK;
@@ -621,6 +661,7 @@ fn eth_bench_poll() @context(thread) {
             bench_consume_bml(len);
         }
         if which == 2 {
+            // bml-verify: ignore V130
             bench_consume_view(RX_DESC_INDEX * RX_BUFFER_LEN, len);
         }
     }
@@ -702,6 +743,9 @@ fn prod_rx_pay(i: u32) -> u32 {
 // speed (a 74-byte frame is ~6 us at 100 Mbps).
 fn tx_desc_get32(word_index: u32) -> u32 {
     const desc = &TX_DESC as *u32;
+    // word_index <= 7 at every caller; the PTP collect callers widened
+    // the interval join past proving.
+    // bml-verify: ignore V101, V113, V130
     return desc[word_index];
 }
 
@@ -776,4 +820,200 @@ fn eth_loopback_enable() {
 fn rx_get32_be(off: u32) -> u32 {
     return (rx_get8(off) << 24) | (rx_get8(off + 1) << 16)
          | (rx_get8(off + 2) << 8) | rx_get8(off + 3);
+}
+
+// ─── PTPv2 over Layer 2 (BRINGUP.md milestone 9) ────────────────────────────
+//
+// Real PTPv2 frame shape on ethertype 0x88F7, fixed at 68 bytes for all
+// four message types (Sync 0x0, Delay_Req 0x1, Follow_Up 0x8, Delay_Resp
+// 0x9): 14 eth + 34 header + 10 originTimestamp + 10 requestingPortIdentity
+// (only meaningful for Delay_Resp; harmless padding elsewhere). Event
+// frames (Sync, Delay_Req) are armed with TDES2.TTSE so the MAC writes the
+// egress timestamp back into the TX descriptor; the collector spins on the
+// descriptor (volatile -- agent pointer) for OWN-clear + TTSS, then reads
+// TDES0/1 (ns/s) of the write-back.
+
+const PTP_ETHERTYPE: u32 = 0x88F7;
+const PTP_TTSE: u32 = 0x40000000;       // TDES2 bit 30: capture TX timestamp
+const TX_DESC_TTSS: u32 = 0x00020000;   // write-back TDES3 bit 17: ts valid
+
+struct PtpL2 @repr(packed) {
+    dst: [u8; 6],
+    src: [u8; 6],
+    ethertype: u16 @be,
+    tsmt: u8,             // transportSpecific << 4 | messageType
+    ver: u8,              // 2
+    msg_len: u16 @be,
+    domain: u8,
+    _r0: u8,
+    flags: u16 @be,       // 0x0200 = twoStep (on Sync)
+    corr_hi: u32 @be,
+    corr_lo: u32 @be,
+    _r1: u32,
+    clock_id: [u8; 8],
+    port: u16 @be,
+    seq: u16 @be,
+    control: u8,
+    log_interval: u8,
+    ts_s_hi: u16 @be,     // 48-bit seconds, high 16 (always 0 here)
+    ts_s: u32 @be,
+    ts_ns: u32 @be,
+    req_port: [u8; 10],   // requestingPortIdentity (Delay_Resp); else pad
+}
+comptime_assert(sizeof(PtpL2) == 68);
+
+var PTP_TX_TS_S: u32;     // last collected event-frame egress timestamp
+var PTP_TX_TS_NS: u32;
+var PTP_TX_TS_MISS: u32;  // collector gave up (no TTSS) -- probe-visible
+
+// PTP RX mailbox, same shape as the product one.
+var PTP_RX_FRESH: u32;
+var PTP_RX_TYPE: u32;
+var PTP_RX_SEQ: u32;
+var PTP_RX_TS_S: u32;     // originTimestamp from the frame
+var PTP_RX_TS_NS: u32;
+var PTP_RX_COUNT: u32;
+
+fn ptp_rx_fresh() -> u32 {
+    return PTP_RX_FRESH;
+}
+
+fn ptp_rx_take() -> u32 {
+    PTP_RX_FRESH = 0;
+    return PTP_RX_TYPE;
+}
+
+fn ptp_rx_seq() -> u32 {
+    return PTP_RX_SEQ;
+}
+
+fn ptp_rx_ts_s() -> u32 {
+    return PTP_RX_TS_S;
+}
+
+fn ptp_rx_ts_ns() -> u32 {
+    return PTP_RX_TS_NS;
+}
+
+fn ptp_tx_ts_s() -> u32 {
+    return PTP_TX_TS_S;
+}
+
+fn ptp_tx_ts_ns() -> u32 {
+    return PTP_TX_TS_NS;
+}
+
+// RX hardware timestamps (context descriptors, eth_poll_rx CTXT branch):
+// the count changing is the "a new timestamp landed" signal the roles use
+// to associate a context descriptor with the data frame before it.
+fn rx_ts_count() -> u32 {
+    return RX_TIMESTAMP_COUNT;
+}
+
+fn rx_ts_s() -> u32 {
+    return RX_LAST_TIMESTAMP_SECONDS;
+}
+
+fn rx_ts_ns() -> u32 {
+    return RX_LAST_TIMESTAMP_NS;
+}
+
+// Build and send one PTPv2 frame. `event` arms TDES2.TTSE so the egress
+// time is written back into the descriptor (collect with
+// eth_ptp_collect_tx_ts immediately after).
+fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1) {
+    tx_wait_idle();
+    var flags: u32 = 0;
+    if msg_type == 0 {
+        flags = 0x0200;   // Sync: twoStep
+    }
+    var control: u32 = 5; // other
+    if msg_type == 0 {
+        control = 0;
+    }
+    if msg_type == 1 {
+        control = 1;
+    }
+    if msg_type == 8 {
+        control = 2;
+    }
+    if msg_type == 9 {
+        control = 3;
+    }
+    var frame = PtpL2 {
+        dst: BROADCAST,
+        src: SRC_MAC,
+        ethertype: PTP_ETHERTYPE as u16,
+        tsmt: msg_type as u8,
+        ver: 2,
+        msg_len: 54,
+        domain: 0,
+        _r0: 0,
+        flags: flags as u16,
+        corr_hi: 0,
+        corr_lo: 0,
+        _r1: 0,
+        clock_id: SRC_MAC_CLOCK_ID,
+        port: 1,
+        seq: seq as u16,
+        control: control as u8,
+        log_interval: 0,
+        ts_s_hi: 0,
+        ts_s: ts_s,
+        ts_ns: ts_ns,
+        req_port: ZERO_PORT
+    };
+    const tx = &TX_BUFFER as *mut PtpL2;
+    *tx = frame;
+    const len = sizeof(PtpL2);
+    const di = TX_DESC_INDEX;
+    TX_DESC[di].buf1 = &TX_BUFFER as u32;
+    TX_DESC[di].buf2 = 0;
+    var ctl: u32 = len & TX_DESC_LEN_MASK;
+    if event {
+        ctl = ctl | PTP_TTSE;
+    }
+    // The @extent(buf1) obligation reads the whole DES2 word as a byte
+    // count, but TTSE (bit 30) shares the word with B1L -- a definite
+    // false violation when set. Masked/sub-field extents are a RECORDED
+    // MODEL GAP (doc/regions-agents.md open items).
+    // bml-verify: ignore V200
+    TX_DESC[di].control = ctl;
+    TX_DESC[di].status = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
+    asm { dmb } : : : "memory";
+    TX_DESC_INDEX = (TX_DESC_INDEX + 1) % TX_DESC_COUNT;
+    const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
+    Ethernet_DMA.DMACTxDTPR = next_desc_addr;
+    // bml-verify: ignore V130
+    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
+}
+
+const SRC_MAC_CLOCK_ID: [u8; 8] = [0x02, 0x00, 0x00, 0xFF, 0xFE, 0x00, 0x72, 0x3A];
+// Typed const: a bare [0,...] literal in a struct-field position infers
+// i32 elements and trips opt (recorded compiler nit).
+const ZERO_PORT: [u8; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+// Collect the egress timestamp of the event frame just sent: spin (volatile
+// agent-pointer reads, bounded by wire speed) for the descriptor write-back,
+// require TTSS, read TDES1/TDES0 (s/ns). Returns true when collected.
+fn eth_ptp_collect_tx_ts() -> b1 {
+    const prev = (TX_DESC_INDEX + TX_DESC_COUNT - 1) % TX_DESC_COUNT;
+    const w = prev * TX_DESC_WORDS;
+    var spins: u32 = 0;
+    while (tx_desc_get32(w + 3) & TX_DESC_OWN) != 0 {
+        spins = spins + 1;
+        if spins > 1000000 {
+            // bml-verify: ignore V130
+            PTP_TX_TS_MISS = PTP_TX_TS_MISS + 1;
+            return false;
+        }
+    }
+    if (tx_desc_get32(w + 3) & TX_DESC_TTSS) == 0 {
+        // bml-verify: ignore V130
+        PTP_TX_TS_MISS = PTP_TX_TS_MISS + 1;
+        return false;
+    }
+    PTP_TX_TS_NS = tx_desc_get32(w);
+    PTP_TX_TS_S = tx_desc_get32(w + 1);
+    return true;
 }

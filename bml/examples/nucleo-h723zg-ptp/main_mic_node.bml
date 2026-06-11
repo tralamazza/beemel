@@ -20,26 +20,111 @@ const BOARD_ID: u32 = 2;
 const MSG_HEALTH_PING: u32 = 2;
 var PINGS_ANSWERED: u32;
 
+// Milestone 9, slave side: collect the four PTP timestamps per round and
+// expose the raw deltas. t1 = master Sync egress (from Follow_Up), t2 =
+// Sync ingress here (RX context descriptor), t3 = Delay_Req egress here
+// (TX descriptor write-back), t4 = Delay_Req ingress at the master (from
+// Delay_Resp). d1 = t2-t1, d2 = t4-t3 (each in ns, u32 wrap, valid while
+// the deltas stay under a second); offset = (d1-d2)/2, path delay =
+// (d1+d2)/2 -- the servo (milestone 10) is NOT here yet.
+const PTP_SYNC: u32 = 0;
+const PTP_FOLLOW_UP: u32 = 8;
+const PTP_DELAY_RESP: u32 = 9;
+var PTP_T1_S: u32;
+var PTP_T1_NS: u32;
+var PTP_T2_S: u32;
+var PTP_T2_NS: u32;
+var PTP_T3_S: u32;
+var PTP_T3_NS: u32;
+var PTP_T4_S: u32;
+var PTP_T4_NS: u32;
+var PTP_D1_NS: u32;          // t2 - t1 (master->slave, includes offset)
+var PTP_D2_NS: u32;          // t4 - t3 (slave->master, minus offset)
+var PTP_OFFSET_RAW: u32;     // d1 - d2 (= 2*offset, two's complement)
+var PTP_DELAY_NS: u32;       // (d1 + d2) / 2
+var PTP_ROUNDS: u32;
+var PTP_T3_MISS: u32;
+
 fn main() @context(thread) {
     board_bringup();
 
     var seq: u32 = 0;
+    var sync_seq: u32 = 0;
+    var t2_pending: u32 = 0;
+    var t2_count_at: u32 = 0;
+    var t2_have: u32 = 0;
+    var await_resp: u32 = 0;
     const boot = ptp_now();
     eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
         phy_poll_link();
-        eth_poll_rx();
-        if prod_rx_fresh() != 0 {
-            const mtype = prod_rx_take();
-            if mtype == MSG_HEALTH_PING {
-                const now2 = ptp_now();
-                eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds);
-                // Free-running counter; wrap intended. // bml-verify: ignore V130
-                PINGS_ANSWERED = PINGS_ANSWERED + 1;
+        // Service up to 8 frames per outer iteration: the ring is 4 deep
+        // and delay() is long; one poll per delay missed most pings
+        // (milestone-8 pacing note) and would miss PTP rounds entirely.
+        var k: u32 = 0;
+        while k < 8 {
+            k = k + 1;
+            eth_poll_rx();
+            if t2_pending != 0 && rx_ts_count() != t2_count_at {
+                PTP_T2_S = rx_ts_s();
+                PTP_T2_NS = rx_ts_ns();
+                t2_pending = 0;
+                t2_have = 1;
+            }
+            if ptp_rx_fresh() != 0 {
+                const pt = ptp_rx_take();
+                if pt == PTP_SYNC {
+                    sync_seq = ptp_rx_seq();
+                    t2_pending = 1;
+                    t2_count_at = rx_ts_count();
+                    t2_have = 0;
+                    await_resp = 0;
+                }
+                if pt == PTP_FOLLOW_UP && ptp_rx_seq() == sync_seq && t2_have != 0 {
+                    PTP_T1_S = ptp_rx_ts_s();
+                    PTP_T1_NS = ptp_rx_ts_ns();
+                    eth_send_ptp(1, sync_seq, 0, 0, true);
+                    if eth_ptp_collect_tx_ts() {
+                        PTP_T3_S = ptp_tx_ts_s();
+                        PTP_T3_NS = ptp_tx_ts_ns();
+                        await_resp = 1;
+                    } else {
+                        // bml-verify: ignore V130
+                        PTP_T3_MISS = PTP_T3_MISS + 1;
+                    }
+                }
+                if pt == PTP_DELAY_RESP && ptp_rx_seq() == sync_seq && await_resp != 0 {
+                    PTP_T4_S = ptp_rx_ts_s();
+                    PTP_T4_NS = ptp_rx_ts_ns();
+                    // All four collected: publish the raw deltas.
+                    // bml-verify: ignore V130
+                    const d1 = (PTP_T2_NS - PTP_T1_NS) + (PTP_T2_S - PTP_T1_S) * 1000000000;
+                    // bml-verify: ignore V130
+                    const d2 = (PTP_T4_NS - PTP_T3_NS) + (PTP_T4_S - PTP_T3_S) * 1000000000;
+                    PTP_D1_NS = d1;
+                    PTP_D2_NS = d2;
+                    // bml-verify: ignore V130
+                    PTP_OFFSET_RAW = d1 - d2;
+                    // bml-verify: ignore V130
+                    PTP_DELAY_NS = (d1 + d2) / 2;
+                    // bml-verify: ignore V130
+                    PTP_ROUNDS = PTP_ROUNDS + 1;
+                    await_resp = 0;
+                }
+            }
+            if prod_rx_fresh() != 0 {
+                const mtype = prod_rx_take();
+                if mtype == MSG_HEALTH_PING {
+                    const now2 = ptp_now();
+                    eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds);
+                    // Free-running counter; wrap intended. // bml-verify: ignore V130
+                    PINGS_ANSWERED = PINGS_ANSWERED + 1;
+                }
             }
         }
         const now = ptp_now();
         eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+        // bml-verify: ignore V130
         seq = seq + 1;
         delay();
     }

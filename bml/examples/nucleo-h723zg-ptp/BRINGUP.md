@@ -293,7 +293,7 @@ Two findings from this milestone, both caught by the toolchain:
   touching the peripheral (timer.bml); deriving that read-back from the
   target's declared gates is an open model item.
 
-### 9. Layer 2 PTP Skeleton
+### 9. Layer 2 PTP Skeleton - Done
 
 Use ethertype `0x88f7`. Do not add IPv4/UDP/ARP for this milestone.
 
@@ -315,6 +315,30 @@ Success criteria:
 
 - Mic node records `t1`, `t2`, `t3`, `t4` for repeated exchanges.
 - Offset/path-delay estimates are exposed in debugger-visible RAM.
+
+Status (2026-06-12, two boards direct-cabled): DONE. Real PTPv2 frames
+on 0x88F7 (fixed 68-byte shape for Sync/Follow_Up/Delay_Req/Delay_Resp,
+`PtpL2` @repr(packed)/@be). TX timestamps via TDES2.TTSE on event
+frames, collected from the descriptor write-back (TTSS + TDES0/1)
+through the volatile agent-pointer reads; RX timestamps via the
+existing context descriptors, associated by the rx_ts_count change
+following the frame. Controller syncs every 8th tick (two-step) and
+answers Delay_Req with the request's RX hardware timestamp. Measured:
+every sync round completes the full four-timestamp exchange
+(SYNCS_SENT == DRESP_SENT == mic PTP_ROUNDS across soaks, e.g. 10==10;
+T1_MISS == T3_MISS == 0 -- hardware TX timestamping hit on every event
+frame). Offset/delay estimates live in PTP_OFFSET_RAW / PTP_DELAY_NS;
+with both clocks free-running on uncalibrated HSI addends the
+estimates are dominated by relative drift over the round (3-90 us
+observed) rather than the sub-microsecond cable delay -- exactly the
+error the milestone-10 servo exists to remove.
+
+Two compiler/model notes from this milestone: the @extent(buf1)
+obligation reads the whole DES2 word as a byte count, so the TTSE
+control bit makes a definite false violation (masked/sub-field extents
+recorded as a model gap); and a bare `[0, ...]` array literal in a
+struct-field position infers i32 elements and trips opt (typed-const
+workaround; recorded compiler nit).
 
 ### 10. Minimal PTP Slave Servo
 
