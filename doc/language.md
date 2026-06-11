@@ -1094,6 +1094,7 @@ var_decl      = ("var" | "const") ident [":" type] "=" expr ";"
 assign        = lvalue ("=" | compound_op) expr ";"
 compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
               | "&=" | "|=" | "^=" | "<<=" | ">>="
+              | "+%=" | "-%=" | "*%="    (* wrapping; see wrap_op *)
               ;; `a OP= b` is a read-modify-write of `a`. A peripheral-field
               ;; target is read exactly once (volatile), so it is safe on
               ;; read-sensitive registers. For other places LLVM folds the
@@ -1151,6 +1152,20 @@ cast_expr     = expr "as" type
 ;; `&x as u32` is `(&x) as u32` (address of x, then cast) and `x as u32 + 1`
 ;; is `(x as u32) + 1`. Field/call/index still bind tighter than the unary, so
 ;; `&a.b` is `&(a.b)`.
+
+wrap_op       = "+%" | "-%" | "*%"
+;; Wrapping arithmetic. Runtime behavior is identical to `+`/`-`/`*` (which
+;; already wrap two's-complement); the difference is DECLARED INTENT: the
+;; verifier drops V130 (unsigned-int-overflow) on the lines a wrap expression
+;; covers, with no `bml-verify: ignore` comment. Division of labor: plain
+;; `+` is a proof obligation ("I believe this cannot overflow -- check me"),
+;; `+%` is a declaration ("wrap is this counter's semantics"). Use it for
+;; free-running counters, sequence numbers, ring indices, cycle-counter
+;; deltas. Integer operands only (E336): no pointers (wrap on an address is
+;; never intent; plain `+`/`-` on pointers means element arithmetic), no
+;; floats, no b1. Same precedence as the plain operator. Compound forms
+;; `+%=` / `-%=` / `*%=`. Not const-evaluable: compile-time arithmetic uses
+;; the plain operators, where overflow is a hard error.
 
 enum_variant  = expr "@" ident
 
@@ -1341,6 +1356,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E332  | `view`/`ring`/`bits` length, capacity, head, or bit-offset must be an integer |
 | E333  | `view`/`ring`/`bits` constructor base has the wrong type (not the expected pointer / array / byte type) |
 | E334  | Cannot write through a readonly view (`view`/`ring`/`bits`); only reads are allowed |
+| E335  | `view` over an agent-shared array outside its claim/handoff window |
+| E336  | Wrapping operator (`+%`/`-%`/`*%`) requires integer operands |
 | E400  | (removed -- use-after-move is reported as E304; the borrow pass tracks no moves) |
 | E401  | `@exclusive` access from wrong function |
 | E402  | `@shared` ceiling violation |

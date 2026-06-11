@@ -2289,6 +2289,39 @@ fn check_expr(
                     }
                     left_ty.clone()
                 }
+                BinaryOp::AddWrap | BinaryOp::SubWrap | BinaryOp::MulWrap => {
+                    // Wrapping arithmetic declares intent to the verifier, so
+                    // it must only appear where wrap is meaningful: plain
+                    // integer operands. No pointers (wrap on an address is
+                    // never intent), no floats, no b1.
+                    if !types::is_int(&left_ty) {
+                        diags.error(
+                            format!(
+                                "wrapping operator requires integer operands, got `{left_ty:?}`"
+                            ),
+                            "E336",
+                            left.span(),
+                        );
+                    }
+                    if !types::is_int(&right_ty) {
+                        diags.error(
+                            format!(
+                                "wrapping operator requires integer operands, got `{right_ty:?}`"
+                            ),
+                            "E336",
+                            right.span(),
+                        );
+                    } else if types::is_int(&left_ty) && left_ty != right_ty {
+                        diags.error(
+                            format!(
+                                "arithmetic between different types `{left_ty:?}` and `{right_ty:?}` -- use `as` to cast"
+                            ),
+                            "E310",
+                            left.span(),
+                        );
+                    }
+                    left_ty.clone()
+                }
                 BinaryOp::Eq
                 | BinaryOp::NotEq
                 | BinaryOp::Lt

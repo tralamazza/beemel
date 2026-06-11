@@ -29,7 +29,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ("V113", "IKOS pointer finding: no fixture yet"),
     ("V115", "IKOS pointer finding: no fixture yet"),
     ("V116", "IKOS pointer finding: no fixture yet"),
-    ("V130", "IKOS finding: no fixture yet"),
     ("V140", "IKOS finding: no fixture yet"),
     ("V150", "IKOS finding: no fixture yet"),
     ("V160", "IKOS finding: no fixture yet"),

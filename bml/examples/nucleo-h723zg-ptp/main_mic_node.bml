@@ -117,8 +117,7 @@ fn main() @context(thread) {
                         PTP_T3_NS = ptp_tx_ts_ns();
                         await_resp = 1;
                     } else {
-                        // bml-verify: ignore V130
-                        PTP_T3_MISS = PTP_T3_MISS + 1;
+                        PTP_T3_MISS +%= 1;
                     }
                 }
                 if pt == PTP_DELAY_RESP && ptp_rx_seq() == sync_seq && await_resp != 0 {
@@ -135,12 +134,10 @@ fn main() @context(thread) {
                     PTP_OFFSET_RAW = d1 - d2;
                     // bml-verify: ignore V130
                     PTP_DELAY_NS = (d1 + d2) / 2;
-                    // bml-verify: ignore V130
-                    PTP_ROUNDS = PTP_ROUNDS + 1;
+                    PTP_ROUNDS +%= 1;
                     PTP_LOG_OFF[PTP_LOG_IDX & 15] = ((PTP_OFFSET_RAW as i32) / 2 as i32) as u32;
                     PTP_LOG_DLY[PTP_LOG_IDX & 15] = PTP_DELAY_NS;
-                    // bml-verify: ignore V130
-                    PTP_LOG_IDX = PTP_LOG_IDX + 1;
+                    PTP_LOG_IDX +%= 1;
                     await_resp = 0;
 
                     // ── Servo (milestone 10) ──
@@ -176,8 +173,7 @@ fn main() @context(thread) {
                             }
                             ptp_step(as_ as u32, ans as u32, false);
                         }
-                        // bml-verify: ignore V130
-                        PTP_STEPS = PTP_STEPS + 1;
+                        PTP_STEPS +%= 1;
                         PTP_LOCK = 1;
                         // A step is a PHASE event: servo_freq (the learned
                         // rate) is deliberately NOT reset. The first version
@@ -194,8 +190,7 @@ fn main() @context(thread) {
                         // timestamp pairing distorts the delay estimate as
                         // much as the offset, so an implausible delay marks
                         // the whole round as garbage. Standard PTP outlier
-                        // rejection. // bml-verify: ignore V130
-                        PTP_REJECTS = PTP_REJECTS + 1;
+                        PTP_REJECTS +%= 1;
                     } else {
                         // Slew: PI on the addend. offset = (d1-d2)/2, signed.
                         const off: i32 = (PTP_OFFSET_RAW as i32) / 2 as i32;
@@ -269,8 +264,7 @@ fn main() @context(thread) {
                             // floor (sigma 84 us at the 0.376 s cadence).
                             // bml-verify: ignore V130
                             if off < 250000 as i32 && off > (0 as i32 - 250000 as i32) {
-                                // bml-verify: ignore V130
-                                PTP_LOCK_STREAK = PTP_LOCK_STREAK + 1;
+                                PTP_LOCK_STREAK +%= 1;
                                 if PTP_LOCK_STREAK >= 4 {
                                     PTP_LOCK = 2;
                                 }
@@ -290,8 +284,7 @@ fn main() @context(thread) {
                     const now2 = ptp_now();
                     eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds,
                         PTP_OFFSET_EST, PTP_LOCK);
-                    // Free-running counter; wrap intended. // bml-verify: ignore V130
-                    PINGS_ANSWERED = PINGS_ANSWERED + 1;
+                    PINGS_ANSWERED +%= 1;
                 }
             }
         }
@@ -306,8 +299,7 @@ fn main() @context(thread) {
         if now.seconds != last_hb_s {
             last_hb_s = now.seconds;
             eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
-            // bml-verify: ignore V130
-            seq = seq + 1;
+            seq +%= 1;
         }
     }
 }

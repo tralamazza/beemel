@@ -284,7 +284,27 @@ pub fn verify(
     let findings = parse_json_report(&report_content)?;
     let findings = deduplicate(findings);
 
-    // 7. Apply per-line suppression directives parsed from the sources that
+    // 7. Drop V130 (unsigned-int-overflow) on every line covered by a
+    // wrapping-arithmetic expression (`+%`/`-%`/`*%`): wrap there is declared
+    // intent, not an accident to prove away. Same line granularity as the
+    // `bml-verify: ignore` comments below, with the same tradeoff -- a line
+    // mixing a wrapping and a plain op loses the plain op's check.
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let wrap_lines: std::collections::HashSet<(PathBuf, u32)> = program
+        .wrap_spans
+        .iter()
+        .flat_map(|span| {
+            let path = canon(source_map.get_path(span.file));
+            let loc = source_map.span_location(*span);
+            (loc.start.line..=loc.end.line).map(move |l| (path.clone(), l as u32))
+        })
+        .collect();
+    let findings: Vec<Finding> = findings
+        .into_iter()
+        .filter(|f| !(f.code == "V130" && wrap_lines.contains(&(canon(&f.file), f.line))))
+        .collect();
+
+    // 8. Apply per-line suppression directives parsed from the sources that
     // appeared in the findings.
     let mut per_file: std::collections::HashMap<PathBuf, Suppressions> =
         std::collections::HashMap::new();

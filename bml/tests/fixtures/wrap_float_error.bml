@@ -1,0 +1,6 @@
+// Wrapping operators declare integer wrap intent; on floats they are
+// meaningless and rejected (E336).
+fn main() @context(thread) {
+    var a: f32 = 1.0f;
+    var b = a +% a;
+}

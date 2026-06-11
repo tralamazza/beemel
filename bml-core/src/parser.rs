@@ -17,6 +17,12 @@ pub struct Parser<'a> {
     depth: u32,
     /// Emit the `E113` nesting diagnostic at most once per parse.
     depth_error_emitted: bool,
+    /// Spans of wrapping-arithmetic expressions (`+%`, `-%`, `*%` and their
+    /// compound forms). Collected here -- the parser is the one place that
+    /// sees every wrap operator by construction -- and carried on `Program`
+    /// so the verifier can suppress V130 (unsigned-int-overflow) exactly
+    /// where wrap was declared. See `BinaryOp::AddWrap`.
+    wrap_spans: Vec<Span>,
 }
 
 /// Maximum nesting depth for expressions, types, and blocks combined. Chosen to
@@ -70,6 +76,7 @@ impl<'a> Parser<'a> {
             trailing_expr: None,
             depth: 0,
             depth_error_emitted: false,
+            wrap_spans: Vec::new(),
         }
     }
 
@@ -108,7 +115,10 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        Program { items }
+        Program {
+            items,
+            wrap_spans: std::mem::take(&mut self.wrap_spans),
+        }
     }
 
     // --- helpers ---
@@ -1218,6 +1228,12 @@ impl<'a> Parser<'a> {
                     let value = self.parse_expr()?;
                     self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
                     let target = expr_to_lvalue(expr)?;
+                    if matches!(
+                        op,
+                        BinaryOp::AddWrap | BinaryOp::SubWrap | BinaryOp::MulWrap
+                    ) {
+                        self.wrap_spans.push(span.merge(value.span()));
+                    }
                     Some(Stmt::CompoundAssign(CompoundAssignStmt {
                         target,
                         op,
@@ -1494,6 +1510,9 @@ impl<'a> Parser<'a> {
                     TokenKind::Plus => Some(BinaryOp::Add),
                     TokenKind::Minus => Some(BinaryOp::Sub),
                     TokenKind::Star => Some(BinaryOp::Mul),
+                    TokenKind::PlusPercent => Some(BinaryOp::AddWrap),
+                    TokenKind::MinusPercent => Some(BinaryOp::SubWrap),
+                    TokenKind::StarPercent => Some(BinaryOp::MulWrap),
                     TokenKind::Slash => Some(BinaryOp::Div),
                     TokenKind::Percent => Some(BinaryOp::Mod),
                     TokenKind::EqEq => Some(BinaryOp::Eq),
@@ -1516,6 +1535,12 @@ impl<'a> Parser<'a> {
                     if prec >= min_prec {
                         self.advance();
                         let right = self.parse_expr_prec(prec + 1, allow_struct)?;
+                        if matches!(
+                            op,
+                            BinaryOp::AddWrap | BinaryOp::SubWrap | BinaryOp::MulWrap
+                        ) {
+                            self.wrap_spans.push(left.span().merge(right.span()));
+                        }
                         left = Expr::Binary(Box::new(left), op, Box::new(right));
                         continue;
                     }
@@ -1984,6 +2009,9 @@ fn compound_assign_op(kind: &TokenKind) -> Option<BinaryOp> {
         TokenKind::CaretEq => BinaryOp::BitXor,
         TokenKind::ShlEq => BinaryOp::Shl,
         TokenKind::ShrEq => BinaryOp::Shr,
+        TokenKind::PlusPercentEq => BinaryOp::AddWrap,
+        TokenKind::MinusPercentEq => BinaryOp::SubWrap,
+        TokenKind::StarPercentEq => BinaryOp::MulWrap,
         _ => return None,
     })
 }
@@ -2068,5 +2096,38 @@ mod tests {
             panic!("expected outer AddrOf");
         };
         assert!(matches!(*inner, Expr::FieldAccess(_, _)));
+    }
+
+    // `+%` has additive precedence: `a +% b * c` is `a +% (b * c)`.
+    #[test]
+    fn wrap_add_precedence_matches_add() {
+        let Expr::Binary(_, BinaryOp::AddWrap, right) = parse_expr_str("a +% b * c") else {
+            panic!("expected outer AddWrap");
+        };
+        assert!(matches!(*right, Expr::Binary(_, BinaryOp::Mul, _)));
+    }
+
+    // `a + %b` is not a wrap op and must not lex as one: binary `%` has no
+    // left operand there, so the parse errors instead of silently regrouping.
+    #[test]
+    fn plus_then_percent_is_not_wrap() {
+        let mut diags = DiagnosticBag::new();
+        let _ = Parser::new("a + % b", FileId::new(), &mut diags).parse_expr();
+        assert!(diags.has_errors(), "`a + % b` should not parse");
+    }
+
+    // `x +%= 1;` parses as a CompoundAssign carrying AddWrap, and the parser
+    // records a wrap span for the verifier.
+    #[test]
+    fn wrap_compound_assign_parses_and_records_span() {
+        let mut diags = DiagnosticBag::new();
+        let src = "fn f() { var x: u32 = 0; x +%= 1; x = x -% 2; }";
+        let program = Parser::new(src, FileId::new(), &mut diags).parse_program();
+        assert!(!diags.has_errors(), "unexpected parse errors");
+        assert_eq!(
+            program.wrap_spans.len(),
+            2,
+            "one span per wrap operation (compound + binary)"
+        );
     }
 }

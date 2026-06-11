@@ -7,6 +7,12 @@ pub type Ident = (String, Span);
 #[derive(Debug, Clone)]
 pub struct Program {
     pub items: Vec<Item>,
+    /// Source spans of wrapping-arithmetic expressions (`+%`/`-%`/`*%`),
+    /// collected by the parser. The verifier suppresses V130
+    /// (unsigned-int-overflow) on the lines these spans cover: the wrap is
+    /// declared, not accidental. Spans carry their `FileId`, so the list
+    /// stays valid when imports merge programs.
+    pub wrap_spans: Vec<crate::source::Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +421,14 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    /// Wrapping arithmetic (`+%`, `-%`, `*%`): same two's-complement wrap the
+    /// plain operators already have at runtime, but the wrap is DECLARED, so
+    /// the verifier does not raise V130 (unsigned-int-overflow) for it. Plain
+    /// `+`/`-`/`*` remain a proof obligation; `+%` is a statement of intent
+    /// (free-running counters, sequence numbers, ring indices).
+    AddWrap,
+    SubWrap,
+    MulWrap,
     Div,
     Mod,
     And,
@@ -448,8 +462,8 @@ impl BinaryOp {
             BinaryOp::BitXor => 5,
             BinaryOp::BitAnd => 6,
             BinaryOp::Shl | BinaryOp::Shr => 7,
-            BinaryOp::Add | BinaryOp::Sub => 8,
-            BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 9,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::AddWrap | BinaryOp::SubWrap => 8,
+            BinaryOp::Mul | BinaryOp::MulWrap | BinaryOp::Div | BinaryOp::Mod => 9,
         }
     }
 }

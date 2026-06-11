@@ -44,12 +44,10 @@ fn main() @context(thread) {
             if mtype == MSG_HEALTH_PING {
                 const now = ptp_now();
                 eth_send_status(BOARD_ID, prod_rx_seq(), now.seconds, now.nanoseconds, 0, 0);
-                // Free-running counter; wrap intended. // bml-verify: ignore V130
-                LT_STATUS_SENT = LT_STATUS_SENT + 1;
+                LT_STATUS_SENT +%= 1;
             }
             if mtype == MSG_HEALTH_STATUS {
-                // bml-verify: ignore V130
-                LT_STATUS_SEEN = LT_STATUS_SEEN + 1;
+                LT_STATUS_SEEN +%= 1;
                 LT_LAST_SEQ = prod_rx_seq();
                 LT_LAST_RX = prod_rx_pay(3);
                 LT_LAST_PHY = prod_rx_pay(1);
@@ -59,11 +57,9 @@ fn main() @context(thread) {
         if t != last_tick {
             last_tick = t;
             const now = ptp_now();
-            // bml-verify: ignore V130
-            ping_seq = ping_seq + 1;
+            ping_seq +%= 1;
             eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
-            // bml-verify: ignore V130
-            LT_PINGS_SENT = LT_PINGS_SENT + 1;
+            LT_PINGS_SENT +%= 1;
         }
     }
 }

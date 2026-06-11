@@ -2300,6 +2300,14 @@ impl IrEmitter {
                     BinaryOp::Add => (if is_float { "fadd" } else { "add" }, lty.as_str()),
                     BinaryOp::Sub => (if is_float { "fsub" } else { "sub" }, lty.as_str()),
                     BinaryOp::Mul => (if is_float { "fmul" } else { "mul" }, lty.as_str()),
+                    // Wrapping ops lower identically to the plain ops (LLVM
+                    // add/sub/mul without nsw/nuw already wrap); the
+                    // difference is declared intent, consumed by the verifier
+                    // via Program::wrap_spans. Checker guarantees integer
+                    // operands (E336), so no float branch.
+                    BinaryOp::AddWrap => ("add", lty.as_str()),
+                    BinaryOp::SubWrap => ("sub", lty.as_str()),
+                    BinaryOp::MulWrap => ("mul", lty.as_str()),
                     BinaryOp::Div => {
                         if crate::types::is_int(&left_ty) {
                             if matches!(left_ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
@@ -5746,9 +5754,9 @@ fn f32_to_f16_bits(value: f32) -> u16 {
 fn compound_unsigned_opcode(op: crate::ast::BinaryOp) -> &'static str {
     use crate::ast::BinaryOp;
     match op {
-        BinaryOp::Add => "add",
-        BinaryOp::Sub => "sub",
-        BinaryOp::Mul => "mul",
+        BinaryOp::Add | BinaryOp::AddWrap => "add",
+        BinaryOp::Sub | BinaryOp::SubWrap => "sub",
+        BinaryOp::Mul | BinaryOp::MulWrap => "mul",
         BinaryOp::Div => "udiv",
         BinaryOp::Mod => "urem",
         BinaryOp::BitAnd => "and",

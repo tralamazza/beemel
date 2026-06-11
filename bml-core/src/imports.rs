@@ -92,6 +92,11 @@ impl ImportResolver {
     fn resolve_imports(&mut self, program: Program, parent_dir: &Path) -> Program {
         let mut items = Vec::new();
         let mut seen_defs: HashSet<Span> = HashSet::new();
+        // Wrap-intent spans from this module plus every resolved child. Spans
+        // carry their FileId, so concatenation across modules is sound; a
+        // diamond import contributes duplicate spans, which is harmless (the
+        // verifier only uses them as a suppression set).
+        let mut wrap_spans = program.wrap_spans;
 
         for item in program.items {
             match item {
@@ -159,6 +164,7 @@ impl ImportResolver {
                     };
 
                     let module_program = &resolved.program;
+                    wrap_spans.extend_from_slice(&module_program.wrap_spans);
                     let exports = filter_exports(module_program, &resolved.export_names);
 
                     if let Some(alias) = &import.alias {
@@ -207,7 +213,7 @@ impl ImportResolver {
             }
         }
 
-        Program { items }
+        Program { items, wrap_spans }
     }
 
     fn resolve_module_path(&self, segments: &[ast::Ident], parent_dir: &Path) -> Option<PathBuf> {

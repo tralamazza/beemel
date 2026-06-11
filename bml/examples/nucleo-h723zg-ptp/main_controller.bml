@@ -75,15 +75,13 @@ fn main() @context(thread) {
         if dreq_pending != 0 && rx_ts_count() != dreq_count_at {
             eth_send_ptp(PTP_DELAY_RESP, dreq_seq, rx_ts_s(), rx_ts_ns(), false);
             dreq_pending = 0;
-            // bml-verify: ignore V130
-            PTP_DRESP_SENT = PTP_DRESP_SENT + 1;
+            PTP_DRESP_SENT +%= 1;
         }
         // Milestone 8 dispatch: record any HEALTH_STATUS reply.
         if prod_rx_fresh() != 0 {
             const mtype = prod_rx_take();
             if mtype == MSG_HEALTH_STATUS {
-                // bml-verify: ignore V130
-                STATUS_SEEN = STATUS_SEEN + 1;
+                STATUS_SEEN +%= 1;
                 STATUS_LAST_BOARD = prod_rx_board();
                 STATUS_LAST_SEQ = prod_rx_seq();
                 STATUS_LAST_RX = prod_rx_pay(3);
@@ -111,27 +109,22 @@ fn main() @context(thread) {
             // cadence for servo convergence): event frame, collect the
             // egress timestamp from the write-back, publish in Follow_Up.
             if (t & 1) == 0 {
-                // bml-verify: ignore V130
-                ptp_seq = ptp_seq + 1;
+                ptp_seq +%= 1;
                 eth_send_ptp(PTP_SYNC, ptp_seq, 0, 0, true);
                 if eth_ptp_collect_tx_ts() {
                     eth_send_ptp(8, ptp_seq, ptp_tx_ts_s(), ptp_tx_ts_ns(), false);
-                    // bml-verify: ignore V130
-                    PTP_SYNCS_SENT = PTP_SYNCS_SENT + 1;
+                    PTP_SYNCS_SENT +%= 1;
                 } else {
-                    // bml-verify: ignore V130
-                    PTP_T1_MISS = PTP_T1_MISS + 1;
+                    PTP_T1_MISS +%= 1;
                 }
             }
             // HEALTH_PING every 4th tick (odd phase; see stagger note).
             if (t & 3) == 1 {
-                // Free-running probe sequence; wrap intended. // bml-verify: ignore V130
-                ping_seq = ping_seq + 1;
+                ping_seq +%= 1;
                 eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
             }
             // Free-running heartbeat sequence; u32 wraparound is the
-            // protocol's behavior. // bml-verify: ignore V130
-            seq = seq + 1;
+            seq +%= 1;
         }
     }
 }

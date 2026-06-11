@@ -1,0 +1,8 @@
+// Wrap on an address is never intent: pointer operands are rejected (E336),
+// unlike plain `+`/`-` which mean GEP arithmetic on pointers.
+var BUF: [u8; 4];
+
+fn main() @context(thread) {
+    var p: *u8 = &BUF as *u8;
+    var q = p +% 1;
+}

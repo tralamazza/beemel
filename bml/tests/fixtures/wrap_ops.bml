@@ -1,0 +1,17 @@
+// Wrapping arithmetic (`+%`, `-%`, `*%`, `+%=`): lowers to the same LLVM
+// add/sub/mul as the plain operators (which already wrap at runtime); the
+// difference is declared intent, consumed by the verifier (no V130).
+var COUNT: u32;
+
+fn bump(seq: u32) -> u32 {
+    return seq +% 1;
+}
+
+fn main() @context(thread) {
+    var a: u32 = 4294967295;
+    const wrapped = a +% 1;        // 0
+    const back = wrapped -% 1;     // u32::MAX again
+    const doubled = a *% 2;        // wraps to 0xFFFFFFFE
+    COUNT +%= 1;
+    var keep = bump(wrapped) + back + doubled;
+}

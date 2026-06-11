@@ -1,0 +1,9 @@
+// Twin of verify_uio.bml with the overflow DECLARED via `+%`: the verifier
+// must drop the V130 unsigned-int-overflow finding (verify passes), while
+// still proving the wrapped value (the assert holds in machine arithmetic).
+// verify_uio.bml -- the same program with plain `+` -- must keep failing.
+fn main() @context(thread) {
+    var a: u32 = 4294967295;
+    var b: u32 = a +% 1u32;
+    assert(b == 0u32);
+}

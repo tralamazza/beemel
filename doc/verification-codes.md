@@ -20,7 +20,7 @@ broader check.
 | V115 | —         | Pointer comparison across unrelated objects      |
 | V116 | —         | Store with no effect                             |
 | V120 | dbz       | Division by zero                                 |
-| V130 | sio / uio | Signed/unsigned integer overflow                 |
+| V130 | sio / uio | Signed/unsigned integer overflow. Not reported on lines covered by a wrapping-arithmetic expression (`+%`/`-%`/`*%`): wrap there is declared intent |
 | V140 | shc       | Shift count exceeds bit width                    |
 | V150 | upa       | Unaligned pointer access                         |
 | V160 | uva       | Undefined value access (opt-in; see verify.md)   |

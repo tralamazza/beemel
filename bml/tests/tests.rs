@@ -1283,6 +1283,27 @@ assert_error!(
 );
 assert_error!(test_bitwise_non_int, "bitwise_non_int_error.bml", "E317");
 
+// Wrapping arithmetic (`+%`/`-%`/`*%`): integer-only (E336 on floats and
+// pointers -- wrap on an address is never intent), and lowers to the same
+// add/sub/mul opcodes as the plain operators. One #[test] for the lowering
+// fixture (one IR test per fixture: --save-temps .ll races).
+assert_error!(test_wrap_float, "wrap_float_error.bml", "E336");
+assert_error!(test_wrap_ptr, "wrap_ptr_error.bml", "E336");
+
+#[test]
+fn test_wrap_ops_lowering() {
+    let ir = bml_ir("wrap_ops.bml");
+    // `a +% 1` / `-% 1` / `*% 2` and the `+%=` compound all lower to plain
+    // wrapping LLVM arithmetic (no nsw/nuw), exactly like `+`/`-`/`*`.
+    assert!(ir.contains("add i32"), "expected add i32 in IR:\n{ir}");
+    assert!(ir.contains("sub i32"), "expected sub i32 in IR:\n{ir}");
+    assert!(ir.contains("mul i32"), "expected mul i32 in IR:\n{ir}");
+    assert!(
+        !ir.contains("nsw") && !ir.contains("nuw"),
+        "wrap ops must not carry overflow flags:\n{ir}"
+    );
+}
+
 // Critical section codegen tests. On v7-M (the default test target,
 // priority_bits=4) a real ISR ceiling lowers to BASEPRI_MAX = ceiling << 4
 // with save/restore -- ISRs above the ceiling keep running. cpsid is the
@@ -2110,6 +2131,24 @@ fn test_verify_dbz() {
     );
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
+
+// Same overflow DECLARED with `+%`: the V130 finding is dropped (wrap is
+// intent, carried via Program::wrap_spans, no ignore comment involved) and
+// the wrapped value still proves (`assert(b == 0)` holds in machine
+// arithmetic). Contrast with test_verify_uio above, which must stay red.
+#[test]
+fn test_verify_wrap_uio_passes() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_wrap_uio.bml");
+    assert!(ok, "expected verify to pass with `+%`:\n{output}");
+    assert!(
+        !output.contains("[V130]"),
+        "wrap-declared overflow must not report V130:\n{output}"
+    );
+}
 assert_verify_pass!(test_verify_no_findings, "verify_no_findings.bml");
 // assume_narrows: assume(b != 0) before a/b should prevent dbz
 assert_verify_pass!(test_verify_assume_narrows, "verify_assume_narrows.bml");

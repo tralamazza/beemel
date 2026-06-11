@@ -383,8 +383,7 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
-    // Free-running TX counter; wrap intended. // bml-verify: ignore V130
-    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
+    TX_FRAME_COUNT +%= 1;
 }
 
 // Index from the static's own address-of so the verify-mode provenance
@@ -452,15 +451,13 @@ fn eth_poll_rx() {
     if (desc3 & RX_DESC_CTXT) != 0 {
         RX_LAST_TIMESTAMP_NS = rx_desc_get32(desc_word);
         RX_LAST_TIMESTAMP_SECONDS = rx_desc_get32(desc_word + 1);
-        // bml-verify: ignore V130
-        RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
+        RX_TIMESTAMP_COUNT +%= 1;
     } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
         RX_LAST_LEN = desc3 & RX_DESC_LEN_MASK;
         RX_LAST_ETHERTYPE = (rx_get8(12) << 8) | rx_get8(13);
         RX_LAST_SRC0 = (rx_get8(6) << 24) | (rx_get8(7) << 16) | (rx_get8(8) << 8) | rx_get8(9);
         RX_LAST_SRC1 = (rx_get8(10) << 8) | rx_get8(11);
-        // bml-verify: ignore V130
-        RX_PACKET_COUNT = RX_PACKET_COUNT + 1;
+        RX_PACKET_COUNT +%= 1;
         // PTPv2 dispatch (milestone 9): messageType in the low nibble of
         // byte 14, sequenceId at 44, originTimestamp at 48 (s48: hi16 at
         // 48, lo32 at 50; ns at 54).
@@ -469,8 +466,7 @@ fn eth_poll_rx() {
             PTP_RX_SEQ = (rx_get8(44) << 8) | rx_get8(45);
             PTP_RX_TS_S = rx_get32_be(50);
             PTP_RX_TS_NS = rx_get32_be(54);
-            // bml-verify: ignore V130
-            PTP_RX_COUNT = PTP_RX_COUNT + 1;
+            PTP_RX_COUNT +%= 1;
             PTP_RX_FRESH = 1;
         }
         // Product protocol dispatch (milestone 8): magic at offset 14
@@ -484,8 +480,7 @@ fn eth_poll_rx() {
                 PROD_RX_PAY[pi] = rx_get32_be(42 + pi * 4);
                 pi = pi + 1;
             }
-            // bml-verify: ignore V130
-            PROD_RX_COUNT = PROD_RX_COUNT + 1;
+            PROD_RX_COUNT +%= 1;
             PROD_RX_FRESH = 1;
         }
     }
@@ -570,14 +565,12 @@ fn bench_consume_defensive(len: u32) @context(thread) {
     asm { cpsie i } : : : "memory";
     timer_bench_mark(0);
     BENCH_DEF_LAST = sum;
-    const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
-    // bml-verify: ignore V130
-    BENCH_DEF_CYC_SUM = BENCH_DEF_CYC_SUM + dt;
+    const dt = t1 -% t0; // CYCCNT delta
+    BENCH_DEF_CYC_SUM +%= dt;
     if dt > BENCH_DEF_CYC_MAX {
         BENCH_DEF_CYC_MAX = dt;
     }
-    // bml-verify: ignore V130
-    BENCH_DEF_FRAMES = BENCH_DEF_FRAMES + 1;
+    BENCH_DEF_FRAMES +%= 1;
 }
 
 fn bench_consume_bml(len: u32) @context(thread) {
@@ -591,14 +584,12 @@ fn bench_consume_bml(len: u32) @context(thread) {
     }
     const t1 = dwt_cycles();
     BENCH_BML_LAST = sum;
-    const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
-    // bml-verify: ignore V130
-    BENCH_BML_CYC_SUM = BENCH_BML_CYC_SUM + dt;
+    const dt = t1 -% t0; // CYCCNT delta
+    BENCH_BML_CYC_SUM +%= dt;
     if dt > BENCH_BML_CYC_MAX {
         BENCH_BML_CYC_MAX = dt;
     }
-    // bml-verify: ignore V130
-    BENCH_BML_FRAMES = BENCH_BML_FRAMES + 1;
+    BENCH_BML_FRAMES +%= 1;
 }
 
 // Third leg, the model-idiomatic FAST PATH: a reclaim view justified by
@@ -622,14 +613,12 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
         const t1 = dwt_cycles();
         Ethernet_DMA.DMACSR.RI = true;
         BENCH_VIEW_LAST = sum;
-        const dt = t1 - t0; // CYCCNT delta, wrap intended // bml-verify: ignore V130
-        // bml-verify: ignore V130
-        BENCH_VIEW_CYC_SUM = BENCH_VIEW_CYC_SUM + dt;
+        const dt = t1 -% t0; // CYCCNT delta
+        BENCH_VIEW_CYC_SUM +%= dt;
         if dt > BENCH_VIEW_CYC_MAX {
             BENCH_VIEW_CYC_MAX = dt;
         }
-        // bml-verify: ignore V130
-        BENCH_VIEW_FRAMES = BENCH_VIEW_FRAMES + 1;
+        BENCH_VIEW_FRAMES +%= 1;
     }
 }
 
@@ -645,15 +634,14 @@ fn eth_bench_poll() @context(thread) {
     }
 
     if (desc3 & RX_DESC_CTXT) != 0 {
-        // bml-verify: ignore V130
-        RX_TIMESTAMP_COUNT = RX_TIMESTAMP_COUNT + 1;
+        RX_TIMESTAMP_COUNT +%= 1;
     } else if (desc3 & RX_DESC_ERROR) == 0 && (desc3 & RX_DESC_FD) != 0 && (desc3 & RX_DESC_LD) != 0 {
         var len: u32 = desc3 & RX_DESC_LEN_MASK;
         if len > 512 {
             len = 512;
         }
         const which = BENCH_ROT % 3;
-        BENCH_ROT = BENCH_ROT + 1; // wrap irrelevant for % 3 rotation // bml-verify: ignore V130
+        BENCH_ROT +%= 1;
         if which == 0 {
             bench_consume_defensive(len);
         }
@@ -790,8 +778,7 @@ fn eth_send_product(msg_type: u32, board_id: u32, seq: u32, seconds: u32, nanose
     TX_DESC_INDEX = (TX_DESC_INDEX + 1) % TX_DESC_COUNT;
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
-    // Free-running TX counter; wrap intended. // bml-verify: ignore V130
-    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
+    TX_FRAME_COUNT +%= 1;
 }
 
 fn eth_send_hello(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
@@ -985,8 +972,7 @@ fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1) {
     TX_DESC_INDEX = (TX_DESC_INDEX + 1) % TX_DESC_COUNT;
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
-    // bml-verify: ignore V130
-    TX_FRAME_COUNT = TX_FRAME_COUNT + 1;
+    TX_FRAME_COUNT +%= 1;
 }
 
 const SRC_MAC_CLOCK_ID: [u8; 8] = [0x02, 0x00, 0x00, 0xFF, 0xFE, 0x00, 0x72, 0x3A];
@@ -1004,14 +990,12 @@ fn eth_ptp_collect_tx_ts() -> b1 {
     while (tx_desc_get32(w + 3) & TX_DESC_OWN) != 0 {
         spins = spins + 1;
         if spins > 1000000 {
-            // bml-verify: ignore V130
-            PTP_TX_TS_MISS = PTP_TX_TS_MISS + 1;
+            PTP_TX_TS_MISS +%= 1;
             return false;
         }
     }
     if (tx_desc_get32(w + 3) & TX_DESC_TTSS) == 0 {
-        // bml-verify: ignore V130
-        PTP_TX_TS_MISS = PTP_TX_TS_MISS + 1;
+        PTP_TX_TS_MISS +%= 1;
         return false;
     }
     PTP_TX_TS_NS = tx_desc_get32(w);

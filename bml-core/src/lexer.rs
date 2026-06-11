@@ -108,6 +108,12 @@ pub enum TokenKind {
     Bang,
     Shl,
     Shr,
+    // Wrapping arithmetic: `+%`, `-%`, `*%`. Lexes greedily; no currently
+    // legal program contains `+` directly followed by `%` (binary `%` needs a
+    // left operand), so nothing re-lexes.
+    PlusPercent,
+    MinusPercent,
+    StarPercent,
 
     // Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`,
     // `<<=`, `>>=`. Distinct tokens so the expression parser does not consume
@@ -122,6 +128,9 @@ pub enum TokenKind {
     CaretEq,
     ShlEq,
     ShrEq,
+    PlusPercentEq,
+    MinusPercentEq,
+    StarPercentEq,
 
     Eof,
 }
@@ -482,6 +491,14 @@ impl<'a> Lexer<'a> {
                     if self.current() == Some('=') {
                         self.advance();
                         TokenKind::PlusEq
+                    } else if self.current() == Some('%') {
+                        self.advance();
+                        if self.current() == Some('=') {
+                            self.advance();
+                            TokenKind::PlusPercentEq
+                        } else {
+                            TokenKind::PlusPercent
+                        }
                     } else {
                         TokenKind::Plus
                     }
@@ -494,6 +511,14 @@ impl<'a> Lexer<'a> {
                     } else if self.current() == Some('=') {
                         self.advance();
                         TokenKind::MinusEq
+                    } else if self.current() == Some('%') {
+                        self.advance();
+                        if self.current() == Some('=') {
+                            self.advance();
+                            TokenKind::MinusPercentEq
+                        } else {
+                            TokenKind::MinusPercent
+                        }
                     } else {
                         TokenKind::Minus
                     }
@@ -503,6 +528,14 @@ impl<'a> Lexer<'a> {
                     if self.current() == Some('=') {
                         self.advance();
                         TokenKind::StarEq
+                    } else if self.current() == Some('%') {
+                        self.advance();
+                        if self.current() == Some('=') {
+                            self.advance();
+                            TokenKind::StarPercentEq
+                        } else {
+                            TokenKind::StarPercent
+                        }
                     } else {
                         TokenKind::Star
                     }
