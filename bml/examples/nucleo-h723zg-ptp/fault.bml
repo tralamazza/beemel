@@ -1,0 +1,64 @@
+// HardFault recorder: turn a silent park in default_handler into forensics.
+//
+// Motivation (2026-06-11): one controller run died at tick 96 with an
+// IMPRECISE bus error (CFSR=0x0400) escalated to HardFault -- an async
+// buffered-write fault, the natural fault class with the D-cache on
+// (board.bml enables CCR.DC). Imprecise means BFAR is invalid and the
+// stacked PC only localizes to "a few instructions after the store", but
+// that beats "parked in default_handler, nothing else known".
+//
+// The vector table binds slot 3 by function name (fn HardFault), same
+// mechanism as the Pico probe's recorder. The handler copies the fault
+// state into probe-visible statics and parks WITHOUT growing the stack,
+// so the exception frame (r0-r3, r12, lr, pc, xpsr at the faulting MSP)
+// stays intact for openocd recovery.
+//
+// Raw-word captures use asm on purpose: the SVD splits CFSR into b1
+// fields, and a recorder must not lose bits the SVD model missed.
+//
+// Probe workflow when FAULT_WHO reads 0xDEADFA17:
+//   stacked frame base ~= FAULT_MSP + (this handler's prologue pushes);
+//   walk up a few words for the pc/xpsr pair (xpsr bit 24, the Thumb
+//   bit, marks it). CFSR bit 10 = IMPRECISERR, bit 9 = PRECISERR
+//   (BFAR valid iff bit 15).
+
+import svd.scb;
+
+var FAULT_WHO: u32;    // 0 clean; 0xDEADFA17 = recorder fired
+var FAULT_VECT: u32;   // ICSR.VECTACTIVE (3 = HardFault)
+var FAULT_CFSR: u32;   // raw CFSR word
+var FAULT_HFSR: u32;   // raw HFSR word (0x40000000 = FORCED escalation)
+var FAULT_BFAR: u32;   // bus fault address (only valid if CFSR bit 15)
+var FAULT_MMFAR: u32;  // memmanage fault address (only valid if CFSR bit 7)
+var FAULT_MSP: u32;    // MSP at handler entry (prologue-shifted; see above)
+
+fn HardFault() {
+    var msp: u32 = 0;
+    asm { mrs $0, msp } : "=r"(msp);
+    FAULT_MSP = msp;
+
+    var cfsr: u32 = 0;
+    asm { movw $0, #0xED28
+          movt $0, #0xE000
+          ldr $0, [$0] } : "=r"(cfsr);
+    FAULT_CFSR = cfsr;
+
+    var hfsr: u32 = 0;
+    asm { movw $0, #0xED2C
+          movt $0, #0xE000
+          ldr $0, [$0] } : "=r"(hfsr);
+    FAULT_HFSR = hfsr;
+
+    FAULT_VECT = SCB.ICSR.VECTACTIVE;
+    FAULT_BFAR = SCB.BFAR.ADDRESS;
+    FAULT_MMFAR = SCB.MMFAR.ADDRESS;
+    FAULT_WHO = 0xDEADFA17;
+
+    // Statics must reach RAM before the park: the probe reads memory, not
+    // the D-cache (the .bss region is MPU non-cacheable for DMA coherency,
+    // but a dsb costs nothing and does not rely on that).
+    asm { dsb } : : : "memory";
+    loop {
+        asm { } : : : "memory";
+    }
+}

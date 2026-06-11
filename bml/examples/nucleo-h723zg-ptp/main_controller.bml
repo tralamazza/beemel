@@ -6,6 +6,7 @@
 // See BRINGUP.md milestone 7.
 
 import board;
+import fault;
 import eth_dma;
 import ptp_clock;
 import phy_lan8742;
