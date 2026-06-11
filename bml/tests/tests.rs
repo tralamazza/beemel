@@ -3537,6 +3537,38 @@ fn test_reclaim_stale_cleared_ok() {
 // Per-buffer flag association: a direct delivery (`P.R = &BUF`) binds the
 // buffer to that register's channel, so its reclaim is guarded by THAT
 // channel's flags; indirect deliveries keep the conservative region union.
+// A store to a DECLARED handoff register is followed by a completion
+// barrier (`dsb`): arming an agent is a posted Device write, and one left
+// in flight while the bus stays busy was an observed imprecise-BusFault
+// source on real silicon (H723 ETH tail pointers). Ordering (`dmb`) is not
+// enough. Non-handoff register writes get no barrier.
+#[test]
+fn test_handoff_store_emits_dsb() {
+    let ir = bml_ir_with_target("chan_assoc_ok.bml", Some("chan_assoc.target"));
+    let store_then_dsb = "to ptr)\n  call void asm sideeffect \"dsb\", \"~{memory}\"()";
+    assert!(
+        ir.contains(store_then_dsb),
+        "expected dsb right after the handoff register store:\n{ir}"
+    );
+}
+
+// Reset handler initializes .data/.bss WORD-wise (the .ld ALIGN(4)s the
+// bounds): byte-wise init RMWs ECC-uninitialized words on ECC RAMs
+// (STM32H7 RAMECC) and latches noise error flags. Also: with no agents
+// declared there are no handoff completion barriers (no dsb at all).
+#[test]
+fn test_reset_word_init_and_no_dsb() {
+    let ir = bml_ir("reset_word_init.bml");
+    assert!(
+        ir.contains("store volatile i32 0, ptr %") && !ir.contains("load volatile i8, ptr"),
+        "expected word-wise .data/.bss init in reset_handler:\n{ir}"
+    );
+    assert!(
+        !ir.contains("\"dsb\""),
+        "no-agent build must not emit completion barriers:\n{ir}"
+    );
+}
+
 #[test]
 fn test_chan_assoc_cross_rejected() {
     let (ok, stderr) = bml_build_with_target("chan_assoc_cross.bml", Some("chan_assoc.target"));

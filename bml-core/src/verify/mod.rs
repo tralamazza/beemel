@@ -133,6 +133,14 @@ pub fn verify(
     // Region/agent obligations: emit the provenance assume + reachability
     // assert at handoff register writes.
     emitter.set_region_alignments(target.region_alignments());
+    emitter.set_handoff_regs(
+        target
+            .agents
+            .iter()
+            .flat_map(crate::target::Agent::handoffs)
+            .map(|h| h.register.clone())
+            .collect(),
+    );
     emitter.set_handoff_obligations(
         region_addr_ranges(program, symbols, target),
         handoff_reach_bounds(target),

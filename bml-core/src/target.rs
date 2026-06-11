@@ -1088,16 +1088,20 @@ SECTIONS
 
   .data :
   {{
+    . = ALIGN(4);
     _sdata = .;
     *(.data*)
+    . = ALIGN(4);
     _edata = .;
     _sidata = LOADADDR(.data);
   }} > RAM AT > FLASH
 
   .bss :
   {{
+    . = ALIGN(4);
     _sbss = .;
     *(.bss*)
+    . = ALIGN(4);
     _ebss = .;
   }} > RAM
 
@@ -1203,16 +1207,20 @@ SECTIONS
 
 {region_sections}  .data :
   {{
+    . = ALIGN(4);
     _sdata = .;
     *(.data*)
+    . = ALIGN(4);
     _edata = .;
     _sidata = LOADADDR(.data);
   }} > {ram_name} AT > {flash_name}
 
   .bss :
   {{
+    . = ALIGN(4);
     _sbss = .;
     *(.bss*)
+    . = ALIGN(4);
     _ebss = .;
   }} > {ram_name}
 

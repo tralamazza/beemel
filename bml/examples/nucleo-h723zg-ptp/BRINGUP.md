@@ -367,9 +367,13 @@ Root cause: the write to `DMACRxDTPR`/`DMACTxDTPR` is a posted (buffered)
 Device write. With long CPU read bursts keeping the bus busy, the posted
 write could stay in flight and complete with an error response, surfacing
 as an imprecise BusFault unrelated to the executing instruction. The fix is
-a `dsb` immediately after each tail-pointer write (`rx_rearm`,
-`eth_send_heartbeat`) -- completion, not just ordering (`dmb` alone is not
-enough). Validated: bench 2,162 frames and controller 977 frames
+a `dsb` immediately after each tail-pointer write -- completion, not just
+ordering (`dmb` alone is not enough). The barrier is now DERIVED: the
+compiler emits the `dsb` after every store to a declared handoff register
+(DMACRx/TxDTPR are handoffs in stm32h723.target), so the driver carries no
+hand-written completion barrier. Falsified on the board: the derived-only
+build ran 2,049 frames flood-clean where the barrier-less driver died
+within 24. Validated: bench 2,162 frames and controller 977 frames
 flood-clean where the unfixed driver died within 24 frames.
 
 Negative knowledge worth keeping:

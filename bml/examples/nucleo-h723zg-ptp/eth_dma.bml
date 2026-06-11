@@ -367,7 +367,6 @@ fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 
     const next_desc_addr = tx_desc_addr(TX_DESC_INDEX * TX_DESC_WORDS);
     Ethernet_DMA.DMACTxDTPR = next_desc_addr;
-    asm { dsb } : : : "memory";
 }
 
 fn rx_get8(index: u32) -> u32 {
@@ -390,11 +389,11 @@ fn rx_rearm(desc_word: u32) {
     RX_DESC[desc_index].buf2 = 0;
     RX_DESC[desc_index].status = RX_DESC_OWN | RX_DESC_BUF1V;
     asm { dmb } : : : "memory";
+    // The completion dsb after this tail-pointer write (the posted-Device-
+    // write BusFault fix, see BRINGUP.md) is now DERIVED: DMACRxDTPR is a
+    // declared handoff register, and the compiler emits the dsb after every
+    // store to one.
     Ethernet_DMA.DMACRxDTPR = rx_desc_addr(desc_word);
-    // Drain the write buffer: the tail-pointer write is a posted Device
-    // write, and leaving it in flight while the bus stays busy was the
-    // imprecise-BusFault source (E1-E8 bisection, 2026-06-11).
-    asm { dsb } : : : "memory";
 }
 
 fn eth_poll_rx() {

@@ -1,0 +1,11 @@
+// Dedicated fixture for the reset_handler word-wise .data/.bss init
+// assertions (one fixture per IR test: parallel tests sharing a fixture
+// race on the --save-temps .ll).
+
+var COUNTER: u32 = 7;   // forces a .data entry
+var SCRATCHPAD: u32;    // forces a .bss entry
+
+fn main() @context(thread) {
+    var x: u32 = COUNTER;
+    SCRATCHPAD = x + 1;
+}

@@ -85,6 +85,12 @@ pub struct IrEmitter {
     /// emits an `assert` that the byte address is in this range. Empty outside
     /// verify.
     handoff_reach_bounds: HashMap<String, (u64, u64)>,
+    /// Declared handoff registers (`PERIPH.REG`, from the target's agents).
+    /// A store to one is followed by a `dsb`: arming an agent is a posted
+    /// Device write, and one left in flight while the bus stays busy was an
+    /// observed imprecise-BusFault source (H723 ETH tail pointers,
+    /// 2026-06-11). Completion, not just ordering -- a `dmb` is not enough.
+    handoff_regs: std::collections::HashSet<String>,
     /// Region name -> `[lo, hi)` byte range of its mem block. In verify mode, a
     /// write to an `addr in R` struct field (an in-memory handoff) asserts the
     /// stored address is in `R`'s range. Empty outside verify.
@@ -338,6 +344,7 @@ impl IrEmitter {
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
+            handoff_regs: std::collections::HashSet::new(),
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
@@ -394,6 +401,7 @@ impl IrEmitter {
             region_addr_ranges: HashMap::new(),
             region_alignments: HashMap::new(),
             handoff_reach_bounds: HashMap::new(),
+            handoff_regs: std::collections::HashSet::new(),
             region_ranges: HashMap::new(),
             extent_cap_shadows: HashMap::new(),
             extent_asserts: HashMap::new(),
@@ -412,6 +420,10 @@ impl IrEmitter {
     /// Install target-specific MMIO writes (`(address, or_mask)`) to apply at the
     /// start of `reset_handler`, before `.data`/`.bss` init. See
     /// `Target::startup_init`.
+    pub fn set_handoff_regs(&mut self, regs: std::collections::HashSet<String>) {
+        self.handoff_regs = regs;
+    }
+
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
         self.startup_init = writes;
     }
@@ -3785,6 +3797,7 @@ impl IrEmitter {
                         "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
+                    self.emit_handoff_completion(periph_name, &field.0);
                     return val_reg.to_string();
                 }
                 // Peripheral field write: GPIOA.ODR.ODR3 = val
@@ -3860,6 +3873,7 @@ impl IrEmitter {
                         "store volatile i32 {new_val}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
+                    self.emit_handoff_completion(periph_name, &reg_field.0);
                     return new_val;
                 }
                 // Struct field write: GEP + store. Resolve the base to the
@@ -4198,6 +4212,15 @@ impl IrEmitter {
     /// `Some(ceiling)` when this access needs its own critical section; the
     /// ceiling picks the mask instrument (BASEPRI to the ceiling on v7-M,
     /// PRIMASK otherwise -- see `arm::emit_critical_enter`).
+    /// `dsb` after a store to a declared handoff register (see
+    /// `handoff_regs`). Emitted in verify mode too: IKOS treats the asm call
+    /// as opaque, same as the critical-section masks.
+    fn emit_handoff_completion(&mut self, periph: &str, reg: &str) {
+        if self.handoff_regs.contains(&format!("{periph}.{reg}")) {
+            self.line("call void asm sideeffect \"dsb\", \"~{memory}\"()");
+        }
+    }
+
     fn critical_section_ceiling(&self, name: &str, symbols: &SymbolTable) -> Option<u8> {
         // Inside a `claim` window everything is already masked; a per-access
         // pair here would drop the mask early and break the window.

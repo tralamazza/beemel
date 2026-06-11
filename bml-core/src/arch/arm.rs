@@ -506,13 +506,17 @@ pub fn emit_startup_routine(
     e.line("");
 
     e.line("data_copy_body:");
-    let val = e.emit_line(&format!("load volatile i8, ptr {src}"));
-    e.line(&format!("store volatile i8 {val}, ptr {dst}"));
+    // Word-wise on purpose (the .ld ALIGN(4)s the section bounds): byte-wise
+    // init is slower and, on ECC RAMs (STM32H7 RAMECC), every byte store
+    // RMWs an ECC-uninitialized word and latches noise error flags that
+    // poison later fault forensics. Word stores establish ECC cleanly.
+    let val = e.emit_line(&format!("load volatile i32, ptr {src}"));
+    e.line(&format!("store volatile i32 {val}, ptr {dst}"));
     e.line(&format!(
-        "{data_src_next} = getelementptr i8, ptr {src}, i32 1"
+        "{data_src_next} = getelementptr i32, ptr {src}, i32 1"
     ));
     e.line(&format!(
-        "{data_dst_next} = getelementptr i8, ptr {dst}, i32 1"
+        "{data_dst_next} = getelementptr i32, ptr {dst}, i32 1"
     ));
     e.line("br label %data_copy_test");
     e.line("");
@@ -537,9 +541,9 @@ pub fn emit_startup_routine(
     e.line("");
 
     e.line("bss_body:");
-    e.line(&format!("store volatile i8 0, ptr {bss_ptr}"));
+    e.line(&format!("store volatile i32 0, ptr {bss_ptr}"));
     e.line(&format!(
-        "{bss_next} = getelementptr i8, ptr {bss_ptr}, i32 1"
+        "{bss_next} = getelementptr i32, ptr {bss_ptr}, i32 1"
     ));
     e.line("br label %bss_test");
     e.line("");

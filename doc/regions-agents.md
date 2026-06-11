@@ -159,6 +159,13 @@ agents stay flat):
   encoding, no shift to get wrong). `port_by` declares the software port
   select: an address behind a TAG-only bus window requires the field set
   (E612); behind no tagged window, a definite set is a misroute.
+  Lowering: every store to a declared handoff register is followed by a
+  derived `dsb` -- COMPLETION, not just ordering. Arming an agent is a
+  posted Device write; one left in flight while the bus stays busy was an
+  observed imprecise-BusFault source on silicon (H723 ETH tail pointers,
+  2026-06-11; see the example's BRINGUP.md for the bisection). A manual
+  `dmb` before the store still orders the descriptor publish; the
+  completion barrier after it is the compiler's job now.
 - `completes_by = [!]P.R.F, ...` -- the transfer-complete signal. Declaring
   it activates the sound-reclaim guard (E611). `!` = done-when-clear (the
   busy-high style: `completes_by = !DMA.CH0_CTRL_TRIG.BUSY`).

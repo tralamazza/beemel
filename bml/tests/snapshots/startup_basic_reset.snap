@@ -11,10 +11,10 @@ data_copy_test:
   br i1 %4, label %bss_zero_init, label %data_copy_body
   
   data_copy_body:
-  %5 = load volatile i8, ptr %0
-  store volatile i8 %5, ptr %1
-  %__phi.data_src_next = getelementptr i8, ptr %0, i32 1
-  %__phi.data_dst_next = getelementptr i8, ptr %1, i32 1
+  %5 = load volatile i32, ptr %0
+  store volatile i32 %5, ptr %1
+  %__phi.data_src_next = getelementptr i32, ptr %0, i32 1
+  %__phi.data_dst_next = getelementptr i32, ptr %1, i32 1
   br label %data_copy_test
   
   bss_zero_init:
@@ -28,8 +28,8 @@ bss_test:
   br i1 %9, label %call_main, label %bss_body
   
   bss_body:
-  store volatile i8 0, ptr %6
-  %__phi.bss_next = getelementptr i8, ptr %6, i32 1
+  store volatile i32 0, ptr %6
+  %__phi.bss_next = getelementptr i32, ptr %6, i32 1
   br label %bss_test
   
   call_main:

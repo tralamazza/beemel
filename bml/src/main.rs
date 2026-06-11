@@ -587,6 +587,14 @@ fn build_file(
         Some(source_map),
     );
     emitter.set_startup_init(target.startup_init.clone());
+    emitter.set_handoff_regs(
+        target
+            .agents
+            .iter()
+            .flat_map(bml_core::target::Agent::handoffs)
+            .map(|h| h.register.clone())
+            .collect(),
+    );
     emitter.set_mpu_regions(target.mpu_regions());
     emitter.set_mpu_flavor(target.mpu_flavor());
     emitter.set_cross_core_locks(
