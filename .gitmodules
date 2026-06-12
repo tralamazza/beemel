@@ -1,0 +1,5 @@
+[submodule "ikos"]
+	path = ikos
+	url = git@github.com:tralamazza/ikos.git
+	branch = feat/llvm18
+	ignore = dirty

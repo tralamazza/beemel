@@ -1,10 +1,12 @@
 //! Link the IKOS analyzer statically when the `ikos-static` feature is on.
 //!
 //! Inputs (build-time environment):
-//! - `BML_IKOS_BUILD_DIR` (required): the fork's cmake build tree, configured
-//!   with `-DIKOS_DISABLE_APRON=ON`. APRON drags in the GPL-licensed PPL
-//!   bridge, which must not be linked into bml; the apron-* domains are
-//!   simply unavailable in static builds.
+//! - `BML_IKOS_BUILD_DIR` (optional): the fork's cmake build tree, configured
+//!   with `-DIKOS_DISABLE_APRON=ON`. Defaults to the `ikos` submodule's
+//!   `build-llvm18-noapron` tree (see doc/ikos-setup.md for the cmake
+//!   invocation). APRON drags in the GPL-licensed PPL bridge, which must
+//!   not be linked into bml; the apron-* domains are simply unavailable in
+//!   static builds.
 //! - `BML_LLVM_CONFIG` (optional): llvm-config of the LLVM 18 the fork was
 //!   built against. Defaults probe the common install prefixes.
 //!
@@ -26,9 +28,25 @@ fn main() {
         return;
     }
 
-    let build_dir = PathBuf::from(
-        std::env::var_os("BML_IKOS_BUILD_DIR")
-            .expect("ikos-static: set BML_IKOS_BUILD_DIR to the fork's cmake build tree (configured with -DIKOS_DISABLE_APRON=ON)"),
+    let build_dir = std::env::var_os("BML_IKOS_BUILD_DIR").map_or_else(
+        || {
+            // Default: the ikos submodule's APRON-free build tree.
+            let manifest =
+                PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets this"));
+            let default = manifest
+                .parent()
+                .expect("bml-core sits in the workspace root")
+                .join("ikos/build-llvm18-noapron");
+            assert!(
+                default.exists(),
+                "ikos-static: {} not found. Build it (git submodule update --init && cmake; \
+                 see doc/ikos-setup.md) or point BML_IKOS_BUILD_DIR at an existing tree \
+                 configured with -DIKOS_DISABLE_APRON=ON",
+                default.display()
+            );
+            default
+        },
+        PathBuf::from,
     );
 
     // The IKOS static libraries (cmake targets ikos-analyzer-core,
