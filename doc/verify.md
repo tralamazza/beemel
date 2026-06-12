@@ -185,10 +185,39 @@ values. This is informational, not a bug in the program under analysis.
 |-----------------------|----------|----------|-----------|---------------------------------------|
 | interval              | —        | Fastest  | Coarse    | Quick bounds checking, CI             |
 | interval-congruence   | —        | Fast     | Coarse + alignment | Default; congruence keeps `upa` from false-positiving on modular indexing |
-| apron-octagon         | octagon  | Moderate | Moderate  | Relationship tracking, fewer FPs      |
-| apron-interval        | apron    | Slow     | Fine      | Complex arithmetic, maximal precision |
+| var-pack-dbm-congruence | —      | Moderate | Relational (difference bounds) + alignment | `x - y <= c` constraints without APRON |
+| apron-octagon         | octagon  | Moderate | Moderate  | Relationship tracking, fewer FPs. NOT in `ikos-static` builds |
+| apron-interval        | apron    | Slow     | Fine      | Complex arithmetic, maximal precision. NOT in `ikos-static` builds |
 
 Default: `interval-congruence`.
+
+### APRON domains and static builds
+
+`bml` built with `--features ikos-static` has no `apron-*` domains: the
+homebrew APRON package links `libap_ppl`, and PPL is GPLv3, which cannot
+be linked into bml (the build rejects APRON-enabled IKOS trees; see
+ikos-setup.md). What this costs in practice: nothing today -- every
+fixture, every example role, and the default pipeline run on
+`interval-congruence`, which is pure IKOS core. The apron domains are an
+opt-in `--domain` escape hatch that nothing in the repo currently uses.
+
+If a proof ever needs relational reasoning (constraints BETWEEN variables,
+e.g. `i < n` through a loop where neither bound is constant, which
+intervals cannot express):
+
+1. Try `--domain var-pack-dbm-congruence` first -- difference-bound
+   matrices are IKOS-native (no APRON) and cover octagon's most useful
+   constraint class, and this variant keeps the congruence component the
+   default relies on for `upa` alignment proofs. Plain `dbm` /
+   `var-pack-dbm` drop congruence (expect V150 noise on modular
+   indexing).
+2. A subprocess-mode bml against an APRON-enabled ikos-analyzer
+   (`--ikos-bin`) still has the full domain list; one-off analyses can go
+   through that path.
+3. If octagon in static builds ever becomes a real need: APRON itself is
+   LGPL, only the PPL bridge is GPL. Building APRON without `ap_ppl` and
+   dynamic-linking it (like GMP) would restore it legally. Not worth the
+   build complexity until a concrete proof demands it.
 
 ## Usage
 

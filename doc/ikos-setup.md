@@ -82,8 +82,10 @@ BML_IKOS_BUILD_DIR="$IKOS_SRC/build-llvm18-noapron" \
 What gets linked how (license-driven, see bml-core/build.rs): LLVM 18,
 Boost, TBB and the IKOS libraries are static; GMP stays a dynamic library
 (LGPL); sqlite3 comes from rusqlite's bundled build; the `apron-*` domains
-are unavailable. `--ikos-bin` is ignored in this mode (a warning says so),
-and `BML_LLVM_CONFIG` overrides the llvm-config probe at build time.
+are unavailable (what that costs and the alternatives: verify.md,
+"APRON domains and static builds"). `--ikos-bin` is ignored in this mode
+(a warning says so), and `BML_LLVM_CONFIG` overrides the llvm-config
+probe at build time.
 
 ## No external `opt`
 
