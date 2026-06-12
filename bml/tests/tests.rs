@@ -2132,6 +2132,21 @@ fn test_verify_dbz() {
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 
+// Spin loop with an MMIO conjunct in the guard: the while lowering's
+// body-entry facts (pure conjuncts re-established for the verifier) make
+// the counter bound prove -- no suppression, and the post-loop assert
+// holds. The runtime IR carries none of this (verify-mode only).
+assert_verify_pass!(test_verify_while_mmio_guard, "verify_while_mmio_guard.bml");
+
+#[test]
+fn test_while_guard_facts_absent_from_runtime_ir() {
+    let ir = bml_ir("verify_while_mmio_guard.bml");
+    assert!(
+        !ir.contains("while_fact"),
+        "body-entry guard facts must not appear in runtime IR:\n{ir}"
+    );
+}
+
 // LANGUAGE CONTRACT: overflow on plain ops is excluded by verification --
 // a POSSIBLE overflow (warning-level V130 on a havoc'd operand) fails the
 // gate exactly like a definite one...

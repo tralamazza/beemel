@@ -311,6 +311,19 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
     }
 }
 
+/// Flatten the top-level `&&` structure of a condition into its conjuncts,
+/// looking through `Group`. `||` operands and everything else are leaves.
+fn flatten_and_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::Group(inner) => flatten_and_conjuncts(inner, out),
+        Expr::Binary(l, crate::ast::BinaryOp::And, r) => {
+            flatten_and_conjuncts(l, out);
+            flatten_and_conjuncts(r, out);
+        }
+        other => out.push(other),
+    }
+}
+
 fn block_has_calls(block: &ast::Block) -> bool {
     block.stmts.iter().any(stmt_has_calls)
         || block.trailing.as_ref().is_some_and(|e| expr_has_calls(e))
@@ -1976,6 +1989,41 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{body_lbl}:"));
                 self.indent += 1;
+                // VERIFY IR ONLY: re-establish each PURE `&&` conjunct of
+                // the guard at body entry. BML's `&&` lowers eagerly
+                // (`and i1`), and when one operand comes from a hardware
+                // load IKOS cannot refine the others back through the
+                // conjunction -- nor through a re-used i1 from another block
+                // (the branch-condition pattern needs a same-block icmp).
+                // Measured: `while spin < N && !MMIO` left `spin` unbounded,
+                // the spin-loop V130 class. Re-EMITTING a conjunct is only
+                // sound if re-evaluation cannot differ or side-effect:
+                // locals and literals only (no MMIO, no statics -- an ISR
+                // could have changed them -- no calls, no loads).
+                if self.verify_mode {
+                    let mut conjuncts: Vec<&Expr> = Vec::new();
+                    flatten_and_conjuncts(&while_stmt.cond, &mut conjuncts);
+                    if conjuncts.len() > 1 {
+                        for c in conjuncts {
+                            if !self.expr_is_pure_local(c, symbols) {
+                                continue;
+                            }
+                            let fact = self.emit_expr(c, symbols, fn_name);
+                            let ok_lbl = self.new_label("while_fact_ok");
+                            let un_lbl = self.new_label("while_fact_un");
+                            self.line(&format!("br i1 {fact}, label %{ok_lbl}, label %{un_lbl}"));
+                            self.line("");
+                            self.indent -= 1;
+                            self.line(&format!("{un_lbl}:"));
+                            self.indent += 1;
+                            self.line("unreachable");
+                            self.line("");
+                            self.indent -= 1;
+                            self.line(&format!("{ok_lbl}:"));
+                            self.indent += 1;
+                        }
+                    }
+                }
                 let (_, body_term) = self.emit_block(
                     &while_stmt.body,
                     symbols,
@@ -4486,6 +4534,33 @@ impl IrEmitter {
         }
         let phys = self.ring_physical_index(agg, ty, cap_hint, &sum);
         (ptr_field, phys)
+    }
+
+    /// Whether re-evaluating `e` is guaranteed to (a) produce the same value
+    /// it produced moments ago in the same scope and (b) have no side
+    /// effects. Used by the `while` lowering to decide which guard conjuncts
+    /// may be re-emitted as body-entry facts for the verifier. Deliberately
+    /// a whitelist: locals (function params included), module consts, and literals composed
+    /// with pure operators. Statics are excluded (an ISR may have written
+    /// them between the two evaluations), as is anything that loads or
+    /// calls -- when in doubt, the conjunct simply contributes no fact.
+    fn expr_is_pure_local(&self, e: &Expr, symbols: &SymbolTable) -> bool {
+        match e {
+            Expr::Ident((name, _)) => {
+                self.locals.contains_key(name) || symbols.consts.contains_key(name)
+            }
+            Expr::IntLiteral(_, _, _) | Expr::BoolLiteral(_, _) => true,
+            Expr::Group(inner) => self.expr_is_pure_local(inner, symbols),
+            Expr::Unary(
+                crate::ast::UnaryOp::Not | crate::ast::UnaryOp::Neg | crate::ast::UnaryOp::BitNot,
+                inner,
+            ) => self.expr_is_pure_local(inner, symbols),
+            Expr::Binary(l, _, r) => {
+                self.expr_is_pure_local(l, symbols) && self.expr_is_pure_local(r, symbols)
+            }
+            Expr::Cast(inner, _) => self.expr_is_pure_local(inner, symbols),
+            _ => false,
+        }
     }
 
     /// Lower a ring view's physical index from `sum = head + i`. With a

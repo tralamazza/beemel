@@ -1,0 +1,23 @@
+// Bounded spin loop with an MMIO read in the guard -- the bucket-3 V130
+// class. BML's `&&` lowers eagerly (`and i1`), and IKOS cannot refine the
+// counter bound back through the conjunction when the other operand comes
+// from a hardware load (nor through a reused i1 from another block). The
+// while lowering re-establishes each PURE guard conjunct (locals, consts,
+// literals only -- re-evaluation is value-identical and side-effect-free)
+// as a fresh fact at body entry, in the verify IR only: `spin + 1` proves
+// and so does the post-loop bound.
+peripheral P at 0x40000000 {
+    reg SR offset 0x0 {
+        field RDY: b1 bit[0]
+    }
+}
+
+const TIMEOUT: u32 = 1000000;
+
+fn main() @context(thread) {
+    var spin: u32 = 0;
+    while spin < TIMEOUT && !P.SR.RDY {
+        spin = spin + 1;
+    }
+    assert(spin <= TIMEOUT);
+}

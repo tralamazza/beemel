@@ -315,8 +315,12 @@ fn tx_desc_addr(word_index: u32) -> u32 {
 }
 
 fn rx_desc_addr(word_index: u32) -> u32 {
-    // word_index <= 15 by the modulo wrap. // bml-verify: ignore V130
-    return (&RX_DESC as u32) + (word_index * 4);
+    // The mask enforces the documented precondition (word_index <= 15)
+    // structurally, so the multiply proves at synthetic entry points where
+    // the caller's bound is invisible. The remaining obligation is
+    // address-of-static + <=60 -- bounded by linker placement, outside the
+    // numeric model. // bml-verify: ignore V130
+    return (&RX_DESC as u32) + ((word_index & 15) * 4);
 }
 
 
@@ -408,11 +412,11 @@ fn rx_desc_get32(word_index: u32) -> u32 {
 }
 
 fn rx_buffer_addr(desc_index: u32) -> u32 {
-    // Interval-precision note: with the PTP senders added, IKOS can no
-    // longer prove the rearm handoff range through this helper (warning,
-    // not error -- desc_index is [0,3] by the modulo wrap, addr stays in
-    // the 4 KiB pool by construction). // bml-verify: ignore V130
-    return (&RX_BUFFER as u32) + (desc_index * RX_BUFFER_LEN);
+    // The mask enforces desc_index in [0,3] structurally (the multiply
+    // proves at synthetic entry points). The remaining obligation is
+    // address-of-static + <=6144 -- bounded by linker placement (the 4 KiB
+    // pool), outside the numeric model. // bml-verify: ignore V130
+    return (&RX_BUFFER as u32) + ((desc_index & 3) * RX_BUFFER_LEN);
 }
 
 fn rx_rearm(desc_word: u32) {
@@ -437,8 +441,9 @@ fn rx_rearm(desc_word: u32) {
 }
 
 fn eth_poll_rx() {
-    // RX_DESC_INDEX in [0,3] by the modulo wrap. // bml-verify: ignore V130
-    const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
+    // & 3 re-establishes the ring-index invariant at read: the % 4
+    // maintenance is invisible at synthetic entry points (havoc'd static).
+    const desc_word = (RX_DESC_INDEX & 3) * RX_DESC_WORDS;
     asm { dmb } : : : "memory";
     const desc3 = rx_desc_get32(desc_word + 3);
 
@@ -557,8 +562,7 @@ fn bench_consume_defensive(len: u32) @context(thread) {
     var sum: u32 = 0;
     var j: u32 = 0;
     while j < len {
-        // bml-verify: ignore V130
-        sum = sum + (BSTAGING[j] as u32); // j < len <= 512 // bml-verify: ignore V101
+        sum +%= BSTAGING[j] as u32; // j < len <= 512 // bml-verify: ignore V101
         j = j + 1;
     }
     const t1 = dwt_cycles();
@@ -578,8 +582,7 @@ fn bench_consume_bml(len: u32) @context(thread) {
     var sum: u32 = 0;
     var j: u32 = 0;
     while j < len {
-        // bml-verify: ignore V130
-        sum = sum + rx_get8(j);
+        sum +%= rx_get8(j); // checksum probe: wrap is fine
         j = j + 1;
     }
     const t1 = dwt_cycles();
@@ -606,8 +609,7 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
         var sum: u32 = 0;
         var j: u32 = 0;
         while j < len {
-            // bml-verify: ignore V130
-            sum = sum + (v[base + j] as u32);
+            sum +%= v[base +% j] as u32; // checksum probe; index bounded by the view assume
             j = j + 1;
         }
         const t1 = dwt_cycles();
@@ -624,8 +626,9 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
 
 // eth_poll_rx with the consumption swapped for the alternating bench legs.
 fn eth_bench_poll() @context(thread) {
-    // RX_DESC_INDEX in [0,3] by the modulo wrap. // bml-verify: ignore V130
-    const desc_word = RX_DESC_INDEX * RX_DESC_WORDS;
+    // & 3 re-establishes the ring-index invariant at read: the % 4
+    // maintenance is invisible at synthetic entry points (havoc'd static).
+    const desc_word = (RX_DESC_INDEX & 3) * RX_DESC_WORDS;
     asm { dmb } : : : "memory";
     const desc3 = rx_desc_get32(desc_word + 3);
 
@@ -649,8 +652,7 @@ fn eth_bench_poll() @context(thread) {
             bench_consume_bml(len);
         }
         if which == 2 {
-            // bml-verify: ignore V130
-            bench_consume_view(RX_DESC_INDEX * RX_BUFFER_LEN, len);
+            bench_consume_view((RX_DESC_INDEX & 3) * RX_BUFFER_LEN, len);
         }
     }
 
