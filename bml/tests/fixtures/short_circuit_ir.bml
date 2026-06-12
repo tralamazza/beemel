@@ -1,0 +1,15 @@
+// IR shape for short-circuit logical ops: a branch around the RHS with an
+// i1 phi at the join, never an eager `and i1`/`or i1` of both operands.
+fn pick(a: b1, b: b1) -> b1 {
+    return a && b;
+}
+
+fn either(a: b1, b: b1) -> b1 {
+    return a || b;
+}
+
+fn main() @context(thread) {
+    var k = pick(true, false);
+    var m = either(false, true);
+    var keep = k && m;
+}

@@ -1,0 +1,56 @@
+// `&&` / `||` are SHORT-CIRCUIT: the right operand is not evaluated when the
+// left side decides the result. Load-bearing for MMIO code (a status-register
+// read in the RHS must not happen -- read-to-clear) and observable here via a
+// counting side effect. Also checks the value form (phi join) and nesting.
+import harness.semihost;
+
+var CALLS: u32;
+
+fn bump_true() -> b1 {
+    CALLS = CALLS + 1;
+    return true;
+}
+
+fn bump_false() -> b1 {
+    CALLS = CALLS + 1;
+    return false;
+}
+
+fn main() @context(thread) {
+    // RHS skipped: LHS decides.
+    var a: b1 = false && bump_true();
+    expect_u32(CALLS, 0);
+    expect_u32(a as u32, 0);
+
+    var b: b1 = true || bump_false();
+    expect_u32(CALLS, 0);
+    expect_u32(b as u32, 1);
+
+    // RHS evaluated: LHS does not decide.
+    var c: b1 = true && bump_true();
+    expect_u32(CALLS, 1);
+    expect_u32(c as u32, 1);
+
+    var d: b1 = false || bump_false();
+    expect_u32(CALLS, 2);
+    expect_u32(d as u32, 0);
+
+    // Chained: evaluation stops at the first decider.
+    // false && X && Y -- neither X nor Y runs.
+    var e: b1 = false && bump_true() && bump_true();
+    expect_u32(CALLS, 2);
+    expect_u32(e as u32, 0);
+
+    // true && false && X -- first RHS runs, second does not.
+    var f: b1 = true && bump_false() && bump_true();
+    expect_u32(CALLS, 3);
+    expect_u32(f as u32, 0);
+
+    // Condition position (branch context), mixed with ||.
+    if false && bump_true() || true {
+        CALLS = CALLS + 10;
+    }
+    expect_u32(CALLS, 13);
+
+    done();
+}

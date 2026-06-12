@@ -1,11 +1,11 @@
-// Bounded spin loop with an MMIO read in the guard -- the bucket-3 V130
-// class. BML's `&&` lowers eagerly (`and i1`), and IKOS cannot refine the
-// counter bound back through the conjunction when the other operand comes
-// from a hardware load (nor through a reused i1 from another block). The
-// while lowering re-establishes each PURE guard conjunct (locals, consts,
-// literals only -- re-evaluation is value-identical and side-effect-free)
-// as a fresh fact at body entry, in the verify IR only: `spin + 1` proves
-// and so does the post-loop bound.
+// Bounded spin loop with an MMIO read in the guard -- the spin-loop V130
+// class. Conditions lower as short-circuit BRANCH TREES (no materialized
+// boolean, no phi): each conjunct is a same-block decision the verifier
+// refines through, so `spin + 1` proves and so does the post-loop bound.
+// Under the old eager `and i1` lowering IKOS could not refine the counter
+// bound through the conjunction when the other operand came from a
+// hardware load -- and a phi-based short-circuit form fails the same way
+// (per-edge phi reasoning). The tree encodes the facts in the CFG itself.
 peripheral P at 0x40000000 {
     reg SR offset 0x0 {
         field RDY: b1 bit[0]

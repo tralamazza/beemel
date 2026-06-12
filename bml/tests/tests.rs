@@ -2132,18 +2132,36 @@ fn test_verify_dbz() {
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 
-// Spin loop with an MMIO conjunct in the guard: the while lowering's
-// body-entry facts (pure conjuncts re-established for the verifier) make
-// the counter bound prove -- no suppression, and the post-loop assert
-// holds. The runtime IR carries none of this (verify-mode only).
+// `&&`/`||` lower short-circuit: branch around the RHS, i1 phi at the join,
+// no eager `and i1`/`or i1` of both operands (the eager form read MMIO in
+// the RHS even when the LHS decided -- a read-to-clear hazard).
+#[test]
+fn test_short_circuit_lowering() {
+    let ir = bml_ir("short_circuit_ir.bml");
+    assert!(ir.contains("and_rhs"), "expected and_rhs block:\n{ir}");
+    assert!(ir.contains("or_rhs"), "expected or_rhs block:\n{ir}");
+    assert!(ir.contains("phi i1"), "expected i1 phi join:\n{ir}");
+    assert!(
+        !ir.contains("= and i1") && !ir.contains("= or i1"),
+        "logical ops must not lower to eager and/or:\n{ir}"
+    );
+}
+
+// Spin loop with an MMIO conjunct in the guard: the branch-tree condition
+// lowering makes the counter bound prove -- no suppression, and the
+// post-loop assert holds.
 assert_verify_pass!(test_verify_while_mmio_guard, "verify_while_mmio_guard.bml");
 
 #[test]
-fn test_while_guard_facts_absent_from_runtime_ir() {
+fn test_while_guard_lowers_as_branch_tree() {
     let ir = bml_ir("verify_while_mmio_guard.bml");
     assert!(
-        !ir.contains("while_fact"),
-        "body-entry guard facts must not appear in runtime IR:\n{ir}"
+        ir.contains("cond_and"),
+        "expected a branch-tree conjunct block in the while guard:\n{ir}"
+    );
+    assert!(
+        !ir.contains("= and i1"),
+        "guard must not materialize an eager and i1:\n{ir}"
     );
 }
 

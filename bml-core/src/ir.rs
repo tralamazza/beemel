@@ -311,19 +311,6 @@ fn stmt_has_calls(stmt: &ast::Stmt) -> bool {
     }
 }
 
-/// Flatten the top-level `&&` structure of a condition into its conjuncts,
-/// looking through `Group`. `||` operands and everything else are leaves.
-fn flatten_and_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
-    match e {
-        Expr::Group(inner) => flatten_and_conjuncts(inner, out),
-        Expr::Binary(l, crate::ast::BinaryOp::And, r) => {
-            flatten_and_conjuncts(l, out);
-            flatten_and_conjuncts(r, out);
-        }
-        other => out.push(other),
-    }
-}
-
 fn block_has_calls(block: &ast::Block) -> bool {
     block.stmts.iter().any(stmt_has_calls)
         || block.trailing.as_ref().is_some_and(|e| expr_has_calls(e))
@@ -1710,14 +1697,11 @@ impl IrEmitter {
             }
 
             Stmt::If(if_stmt) => {
-                let cond_reg = self.emit_expr(&if_stmt.cond, symbols, fn_name);
                 let then_lbl = self.new_label("then");
                 let else_lbl = self.new_label("else");
                 let end_lbl = self.new_label("endif");
 
-                self.line(&format!(
-                    "br i1 {cond_reg}, label %{then_lbl}, label %{else_lbl}"
-                ));
+                self.emit_branch_cond(&if_stmt.cond, &then_lbl, &else_lbl, symbols, fn_name);
                 self.line("");
 
                 self.indent -= 1;
@@ -1980,50 +1964,12 @@ impl IrEmitter {
                 self.indent -= 1;
                 self.line(&format!("{cond_lbl}:"));
                 self.indent += 1;
-                let cond_reg = self.emit_expr(&while_stmt.cond, symbols, fn_name);
-                self.line(&format!(
-                    "br i1 {cond_reg}, label %{body_lbl}, label %{end_lbl}"
-                ));
+                self.emit_branch_cond(&while_stmt.cond, &body_lbl, &end_lbl, symbols, fn_name);
                 self.line("");
 
                 self.indent -= 1;
                 self.line(&format!("{body_lbl}:"));
                 self.indent += 1;
-                // VERIFY IR ONLY: re-establish each PURE `&&` conjunct of
-                // the guard at body entry. BML's `&&` lowers eagerly
-                // (`and i1`), and when one operand comes from a hardware
-                // load IKOS cannot refine the others back through the
-                // conjunction -- nor through a re-used i1 from another block
-                // (the branch-condition pattern needs a same-block icmp).
-                // Measured: `while spin < N && !MMIO` left `spin` unbounded,
-                // the spin-loop V130 class. Re-EMITTING a conjunct is only
-                // sound if re-evaluation cannot differ or side-effect:
-                // locals and literals only (no MMIO, no statics -- an ISR
-                // could have changed them -- no calls, no loads).
-                if self.verify_mode {
-                    let mut conjuncts: Vec<&Expr> = Vec::new();
-                    flatten_and_conjuncts(&while_stmt.cond, &mut conjuncts);
-                    if conjuncts.len() > 1 {
-                        for c in conjuncts {
-                            if !self.expr_is_pure_local(c, symbols) {
-                                continue;
-                            }
-                            let fact = self.emit_expr(c, symbols, fn_name);
-                            let ok_lbl = self.new_label("while_fact_ok");
-                            let un_lbl = self.new_label("while_fact_un");
-                            self.line(&format!("br i1 {fact}, label %{ok_lbl}, label %{un_lbl}"));
-                            self.line("");
-                            self.indent -= 1;
-                            self.line(&format!("{un_lbl}:"));
-                            self.indent += 1;
-                            self.line("unreachable");
-                            self.line("");
-                            self.indent -= 1;
-                            self.line(&format!("{ok_lbl}:"));
-                            self.indent += 1;
-                        }
-                    }
-                }
                 let (_, body_term) = self.emit_block(
                     &while_stmt.body,
                     symbols,
@@ -2077,12 +2023,9 @@ impl IrEmitter {
             }
 
             Stmt::Assume(assume) => {
-                let cond_reg = self.emit_expr(&assume.cond, symbols, fn_name);
                 let ok_lbl = self.new_label("assume_ok");
                 let unreach_lbl = self.new_label("assume_unreach");
-                self.line(&format!(
-                    "br i1 {cond_reg}, label %{ok_lbl}, label %{unreach_lbl}"
-                ));
+                self.emit_branch_cond(&assume.cond, &ok_lbl, &unreach_lbl, symbols, fn_name);
                 self.line("");
                 self.indent -= 1;
                 self.line(&format!("{unreach_lbl}:"));
@@ -2294,6 +2237,53 @@ impl IrEmitter {
                 let left_ty = self.expr_type(left, symbols);
                 let right_ty = self.expr_type(right, symbols);
 
+                // SHORT-CIRCUIT logical operators: `a && b` does not evaluate
+                // `b` when `a` is false (dually for `||`). This is load-
+                // bearing for an MMIO language -- with the old eager
+                // `and i1` lowering, `a && P.SR.X` read the register even
+                // when `a` was false, a real hazard for read-to-clear status
+                // registers (and `a && f()` always called f). Lowered as a
+                // branch around the RHS with an i1 phi at the join.
+                if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                    let is_and = *op == BinaryOp::And;
+                    let dbg = self.dbg_loc(expr.span());
+                    let lhs_reg = self.emit_expr(left, symbols, fn_name);
+                    let lhs_edge = self
+                        .current_label
+                        .clone()
+                        .unwrap_or_else(|| "entry".to_string());
+                    let rhs_lbl = self.new_label(if is_and { "and_rhs" } else { "or_rhs" });
+                    let end_lbl = self.new_label(if is_and { "and_end" } else { "or_end" });
+                    if is_and {
+                        self.line(&format!(
+                            "br i1 {lhs_reg}, label %{rhs_lbl}, label %{end_lbl}{dbg}"
+                        ));
+                    } else {
+                        self.line(&format!(
+                            "br i1 {lhs_reg}, label %{end_lbl}, label %{rhs_lbl}{dbg}"
+                        ));
+                    }
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{rhs_lbl}:"));
+                    self.indent += 1;
+                    let rhs_reg = self.emit_expr(right, symbols, fn_name);
+                    let rhs_edge = self.current_label.clone().unwrap_or(rhs_lbl);
+                    self.line(&format!("br label %{end_lbl}"));
+                    self.line("");
+                    self.indent -= 1;
+                    self.line(&format!("{end_lbl}:"));
+                    self.indent += 1;
+                    // The short value is the LHS-decided one: false for &&,
+                    // true for ||.
+                    let short_val = if is_and { "false" } else { "true" };
+                    let result = self.new_reg();
+                    self.line(&format!(
+                        "{result} = phi i1 [ {short_val}, %{lhs_edge} ], [ {rhs_reg}, %{rhs_edge} ]"
+                    ));
+                    return result;
+                }
+
                 // Pointer arithmetic: GEP
                 if crate::types::is_ptr(&left_ty)
                     && crate::types::is_int(&right_ty)
@@ -2461,8 +2451,9 @@ impl IrEmitter {
                             ("icmp", iop)
                         }
                     }
-                    BinaryOp::And => ("and", "i1"),
-                    BinaryOp::Or => ("or", "i1"),
+                    // Logical && / || are short-circuited above and never
+                    // reach the eager opcode path.
+                    BinaryOp::And | BinaryOp::Or => unreachable!("short-circuited above"),
                     BinaryOp::BitAnd => ("and", lty.as_str()),
                     BinaryOp::BitOr => ("or", lty.as_str()),
                     BinaryOp::BitXor => ("xor", lty.as_str()),
@@ -2486,18 +2477,11 @@ impl IrEmitter {
                         | BinaryOp::LtEq
                         | BinaryOp::GtEq
                 );
-                // For logical ops, result is i1
-                let is_logical = matches!(op, BinaryOp::And | BinaryOp::Or);
-
                 let dbg = self.dbg_loc(expr.span());
                 if cmp_result {
                     let (cmd, cond) = (llvm_op, result_ty);
                     self.line(&format!(
                         "{reg} = {cmd} {cond} {lty} {left_reg}, {right_reg}{dbg}"
-                    ));
-                } else if is_logical {
-                    self.line(&format!(
-                        "{reg} = {llvm_op} {result_ty} {left_reg}, {right_reg}{dbg}"
                     ));
                 } else {
                     // VERIFY IR ONLY: tag signed add/sub/mul with `nsw` so
@@ -3215,14 +3199,11 @@ impl IrEmitter {
                 }
             }
             Expr::If(if_expr) => {
-                let cond_reg = self.emit_expr(&if_expr.cond, symbols, fn_name);
                 let then_lbl = self.new_label("if_then");
                 let else_lbl = self.new_label("if_else");
                 let end_lbl = self.new_label("if_end");
 
-                self.line(&format!(
-                    "br i1 {cond_reg}, label %{then_lbl}, label %{else_lbl}"
-                ));
+                self.emit_branch_cond(&if_expr.cond, &then_lbl, &else_lbl, symbols, fn_name);
                 self.line("");
 
                 self.indent -= 1;
@@ -4536,30 +4517,55 @@ impl IrEmitter {
         (ptr_field, phys)
     }
 
-    /// Whether re-evaluating `e` is guaranteed to (a) produce the same value
-    /// it produced moments ago in the same scope and (b) have no side
-    /// effects. Used by the `while` lowering to decide which guard conjuncts
-    /// may be re-emitted as body-entry facts for the verifier. Deliberately
-    /// a whitelist: locals (function params included), module consts, and literals composed
-    /// with pure operators. Statics are excluded (an ISR may have written
-    /// them between the two evaluations), as is anything that loads or
-    /// calls -- when in doubt, the conjunct simply contributes no fact.
-    fn expr_is_pure_local(&self, e: &Expr, symbols: &SymbolTable) -> bool {
+    /// Lower a boolean condition in BRANCH position as a short-circuit
+    /// branch tree: `&&` / `||` / `!` become control flow with two targets
+    /// and NO phi. Each leaf decision is a same-block value + `br`, which is
+    /// both the standard condition lowering (no materialized boolean) and
+    /// the shape the verifier refines through: on the false edge of
+    /// `a || b`, "both operands are false" is encoded in the CFG itself,
+    /// where the phi form needs per-edge reasoning IKOS does not do (the
+    /// servo's divergence-gate else branch lost its `off` bounds when `||`
+    /// briefly lowered to a phi). Value-position `&&`/`||` keep the phi
+    /// lowering in `emit_expr`.
+    fn emit_branch_cond(
+        &mut self,
+        e: &Expr,
+        true_lbl: &str,
+        false_lbl: &str,
+        symbols: &SymbolTable,
+        fn_name: &str,
+    ) {
         match e {
-            Expr::Ident((name, _)) => {
-                self.locals.contains_key(name) || symbols.consts.contains_key(name)
+            Expr::Group(inner) => {
+                self.emit_branch_cond(inner, true_lbl, false_lbl, symbols, fn_name);
             }
-            Expr::IntLiteral(_, _, _) | Expr::BoolLiteral(_, _) => true,
-            Expr::Group(inner) => self.expr_is_pure_local(inner, symbols),
-            Expr::Unary(
-                crate::ast::UnaryOp::Not | crate::ast::UnaryOp::Neg | crate::ast::UnaryOp::BitNot,
-                inner,
-            ) => self.expr_is_pure_local(inner, symbols),
-            Expr::Binary(l, _, r) => {
-                self.expr_is_pure_local(l, symbols) && self.expr_is_pure_local(r, symbols)
+            Expr::Binary(l, crate::ast::BinaryOp::And, r) => {
+                let mid = self.new_label("cond_and");
+                self.emit_branch_cond(l, &mid, false_lbl, symbols, fn_name);
+                self.line("");
+                self.indent -= 1;
+                self.line(&format!("{mid}:"));
+                self.indent += 1;
+                self.emit_branch_cond(r, true_lbl, false_lbl, symbols, fn_name);
             }
-            Expr::Cast(inner, _) => self.expr_is_pure_local(inner, symbols),
-            _ => false,
+            Expr::Binary(l, crate::ast::BinaryOp::Or, r) => {
+                let mid = self.new_label("cond_or");
+                self.emit_branch_cond(l, true_lbl, &mid, symbols, fn_name);
+                self.line("");
+                self.indent -= 1;
+                self.line(&format!("{mid}:"));
+                self.indent += 1;
+                self.emit_branch_cond(r, true_lbl, false_lbl, symbols, fn_name);
+            }
+            Expr::Unary(crate::ast::UnaryOp::Not, inner) => {
+                self.emit_branch_cond(inner, false_lbl, true_lbl, symbols, fn_name);
+            }
+            other => {
+                let reg = self.emit_expr(other, symbols, fn_name);
+                self.line(&format!(
+                    "br i1 {reg}, label %{true_lbl}, label %{false_lbl}"
+                ));
+            }
         }
     }
 

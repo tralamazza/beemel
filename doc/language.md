@@ -1153,6 +1153,15 @@ cast_expr     = expr "as" type
 ;; is `(x as u32) + 1`. Field/call/index still bind tighter than the unary, so
 ;; `&a.b` is `&(a.b)`.
 
+;; LOGICAL OPERATORS `&&` / `||` ARE SHORT-CIRCUIT: the right operand is
+;; not evaluated when the left side decides the result (like C and Rust).
+;; This is load-bearing for MMIO code -- in `a && P.SR.X`, the status
+;; register is NOT read when `a` is false, which matters for read-to-clear
+;; registers; `a && f()` calls `f` only when `a` is true. (Until 2026-06-12
+;; they evaluated eagerly; code relying on an always-evaluated RHS side
+;; effect must hoist it.) The bitwise forms `&` / `|` on `b1` remain eager,
+;; single-instruction, and side-effect-transparent.
+
 wrap_op       = "+%" | "-%" | "*%"
 ;; Wrapping arithmetic. Runtime behavior is identical to `+`/`-`/`*` (which
 ;; already wrap two's-complement); the difference is DECLARED INTENT: the

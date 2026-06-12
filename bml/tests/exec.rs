@@ -258,6 +258,10 @@ assert_exec!(exec_claim_window, "claim_window.bml");
 // stays pended until the window closes.
 assert_exec!(exec_basepri_window, "basepri_window.bml");
 
+// `&&` / `||` short-circuit: the RHS is not evaluated when the LHS decides
+// (counting side effect observes it), values and chaining included.
+assert_exec!(exec_short_circuit, "short_circuit.bml");
+
 // ─── integer wrapping (design-decisions.md §8) ───────────────────────────────
 assert_exec!(exec_wrapping, "wrapping.bml");
 
