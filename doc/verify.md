@@ -215,10 +215,7 @@ bml verify --fail-on warning program.bml
 # With explicit IKOS binary path (or set BML_IKOS_BIN env var)
 bml verify --ikos-bin /opt/ikos/bin/ikos-analyzer program.bml
 
-# With explicit report tool path, if inference is not suitable
-bml verify --ikos-report-bin /opt/ikos/bin/ikos-report program.bml
-
-# Keep intermediate files (.ll, .db, .hwaddrs, .json)
+# Keep intermediate files (.ll, .db, .hwaddrs)
 bml verify --save-temps program.bml
 ```
 

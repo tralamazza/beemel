@@ -1,3 +1,4 @@
+pub mod db;
 pub mod hwaddrs;
 pub mod preempt;
 pub mod report;
@@ -17,7 +18,6 @@ use self::report::{Finding, Status, Suppressions, apply_suppressions, deduplicat
 pub struct VerifyConfig {
     pub opt_bin: PathBuf,
     pub ikos_bin: PathBuf,
-    pub ikos_report_bin: PathBuf,
     pub domain: String,
     pub checks: Vec<String>,
     pub extra_hwaddrs: Vec<PathBuf>,
@@ -28,7 +28,6 @@ impl Default for VerifyConfig {
         VerifyConfig {
             opt_bin: PathBuf::from("opt"),
             ikos_bin: PathBuf::from("ikos-analyzer"),
-            ikos_report_bin: PathBuf::from("ikos-report"),
             // `interval-congruence` (reduced product of interval + congruence)
             // is required for `upa` to prove modular alignment of array
             // indexing without flooding the report with V150 false positives.
@@ -104,8 +103,8 @@ pub fn collect_entry_points(symbols: &SymbolTable) -> Vec<String> {
 ///
 /// # Errors
 ///
-/// Returns `VerifyError` if IKOS or ikos-report fail, or if the JSON report
-/// cannot be parsed.
+/// Returns `VerifyError` if `opt` or ikos-analyzer fail, or if the result
+/// database cannot be read.
 #[allow(clippy::too_many_arguments)]
 pub fn verify(
     program: &crate::ast::Program,
@@ -214,7 +213,6 @@ pub fn verify(
     // accepts textual `.ll` through LLVM's parseIRFile(), so no llvm-as step
     // is needed here.
     let db_path = stem.with_extension("verify.db");
-    let json_path = stem.with_extension("verify.json");
 
     let mut cmd = Command::new(&config.ikos_bin);
     cmd.arg(&opt_ll_path)
@@ -251,43 +249,9 @@ pub fn verify(
         return Err(VerifyError::IkosFailed(stderr.to_string()));
     }
 
-    // 5. Convert DB to JSON via the matching ikos-report.
-    let report_output = Command::new(&config.ikos_report_bin)
-        .arg("-f")
-        .arg("json")
-        .arg("-o")
-        .arg(&json_path)
-        .arg(&db_path)
-        .output()
-        .map_err(|e| {
-            let hint = if config.ikos_report_bin.exists() {
-                "; the script exists, so its interpreter may be missing. Run the IKOS install step or pass --ikos-report-bin to a working ikos-report"
-            } else {
-                ""
-            };
-            VerifyError::ToolInvocation(format!(
-                "failed to run {}: {e}{hint}",
-                config.ikos_report_bin.display()
-            ))
-        })?;
-
-    if !report_output.status.success() {
-        let stderr = String::from_utf8_lossy(&report_output.stderr);
-        return Err(VerifyError::IkosFailed(format!(
-            "{} failed: {stderr}",
-            config.ikos_report_bin.display()
-        )));
-    }
-
-    // 6. Parse JSON report.
-    let report_content = std::fs::read_to_string(&json_path).map_err(|e| {
-        VerifyError::ParseError(format!(
-            "failed to read report {}: {e}",
-            json_path.display()
-        ))
-    })?;
-
-    let findings = parse_json_report(&report_content)?;
+    // 6. Read findings straight from the result database (see db.rs; this
+    // replaced the Python ikos-report subprocess).
+    let findings = db::read_findings(&db_path)?;
     let findings = deduplicate(findings);
 
     // 7. Drop V130 (unsigned-int-overflow) on every line covered by a
@@ -566,164 +530,4 @@ fn check_to_bml_code(check: &str, status: Status) -> (String, String) {
         Safe | Unreachable => "info",
     };
     (code.to_string(), severity.to_string())
-}
-
-/// Parse IKOS JSON report into findings.
-/// Schema: integer kind/status codes, with statement/file lookups.
-fn parse_json_report(content: &str) -> Result<Vec<Finding>, VerifyError> {
-    #[derive(serde::Deserialize)]
-    struct IkosRoot {
-        files: Vec<IkosFile>,
-        functions: Vec<IkosFunction>,
-        statements: Vec<IkosStatement>,
-        #[serde(default)]
-        operands: Vec<IkosOperand>,
-        reports: Vec<IkosReportEntry>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct IkosFile {
-        id: i64,
-        path: Option<String>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct IkosFunction {
-        id: i64,
-        name: String,
-        file_id: Option<i64>,
-        line: Option<u32>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct IkosStatement {
-        id: i64,
-        kind: i64,
-        function_id: i64,
-        file_id: Option<i64>,
-        line: Option<u32>,
-        column: Option<u32>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct IkosOperand {
-        id: i64,
-        repr: Option<String>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct IkosReportEntry {
-        kind: i64,
-        status: i64,
-        statement_id: i64,
-        // `default` alone does not cover an explicit `null`: unreachable
-        // entries carry `"operands": null`, so this must be Option.
-        #[serde(default)]
-        operands: Option<Vec<(i64, i64)>>,
-        #[allow(dead_code)]
-        info: Option<serde_json::Value>,
-    }
-
-    let root: IkosRoot = serde_json::from_str(content)
-        .map_err(|e| VerifyError::ParseError(format!("JSON parse error: {e}")))?;
-
-    // Build lookup maps
-    let file_map: HashMap<i64, PathBuf> = root
-        .files
-        .iter()
-        .filter_map(|f| f.path.as_ref().map(|p| (f.id, PathBuf::from(p))))
-        .collect();
-    let stmt_by_id: HashMap<i64, &IkosStatement> =
-        root.statements.iter().map(|s| (s.id, s)).collect();
-    let fn_by_id: HashMap<i64, &IkosFunction> = root.functions.iter().map(|f| (f.id, f)).collect();
-    let operand_by_id: HashMap<i64, &str> = root
-        .operands
-        .iter()
-        .filter_map(|o| o.repr.as_deref().map(|r| (o.id, r)))
-        .collect();
-
-    let mut findings = Vec::new();
-    for entry in root.reports {
-        let status = match entry.status {
-            0 => Status::Safe,
-            1 => Status::Warning,
-            2 => Status::Error,
-            3 => Status::Unreachable,
-            _ => continue,
-        };
-        if status == Status::Safe {
-            continue;
-        }
-        // Kind 0 ("unreachable") entries are dropped like Safe ones: bml
-        // encodes every verify obligation (range assumes, view bounds) as a
-        // branch-to-unreachable, so IKOS reports one such entry per
-        // obligation BY CONSTRUCTION -- on bml-generated IR they are
-        // encoding artifacts, not dead user code (~28 info findings burying
-        // the real report on the H7 example).
-        if entry.kind == 0 {
-            continue;
-        }
-
-        let check = check_name(entry.kind).to_string();
-        let (code, severity) = check_to_bml_code(&check, status);
-
-        // Look up file/line from the associated statement,
-        // falling back to function-level location when statement has none.
-        let (file, line, column) = stmt_by_id
-            .get(&entry.statement_id)
-            .map(|s| {
-                let (fid, s_line, s_col) = (s.file_id, s.line, s.column);
-                if fid.is_none() && s_line.is_none() {
-                    // Statement has no location; fall back to function location
-                    fn_by_id
-                        .get(&s.function_id)
-                        .map_or((PathBuf::new(), 0, 0), |f| {
-                            let file = f
-                                .file_id
-                                .and_then(|fid| file_map.get(&fid).cloned())
-                                .unwrap_or_default();
-                            (file, f.line.unwrap_or(0), 0u32)
-                        })
-                } else {
-                    let file = fid
-                        .and_then(|fid| file_map.get(&fid).cloned())
-                        .unwrap_or_default();
-                    (file, s_line.unwrap_or(0), s_col.unwrap_or(0))
-                }
-            })
-            .unwrap_or_default();
-
-        // Collect operand names IKOS thinks are involved in this finding.
-        // The JSON encodes them as (kind, id) pairs; we look up the printable
-        // repr from the operands table. Kind 17 in IKOS is a local variable;
-        // others are constants/internals we skip.
-        let operand_names: Vec<&str> = entry
-            .operands
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|(_, id)| operand_by_id.get(id).copied())
-            .filter(|name| !name.is_empty())
-            .collect();
-        let message = if operand_names.is_empty() {
-            format!("[{severity}][{code}] {check} violation")
-        } else {
-            format!(
-                "[{severity}][{code}] {check} violation (operand: {})",
-                operand_names.join(", ")
-            )
-        };
-
-        findings.push(Finding {
-            check,
-            code,
-            status,
-            message,
-            file,
-            line,
-            column,
-        });
-    }
-
-    Ok(findings)
 }

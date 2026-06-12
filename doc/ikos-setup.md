@@ -31,16 +31,13 @@ cd "$IKOS_SRC"
 cmake -S . -B build-llvm18 \
   -DCMAKE_BUILD_TYPE=Release \
   -DLLVM_CONFIG_EXECUTABLE="$LLVM18/bin/llvm-config"
-cmake --build build-llvm18 -j
-cmake --install build-llvm18
+cmake --build build-llvm18 -j ikos-analyzer
 ```
 
 The analyzer binary is then at `$IKOS_SRC/build-llvm18/analyzer/ikos-analyzer`.
-
-`bml verify` also needs `ikos-report` to convert IKOS's SQLite database to JSON.
-The install step creates the Python environment used by `ikos-report`. After
-installing, BML infers the matching report tool automatically when `--ikos-bin`
-points at either the build-tree analyzer or the installed analyzer.
+That binary is the ONLY IKOS piece `bml verify` needs: BML reads the result
+database directly (no `ikos-report`, no Python environment, no
+`cmake --install` step).
 
 ## Running `bml verify`
 
@@ -57,14 +54,11 @@ export BML_IKOS_BIN="$IKOS_SRC/build-llvm18/analyzer/ikos-analyzer"
 cargo test --test tests -- test_verify_
 ```
 
-The installed analyzer works too:
+An installed analyzer (`cmake --install`) works too:
 
 ```bash
 export BML_IKOS_BIN="$IKOS_SRC/install/bin/ikos-analyzer"
 ```
-
-No separate `BML_IKOS_REPORT_BIN` is needed after installation. Use
-`--ikos-report-bin` only as an escape hatch for non-standard IKOS layouts.
 
 ## LLVM 18 `opt` requirement
 
