@@ -1,0 +1,16 @@
+// LANGUAGE CONTRACT test: "may overflow" is as red as "does overflow".
+// The ISR havocs X, so `x + 1` in the reader is a POSSIBLE overflow -- IKOS
+// classifies it as a warning, and the verify gate escalates V130 warnings
+// to errors (prove it, declare wrap with `+%`, or suppress visibly).
+// verify_wrap_uio_warning.bml is the `+%` twin that passes.
+var X: u32 @shared(ceiling = 1) = 0;
+
+fn ticker() @isr(priority = 1) {
+    X = 1u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = X;
+    var y: u32 = x + 1;
+    var keep = y;
+}

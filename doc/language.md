@@ -1156,16 +1156,29 @@ cast_expr     = expr "as" type
 wrap_op       = "+%" | "-%" | "*%"
 ;; Wrapping arithmetic. Runtime behavior is identical to `+`/`-`/`*` (which
 ;; already wrap two's-complement); the difference is DECLARED INTENT: the
-;; verifier drops V130 (unsigned-int-overflow) on the lines a wrap expression
-;; covers, with no `bml-verify: ignore` comment. Division of labor: plain
-;; `+` is a proof obligation ("I believe this cannot overflow -- check me"),
-;; `+%` is a declaration ("wrap is this counter's semantics"). Use it for
-;; free-running counters, sequence numbers, ring indices, cycle-counter
-;; deltas. Integer operands only (E336): no pointers (wrap on an address is
-;; never intent; plain `+`/`-` on pointers means element arithmetic), no
-;; floats, no b1. Same precedence as the plain operator. Compound forms
-;; `+%=` / `-%=` / `*%=`. Not const-evaluable: compile-time arithmetic uses
-;; the plain operators, where overflow is a hard error.
+;; verifier drops V130 (integer overflow) on the lines a wrap expression
+;; covers, with no `bml-verify: ignore` comment. Use it for free-running
+;; counters, sequence numbers, ring indices, cycle-counter deltas. Integer
+;; operands only (E336): no pointers (wrap on an address is never intent;
+;; plain `+`/`-` on pointers means element arithmetic), no floats, no b1.
+;; Same precedence as the plain operator. Compound forms `+%=` / `-%=` /
+;; `*%=`. Not const-evaluable: compile-time arithmetic uses the plain
+;; operators, where overflow is a hard error.
+
+;; INTEGER OVERFLOW CONTRACT. Overflow on plain `+`/`-`/`*` is a program
+;; ERROR that verification excludes -- `bml verify` reports any plain-op
+;; site it cannot prove non-overflowing as an error-level V130 ("may
+;; overflow" is as red as "does overflow"). The three sanctioned outcomes
+;; for such a site: bound the operands so it proves, declare the wrap with
+;; the `%` operator, or carry a visible `bml-verify: ignore` justification
+;; (the audited escape hatch, like an unsafe block). The RUNTIME LOWERING
+;; is two's-complement wrap either way -- deterministic, never UB, no
+;; trap, no UB-licensed optimization -- so an unverified program still has
+;; defined (wrapping) behavior; what verification adds is the guarantee
+;; that plain-op wrap never happens. In the verify IR (only there), signed
+;; ops carry `nsw` so the prover checks the signed overflow predicate; the
+;; no-overflow modeling this implies is sound exactly because programs
+;; where it could fire do not pass the gate.
 
 enum_variant  = expr "@" ident
 

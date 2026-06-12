@@ -108,7 +108,12 @@ fn main() @context(thread) {
                     t2_have = 0;
                     await_resp = 0;
                 }
-                if pt == PTP_FOLLOW_UP && ptp_rx_seq() == sync_seq && t2_have != 0 {
+                // The ns field is WIRE data: validate at capture (a garbage
+                // Follow_Up kills the round, like a t3 miss). This backs the
+                // `assume(t1ns < 1e9)` in the Delay_Resp handler -- an
+                // assume on attacker-reachable input would be runtime UB.
+                if pt == PTP_FOLLOW_UP && ptp_rx_seq() == sync_seq && t2_have != 0
+                    && ptp_rx_ts_ns() < 1000000000 {
                     PTP_T1_S = ptp_rx_ts_s();
                     PTP_T1_NS = ptp_rx_ts_ns();
                     eth_send_ptp(1, sync_seq, 0, 0, true);
@@ -123,12 +128,13 @@ fn main() @context(thread) {
                 if pt == PTP_DELAY_RESP && ptp_rx_seq() == sync_seq && await_resp != 0 {
                     PTP_T4_S = ptp_rx_ts_s();
                     PTP_T4_NS = ptp_rx_ts_ns();
-                    // All four collected: publish the raw deltas. The
-                    // nanosecond fields are < 1e9 by hardware (digital
-                    // rollover, TSCTRLSSR); captured into locals and stated
-                    // as assumes so the signed borrow math in the step
-                    // branch PROVES instead of being suppressed (assuming on
-                    // the static narrows only that load, not the cell).
+                    // All four collected: publish the raw deltas. t2ns is
+                    // our own MAC's RX timestamp (< 1e9 by hardware digital
+                    // rollover, TSCTRLSSR); t1ns is wire data whose bound is
+                    // ENFORCED at the Follow_Up capture above -- both
+                    // assumes are backed invariants, not trusted axioms.
+                    // Captured into locals because assuming on a static
+                    // narrows only that load, not the cell.
                     const t1ns = PTP_T1_NS;
                     const t2ns = PTP_T2_NS;
                     assume(t1ns < 1000000000);

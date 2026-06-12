@@ -2132,6 +2132,16 @@ fn test_verify_dbz() {
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 
+// LANGUAGE CONTRACT: overflow on plain ops is excluded by verification --
+// a POSSIBLE overflow (warning-level V130 on a havoc'd operand) fails the
+// gate exactly like a definite one...
+assert_verify_fail!(test_verify_uio_warning_is_red, "verify_uio_warning.bml");
+// ...and the `+%` twin of the same may-overflow add passes: declared wrap.
+assert_verify_pass!(
+    test_verify_wrap_uio_warning_passes,
+    "verify_wrap_uio_warning.bml"
+);
+
 // Signed-typed arithmetic is tagged `nsw` in the verify IR, flipping IKOS
 // from the unsigned reading (which flagged `5 - 7` as i32 as a definite
 // underflow) to the signed check with branch narrowing: bounded signed math

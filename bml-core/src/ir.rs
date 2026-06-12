@@ -43,6 +43,15 @@ pub struct IrEmitter {
     /// volatile: the agent is a concurrent writer the optimizer cannot see
     /// (a hoisted OWN-bit spin became an infinite branch on the H723).
     agent_ptr_locals: std::collections::HashSet<String>,
+    /// Spans of COMPILER-generated arithmetic that wraps by design, recorded
+    /// in verify mode only: the ring view's `head + i` (bounded by the
+    /// subsequent `% cap` regardless of wrap) and the bit view's
+    /// `bit_offset + i` (bounded by the index assume + byte select). The
+    /// verify driver merges these with the user's `Program::wrap_spans` so
+    /// V130 is not raised for index math the user never wrote -- without
+    /// this, any exported fn taking a ring/bits param fails the overflow
+    /// contract on synthetic entry-point havoc.
+    pub generated_wrap_spans: Vec<crate::source::Span>,
     preempt: Option<PreemptInfo>,
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
@@ -344,6 +353,7 @@ impl IrEmitter {
             verify_mode: false,
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
+            generated_wrap_spans: Vec::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -403,6 +413,7 @@ impl IrEmitter {
             verify_mode: true,
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
+            generated_wrap_spans: Vec::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -581,7 +592,7 @@ impl IrEmitter {
     }
 
     #[must_use]
-    pub fn emit(mut self, program: &Program, symbols: &SymbolTable) -> String {
+    pub fn emit(&mut self, program: &Program, symbols: &SymbolTable) -> String {
         if self.verify_mode {
             self.collect_desc_extents(program);
         }
@@ -601,9 +612,10 @@ impl IrEmitter {
         self.emit_string_literals();
         if self.debug {
             self.emit_debug_module_flags();
-            self.out.push_str(&self.debug_metadata);
+            let metadata = std::mem::take(&mut self.debug_metadata);
+            self.out.push_str(&metadata);
         }
-        self.out
+        std::mem::take(&mut self.out)
     }
 
     // ─── module header ───────────────────────────────────────────────
@@ -2760,6 +2772,9 @@ impl IrEmitter {
                     self.indent += 1;
                     let bit = self.new_reg();
                     self.line(&format!("{bit} = add i32 {off_field}, {idx_i32}"));
+                    if self.verify_mode {
+                        self.generated_wrap_spans.push(index.span());
+                    }
                     let byteidx = self.new_reg();
                     self.line(&format!("{byteidx} = lshr i32 {bit}, 3"));
                     let bib = self.new_reg();
@@ -4132,6 +4147,9 @@ impl IrEmitter {
                     self.indent += 1;
                     let bit = self.new_reg();
                     self.line(&format!("{bit} = add i32 {off_field}, {idx_i32}"));
+                    if self.verify_mode {
+                        self.generated_wrap_spans.push(index.span());
+                    }
                     let byteidx = self.new_reg();
                     self.line(&format!("{byteidx} = lshr i32 {bit}, 3"));
                     let bib = self.new_reg();
@@ -4463,6 +4481,9 @@ impl IrEmitter {
         let idx_i32 = self.coerce_int(idx_reg, &idx_ty, &Type::U32);
         let sum = self.new_reg();
         self.line(&format!("{sum} = add i32 {head_field}, {idx_i32}"));
+        if self.verify_mode {
+            self.generated_wrap_spans.push(index.span());
+        }
         let phys = self.ring_physical_index(agg, ty, cap_hint, &sum);
         (ptr_field, phys)
     }

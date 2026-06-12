@@ -293,6 +293,7 @@ pub fn verify(
     let wrap_lines: std::collections::HashSet<(PathBuf, u32)> = program
         .wrap_spans
         .iter()
+        .chain(emitter.generated_wrap_spans.iter())
         .flat_map(|span| {
             let path = canon(source_map.get_path(span.file));
             let loc = source_map.span_location(*span);
@@ -316,7 +317,30 @@ pub fn verify(
             per_file.insert(f.file.clone(), report::parse_suppressions(&src));
         }
     }
-    Ok(apply_suppressions(findings, &per_file))
+    let findings = apply_suppressions(findings, &per_file);
+
+    // 9. LANGUAGE CONTRACT: overflow on plain arithmetic is a program error
+    // that verification must exclude -- "may overflow" is as red as "does
+    // overflow". Escalate surviving V130 warnings to errors so the default
+    // gate (--fail-on error) rejects them. The sanctioned outcomes for a
+    // V130 site are: prove it (bound the operands), declare the wrap (`+%`),
+    // or carry a visible `bml-verify: ignore` with a justification (the
+    // escape hatch, applied above, BEFORE this escalation). This is also
+    // what keeps the nsw signed modeling sound for gated programs: the
+    // verifier may reason as if plain ops never overflow precisely because
+    // no program where they might overflow passes this gate.
+    Ok(findings
+        .into_iter()
+        .map(|mut f| {
+            if f.code == "V130" && f.status == Status::Warning {
+                f.status = Status::Error;
+                // The message carries the original "[warning]" tag from
+                // parse time; rewrite it so the report is consistent.
+                f.message = f.message.replacen("[warning]", "[error]", 1);
+            }
+            f
+        })
+        .collect())
 }
 
 /// Map IKOS `CheckKind` integer to a short string name.

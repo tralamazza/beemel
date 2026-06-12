@@ -1,0 +1,13 @@
+// `+%` twin of verify_uio_warning.bml: the same havoc'd may-overflow add,
+// but the wrap is DECLARED, so no V130 is reported and verify passes.
+var X: u32 @shared(ceiling = 1) = 0;
+
+fn ticker() @isr(priority = 1) {
+    X = 1u32;
+}
+
+fn main() @context(thread) {
+    var x: u32 = X;
+    var y: u32 = x +% 1;
+    var keep = y;
+}
