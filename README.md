@@ -20,7 +20,9 @@ cargo build --release
 ```
 
 Requires `opt`, `llc`, and `ld.lld` (LLVM toolchain) for `bml build`.
-Requires `ikos-analyzer` for `bml verify` (see [doc/verify.md](./doc/verify.md)).
+`bml verify` needs the LLVM 18 IKOS fork vendored as the `ikos` submodule
+(`git submodule update --init ikos`, then build it once -- see
+[doc/ikos-setup.md](./doc/ikos-setup.md)); stock IKOS does not work.
 
 ## Crates
 
