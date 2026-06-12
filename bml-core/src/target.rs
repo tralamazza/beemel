@@ -1033,6 +1033,28 @@ impl Target {
         contains(self.vector_table_offset).or_else(|| contains(self.flash_base))
     }
 
+    /// RAM blocks the generated `reset_handler` word-zeroes at boot, BEFORE
+    /// the `.data` copy: every mem block except the code/flash block.
+    ///
+    /// Why (measured on the NUCLEO-H723ZG, 2026-06-12): ECC RAM powers up
+    /// with random check bits. Word-zeroing `.data`/`.bss` covers the
+    /// statics, but the stack (NOLOAD), section gaps, and any other
+    /// never-written words keep invalid ECC -- and once the D-cache is on, a
+    /// write-allocate linefill READS the whole 32-byte line, so a store near
+    /// virgin words raises an ECC double-error = imprecise `BusFault`. The
+    /// failure is cold-boot-only (warm resets retain valid ECC from prior
+    /// runs), which made it look like a heisenbug across firmware versions.
+    /// Scrubbing whole blocks with word stores makes every word ECC-valid.
+    #[must_use]
+    pub fn ecc_scrub_blocks(&self) -> Vec<(u64, u64)> {
+        let flash = self.flash_block().map(|m| m.name.clone());
+        self.mem_blocks
+            .iter()
+            .filter(|m| Some(&m.name) != flash.as_ref())
+            .map(|m| (m.base, m.size))
+            .collect()
+    }
+
     /// The working-RAM block (holds `.data`/`.bss`/`.stack`): the block named by
     /// `data_block`, else the block containing `ram_base` (back-compat).
     #[must_use]

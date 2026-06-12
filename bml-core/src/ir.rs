@@ -52,6 +52,8 @@ pub struct IrEmitter {
     /// this, any exported fn taking a ring/bits param fails the overflow
     /// contract on synthetic entry-point havoc.
     pub generated_wrap_spans: Vec<crate::source::Span>,
+    /// See `set_ecc_scrub_blocks`.
+    pub(crate) ecc_scrub_blocks: Vec<(u64, u64)>,
     preempt: Option<PreemptInfo>,
     /// MMIO `(address, or_mask)` writes emitted at the start of `reset_handler`,
     /// before `.data`/`.bss` init. See `Target::startup_init`.
@@ -354,6 +356,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
             generated_wrap_spans: Vec::new(),
+            ecc_scrub_blocks: Vec::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -414,6 +417,7 @@ impl IrEmitter {
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
             generated_wrap_spans: Vec::new(),
+            ecc_scrub_blocks: Vec::new(),
             preempt: None,
             startup_init: Vec::new(),
             mpu_regions: Vec::new(),
@@ -466,6 +470,15 @@ impl IrEmitter {
 
     pub fn set_startup_init(&mut self, writes: Vec<(u64, u64)>) {
         self.startup_init = writes;
+    }
+
+    /// RAM blocks `(base, size)` the generated `reset_handler` word-zeroes at
+    /// boot to establish valid ECC (see `Target::ecc_scrub_blocks`). Not set
+    /// in verify mode: boot scrub is below the verifier's abstraction (IKOS
+    /// models statics from their initializers), and the scrub loop's
+    /// SP-clamped bound would only feed V130 noise.
+    pub fn set_ecc_scrub_blocks(&mut self, blocks: Vec<(u64, u64)>) {
+        self.ecc_scrub_blocks = blocks;
     }
 
     /// Install the non-cacheable MPU regions (base, size). Programmed at the

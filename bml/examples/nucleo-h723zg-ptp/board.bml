@@ -17,12 +17,26 @@ export fn board_bringup, fn delay;
 // produced ~15.6 ms between heartbeats on the reset clock tree.
 const HEARTBEAT_DELAY_COUNT: u32 = 64000000;
 
-// Invalidate the D-cache by set/way, then enable it. H723 L1 D-cache: 16 KB,
-// 4-way, 32-byte line -> 128 sets. DCISW takes `(way<<30) | (set<<5)`. The
+// Invalidate the D-cache by set/way, then enable it. H723 L1 D-cache: 32 KB,
+// 4-way, 32-byte line -> 256 SETS. DCISW takes `(way<<30) | (set<<5)`. The
 // invalidate is required because the cache's reset state is undefined.
+//
+// ROOT CAUSE OF THE COLD-BOOT BUSFAULTS (found 2026-06-12): this loop said
+// 128 sets -- the H743's 16 KB geometry, not the H723's 32 KB -- so sets
+// 128..255 kept their random power-on tags and DIRTY bits. Once the cache
+// was on, conflict evictions in the upper sets wrote those garbage lines to
+// whatever address the random tag encoded: AXIM DECERR (ABFSR=0x208),
+// imprecise BusFault. Cold-boot-only because warm resets retain cache RAM,
+// which running progressively cleans -- that is why it survived warm-reset
+// validation for days, struck any firmware version after a power cycle, and
+// "stabilized after a few runs". Diagnosed by: ECC scrub eliminating RAMECC
+// as a suspect, ABFSR naming the AXI master port with a decode error, and a
+// cache-off build running clean. The robust form would read CCSIDR for the
+// geometry; the count is hardcoded with this citation instead because the
+// example targets exactly this part.
 fn enable_dcache() {
     var set: u32 = 0;
-    while set < 128 {
+    while set < 256 {
         var way: u32 = 0;
         while way < 4 {
             CM7_CACHE.DCISW = (way << 30) | (set << 5);

@@ -587,6 +587,7 @@ fn build_file(
         Some(source_map),
     );
     emitter.set_startup_init(target.startup_init.clone());
+    emitter.set_ecc_scrub_blocks(target.ecc_scrub_blocks());
     emitter.set_handoff_regs(
         target
             .agents

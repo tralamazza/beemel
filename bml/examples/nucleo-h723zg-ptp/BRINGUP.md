@@ -581,6 +581,51 @@ Instrument gotchas (cost real time):
   board resets bounce the link; bind the flood sender with `IP_BOUND_IF`
   (option 25) instead of a fixed source address.
 
+## Finding: Cold-Boot Imprecise BusFaults - Fixed (wrong D-cache geometry)
+
+Symptom (2026-06-12, after a USB-power replug): imprecise BusFault
+(CFSR=0x400) within seconds-to-minutes of real RX traffic, PC always
+somewhere in `eth_poll_rx`'s frame parsing, on EITHER board, under THREE
+different firmware versions -- including the binary that had locked for
+hours the day before. Warm resets shuffled which board died; cold boots
+always reproduced. It perfectly impersonated a compiler regression (two
+fresh commits were on the boards) and a power problem (the old USB hub
+had dropped enumeration three times).
+
+Diagnosis chain, each step eliminating a suspect class:
+1. Flashing the previous day's hardware-validated commit -> still faults:
+   ALL firmware exonerated, environment indicted.
+2. New power source, cold boot -> still faults: power exonerated.
+3. RAMECC D2 monitor showed latched single+double ECC errors -> the
+   reset_handler now word-zeroes every non-flash mem block (SP-clamped)
+   before the .data copy, establishing valid ECC in the stack, section
+   gaps, and unused words (cold ECC RAM holds random check bits; with the
+   D-cache on, a write-allocate linefill READS the whole 32-byte line, so
+   even word-zeroed .data/.bss is not enough). Real hardening; RAMECC came
+   up clean afterwards -- but the fault persisted.
+4. SCB ABFSR = 0x208: AXI master port, DECODE error -- a CPU write to an
+   address nothing decodes. Not ECC, not the ETH registers (those are
+   AHBP).
+5. D-cache-off build -> ran clean, LOCK=2. Cache machinery indicted.
+6. Root cause: `enable_dcache()` invalidated 128 sets -- the H743's 16 KB
+   D-cache geometry. The H723's D-cache is 32 KB = 256 SETS. Sets 128..255
+   kept their random power-on tags and DIRTY bits; once the cache was
+   enabled, conflict evictions in the upper sets wrote garbage lines to
+   whatever address the random tag encoded -> AXIM DECERR. Cold-boot-only
+   because warm resets retain cache RAM, which running progressively
+   cleans -- the bug hid behind every warm-reset validation pass and
+   "stabilized after a few runs" each time it surfaced.
+
+Fix: invalidate 256 sets (with the geometry cited); the robust form would
+read CCSIDR. Validated: cache on, both boards lock, ABFSR clean.
+
+Honesty note for earlier findings: the milestone-8 "RI acknowledge"
+imprecise-BusFault bisection ("micro-mechanism unresolved") and some of
+the post-replug "wedges" attributed to link-bounce may have been this
+bug wearing different timing. The RI ack and the reset-order rule remain
+in place (both are defensible on their own terms), but their evidence is
+now confounded.
+
 ## RX Consumption Bench
 
 `main_bench.bml` measures two disciplines for the same job ("consume a

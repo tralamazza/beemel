@@ -1,8 +1,11 @@
 # QEMU stm32vldiscovery target with a mem-block layout, for region placement
-# tests. The 20K SRAM QEMU backs at 0x20000000 is split into a working RAM
-# block (sram, holds .data/.bss/.stack) and a separate dma_pool block at
-# 0x20004000 that a region is placed in -- proving `in <region>` lands a static
-# at its mem block's address, distinct from ordinary statics.
+# tests. QEMU's stm32vldiscovery backs exactly 8K of SRAM at 0x20000000
+# (verified with `info mtree`; the previous claim of 20K let the round-trip
+# half of the fixture write to unmapped memory and hang -- masked until the
+# reset-time ECC scrub walked the whole block). It is split into a working
+# RAM block (sram, holds .data/.bss/.stack) and a separate dma_pool block at
+# 0x20001800 that a region is placed in -- proving `in <region>` lands a
+# static at its mem block's address, distinct from ordinary statics.
 arch = armv7m
 cpu = cortex-m3
 priority_bits = 4
@@ -10,7 +13,7 @@ has_bitband = true
 flash_base = 0x08000000
 flash_size = 64K
 ram_base = 0x20000000
-ram_size = 20K
+ram_size = 8K
 vector_table_offset = 0x08000000
 
 [mem.flash]
@@ -19,11 +22,11 @@ size = 64K
 
 [mem.sram]
 base = 0x20000000
-size = 16K
+size = 6K
 
 [mem.dma_pool]
-base = 0x20004000
-size = 0x1000
+base = 0x20001800
+size = 0x800
 
 [agent.dma]
 kind = dma

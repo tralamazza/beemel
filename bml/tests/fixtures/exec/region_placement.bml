@@ -1,7 +1,7 @@
 // `in <region>` places a static at its region's mem block address. The linker
 // script (mem-block-driven when regions exist) must map the `.region.pool`
-// section to the dma_pool block at 0x20004000, distinct from where ordinary
-// statics land (.data/.bss in the sram block, below 0x20004000). Checked by the
+// section to the dma_pool block at 0x20001800, distinct from where ordinary
+// statics land (.data/.bss in the sram block, below 0x20001800). Checked by the
 // runtime addresses under QEMU. See doc/regions-agents.md slice 1.
 import harness.semihost;
 
@@ -18,12 +18,15 @@ fn main() @context(thread) {
     const pool_addr = &POOL_BUF as u32;
     const normal_addr = (&NORMAL_BUF[0]) as u32;
 
-    // The placed buffer sits in the dma_pool block [0x20004000, 0x20005000).
-    expect_b1(pool_addr >= 0x20004000, true);
-    expect_b1(pool_addr < 0x20005000, true);
+    // The placed buffer sits in the dma_pool block [0x20001800, 0x20002000)
+    // -- inside the 8K the QEMU machine actually maps, so the write/read-back
+    // below exercises real memory (the old 0x20004000 location was unmapped
+    // and the round-trip silently hung).
+    expect_b1(pool_addr >= 0x20001800, true);
+    expect_b1(pool_addr < 0x20002000, true);
 
     // An ordinary static lands in the working RAM block, below the pool.
-    expect_b1(normal_addr < 0x20004000, true);
+    expect_b1(normal_addr < 0x20001800, true);
 
     // Placement does not disturb usability: the buffer still reads back writes.
     // The write goes directly; the read-back goes through a raw `*u32` view, the

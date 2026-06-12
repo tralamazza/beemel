@@ -479,6 +479,66 @@ pub fn emit_startup_routine(
     // policy.
     emit_ipr_stores(e, isr_priorities);
 
+    // ECC RAM scrub: word-zero every non-flash mem block BEFORE the .data
+    // copy (which then overwrites its part). ECC RAM powers up with random
+    // check bits; word-zeroing .data/.bss covers the statics but leaves the
+    // stack (NOLOAD), section gaps, and unused words ECC-invalid -- and with
+    // the D-cache on, a write-allocate linefill READS the whole 32-byte
+    // line, so a store near a virgin word raises an ECC double-error =
+    // imprecise BusFault. Cold-boot-only (warm resets retain valid ECC),
+    // measured on the NUCLEO-H723ZG D2 SRAM. The block holding the live
+    // stack is clamped at SP: words below SP are virgin (zeroed here),
+    // words at/above SP are reset_handler's own frame. Runs cache-off,
+    // before any DMA, with registers + the already-clocked RAM only.
+    let scrub = e.ecc_scrub_blocks.clone();
+    let mut pred = "entry".to_string();
+    if !scrub.is_empty() {
+        let sp = e.emit_line(&format!(
+            "call {ptr_ty} asm sideeffect \"mov $0, sp\", \"=r\"()"
+        ));
+        let sp_al = e.emit_line(&format!("and {ptr_ty} {sp}, -4"));
+        let mut his = Vec::new();
+        for (base, size) in &scrub {
+            let end = base + size;
+            let in_lo = e.emit_line(&format!("icmp ugt {ptr_ty} {sp}, {base}"));
+            let in_hi = e.emit_line(&format!("icmp ule {ptr_ty} {sp}, {end}"));
+            let in_blk = e.emit_line(&format!("and i1 {in_lo}, {in_hi}"));
+            let hi = e.emit_line(&format!(
+                "select i1 {in_blk}, {ptr_ty} {sp_al}, {ptr_ty} {end}"
+            ));
+            his.push(hi);
+        }
+        for (i, ((base, _), hi)) in scrub.iter().zip(his.iter()).enumerate() {
+            let test = format!("scrub_test_{i}");
+            let body = format!("scrub_body_{i}");
+            let done = format!("scrub_done_{i}");
+            let next = format!("%__phi.scrub_next_{i}");
+            e.line(&format!("br label %{test}"));
+            e.line("");
+            e.indent -= 1;
+            e.line(&format!("{test}:"));
+            e.indent += 1;
+            let p = e.emit_line(&format!(
+                "phi {ptr_ty} [ {base}, %{pred} ], [ {next}, %{body} ]"
+            ));
+            let done_c = e.emit_line(&format!("icmp uge {ptr_ty} {p}, {hi}"));
+            e.line(&format!("br i1 {done_c}, label %{done}, label %{body}"));
+            e.line("");
+            e.indent -= 1;
+            e.line(&format!("{body}:"));
+            e.indent += 1;
+            let pp = e.emit_line(&format!("inttoptr {ptr_ty} {p} to ptr"));
+            e.line(&format!("store volatile i32 0, ptr {pp}"));
+            e.line(&format!("{next} = add {ptr_ty} {p}, 4"));
+            e.line(&format!("br label %{test}"));
+            e.line("");
+            e.indent -= 1;
+            e.line(&format!("{done}:"));
+            e.indent += 1;
+            pred = done;
+        }
+    }
+
     e.line("  br label %data_copy_test");
     e.line("");
 
@@ -492,10 +552,10 @@ pub fn emit_startup_routine(
     e.line("data_copy_test:");
     e.indent += 1;
     let src = e.emit_line(&format!(
-        "phi ptr [ @_sidata, %entry ], [ {data_src_next}, %data_copy_body ]"
+        "phi ptr [ @_sidata, %{pred} ], [ {data_src_next}, %data_copy_body ]"
     ));
     let dst = e.emit_line(&format!(
-        "phi ptr [ @_sdata, %entry ], [ {data_dst_next}, %data_copy_body ]"
+        "phi ptr [ @_sdata, %{pred} ], [ {data_dst_next}, %data_copy_body ]"
     ));
     let dst_int = e.emit_line(&format!("ptrtoint ptr {dst} to {ptr_ty}"));
     let edata_int = e.emit_line(&format!("ptrtoint ptr @_edata to {ptr_ty}"));
