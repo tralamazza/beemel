@@ -1319,7 +1319,7 @@ fn collect_completions(
     let mut items = Vec::new();
 
     // Keywords
-    for kw in BML_KEYWORDS {
+    for kw in bml_keywords() {
         items.push(CompletionItem {
             label: kw.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
@@ -1637,44 +1637,19 @@ fn walk_expr_for_scope(expr: &ast::Expr, offset: usize, scope: &mut CompletionSc
     }
 }
 
-const BML_KEYWORDS: &[&str] = &[
-    "fn",
-    "var",
-    "const",
-    "peripheral",
-    "reg",
-    "field",
-    "import",
-    "export",
-    "as",
-    "asm",
-    "if",
-    "else",
-    "loop",
-    "while",
-    "for",
-    "return",
-    "break",
-    "continue",
-    "match",
-    "enum",
-    "struct",
-    "extern",
-    "i8",
-    "i16",
-    "i32",
-    "i64",
-    "u8",
-    "u16",
-    "u32",
-    "u64",
-    "f16",
-    "f32",
-    "f64",
-    "b1",
-    "b8",
-    "void",
+// Keywords come from the lexer's KEYWORDS table (single source of truth);
+// only the primitive type names are listed here, because the lexer treats
+// them as plain identifiers.
+const BML_TYPES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f16", "f32", "f64", "b1", "b8", "void",
 ];
+
+fn bml_keywords() -> impl Iterator<Item = &'static str> {
+    bml_core::lexer::KEYWORDS
+        .iter()
+        .map(|(kw, _)| *kw)
+        .chain(BML_TYPES.iter().copied())
+}
 
 fn find_const_value(name: &str, program: &ast::Program) -> Option<String> {
     for item in &program.items {
@@ -2019,6 +1994,26 @@ fn main() {
         );
 
         assert!(contains_label(&labels, "local"));
+    }
+
+    #[test]
+    fn completion_keywords_come_from_the_lexer_table() {
+        let labels = completion_labels(
+            r"
+fn main() {
+    $0
+}
+",
+        );
+
+        // Words users type in bodies, drawn from the lexer's KEYWORDS table.
+        // The previous hand-copied keyword array silently lacked all of
+        // these; this pins the single-source-of-truth wiring.
+        for kw in ["claim", "assume", "upto", "sizeof", "comptime_assert"] {
+            assert!(contains_label(&labels, kw), "missing keyword {kw}");
+        }
+        // Type names are not lexer keywords and come from the LSP's own list.
+        assert!(contains_label(&labels, "u32"));
     }
 
     #[test]
