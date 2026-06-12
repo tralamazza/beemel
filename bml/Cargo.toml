@@ -11,5 +11,9 @@ path = "src/main.rs"
 [dependencies]
 bml-core = { path = "../bml-core" }
 
+[features]
+# Run IKOS in-process instead of spawning ikos-analyzer; see bml-core.
+ikos-static = ["bml-core/ikos-static"]
+
 [lints]
 workspace = true

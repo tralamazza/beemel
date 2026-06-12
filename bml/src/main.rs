@@ -838,6 +838,11 @@ fn verify_file(
         checks.to_vec()
     };
 
+    if cfg!(feature = "ikos-static") && ikos_bin.is_some() {
+        eprintln!(
+            "warning: this bml links IKOS statically; --ikos-bin is ignored and the analysis runs in-process"
+        );
+    }
     let ikos_bin = ikos_bin
         .or_else(|| std::env::var_os("BML_IKOS_BIN").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("ikos-analyzer"));

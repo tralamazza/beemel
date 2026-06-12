@@ -8,6 +8,12 @@ license = "Apache-2.0"
 name = "bml_core"
 path = "src/lib.rs"
 
+[features]
+# Link the IKOS analyzer into the binary (fork's ikos-analyzer-core static
+# library) and run analyses in-process instead of spawning ikos-analyzer.
+# Requires BML_IKOS_BUILD_DIR at build time; see build.rs.
+ikos-static = []
+
 [dependencies]
 codespan-reporting = "0.13"
 serde = { version = "1", features = ["derive"] }
