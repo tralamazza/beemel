@@ -1,0 +1,22 @@
+// Differential WRAP-FAITHFULNESS test for the patched IKOS
+// (--no-wrap-sign-only): the ISR havocs X, so after the branch x is in
+// [1, INT_MAX] and `x + 1` is a POSSIBLE signed overflow (V130 warning,
+// escalated by the gate). Under stock IKOS semantics the same nsw tag that
+// requests the sio check would also ASSUME the add cannot overflow, which
+// would prove `assert(r > 0)` -- the prover claiming a fact downstream of
+// the very overflow it just warned about. With the patch the add is modeled
+// as wrapping (x = INT_MAX gives r = INT_MIN), so the assert must stay
+// unproven: this fixture must report BOTH V130 and V200.
+var X: i32 @shared(ceiling = 1) = 0;
+
+fn ticker() @isr(priority = 1) {
+    X = 1 as i32;
+}
+
+fn main() @context(thread) {
+    var x: i32 = X;
+    if x > 0 as i32 {
+        var r: i32 = x + 1 as i32;
+        assert(r > 0 as i32);
+    }
+}

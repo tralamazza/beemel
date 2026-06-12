@@ -2184,6 +2184,31 @@ assert_verify_pass!(test_verify_signed_math, "verify_signed_math.bml");
 // differential, because the unsigned reading would have passed it.
 assert_verify_fail!(test_verify_sio_definite, "verify_sio_definite.bml");
 
+// WRAP FAITHFULNESS (requires the --no-wrap-sign-only ikos fork patch):
+// the nsw tag selects the sio check but must NOT double as an
+// assume-no-overflow. A possible overflow (V130, escalated) followed by an
+// assert that only holds if the add cannot wrap must report BOTH findings;
+// stock IKOS proves the assert from the unproven overflow (no V200).
+#[test]
+fn test_verify_nsw_wrap_faithful() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_nsw_wrap_faithful.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V130]"),
+        "expected the possible-overflow V130 finding:\n{output}"
+    );
+    assert!(
+        output.contains("[V200]"),
+        "the assert downstream of an unproven overflow must stay unproven \
+         (wrapped value can be negative); a missing V200 means ikos still \
+         applies assume-no-overflow semantics to nsw:\n{output}"
+    );
+}
+
 // The nsw tag must NOT appear in runtime codegen (BML defines wrap; nsw
 // would license UB-based optimization).
 #[test]

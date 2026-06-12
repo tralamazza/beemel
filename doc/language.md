@@ -1185,9 +1185,10 @@ wrap_op       = "+%" | "-%" | "*%"
 ;; trap, no UB-licensed optimization -- so an unverified program still has
 ;; defined (wrapping) behavior; what verification adds is the guarantee
 ;; that plain-op wrap never happens. In the verify IR (only there), signed
-;; ops carry `nsw` so the prover checks the signed overflow predicate; the
-;; no-overflow modeling this implies is sound exactly because programs
-;; where it could fire do not pass the gate.
+;; ops carry `nsw` so the prover checks the signed overflow predicate;
+;; the analyzer (patched ikos, --no-wrap-sign-only) reads the tag as
+;; signedness only and still models the arithmetic as wrapping, so an
+;; unproven overflow is never silently assumed away downstream.
 
 enum_variant  = expr "@" ident
 

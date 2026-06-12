@@ -228,6 +228,12 @@ pub fn verify(
         .arg(&hwaddrs_path)
         .arg("--no-libc")
         .arg("--no-libcpp")
+        // We emit nsw on signed ops purely so the sio check applies; BML
+        // arithmetic always wraps. Without this flag ikos would treat each
+        // unproven overflow as an assumption for everything downstream of it
+        // (C semantics: nsw overflow is UB). Requires the feat/llvm18 fork;
+        // a stock ikos-analyzer fails loudly on the unknown flag.
+        .arg("--no-wrap-sign-only")
         .arg("-o")
         .arg(&db_path);
 
