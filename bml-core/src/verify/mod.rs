@@ -16,7 +16,6 @@ use crate::target::Target;
 use self::report::{Finding, Status, Suppressions, apply_suppressions, deduplicate};
 
 pub struct VerifyConfig {
-    pub opt_bin: PathBuf,
     pub ikos_bin: PathBuf,
     pub domain: String,
     pub checks: Vec<String>,
@@ -26,7 +25,6 @@ pub struct VerifyConfig {
 impl Default for VerifyConfig {
     fn default() -> Self {
         VerifyConfig {
-            opt_bin: PathBuf::from("opt"),
             ikos_bin: PathBuf::from("ikos-analyzer"),
             // `interval-congruence` (reduced product of interval + congruence)
             // is required for `upa` to prove modular alignment of array
@@ -161,44 +159,12 @@ pub fn verify(
         VerifyError::ToolInvocation(format!("failed to write {}: {e}", ll_path.display()))
     })?;
 
-    // 2. Promote allocas to SSA registers so IKOS can refine values across
-    // loads. Without mem2reg/sroa, BML's alloca-heavy lowering hides the
-    // dataflow IKOS needs for assume narrowing and array-init bounds.
-    let opt_ll_path = stem.with_extension("verify.opt.ll");
-    let opt_status = Command::new(&config.opt_bin)
-        .arg("-passes=mem2reg,sroa")
-        .arg("-S")
-        .arg(&ll_path)
-        .arg("-o")
-        .arg(&opt_ll_path)
-        .output()
-        .map_err(|e| {
-            VerifyError::ToolInvocation(format!("failed to run {}: {e}", config.opt_bin.display()))
-        })?;
-    if !opt_status.status.success() {
-        let stderr = String::from_utf8_lossy(&opt_status.stderr);
-        return Err(VerifyError::ToolInvocation(format!(
-            "{} mem2reg failed: {stderr}",
-            config.opt_bin.display()
-        )));
-    }
-
-    // LLVM 19+ defaults to "debug records" (`#dbg_value(...)` etc.) which
-    // ikos-analyzer (built against LLVM 18) cannot parse. Strip them so the
-    // pipeline still works when the only `opt` on PATH is newer. Instruction
-    // !dbg locations survive — those are what IKOS uses for source mapping.
-    if let Ok(opt_ir) = std::fs::read_to_string(&opt_ll_path)
-        && opt_ir.contains("#dbg_")
-    {
-        let stripped: String = opt_ir
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("#dbg_"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&opt_ll_path, stripped).map_err(|e| {
-            VerifyError::ToolInvocation(format!("failed to rewrite {}: {e}", opt_ll_path.display()))
-        })?;
-    }
+    // 2. Alloca promotion (mem2reg,sroa) happens INSIDE ikos-analyzer via
+    // its --mem2reg flag (fork feature): without it, BML's alloca-heavy
+    // lowering hides the dataflow IKOS needs for assume narrowing and
+    // array-init bounds. Running it in-process removed the external LLVM 18
+    // `opt` dependency and the debug-record stripping workaround that came
+    // with newer `opt` versions.
 
     // 3. Write hardware addresses file.
     let hwaddrs_path = stem.with_extension("verify.hwaddrs");
@@ -215,7 +181,8 @@ pub fn verify(
     let db_path = stem.with_extension("verify.db");
 
     let mut cmd = Command::new(&config.ikos_bin);
-    cmd.arg(&opt_ll_path)
+    cmd.arg(&ll_path)
+        .arg("--mem2reg")
         .arg("--entry-points")
         .arg(&entry_points_str)
         .arg("-d")

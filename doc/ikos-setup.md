@@ -60,22 +60,14 @@ An installed analyzer (`cmake --install`) works too:
 export BML_IKOS_BIN="$IKOS_SRC/install/bin/ikos-analyzer"
 ```
 
-## LLVM 18 `opt` requirement
+## No external `opt`
 
-`bml verify` runs `opt -passes=mem2reg,sroa` before invoking the analyzer.
-The `opt` from LLVM 19 or newer emits "debug records" (`#dbg_value(...)`)
-that the LLVM-18-based IKOS cannot parse. The verify pipeline auto-discovers
-LLVM 18's `opt` in the common Homebrew / Debian install prefixes; if you
-have a non-standard install, set `BML_OPT_BIN`:
-
-```bash
-export BML_OPT_BIN=/path/to/llvm@18/bin/opt
-```
-
-As a safety net, BML also strips any leftover `#dbg_` records from the
-post-`opt` IR before handing it to IKOS, so things still work even if the
-only `opt` on PATH is newer. Source-line `!dbg` metadata on instructions
-survives — that's what IKOS uses to map findings back to BML source.
+`bml verify` passes `--mem2reg` to the analyzer (fork feature), which runs
+the LLVM `mem2reg,sroa` promotion in-process before translation. Earlier
+versions spawned an external LLVM 18 `opt` for this (`BML_OPT_BIN`); that
+dependency and the LLVM-19+ debug-record stripping workaround are gone.
+(`bml build` still uses `opt`/`llc` from PATH for code generation — that is
+unrelated to verification.)
 
 ## Notes
 

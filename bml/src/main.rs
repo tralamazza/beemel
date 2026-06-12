@@ -841,10 +841,8 @@ fn verify_file(
     let ikos_bin = ikos_bin
         .or_else(|| std::env::var_os("BML_IKOS_BIN").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("ikos-analyzer"));
-    let opt_bin = std::env::var_os("BML_OPT_BIN").map_or_else(infer_opt_bin, PathBuf::from);
 
     let config = VerifyConfig {
-        opt_bin,
         ikos_bin,
         domain: domain.to_string(),
         checks: check_list,
@@ -973,29 +971,6 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-/// Locate an LLVM 18 `opt` binary. IKOS is built against LLVM 18 and rejects
-/// the debug-records syntax that newer `opt` (LLVM 19+) emits by default; a
-/// `opt` from LLVM 22 on PATH will produce IR ikos-analyzer can't parse.
-///
-/// Search order:
-///   1. `BML_OPT_BIN` (handled at the call site)
-///   2. Common LLVM 18 install prefixes
-///   3. Plain `opt` on PATH (last resort; may fail with newer LLVM)
-fn infer_opt_bin() -> PathBuf {
-    const CANDIDATES: &[&str] = &[
-        "/opt/homebrew/opt/llvm@18/bin/opt",
-        "/usr/local/opt/llvm@18/bin/opt",
-        "/usr/lib/llvm-18/bin/opt",
-    ];
-    for candidate in CANDIDATES {
-        let p = Path::new(candidate);
-        if p.exists() {
-            return p.to_path_buf();
-        }
-    }
-    PathBuf::from("opt")
 }
 
 fn llc_opt_level(level: &str) -> &str {
