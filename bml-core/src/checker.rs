@@ -4,9 +4,18 @@ use crate::ast::{self, Expr, Item, LValue, Program, Stmt, StructRepr};
 use crate::consteval::{self, ConstVal};
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
+use crate::source::Span;
 use crate::types::{self, Type};
 
 pub struct Checker;
+
+/// The resolved type of every local `var`/`val`, keyed by its name span. The
+/// checker fills this as a by-product of type checking so tools (the LSP's
+/// hover and inlay hints) can show the *authoritative* type -- including forms
+/// no heuristic recovers, like `var d = a + b` or `var x = arr[i]` -- instead
+/// of re-inferring. Locals whose initializer failed to type-check (`Type::Error`)
+/// are omitted, so a present entry is always a real type.
+pub type LocalTypes = HashMap<Span, Type>;
 
 /// Local variable information tracked during type checking.
 #[derive(Debug, Clone)]
@@ -19,12 +28,26 @@ struct VarInfo {
 /// A stack of variable scopes.
 struct ScopeStack {
     scopes: Vec<HashMap<String, VarInfo>>,
+    /// Resolved type of each local declared while checking this function, keyed
+    /// by name span. Lives on the stack (not per-scope) so it survives `pop`,
+    /// `snapshot`/`restore`, and the loop-body fixpoint -- a re-checked `var`
+    /// just overwrites its entry with the same type. Drained by `check_fn`.
+    local_types: LocalTypes,
 }
 
 impl ScopeStack {
     fn new() -> Self {
         ScopeStack {
             scopes: vec![HashMap::new()],
+            local_types: LocalTypes::new(),
+        }
+    }
+
+    /// Record a local's resolved type for tooling. `Type::Error` is dropped so
+    /// the map only ever holds real types.
+    fn record_local(&mut self, span: Span, ty: &Type) {
+        if !matches!(ty, Type::Error(_)) {
+            self.local_types.insert(span, ty.clone());
         }
     }
 
@@ -98,7 +121,15 @@ impl ScopeStack {
 }
 
 impl Checker {
-    pub fn check(program: &Program, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    /// Type-check the program, emitting diagnostics. Returns the resolved type
+    /// of every function-body local (keyed by name span) as a by-product, for
+    /// tooling; callers that only want diagnostics can ignore it.
+    pub fn check(
+        program: &Program,
+        symbols: &SymbolTable,
+        diags: &mut DiagnosticBag,
+    ) -> LocalTypes {
+        let mut local_types = LocalTypes::new();
         validate_type_annotations(program, symbols, diags);
         validate_struct_layouts(program, symbols, diags);
         validate_extern_abi(program, symbols, diags);
@@ -121,11 +152,12 @@ impl Checker {
                 );
             }
             if let ast::Item::FnDef(fn_def) = item {
-                check_fn(fn_def, symbols, diags);
+                local_types.extend(check_fn(fn_def, symbols, diags));
                 check_agent_ptr_escape(fn_def, symbols, diags);
             }
         }
         check_comptime_asserts(program, symbols, diags);
+        local_types
     }
 }
 
@@ -806,7 +838,9 @@ fn check_comptime_asserts(program: &Program, symbols: &SymbolTable, diags: &mut 
     }
 }
 
-fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+/// Type-check one function, returning the resolved types of its locals (keyed
+/// by name span) for tooling.
+fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) -> LocalTypes {
     let mut scope = ScopeStack::new();
     let expected_ret = fn_def
         .ret
@@ -848,6 +882,8 @@ fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBa
             fn_def.name.1,
         );
     }
+
+    scope.local_types
 }
 
 fn check_block(
@@ -887,6 +923,9 @@ fn check_block(
                     init_ty
                 };
 
+                // Persist the resolved type for tooling before it is moved into
+                // the scope entry.
+                scope.record_local(vd.name.1, &ty);
                 scope.insert(
                     vd.name.0.clone(),
                     VarInfo {

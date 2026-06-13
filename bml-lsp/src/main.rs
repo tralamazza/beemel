@@ -1,6 +1,6 @@
 use bml_core::ast;
 use bml_core::borrow::BorrowChecker;
-use bml_core::checker::Checker;
+use bml_core::checker::{Checker, LocalTypes};
 use bml_core::errors::{self, DiagnosticBag, Level};
 use bml_core::imports::{ImportResolver, ModuleCache};
 use bml_core::parser::Parser;
@@ -28,6 +28,10 @@ struct AnalysisResult {
     symbols: SymbolTable,
     source_map: SourceMap,
     root_file_id: bml_core::source::FileId,
+    /// Authoritative resolved type of each local, keyed by name span, from the
+    /// checker. Empty when checking did not run (earlier errors). Hover and
+    /// inlay hints prefer this over the local heuristic.
+    local_types: LocalTypes,
 }
 
 struct Server {
@@ -470,7 +474,7 @@ impl Server {
         // A local binding in the enclosing function shadows any global of the
         // same name, so resolve it first.
         let local_ty = enclosing_fn(&analysis.program, analysis.root_file_id, offset)
-            .and_then(|f| local_type_in_fn(f, name, &analysis.symbols));
+            .and_then(|f| local_type_in_fn(f, name, &analysis.symbols, &analysis.local_types));
 
         let (bml_decl, extra) = if let Some(ty) = local_ty {
             (ty, None)
@@ -633,10 +637,11 @@ impl Server {
     }
 
     /// `textDocument/inlayHint`: a `: T` hint after each unannotated `var`/`val`
-    /// whose initializer type we can infer (the same best-effort inference hover
-    /// uses). Hints we are not confident about are omitted rather than guessed.
-    /// Only the open document's own declarations are hinted (inlined imports
-    /// have spans in other files), and only those inside the requested range.
+    /// whose type is known -- the checker's authoritative type when available,
+    /// else the best-effort heuristic (same source as hover). Unknown types are
+    /// omitted rather than guessed. Only the open document's own declarations
+    /// are hinted (inlined imports have spans in other files), and only those
+    /// inside the requested range.
     fn handle_inlay_hints(&self, req: &Request) -> Option<Vec<InlayHint>> {
         let params: lsp_types::InlayHintParams = serde_json::from_value(req.params.clone()).ok()?;
         let analysis = self.analysis_cache.get(&params.text_document.uri)?;
@@ -645,7 +650,12 @@ impl Server {
         let mut decls = Vec::new();
         for item in &analysis.program.items {
             if let ast::Item::FnDef(f) = item {
-                collect_inferred_var_decls(&f.body, &analysis.symbols, &mut decls);
+                collect_inferred_var_decls(
+                    &f.body,
+                    &analysis.symbols,
+                    &analysis.local_types,
+                    &mut decls,
+                );
             }
         }
 
@@ -683,49 +693,65 @@ fn pos_in_range(pos: Position, range: &Range) -> bool {
     key(range.start) <= key(pos) && key(pos) <= key(range.end)
 }
 
-/// Collect `(name span, inferred type)` for every unannotated `var`/`val` whose
-/// initializer type `infer_init_type` can name, walking the block and every
-/// nested block exhaustively. Annotated declarations and ones we can't infer
-/// are skipped (no hint rather than a wrong one).
+/// The display type for an unannotated local: the checker's authoritative type
+/// if it ran (covers every form, e.g. `a + b` or `arr[i]`), otherwise the
+/// best-effort initializer heuristic. `None` when neither can name a type.
+fn inferred_local_type(
+    v: &ast::VarDecl,
+    symbols: &SymbolTable,
+    local_types: &LocalTypes,
+) -> Option<String> {
+    local_types
+        .get(&v.name.1)
+        .map(ToString::to_string)
+        .or_else(|| infer_init_type(&v.init, symbols))
+}
+
+/// Collect `(name span, type)` for every unannotated `var`/`val` whose type is
+/// known (see [`inferred_local_type`]), walking the block and every nested block
+/// exhaustively. Annotated declarations and ones whose type is unknown are
+/// skipped (no hint rather than a wrong one).
 fn collect_inferred_var_decls(
     block: &ast::Block,
     symbols: &SymbolTable,
+    local_types: &LocalTypes,
     out: &mut Vec<(source::Span, String)>,
 ) {
     for stmt in &block.stmts {
-        collect_inferred_var_decls_stmt(stmt, symbols, out);
+        collect_inferred_var_decls_stmt(stmt, symbols, local_types, out);
     }
 }
 
 fn collect_inferred_var_decls_stmt(
     stmt: &ast::Stmt,
     symbols: &SymbolTable,
+    local_types: &LocalTypes,
     out: &mut Vec<(source::Span, String)>,
 ) {
     match stmt {
         ast::Stmt::VarDecl(v) => {
             if v.ty_ann.is_none()
-                && let Some(ty) = infer_init_type(&v.init, symbols)
+                && let Some(ty) = inferred_local_type(v, symbols, local_types)
             {
                 out.push((v.name.1, ty));
             }
         }
-        ast::Stmt::Block(b) => collect_inferred_var_decls(b, symbols, out),
+        ast::Stmt::Block(b) => collect_inferred_var_decls(b, symbols, local_types, out),
         ast::Stmt::If(i) => {
-            collect_inferred_var_decls(&i.then_block, symbols, out);
+            collect_inferred_var_decls(&i.then_block, symbols, local_types, out);
             if let Some(else_branch) = &i.else_branch {
-                collect_inferred_var_decls_stmt(else_branch, symbols, out);
+                collect_inferred_var_decls_stmt(else_branch, symbols, local_types, out);
             }
         }
-        ast::Stmt::Loop(l) => collect_inferred_var_decls(&l.body, symbols, out),
-        ast::Stmt::While(w) => collect_inferred_var_decls(&w.body, symbols, out),
-        ast::Stmt::For(f) => collect_inferred_var_decls(&f.body, symbols, out),
+        ast::Stmt::Loop(l) => collect_inferred_var_decls(&l.body, symbols, local_types, out),
+        ast::Stmt::While(w) => collect_inferred_var_decls(&w.body, symbols, local_types, out),
+        ast::Stmt::For(f) => collect_inferred_var_decls(&f.body, symbols, local_types, out),
         ast::Stmt::Match(m) => {
             for arm in &m.arms {
-                collect_inferred_var_decls(&arm.body, symbols, out);
+                collect_inferred_var_decls(&arm.body, symbols, local_types, out);
             }
         }
-        ast::Stmt::Claim(c) => collect_inferred_var_decls(&c.body, symbols, out),
+        ast::Stmt::Claim(c) => collect_inferred_var_decls(&c.body, symbols, local_types, out),
         // No nested block to descend, and no declaration to hint.
         ast::Stmt::Assign(_)
         | ast::Stmt::CompoundAssign(_)
@@ -753,6 +779,7 @@ fn analyze_file(
     let mut parser = Parser::new(source_text, file_id, &mut diags);
     let mut program = parser.parse_program();
     let mut symbols = SymbolTable::default();
+    let mut local_types = LocalTypes::new();
 
     if !diags.has_errors() {
         let mut import_resolver = ImportResolver::new();
@@ -785,7 +812,7 @@ fn analyze_file(
                     .collect();
                 region::apply_derived_move(&program, target, &mut symbols);
             }
-            Checker::check(&program, &symbols, &mut diags);
+            local_types = Checker::check(&program, &symbols, &mut diags);
             if !diags.has_errors() {
                 BorrowChecker::check(&program, &symbols, &mut diags);
                 // Region/agent placement and ownership checks (E605/E607/E611/
@@ -804,6 +831,7 @@ fn analyze_file(
         symbols,
         source_map,
         root_file_id: file_id,
+        local_types,
     };
 
     (analysis, diags)
@@ -1306,23 +1334,28 @@ fn enclosing_fn(
 
 /// Resolve `name` to a parameter or local declaration *within* a single
 /// function. Used so a local correctly shadows a same-named global.
-fn local_type_in_fn(f: &ast::FnDef, name: &str, symbols: &SymbolTable) -> Option<String> {
+fn local_type_in_fn(
+    f: &ast::FnDef,
+    name: &str,
+    symbols: &SymbolTable,
+    local_types: &LocalTypes,
+) -> Option<String> {
     for p in &f.params {
         if p.name.0 == name {
             return Some(format!("{name}: {}", p.ty));
         }
     }
-    find_local_in_block(name, &f.body, symbols)
+    find_local_in_block(name, &f.body, symbols, local_types)
 }
 
 /// Render a local `var`/`const` for hover. With an annotation, show it verbatim;
-/// otherwise infer the type from the initializer, falling back to "(inferred)"
-/// when the form is not one we recognize.
-fn format_local_decl(v: &ast::VarDecl, symbols: &SymbolTable) -> String {
+/// otherwise use the checker's resolved type, then the initializer heuristic,
+/// falling back to "(inferred)" when neither names a type.
+fn format_local_decl(v: &ast::VarDecl, symbols: &SymbolTable, local_types: &LocalTypes) -> String {
     let name = &v.name.0;
     if let Some(t) = &v.ty_ann {
         format!("{name}: {t}")
-    } else if let Some(t) = infer_init_type(&v.init, symbols) {
+    } else if let Some(t) = inferred_local_type(v, symbols, local_types) {
         format!("{name}: {t}")
     } else {
         format!("{name} (inferred)")
@@ -1378,51 +1411,56 @@ fn infer_init_type(init: &ast::Expr, symbols: &SymbolTable) -> Option<String> {
     }
 }
 
-fn find_local_in_block(name: &str, block: &ast::Block, symbols: &SymbolTable) -> Option<String> {
+fn find_local_in_block(
+    name: &str,
+    block: &ast::Block,
+    symbols: &SymbolTable,
+    local_types: &LocalTypes,
+) -> Option<String> {
     for stmt in &block.stmts {
         match stmt {
             ast::Stmt::VarDecl(v) if v.name.0 == name => {
-                return Some(format_local_decl(v, symbols));
+                return Some(format_local_decl(v, symbols, local_types));
             }
             ast::Stmt::Block(b) => {
-                let r = find_local_in_block(name, b, symbols);
+                let r = find_local_in_block(name, b, symbols, local_types);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::If(i) => {
-                let r = find_local_in_block(name, &i.then_block, symbols);
+                let r = find_local_in_block(name, &i.then_block, symbols, local_types);
                 if r.is_some() {
                     return r;
                 }
                 if let Some(ref else_s) = i.else_branch {
-                    let r = find_local_in_stmt(name, else_s, symbols);
+                    let r = find_local_in_stmt(name, else_s, symbols, local_types);
                     if r.is_some() {
                         return r;
                     }
                 }
             }
             ast::Stmt::Loop(l) => {
-                let r = find_local_in_block(name, &l.body, symbols);
+                let r = find_local_in_block(name, &l.body, symbols, local_types);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::While(w) => {
-                let r = find_local_in_block(name, &w.body, symbols);
+                let r = find_local_in_block(name, &w.body, symbols, local_types);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::For(f) => {
-                let r = find_local_in_block(name, &f.body, symbols);
+                let r = find_local_in_block(name, &f.body, symbols, local_types);
                 if r.is_some() {
                     return r;
                 }
             }
             ast::Stmt::Match(m) => {
                 for arm in &m.arms {
-                    let r = find_local_in_block(name, &arm.body, symbols);
+                    let r = find_local_in_block(name, &arm.body, symbols, local_types);
                     if r.is_some() {
                         return r;
                     }
@@ -1434,31 +1472,43 @@ fn find_local_in_block(name: &str, block: &ast::Block, symbols: &SymbolTable) ->
     block
         .trailing
         .as_ref()
-        .and_then(|e| find_local_in_expr(name, e, symbols))
+        .and_then(|e| find_local_in_expr(name, e, symbols, local_types))
 }
 
-fn find_local_in_stmt(name: &str, stmt: &ast::Stmt, symbols: &SymbolTable) -> Option<String> {
+fn find_local_in_stmt(
+    name: &str,
+    stmt: &ast::Stmt,
+    symbols: &SymbolTable,
+    local_types: &LocalTypes,
+) -> Option<String> {
     match stmt {
-        ast::Stmt::VarDecl(v) if v.name.0 == name => Some(format_local_decl(v, symbols)),
-        ast::Stmt::Block(b) => find_local_in_block(name, b, symbols),
+        ast::Stmt::VarDecl(v) if v.name.0 == name => {
+            Some(format_local_decl(v, symbols, local_types))
+        }
+        ast::Stmt::Block(b) => find_local_in_block(name, b, symbols, local_types),
         ast::Stmt::If(i) => {
-            let r = find_local_in_block(name, &i.then_block, symbols);
+            let r = find_local_in_block(name, &i.then_block, symbols, local_types);
             if r.is_some() {
                 return r;
             }
             i.else_branch
                 .as_ref()
-                .and_then(|s| find_local_in_stmt(name, s, symbols))
+                .and_then(|s| find_local_in_stmt(name, s, symbols, local_types))
         }
         _ => None,
     }
 }
 
-fn find_local_in_expr(name: &str, expr: &ast::Expr, symbols: &SymbolTable) -> Option<String> {
+fn find_local_in_expr(
+    name: &str,
+    expr: &ast::Expr,
+    symbols: &SymbolTable,
+    local_types: &LocalTypes,
+) -> Option<String> {
     match expr {
-        ast::Expr::Block(b) => find_local_in_block(name, &b.block, symbols),
-        ast::Expr::If(i) => find_local_in_block(name, &i.then_block, symbols)
-            .or_else(|| find_local_in_expr(name, &i.else_branch, symbols)),
+        ast::Expr::Block(b) => find_local_in_block(name, &b.block, symbols, local_types),
+        ast::Expr::If(i) => find_local_in_block(name, &i.then_block, symbols, local_types)
+            .or_else(|| find_local_in_expr(name, &i.else_branch, symbols, local_types)),
         _ => None,
     }
 }
@@ -2500,12 +2550,13 @@ fn main(p: u32) {
         let (analysis, offset) = analyze_at(src);
         let f =
             enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
+        let lt = &analysis.local_types;
         assert_eq!(
-            local_type_in_fn(f, "local_v", &analysis.symbols).as_deref(),
+            local_type_in_fn(f, "local_v", &analysis.symbols, lt).as_deref(),
             Some("local_v: u32")
         );
         assert_eq!(
-            local_type_in_fn(f, "p", &analysis.symbols).as_deref(),
+            local_type_in_fn(f, "p", &analysis.symbols, lt).as_deref(),
             Some("p: u32")
         );
     }
@@ -2529,14 +2580,19 @@ fn main() @context(thread) {
         let f =
             enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
         let s = &analysis.symbols;
+        let lt = &analysis.local_types;
         // Call -> declared return type; literal -> its suffix; struct literal ->
         // the struct; cast -> the cast target.
-        assert_eq!(local_type_in_fn(f, "n", s).as_deref(), Some("n: u32"));
-        assert_eq!(local_type_in_fn(f, "c", s).as_deref(), Some("c: u8"));
-        assert_eq!(local_type_in_fn(f, "p", s).as_deref(), Some("p: struct Pt"));
-        assert_eq!(local_type_in_fn(f, "m", s).as_deref(), Some("m: u16"));
-        // A form we do not infer keeps the graceful "(inferred)" fallback.
-        assert_eq!(local_type_in_fn(f, "z", s).as_deref(), Some("z (inferred)"));
+        assert_eq!(local_type_in_fn(f, "n", s, lt).as_deref(), Some("n: u32"));
+        assert_eq!(local_type_in_fn(f, "c", s, lt).as_deref(), Some("c: u8"));
+        assert_eq!(
+            local_type_in_fn(f, "p", s, lt).as_deref(),
+            Some("p: struct Pt")
+        );
+        assert_eq!(local_type_in_fn(f, "m", s, lt).as_deref(), Some("m: u16"));
+        // `c + c` is a form the heuristic alone does not infer; the checker's
+        // resolved type now fills it in (u8 + u8 -> u8).
+        assert_eq!(local_type_in_fn(f, "z", s, lt).as_deref(), Some("z: u8"));
     }
 
     #[test]
@@ -2838,14 +2894,19 @@ fn main() @context(thread) {
 
     // ─── inlay hints (inferred local types) ────────────────────────────
 
-    /// The (name, inferred type) pairs the inlay-hint collector produces for a
+    /// The (name, type) pairs the inlay-hint collector produces for a
     /// function's body, resolving each hint's name span back to its text.
     fn inlay_pairs(src: &str) -> Vec<(String, String)> {
         let (analysis, offset) = analyze_at(src);
         let f =
             enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
         let mut decls = Vec::new();
-        collect_inferred_var_decls(&f.body, &analysis.symbols, &mut decls);
+        collect_inferred_var_decls(
+            &f.body,
+            &analysis.symbols,
+            &analysis.local_types,
+            &mut decls,
+        );
         let source = analysis.source_map.source(analysis.root_file_id);
         decls
             .into_iter()
@@ -2855,9 +2916,10 @@ fn main() @context(thread) {
 
     #[test]
     fn inlay_hints_infer_unannotated_locals() {
-        // a: literal suffix; c: call return type; e: nested-block literal.
-        // b is annotated (skipped); d is a local reference we don't infer
-        // (skipped, not guessed). Order follows the walk.
+        // The checker's authoritative types drive these. a: literal suffix;
+        // c: call return type; e: nested-block literal; d: a binary op the
+        // heuristic alone cannot type, now filled in (u16 + u16 -> u16). b is
+        // annotated, so it is skipped. Order follows the walk.
         let src = "\
 fn ret16() -> u16 @context(thread) {
     return 0u16;
@@ -2866,7 +2928,7 @@ fn main() @context(thread) {
     const a = $07u8;
     var b: u32 = 2u32;
     const c = ret16();
-    const d = c;
+    const d = c + c;
     if b == 2u32 {
         const e = 9u16;
     }
@@ -2877,9 +2939,37 @@ fn main() @context(thread) {
             vec![
                 ("a".to_string(), "u8".to_string()),
                 ("c".to_string(), "u16".to_string()),
+                ("d".to_string(), "u16".to_string()),
                 ("e".to_string(), "u16".to_string()),
             ],
         );
+    }
+
+    /// When the checker did not run (an empty `LocalTypes`), the collector falls
+    /// back to the initializer heuristic: literals/calls still get hints, but a
+    /// binary op does not (the heuristic cannot type it).
+    #[test]
+    fn inlay_hints_fall_back_to_heuristic_without_checker_types() {
+        let src = "\
+fn main() @context(thread) {
+    const a = $05u8;
+    const d = a + a;
+}
+";
+        let (analysis, offset) = analyze_at(src);
+        let f =
+            enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
+        let mut decls = Vec::new();
+        // Empty map simulates "checker did not run" (e.g. earlier errors).
+        let no_types = LocalTypes::new();
+        collect_inferred_var_decls(&f.body, &analysis.symbols, &no_types, &mut decls);
+        let source = analysis.source_map.source(analysis.root_file_id);
+        let names: Vec<&str> = decls
+            .iter()
+            .map(|(span, _)| &source[span.start..span.end])
+            .collect();
+        // `a` (literal) is hinted; `d` (binary op) is not, without checker types.
+        assert_eq!(names, vec!["a"]);
     }
 
     #[test]

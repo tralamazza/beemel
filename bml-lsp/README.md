@@ -7,10 +7,10 @@ Language server for the BML language. Implements the Language Server Protocol us
 | Capability | Description |
 |-----------|-------------|
 | Diagnostics | Full analysis pipeline on open/change/save; publishes errors and warnings. Region/agent checks (`reclaim`/`view`, E605/E611/E615/E326/...) run when a target is resolved for the file (see Targets) |
-| Hover | Type information for functions, statics, peripherals, registers, fields, structs, enums, and locals |
+| Hover | Type information for functions, statics, peripherals, registers, fields, structs, enums, and locals (unannotated locals use the checker's resolved type) |
 | Go-to-Definition | Navigate to definitions across modules |
 | Completion | Keywords, globals, locals, import aliases, peripheral registers/fields |
-| Inlay hints | `: T` type hints after unannotated `var`/`val` whose initializer type is inferable (cast, call, struct/literal, global ref); ambiguous forms are left un-hinted |
+| Inlay hints | `: T` type hints after unannotated `var`/`val`, using the checker's authoritative resolved type (any form: `a + b`, `arr[i]`, calls, ...); falls back to a best-effort heuristic when checking did not run, and leaves a local un-hinted only when its type is unknown |
 
 ## Usage
 
