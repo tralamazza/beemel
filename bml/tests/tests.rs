@@ -2034,7 +2034,9 @@ fn bml_verify_args(fixture: &str, extra: &[&str]) -> (bool, String, String) {
     let ikos_bin = std::env::var("BML_IKOS_BIN").unwrap_or_else(|_| "ikos-analyzer".into());
 
     // Unique temp dir per call (the same fixture is verified with different
-    // flags) to avoid IKOS DB lock contention when tests run in parallel.
+    // flags) to avoid IKOS DB lock contention when tests run in parallel. It is
+    // both the IKOS scratch (TMPDIR) and the `.verify.*` artifact dir
+    // (--out-dir), so nothing is written into the fixtures directory.
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let tmpdir = std::env::temp_dir().join(format!("bml_test_{}_{seq}", fixture.replace('.', "_")));
     let _ = std::fs::create_dir_all(&tmpdir);
@@ -2043,6 +2045,8 @@ fn bml_verify_args(fixture: &str, extra: &[&str]) -> (bool, String, String) {
         .arg("verify")
         .arg("--ikos-bin")
         .arg(&ikos_bin)
+        .arg("--out-dir")
+        .arg(&tmpdir)
         .args(extra)
         .arg(&path)
         .env("TMPDIR", &tmpdir)
@@ -2061,24 +2065,49 @@ fn bml_verify_args(fixture: &str, extra: &[&str]) -> (bool, String, String) {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
-    // Clean up temp files from the fixture dir (created by --save-temps)
-    let fixture_dir = path.parent().unwrap();
-    if let Ok(entries) = fixture_dir.read_dir() {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".verify.ll")
-                || name.ends_with(".verify.db")
-                || name.ends_with(".verify.json")
-                || name.ends_with(".verify.hwaddrs")
-            {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-
     let _ = std::fs::remove_dir_all(&tmpdir);
 
     (output.status.success(), stdout, stderr)
+}
+
+// `verify --out-dir` keeps the `.verify.*` intermediates in the given directory
+// and writes nothing next to the source. The redirect happens when bml emits the
+// IR -- before IKOS runs -- so this checks artifact placement regardless of
+// whether IKOS (or the fork's flags) is available. (Default verify already
+// isolates via a unique auto-removed temp dir; this pins the explicit redirect.)
+#[test]
+fn test_verify_out_dir_redirects_artifacts() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let fixture = "verify_no_findings.bml";
+    let path = dir.join(fixture);
+    let out = unique_out_dir("verify_out_dir");
+    let ikos_bin = std::env::var("BML_IKOS_BIN").unwrap_or_else(|_| "ikos-analyzer".into());
+
+    let _ = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("verify")
+        .arg("--ikos-bin")
+        .arg(&ikos_bin)
+        .arg("--out-dir")
+        .arg(&out)
+        .arg(&path)
+        .env("TMPDIR", &out)
+        .output()
+        .expect("failed to run bml verify");
+
+    let in_out_dir = out_artifact(&out, fixture, "verify.ll").exists();
+    let beside_source = path.with_extension("verify.ll").exists();
+    let _ = std::fs::remove_dir_all(&out);
+
+    assert!(
+        in_out_dir,
+        "the verify .ll should land in --out-dir (written before IKOS runs)"
+    );
+    assert!(
+        !beside_source,
+        "no .verify.ll should be written next to the source"
+    );
 }
 
 /// Run `bml verify <args>` directly with no IKOS setup, returning

@@ -154,6 +154,7 @@ fn main() {
             let mut checks: Vec<String> = vec![];
             let mut ikos_bin: Option<PathBuf> = None;
             let mut save_temps = false;
+            let mut out_dir: Option<PathBuf> = None;
             let mut source_path: Option<PathBuf> = None;
             let mut fail_on = FailOn::Error;
             let mut output_format = OutputFormat::Text;
@@ -167,6 +168,15 @@ fn main() {
                             target_path = Some(PathBuf::from(&args[i]));
                         } else {
                             eprintln!("--target requires a path");
+                            process::exit(1);
+                        }
+                    }
+                    "--out-dir" => {
+                        i += 1;
+                        if i < args.len() {
+                            out_dir = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--out-dir requires a path");
                             process::exit(1);
                         }
                     }
@@ -251,7 +261,7 @@ fn main() {
             }
 
             let source_path = source_path.unwrap_or_else(|| {
-                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>] [--save-temps] <file.bml>");
+                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>] [--save-temps] [--out-dir <dir>] <file.bml>");
                 process::exit(1);
             });
 
@@ -272,6 +282,7 @@ fn main() {
                 save_temps,
                 fail_on,
                 output_format,
+                out_dir.as_deref(),
             );
         }
         "cflags" => {
@@ -326,8 +337,8 @@ fn print_usage() {
     eprintln!("        [--out-dir <dir>] [--link <lib>]... [--stack] <file.bml>");
     eprintln!("                                                 Compile and optionally link");
     eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
-    eprintln!("         [--ikos-bin <path>]");
-    eprintln!("         [--fail-on <level>] [--format <fmt>] [--save-temps] <file.bml>");
+    eprintln!("         [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>]");
+    eprintln!("         [--save-temps] [--out-dir <dir>] <file.bml>");
     eprintln!("                                                 Run IKOS static analysis");
     eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
     eprintln!();
@@ -335,8 +346,8 @@ fn print_usage() {
     eprintln!("  --opt=<level>   Optimization level: 0, 1, 2, 3, s, z (default: s)");
     eprintln!("  --debug, -g     Emit DWARF debug information");
     eprintln!("  --save-temps    Keep intermediate files (file.opt.ll)");
-    eprintln!("  --out-dir <dir> Write build artifacts to <dir> (created if needed)");
-    eprintln!("                  instead of next to the source");
+    eprintln!("  --out-dir <dir> Write artifacts to <dir> (created if needed) instead");
+    eprintln!("                  of next to the source (build and verify)");
     eprintln!("  --stack         Perform compile-time stack usage analysis");
     eprintln!("  --target <path> Target specification file");
     eprintln!("  --link <lib>    Link with library (.a / .o), repeatable");
@@ -775,6 +786,7 @@ fn verify_file(
     save_temps: bool,
     fail_on: FailOn,
     output_format: OutputFormat,
+    out_dir: Option<&Path>,
 ) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
@@ -888,8 +900,18 @@ fn verify_file(
         extra_hwaddrs: Vec::new(),
     };
 
-    let work_dir = if save_temps {
-        path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    // Where the `.verify.*` intermediates go. `--out-dir` wins (created if
+    // needed, user-owned -- kept); else `--save-temps` keeps them beside the
+    // source; else a unique temp dir that is removed afterward. The temp default
+    // already isolates concurrent runs, so verify never had the build race.
+    let (work_dir, ephemeral) = if let Some(dir) = out_dir {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("failed to create out-dir {}: {e}", dir.display());
+            process::exit(1);
+        }
+        (dir.to_path_buf(), false)
+    } else if save_temps {
+        (path.parent().unwrap_or(Path::new(".")).to_path_buf(), false)
     } else {
         let unique = format!(
             "bml-verify-{}-{}",
@@ -903,7 +925,7 @@ fn verify_file(
             eprintln!("failed to create temp dir {}: {e}", dir.display());
             process::exit(1);
         }
-        dir
+        (dir, true)
     };
 
     match verify::verify(
@@ -927,7 +949,7 @@ fn verify_file(
         }
     }
 
-    if !save_temps {
+    if ephemeral {
         let _ = std::fs::remove_dir_all(&work_dir);
     }
 }
