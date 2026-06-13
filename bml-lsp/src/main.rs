@@ -4,8 +4,10 @@ use bml_core::checker::Checker;
 use bml_core::errors::{self, DiagnosticBag, Level};
 use bml_core::imports::{ImportResolver, ModuleCache};
 use bml_core::parser::Parser;
+use bml_core::region;
 use bml_core::resolver::{self, Resolver, SymbolTable};
 use bml_core::source::{self, SourceMap};
+use bml_core::target::{self, Target};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response, ResponseError};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -39,6 +41,95 @@ struct Server {
     /// Persistent parse cache for imported modules, reused across analyses so
     /// unchanged imports aren't re-read and re-parsed on every keystroke.
     module_cache: ModuleCache,
+    /// Workspace target selection (from `initializationOptions`) plus the
+    /// directory-discovery fallback. Decides which `.target` an open file is
+    /// analyzed against, so the region/agent checks run in-editor.
+    config: Config,
+    /// Target paths whose load already failed and was logged, so a broken
+    /// target file doesn't spam stderr on every debounced re-analysis.
+    logged_target_errors: HashSet<PathBuf>,
+}
+
+/// Where the LSP gets the target a file is analyzed against. Primary source is
+/// `initializationOptions` (mechanism `c`): a workspace-wide `target`, or a
+/// `targets` map of path-prefix -> target file (longest prefix wins). When
+/// neither matches, `resolve_target` falls back to directory discovery
+/// (mechanism `a`). All config paths are pre-resolved to absolute here.
+#[derive(Default)]
+struct Config {
+    /// Root for resolving relative config paths and the ceiling for discovery's
+    /// upward walk. From the first workspace folder, else `root_uri`.
+    workspace_root: Option<PathBuf>,
+    /// `target`: one target for the whole workspace (lowest precedence).
+    default_target: Option<PathBuf>,
+    /// `targets`: (prefix dir, target file), sorted longest-prefix-first so the
+    /// first matching entry is the most specific.
+    target_map: Vec<(PathBuf, PathBuf)>,
+}
+
+impl Config {
+    /// The target file configured for `file`, if any. Longest matching prefix
+    /// in `target_map` wins; otherwise the workspace-wide `default_target`.
+    /// `None` means "no config opinion" -- the caller falls back to discovery.
+    fn target_path_for(&self, file: &Path) -> Option<PathBuf> {
+        for (prefix, target) in &self.target_map {
+            if file.starts_with(prefix) {
+                return Some(target.clone());
+            }
+        }
+        self.default_target.clone()
+    }
+}
+
+/// Parse `initializationOptions` into a `Config`. Unknown/missing keys are
+/// ignored (the server stays usable with no config -- discovery covers it).
+fn parse_config(opts: Option<&serde_json::Value>, workspace_root: Option<PathBuf>) -> Config {
+    let resolve = |p: &str| -> PathBuf {
+        let pb = PathBuf::from(p);
+        match &workspace_root {
+            Some(root) if pb.is_relative() => root.join(pb),
+            _ => pb,
+        }
+    };
+    let mut default_target = None;
+    let mut target_map = Vec::new();
+    if let Some(opts) = opts {
+        if let Some(t) = opts.get("target").and_then(|v| v.as_str()) {
+            default_target = Some(resolve(t));
+        }
+        if let Some(map) = opts.get("targets").and_then(|v| v.as_object()) {
+            for (prefix, target) in map {
+                if let Some(target) = target.as_str() {
+                    target_map.push((resolve(prefix), resolve(target)));
+                }
+            }
+            // Longest prefix (by component count) first, so target_path_for
+            // picks the most specific match.
+            target_map.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.components().count()));
+        }
+    }
+    // `resolve` (which borrows workspace_root) is no longer needed, so the root
+    // can move into the config unchanged.
+    Config {
+        workspace_root,
+        default_target,
+        target_map,
+    }
+}
+
+/// The workspace root for resolving relative config paths and bounding
+/// discovery: first workspace folder, else the (deprecated) `root_uri`.
+fn workspace_root(params: &InitializeParams) -> Option<PathBuf> {
+    #[allow(deprecated)]
+    if let Some(folder) = params
+        .workspace_folders
+        .as_ref()
+        .and_then(|folders| folders.first())
+    {
+        Some(uri_to_pathbuf(&folder.uri))
+    } else {
+        params.root_uri.as_ref().map(uri_to_pathbuf)
+    }
 }
 
 /// How long to wait for typing to settle before re-analyzing a changed
@@ -77,6 +168,11 @@ fn main() {
     )
     .unwrap();
 
+    let config = parse_config(
+        init_params.initialization_options.as_ref(),
+        workspace_root(&init_params),
+    );
+
     let mut server = Server {
         file_paths: HashMap::new(),
         file_sources: HashMap::new(),
@@ -84,6 +180,8 @@ fn main() {
         position_encoding,
         dirty: HashSet::new(),
         module_cache: ModuleCache::default(),
+        config,
+        logged_target_errors: HashSet::new(),
     };
 
     server.run(&conn);
@@ -287,10 +385,40 @@ impl Server {
         }
     }
 
+    /// The parsed target an open `file` is analyzed against, or `None` for
+    /// target-less analysis (no config match and no `.target` discovered, or a
+    /// target that failed to load). Re-read every analysis -- targets are tiny
+    /// and `from_file` re-reads the whole `include` chain, so editing a target
+    /// (or a base it includes) is picked up on the file's next analysis.
+    fn resolve_target(&mut self, file: &Path) -> Option<Target> {
+        let target_path = self
+            .config
+            .target_path_for(file)
+            .or_else(|| discover_target(file, self.config.workspace_root.as_deref()))?;
+        match Target::from_file(&target_path) {
+            Ok(target) => {
+                self.logged_target_errors.remove(&target_path);
+                Some(target)
+            }
+            Err(e) => {
+                // Log once per broken target so a debounced re-analysis loop
+                // doesn't flood the editor log; clears when the load succeeds.
+                if self.logged_target_errors.insert(target_path.clone()) {
+                    eprintln!(
+                        "bml-lsp: failed to load target {}: {e} (analyzing without a target)",
+                        target_path.display()
+                    );
+                }
+                None
+            }
+        }
+    }
+
     fn check_and_publish(&mut self, conn: &Connection, uri: &Uri, path: &Path, source: &str) {
         // This document is now being analyzed, so it's no longer pending.
         self.dirty.remove(uri);
-        let (analysis, diags) = analyze_file(path, source, &mut self.module_cache);
+        let target = self.resolve_target(path);
+        let (analysis, diags) = analyze_file(path, source, &mut self.module_cache, target.as_ref());
 
         let lsp_diags: Vec<Diagnostic> = diags
             .diagnostics()
@@ -498,6 +626,7 @@ fn analyze_file(
     path: &Path,
     source: &str,
     module_cache: &mut ModuleCache,
+    target: Option<&Target>,
 ) -> (AnalysisResult, DiagnosticBag) {
     let mut source_map = SourceMap::new();
     let file_id = source_map.add_file_with_source(path.to_path_buf(), source.to_string());
@@ -524,9 +653,31 @@ fn analyze_file(
         symbols = resolver.resolve(&program, &mut diags, aliases);
 
         if !diags.has_errors() {
+            // With a target, mirror the compiler's target-aware prelude so the
+            // region/agent checks run in-editor: byte order and core entry
+            // points feed the type checker, and derived-Move wraps agent-shared
+            // region placements in `Type::AgentShared` (which `reclaim` needs).
+            // Without a target these stay at their defaults (target-less, like
+            // `bml check`).
+            if let Some(target) = target {
+                symbols.target_endianness = target.to_arch().endianness();
+                symbols.entry_fns = target
+                    .agents
+                    .iter()
+                    .filter_map(|a| a.entry.clone())
+                    .collect();
+                region::apply_derived_move(&program, target, &mut symbols);
+            }
             Checker::check(&program, &symbols, &mut diags);
             if !diags.has_errors() {
                 BorrowChecker::check(&program, &symbols, &mut diags);
+                // Region/agent placement and ownership checks (E605/E607/E611/
+                // E615/...) need the target; they run last, like build/verify.
+                if !diags.has_errors()
+                    && let Some(target) = target
+                {
+                    region::check(&program, &symbols, target, &mut diags);
+                }
             }
         }
     }
@@ -539,6 +690,79 @@ fn analyze_file(
     };
 
     (analysis, diags)
+}
+
+/// Discover a `.target` for `file` when config gives no answer (mechanism `a`):
+/// walk up from the file's directory to `workspace_root`, and at the first
+/// directory that holds any `.target`, return the unique "root" target -- the
+/// one no sibling target `include`s (so a board file that includes a chip file
+/// wins, and the chip file is not chosen on its own). Returns `None` if that
+/// directory's targets are ambiguous (no unique root) -- the LSP does not guess.
+fn discover_target(file: &Path, workspace_root: Option<&Path>) -> Option<PathBuf> {
+    let mut dir = file.parent();
+    while let Some(d) = dir {
+        let targets = list_targets(d);
+        if !targets.is_empty() {
+            return pick_root_target(d, &targets);
+        }
+        if same_dir(Some(d), workspace_root) {
+            break;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+/// The `.target` files directly in `dir` (non-recursive).
+fn list_targets(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "target"))
+        .collect()
+}
+
+/// Among `targets` in `dir`, the one no sibling includes. A single target is
+/// trivially the root; with several, the root is the target not referenced by
+/// any sibling's `include = ...`. Ambiguous (zero or many roots) -> `None`.
+fn pick_root_target(dir: &Path, targets: &[PathBuf]) -> Option<PathBuf> {
+    if let [only] = targets {
+        return Some(only.clone());
+    }
+    let mut included: HashSet<PathBuf> = HashSet::new();
+    for t in targets {
+        if let Ok(content) = std::fs::read_to_string(t) {
+            for inc in target::included_paths(&content) {
+                included.insert(canonical(&dir.join(inc)));
+            }
+        }
+    }
+    let mut roots = targets.iter().filter(|t| !included.contains(&canonical(t)));
+    let root = roots.next()?;
+    // Unique root only; if a second survives, the directory is ambiguous.
+    if roots.next().is_none() {
+        Some(root.clone())
+    } else {
+        None
+    }
+}
+
+/// Best-effort canonicalization for include-graph comparison; falls back to the
+/// path as-is when the file can't be canonicalized (e.g. a dangling include).
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether `a` and `b` name the same directory, comparing canonical forms so a
+/// non-canonical workspace root from the editor still bounds the walk.
+fn same_dir(a: Option<&Path>, b: Option<&Path>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => canonical(a) == canonical(b),
+        _ => false,
+    }
 }
 
 fn diagnostic_to_lsp(
@@ -1895,6 +2119,7 @@ mod tests {
             Path::new("/tmp/completion_test.bml"),
             &source,
             &mut ModuleCache::default(),
+            None,
         );
         assert!(!diags.has_errors());
         collect_completions(
@@ -2115,6 +2340,7 @@ fn main() {
             Path::new("/tmp/lsp_resolve_test.bml"),
             &source,
             &mut ModuleCache::default(),
+            None,
         );
         (analysis, offset, diags)
     }
@@ -2306,7 +2532,8 @@ fn main() @context(thread) {
         fs::write(&main_path, main_src).unwrap();
         fs::write(dir.join("biglib.bml"), &biglib).unwrap();
 
-        let (analysis, diags) = analyze_file(&main_path, main_src, &mut ModuleCache::default());
+        let (analysis, diags) =
+            analyze_file(&main_path, main_src, &mut ModuleCache::default(), None);
         assert!(!diags.has_errors(), "snippet should analyze cleanly");
 
         let ident = find_ident_at(&analysis.program, analysis.root_file_id, call_off)
@@ -2382,12 +2609,12 @@ fn main() @context(thread) {
 
         let mut cache = ModuleCache::default();
 
-        let (a1, d1) = analyze_file(&main_path, main_src, &mut cache);
+        let (a1, d1) = analyze_file(&main_path, main_src, &mut cache, None);
         assert!(!d1.has_errors(), "first analysis should be clean");
         let f1 = helper_file(&a1);
         assert_eq!(a1.source_map.get_path(f1), lib_path.as_path());
 
-        let (a2, d2) = analyze_file(&main_path, main_src, &mut cache);
+        let (a2, d2) = analyze_file(&main_path, main_src, &mut cache, None);
         assert!(!d2.has_errors(), "second analysis should be clean");
         let f2 = helper_file(&a2);
 
@@ -2398,5 +2625,97 @@ fn main() @context(thread) {
         assert_eq!(a2.source_map.get_path(f2), lib_path.as_path());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ─── target-aware analysis (regions/agents) ────────────────────────
+
+    /// The rp2350 probe example's directory, which holds probe.bml, its
+    /// `rp2350_periph` import, and the layered pico2w/rp2350 target files.
+    fn rp2350_example_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../bml/examples/rp2350-pico2w")
+    }
+
+    /// The reported bug: `reclaim(DST)` in probe.bml is a false positive
+    /// without the target (the LSP never wrapped the region array in
+    /// `AgentShared`), and clean once the target is loaded -- the region pass
+    /// (`apply_derived_move` + `region::check`) now runs in-editor.
+    #[test]
+    fn probe_example_is_clean_only_with_its_target() {
+        use std::fs;
+
+        let dir = rp2350_example_dir();
+        let probe = dir.join("probe.bml");
+        let source = fs::read_to_string(&probe).expect("probe.bml present");
+
+        // Target-less (today's LSP): the agent-shared rejection misfires.
+        let (_, no_target) = analyze_file(&probe, &source, &mut ModuleCache::default(), None);
+        assert!(
+            no_target
+                .diagnostics()
+                .iter()
+                .any(|d| d.code == "E335" && d.message.contains("not")),
+            "without a target, reclaim should still misfire (the bug)"
+        );
+
+        // With the target: derived-Move wraps the dma_buf arrays in
+        // AgentShared, reclaim is legal, and the whole example checks clean.
+        let target = Target::from_file(&dir.join("pico2w.target")).expect("pico2w.target loads");
+        let (_, with_target) =
+            analyze_file(&probe, &source, &mut ModuleCache::default(), Some(&target));
+        assert!(
+            !with_target.has_errors(),
+            "probe.bml should analyze clean with its target, got: {:?}",
+            with_target
+                .diagnostics()
+                .iter()
+                .map(|d| format!("{} {}", d.code, d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Discovery (fallback `a`) picks the include *root*: probe.bml's directory
+    /// has pico2w.target (board) and rp2350.target (chip), and pico2w includes
+    /// rp2350, so the board file -- the one nothing includes -- is chosen.
+    #[test]
+    fn discover_target_picks_the_include_root() {
+        let dir = rp2350_example_dir();
+        let probe = dir.join("probe.bml");
+        let found = discover_target(&probe, None).expect("a target is discovered");
+        assert_eq!(
+            canonical(&found),
+            canonical(&dir.join("pico2w.target")),
+            "discovery should pick the board target that includes the chip target"
+        );
+    }
+
+    /// Config (mechanism `c`): the longest matching path-prefix wins over a
+    /// broader prefix and over the workspace-wide default.
+    #[test]
+    fn config_target_map_prefers_longest_prefix() {
+        let root = PathBuf::from("/ws");
+        let opts = serde_json::json!({
+            "target": "default.target",
+            "targets": {
+                "boards": "boards/generic.target",
+                "boards/pico2w": "boards/pico2w/pico2w.target",
+            },
+        });
+        let config = parse_config(Some(&opts), Some(root.clone()));
+
+        assert_eq!(
+            config.target_path_for(Path::new("/ws/boards/pico2w/probe.bml")),
+            Some(root.join("boards/pico2w/pico2w.target")),
+            "the more specific prefix wins"
+        );
+        assert_eq!(
+            config.target_path_for(Path::new("/ws/boards/other/x.bml")),
+            Some(root.join("boards/generic.target")),
+            "the broader prefix matches when the specific one does not"
+        );
+        assert_eq!(
+            config.target_path_for(Path::new("/ws/src/x.bml")),
+            Some(root.join("default.target")),
+            "no prefix match falls back to the workspace-wide default"
+        );
     }
 }

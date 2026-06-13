@@ -1269,6 +1269,16 @@ fn is_supported_arch(arch: &str) -> bool {
     matches!(arch, "armv6m" | "armv7m" | "armv7em")
 }
 
+/// The relative paths a target file `include`s, parsed from its raw text. Same
+/// directives `from_file` follows, exposed for tooling that needs the include
+/// graph without a full parse: the LSP uses it to pick the "root" target in a
+/// directory (the one no sibling target includes) when discovering a target for
+/// an open file.
+#[must_use]
+pub fn included_paths(content: &str) -> Vec<String> {
+    scan_includes(content)
+}
+
 /// Collect the values of top-level `include = <path>` directives -- those before
 /// the first `[section]` header (top-level keys must precede any section). Paths
 /// are resolved relative to the including file by `load_file`.
