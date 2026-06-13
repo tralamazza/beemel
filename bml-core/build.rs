@@ -138,11 +138,11 @@ fn main() {
 
     // Boost (static, BSL license). The set mirrors what ikos-analyzer links:
     // filesystem + thread and their internal dependencies.
-    let boost_dir = ["/opt/homebrew/opt/boost/lib", "/usr/local/opt/boost/lib"]
+    let boost_dir = ["/opt/homebrew/opt/boost/lib", "/usr/local/opt/boost/lib", "/usr/lib64", "/usr/lib"]
         .iter()
         .map(Path::new)
-        .find(|p| p.exists())
-        .expect("ikos-static: boost not found (brew install boost)");
+        .find(|p| p.exists() && p.join("libboost_filesystem.a").exists())
+        .expect("ikos-static: boost not found (install boost-devel)");
     println!("cargo::rustc-link-search=native={}", boost_dir.display());
     for lib in [
         "boost_filesystem",
@@ -155,21 +155,29 @@ fn main() {
         println!("cargo::rustc-link-lib=static={lib}");
     }
 
-    // TBB (static, Apache-2.0).
-    let tbb_dir = ["/opt/homebrew/opt/tbb/lib", "/usr/local/opt/tbb/lib"]
+    // TBB (Apache-2.0). Prefer static but fall back to dynamic.
+    let tbb_dir = if let Some(d) = ["/opt/homebrew/opt/tbb/lib", "/usr/local/opt/tbb/lib"]
         .iter()
         .map(Path::new)
         .find(|p| p.exists())
-        .expect("ikos-static: tbb not found (brew install tbb)");
+    {
+        d.to_path_buf()
+    } else {
+        PathBuf::from("/usr/lib64")
+    };
     println!("cargo::rustc-link-search=native={}", tbb_dir.display());
-    println!("cargo::rustc-link-lib=static=tbb");
+    if tbb_dir.join("libtbb.a").exists() {
+        println!("cargo::rustc-link-lib=static=tbb");
+    } else {
+        println!("cargo::rustc-link-lib=dylib=tbb");
+    }
 
     // GMP stays DYNAMIC: LGPL.
-    let gmp_dir = ["/opt/homebrew/opt/gmp/lib", "/usr/local/opt/gmp/lib"]
+    let gmp_dir = ["/opt/homebrew/opt/gmp/lib", "/usr/local/opt/gmp/lib", "/usr/lib64", "/usr/lib"]
         .iter()
         .map(Path::new)
-        .find(|p| p.exists())
-        .expect("ikos-static: gmp not found (brew install gmp)");
+        .find(|p| p.exists() && p.join("libgmp.so").exists())
+        .expect("ikos-static: gmp not found (install gmp-devel)");
     println!("cargo::rustc-link-search=native={}", gmp_dir.display());
     println!("cargo::rustc-link-lib=dylib=gmpxx");
     println!("cargo::rustc-link-lib=dylib=gmp");
@@ -206,6 +214,13 @@ fn find_llvm_config() -> PathBuf {
                 .map(Path::new)
                 .find(|p| p.exists())
                 .map(Path::to_path_buf)
+                .or_else(|| {
+                    std::env::split_paths(
+                        &std::env::var("PATH").unwrap_or_default(),
+                    )
+                    .find(|dir| dir.join("llvm-config-18").exists())
+                    .map(|dir| dir.join("llvm-config-18"))
+                })
                 .expect("ikos-static: no LLVM 18 llvm-config found; set BML_LLVM_CONFIG")
         },
         PathBuf::from,
@@ -250,7 +265,8 @@ fn ensure_ikos_built(src: &Path, build_dir: &Path, llvm_config: &Path) {
                     "-DLLVM_CONFIG_EXECUTABLE={}",
                     llvm_config.display()
                 ))
-                .arg("-DIKOS_DISABLE_APRON=ON"),
+                .arg("-DIKOS_DISABLE_APRON=ON")
+                .arg("-DCMAKE_POSITION_INDEPENDENT_CODE=ON"),
             "cmake configure",
         );
     }
