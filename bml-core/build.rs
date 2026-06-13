@@ -2,11 +2,14 @@
 //!
 //! Inputs (build-time environment):
 //! - `BML_IKOS_BUILD_DIR` (optional): the fork's cmake build tree, configured
-//!   with `-DIKOS_DISABLE_APRON=ON`. Defaults to the `ikos` submodule's
-//!   `build-llvm18-noapron` tree (see doc/ikos-setup.md for the cmake
-//!   invocation). APRON drags in the GPL-licensed PPL bridge, which must
-//!   not be linked into bml; the apron-* domains are simply unavailable in
-//!   static builds.
+//!   with `-DIKOS_DISABLE_APRON=ON`. When unset, build.rs uses the `ikos`
+//!   submodule's `build-llvm18-noapron` tree and BUILDS IT ON DEMAND (cmake
+//!   configure + `cmake --build --target ikos-analyzer`) if its static
+//!   libraries are missing -- a one-time C++ build that needs cmake and the
+//!   LLVM 18 toolchain on the machine. A caller-supplied directory is taken
+//!   as-is and never auto-built. APRON drags in the GPL-licensed PPL bridge,
+//!   which must not be linked into bml; the apron-* domains are simply
+//!   unavailable in static builds.
 //! - `BML_LLVM_CONFIG` (optional): llvm-config of the LLVM 18 the fork was
 //!   built against. Defaults probe the common install prefixes.
 //!
@@ -28,26 +31,28 @@ fn main() {
         return;
     }
 
-    let build_dir = std::env::var_os("BML_IKOS_BUILD_DIR").map_or_else(
-        || {
-            // Default: the ikos submodule's APRON-free build tree.
-            let manifest =
-                PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets this"));
-            let default = manifest
-                .parent()
-                .expect("bml-core sits in the workspace root")
-                .join("ikos/build-llvm18-noapron");
-            assert!(
-                default.exists(),
-                "ikos-static: {} not found. Build it (git submodule update --init && cmake; \
-                 see doc/ikos-setup.md) or point BML_IKOS_BUILD_DIR at an existing tree \
-                 configured with -DIKOS_DISABLE_APRON=ON",
-                default.display()
-            );
-            default
-        },
-        PathBuf::from,
-    );
+    // llvm-config of the LLVM 18 the fork is built against. Needed both to
+    // configure the on-demand IKOS cmake build and to emit the LLVM link flags.
+    let llvm_config = find_llvm_config();
+
+    // The IKOS cmake build tree. By default this is the `ikos` submodule's
+    // APRON-free tree, which build.rs builds on demand if its static libraries
+    // are missing. A caller-supplied BML_IKOS_BUILD_DIR is taken as-is.
+    let build_dir = if let Some(dir) = std::env::var_os("BML_IKOS_BUILD_DIR") {
+        let dir = PathBuf::from(dir);
+        assert!(
+            dir.exists(),
+            "ikos-static: BML_IKOS_BUILD_DIR={} does not exist; point it at a tree \
+             configured with -DIKOS_DISABLE_APRON=ON (see doc/ikos-setup.md)",
+            dir.display()
+        );
+        dir
+    } else {
+        let src = workspace_root().join("ikos");
+        let dir = src.join("build-llvm18-noapron");
+        ensure_ikos_built(&src, &dir, &llvm_config);
+        dir
+    };
 
     // The IKOS static libraries (cmake targets ikos-analyzer-core,
     // ikos-llvm-to-ar, ikos-ar).
@@ -85,22 +90,6 @@ fn main() {
 
     // LLVM 18, static. The component set mirrors the fork's analyzer
     // CMakeLists (`passes` is for the in-process --mem2reg pipeline).
-    let llvm_config = std::env::var_os("BML_LLVM_CONFIG").map_or_else(
-        || {
-            const CANDIDATES: &[&str] = &[
-                "/opt/homebrew/opt/llvm@18/bin/llvm-config",
-                "/usr/local/opt/llvm@18/bin/llvm-config",
-                "/usr/lib/llvm-18/bin/llvm-config",
-            ];
-            CANDIDATES
-                .iter()
-                .map(Path::new)
-                .find(|p| p.exists())
-                .map(Path::to_path_buf)
-                .expect("ikos-static: no LLVM 18 llvm-config found; set BML_LLVM_CONFIG")
-        },
-        PathBuf::from,
-    );
     let llvm = |args: &[&str]| -> String {
         let out = Command::new(&llvm_config)
             .args(args)
@@ -192,4 +181,94 @@ fn main() {
     } else {
         println!("cargo::rustc-link-lib=stdc++");
     }
+}
+
+/// The workspace root (parent of the `bml-core` package directory).
+fn workspace_root() -> PathBuf {
+    PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets this"))
+        .parent()
+        .expect("bml-core sits in the workspace root")
+        .to_path_buf()
+}
+
+/// llvm-config of the LLVM 18 the fork is built against (`BML_LLVM_CONFIG`
+/// overrides the probe).
+fn find_llvm_config() -> PathBuf {
+    std::env::var_os("BML_LLVM_CONFIG").map_or_else(
+        || {
+            const CANDIDATES: &[&str] = &[
+                "/opt/homebrew/opt/llvm@18/bin/llvm-config",
+                "/usr/local/opt/llvm@18/bin/llvm-config",
+                "/usr/lib/llvm-18/bin/llvm-config",
+            ];
+            CANDIDATES
+                .iter()
+                .map(Path::new)
+                .find(|p| p.exists())
+                .map(Path::to_path_buf)
+                .expect("ikos-static: no LLVM 18 llvm-config found; set BML_LLVM_CONFIG")
+        },
+        PathBuf::from,
+    )
+}
+
+/// Build the IKOS analyzer's static libraries in `build_dir` if they are not
+/// already there. Mirrors doc/ikos-setup.md: an APRON-free Release build (no
+/// GPL PPL bridge) of the `ikos-analyzer` target. Configures once, then builds.
+fn ensure_ikos_built(src: &Path, build_dir: &Path, llvm_config: &Path) {
+    // Fast path: the libraries bml links already exist, so skip cmake entirely.
+    // (Removing the build tree forces a rebuild; bumping the submodule does not
+    // -- this build script only reruns on env-var changes, so clean it by hand.)
+    if build_dir.join("analyzer/libikos-analyzer-core.a").exists() {
+        return;
+    }
+
+    assert!(
+        src.join("CMakeLists.txt").exists(),
+        "ikos-static: IKOS source not found at {}; initialize the submodule first \
+         (git submodule update --init ikos)",
+        src.display()
+    );
+
+    // Surfaces during `cargo build` (build-script stdout is otherwise hidden);
+    // the C++ build is slow and would otherwise look like a hang.
+    println!(
+        "cargo::warning=ikos-static: building the IKOS analyzer in {} \
+         (one-time, several minutes)",
+        build_dir.display()
+    );
+
+    if !build_dir.join("CMakeCache.txt").exists() {
+        run(
+            Command::new("cmake")
+                .arg("-S")
+                .arg(src)
+                .arg("-B")
+                .arg(build_dir)
+                .arg("-DCMAKE_BUILD_TYPE=Release")
+                .arg(format!(
+                    "-DLLVM_CONFIG_EXECUTABLE={}",
+                    llvm_config.display()
+                ))
+                .arg("-DIKOS_DISABLE_APRON=ON"),
+            "cmake configure",
+        );
+    }
+
+    run(
+        Command::new("cmake")
+            .arg("--build")
+            .arg(build_dir)
+            .arg("-j")
+            .arg("--target")
+            .arg("ikos-analyzer"),
+        "cmake build",
+    );
+}
+
+fn run(cmd: &mut Command, what: &str) {
+    let status = cmd
+        .status()
+        .unwrap_or_else(|e| panic!("ikos-static: failed to spawn {what} (is cmake on PATH?): {e}"));
+    assert!(status.success(), "ikos-static: {what} failed ({status})");
 }

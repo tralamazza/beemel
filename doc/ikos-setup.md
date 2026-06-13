@@ -74,9 +74,18 @@ needed at run time:
 cargo build --release -p bml --features ikos-static
 ```
 
-build.rs defaults to the submodule's `ikos/build-llvm18-noapron` tree;
-`BML_IKOS_BUILD_DIR` points it elsewhere, and `BML_LLVM_CONFIG` overrides
-the llvm-config probe.
+You do NOT need to run the "Build IKOS" cmake commands above first: when the
+submodule's `ikos/build-llvm18-noapron` tree is missing its static libraries,
+build.rs builds it on demand (the same APRON-free `cmake --build --target
+ikos-analyzer`). This one-time C++ build needs `cmake` on PATH and the LLVM 18
+toolchain; it prints a `cargo:warning` while it runs so the wait is not
+mistaken for a hang. The submodule must be checked out first
+(`git submodule update --init ikos`).
+
+`BML_IKOS_BUILD_DIR` points build.rs at a prebuilt tree instead (taken as-is,
+never auto-built); `BML_LLVM_CONFIG` overrides the llvm-config probe. To force
+a rebuild after bumping the submodule, remove the build tree -- build.rs only
+reruns on those env-var changes, so an in-place source bump is not detected.
 
 What gets linked how (license-driven, see bml-core/build.rs): LLVM 18,
 Boost, TBB and the IKOS libraries are static; GMP stays a dynamic library
