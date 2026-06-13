@@ -61,6 +61,7 @@ fn main() {
             let mut target_path: Option<PathBuf> = None;
             let mut link_libs: Vec<PathBuf> = vec![];
             let mut source_path: Option<PathBuf> = None;
+            let mut out_dir: Option<PathBuf> = None;
             let mut opt_level = "s".to_string();
             let mut save_temps = false;
             let mut debug = false;
@@ -74,6 +75,15 @@ fn main() {
                             target_path = Some(PathBuf::from(&args[i]));
                         } else {
                             eprintln!("--target requires a path");
+                            process::exit(1);
+                        }
+                    }
+                    "--out-dir" => {
+                        i += 1;
+                        if i < args.len() {
+                            out_dir = Some(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--out-dir requires a path");
                             process::exit(1);
                         }
                     }
@@ -114,7 +124,7 @@ fn main() {
 
             let source_path = source_path.unwrap_or_else(|| {
                 eprintln!(
-                    "Usage: bml build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps] [--link <lib>]... [--stack] <file.bml>"
+                    "Usage: bml build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps] [--out-dir <dir>] [--link <lib>]... [--stack] <file.bml>"
                 );
                 process::exit(1);
             });
@@ -135,6 +145,7 @@ fn main() {
                 save_temps,
                 debug,
                 stack_analysis,
+                out_dir.as_deref(),
             );
         }
         "verify" => {
@@ -312,7 +323,8 @@ fn print_usage() {
     eprintln!("Commands:");
     eprintln!("  check [--stack] <file.bml>                    Type-check a source file");
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
-    eprintln!("        [--link <lib>]... [--stack] <file.bml>  Compile and optionally link");
+    eprintln!("        [--out-dir <dir>] [--link <lib>]... [--stack] <file.bml>");
+    eprintln!("                                                 Compile and optionally link");
     eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
     eprintln!("         [--ikos-bin <path>]");
     eprintln!("         [--fail-on <level>] [--format <fmt>] [--save-temps] <file.bml>");
@@ -323,6 +335,8 @@ fn print_usage() {
     eprintln!("  --opt=<level>   Optimization level: 0, 1, 2, 3, s, z (default: s)");
     eprintln!("  --debug, -g     Emit DWARF debug information");
     eprintln!("  --save-temps    Keep intermediate files (file.opt.ll)");
+    eprintln!("  --out-dir <dir> Write build artifacts to <dir> (created if needed)");
+    eprintln!("                  instead of next to the source");
     eprintln!("  --stack         Perform compile-time stack usage analysis");
     eprintln!("  --target <path> Target specification file");
     eprintln!("  --link <lib>    Link with library (.a / .o), repeatable");
@@ -476,6 +490,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_file(
     path: &Path,
     target: &Target,
@@ -484,6 +499,7 @@ fn build_file(
     save_temps: bool,
     debug: bool,
     stack_analysis: bool,
+    out_dir: Option<&Path>,
 ) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
@@ -602,20 +618,38 @@ fn build_file(
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
 
-    let ll_path = path.with_extension("ll");
+    // Artifact basename. With `--out-dir`, the source filename is relocated into
+    // that directory (created if needed); the `.with_extension` calls below then
+    // produce `<dir>/<stem>.{ll,opt.ll,o,ld,elf}` exactly as they would next to
+    // the source. Without it, artifacts land beside the source as before.
+    let out_base = match out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).unwrap_or_else(|e| {
+                eprintln!("Error creating out-dir {}: {e}", dir.display());
+                process::exit(1);
+            });
+            dir.join(path.file_name().unwrap_or_else(|| {
+                eprintln!("Error: source path {} has no file name", path.display());
+                process::exit(1);
+            }))
+        }
+        None => path.to_path_buf(),
+    };
+
+    let ll_path = out_base.with_extension("ll");
     std::fs::write(&ll_path, &llvm_ir).unwrap_or_else(|e| {
         eprintln!("Error writing {}: {e}", ll_path.display());
         process::exit(1);
     });
 
     let linker_script = target.generate_linker_script();
-    let ld_path = path.with_extension("ld");
+    let ld_path = out_base.with_extension("ld");
     std::fs::write(&ld_path, linker_script).unwrap_or_else(|e| {
         eprintln!("Error writing {}: {e}", ld_path.display());
         process::exit(1);
     });
 
-    let obj_path = path.with_extension("o");
+    let obj_path = out_base.with_extension("o");
 
     if opt_level == "0" {
         // ── no optimization: llc only ──
@@ -635,7 +669,7 @@ fn build_file(
     } else if save_temps {
         // ── file mode: opt → file.opt.ll → llc ──
         let llc_opt = llc_opt_level(opt_level);
-        let opt_ll_path = path.with_extension("opt.ll");
+        let opt_ll_path = out_base.with_extension("opt.ll");
         let opt_status = process::Command::new("opt")
             .args([
                 &format!("--O{opt_level}"),
@@ -1010,7 +1044,9 @@ fn codegen_result(
                     obj_path.display()
                 );
             } else {
-                let elf_path = path.with_extension("elf");
+                // Derive the ELF from the (already relocated) object path so it
+                // honors `--out-dir` too.
+                let elf_path = obj_path.with_extension("elf");
                 let mut cmd = process::Command::new("ld.lld");
                 cmd.arg("-T")
                     .arg(ld_path.to_str().unwrap())

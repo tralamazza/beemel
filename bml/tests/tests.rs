@@ -1,6 +1,31 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// A unique, fresh output directory for one `bml build --out-dir` run. Because
+/// `bml build` derives its artifact paths (`<stem>.ll`/`.o`/`.ld`) from the
+/// output directory, giving every build its own dir means two tests building the
+/// SAME fixture in parallel never share a path -- no clobbered `.ll`, no "opt
+/// failed" race -- and nothing is written into the source-controlled fixtures
+/// directory. The caller removes the dir when done.
+fn unique_out_dir(fixture: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "bml_build_{}_{}_{seq}",
+        std::process::id(),
+        fixture.replace('.', "_")
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// The `.ll` (or other artifact) path inside an `--out-dir`: the fixture's name
+/// with its extension swapped, mirroring how `bml build` names outputs.
+fn out_artifact(out_dir: &std::path::Path, fixture: &str, ext: &str) -> PathBuf {
+    out_dir.join(PathBuf::from(fixture).with_extension(ext))
+}
+
 fn bml_check(fixture: &str) -> (bool, String) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -89,20 +114,20 @@ fn bml_ir_debug(fixture: &str) -> String {
         .join("tests")
         .join("fixtures")
         .join(fixture);
+    let out = unique_out_dir(fixture);
     let output = Command::new(env!("CARGO_BIN_EXE_bml"))
         .arg("build")
         .arg("--opt=0")
         .arg("-g")
         .arg("--save-temps")
+        .arg("--out-dir")
+        .arg(&out)
         .arg(&path)
         .output()
         .expect("failed to run bml build -g");
 
-    let ll_path = path.with_extension("ll");
-    let ir = std::fs::read_to_string(&ll_path).unwrap_or_default();
-    let _ = std::fs::remove_file(&ll_path);
-    let _ = std::fs::remove_file(path.with_extension("o"));
-    let _ = std::fs::remove_file(path.with_extension("ld"));
+    let ir = std::fs::read_to_string(out_artifact(&out, fixture, "ll")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&out);
 
     assert!(
         output.status.success() || !ir.is_empty(),
@@ -118,9 +143,14 @@ fn bml_ir_with_target(fixture: &str, target: Option<&str>) -> String {
         .join("tests")
         .join("fixtures")
         .join(fixture);
+    let out = unique_out_dir(fixture);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bml"));
-    cmd.arg("build").arg("--opt=0").arg("--save-temps");
+    cmd.arg("build")
+        .arg("--opt=0")
+        .arg("--save-temps")
+        .arg("--out-dir")
+        .arg(&out);
     if let Some(t) = target {
         let tpath = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -131,12 +161,8 @@ fn bml_ir_with_target(fixture: &str, target: Option<&str>) -> String {
     cmd.arg(&path);
     let output = cmd.output().expect("failed to run bml build");
 
-    let ll_path = path.with_extension("ll");
-    let ir = std::fs::read_to_string(&ll_path).unwrap_or_default();
-
-    let _ = std::fs::remove_file(&ll_path);
-    let _ = std::fs::remove_file(path.with_extension("o"));
-    let _ = std::fs::remove_file(path.with_extension("ld"));
+    let ir = std::fs::read_to_string(out_artifact(&out, fixture, "ll")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&out);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1285,8 +1311,8 @@ assert_error!(test_bitwise_non_int, "bitwise_non_int_error.bml", "E317");
 
 // Wrapping arithmetic (`+%`/`-%`/`*%`): integer-only (E336 on floats and
 // pointers -- wrap on an address is never intent), and lowers to the same
-// add/sub/mul opcodes as the plain operators. One #[test] for the lowering
-// fixture (one IR test per fixture: --save-temps .ll races).
+// add/sub/mul opcodes as the plain operators. (Builds run in a unique
+// `--out-dir`, so tests may share a fixture without racing on artifacts.)
 assert_error!(test_wrap_float, "wrap_float_error.bml", "E336");
 assert_error!(test_wrap_ptr, "wrap_ptr_error.bml", "E336");
 
@@ -1308,8 +1334,8 @@ fn test_wrap_ops_lowering() {
 // priority_bits=4) a real ISR ceiling lowers to BASEPRI_MAX = ceiling << 4
 // with save/restore -- ISRs above the ceiling keep running. cpsid is the
 // fallback (v6-M, ceiling 0, thread-level sentinel 255).
-// (One #[test] per fixture: parallel tests on the same fixture race on the
-// shared --save-temps .ll file.)
+// (Each build uses a unique `--out-dir`, so multiple tests may share a
+// fixture without racing on artifacts.)
 #[test]
 fn test_shared_cs_thread_basepri() {
     let ir = bml_ir("shared_cs_thread.bml");
@@ -2676,18 +2702,62 @@ fn bml_build_with_target(fixture: &str, target: Option<&str>) -> (bool, String) 
         .join("tests")
         .join("fixtures");
     let path = dir.join(fixture);
+    let out = unique_out_dir(fixture);
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bml"));
-    cmd.arg("build");
+    cmd.arg("build").arg("--out-dir").arg(&out);
     if let Some(t) = target {
         cmd.arg("--target").arg(dir.join(t));
     }
     let output = cmd.arg(&path).output().expect("failed to run bml build");
-    // Clean up any emitted artifacts from a successful build.
-    let _ = std::fs::remove_file(path.with_extension("o"));
-    let _ = std::fs::remove_file(path.with_extension("ld"));
-    let _ = std::fs::remove_file(path.with_extension("ll"));
+    let _ = std::fs::remove_dir_all(&out);
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     (output.status.success(), stderr)
+}
+
+// `--out-dir` places every build artifact in the given directory and writes
+// nothing next to the source -- the property the whole test harness relies on
+// for race-free parallel builds.
+#[test]
+fn test_out_dir_redirects_artifacts() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let fixture = "owns_ok.bml";
+    let path = dir.join(fixture);
+    let out = unique_out_dir("out_dir_redirect");
+    let output = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("build")
+        .arg("--out-dir")
+        .arg(&out)
+        .arg(&path)
+        .output()
+        .expect("failed to run bml build");
+
+    let in_out_dir: Vec<&str> = ["ll", "o", "ld"]
+        .into_iter()
+        .filter(|ext| out_artifact(&out, fixture, ext).exists())
+        .collect();
+    let beside_source: Vec<&str> = ["ll", "o", "ld"]
+        .into_iter()
+        .filter(|ext| path.with_extension(ext).exists())
+        .collect();
+    // Clean up before asserting so a failure doesn't strand the temp dir.
+    let _ = std::fs::remove_dir_all(&out);
+
+    assert!(
+        output.status.success(),
+        "build failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        in_out_dir,
+        vec!["ll", "o", "ld"],
+        "all artifacts should land in --out-dir"
+    );
+    assert!(
+        beside_source.is_empty(),
+        "no artifacts should be written next to the source, found: {beside_source:?}"
+    );
 }
 
 // A module owning a peripheral it uses builds cleanly.
@@ -3337,17 +3407,19 @@ fn test_cross_core_locked_ok_and_lowering() {
         .join("tests")
         .join("fixtures");
     let path = dir.join("cross_core_locked.bml");
+    let out_dir = unique_out_dir("cross_core_locked.bml");
     let out = Command::new(env!("CARGO_BIN_EXE_bml"))
         .arg("build")
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--target")
         .arg(dir.join("cross_core_locks.target"))
         .arg(&path)
         .output()
         .expect("failed to run bml build");
-    let ll = std::fs::read_to_string(path.with_extension("ll")).unwrap_or_default();
-    let _ = std::fs::remove_file(path.with_extension("o"));
-    let _ = std::fs::remove_file(path.with_extension("ld"));
-    let _ = std::fs::remove_file(path.with_extension("ll"));
+    let ll = std::fs::read_to_string(out_artifact(&out_dir, "cross_core_locked.bml", "ll"))
+        .unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&out_dir);
     assert!(
         out.status.success(),
         "claimed cross-core @shared should build:\n{}",
@@ -3400,17 +3472,19 @@ fn test_pmsa8_mpu_emission() {
         .join("tests")
         .join("fixtures");
     let path = dir.join("pmsa8_mpu.bml");
+    let out_dir = unique_out_dir("pmsa8_mpu.bml");
     let out = Command::new(env!("CARGO_BIN_EXE_bml"))
         .arg("build")
+        .arg("--out-dir")
+        .arg(&out_dir)
         .arg("--target")
         .arg(dir.join("pmsa8_mpu.target"))
         .arg(&path)
         .output()
         .expect("failed to run bml build");
-    let ll = std::fs::read_to_string(path.with_extension("ll")).unwrap_or_default();
-    let _ = std::fs::remove_file(path.with_extension("o"));
-    let _ = std::fs::remove_file(path.with_extension("ld"));
-    let _ = std::fs::remove_file(path.with_extension("ll"));
+    let ll =
+        std::fs::read_to_string(out_artifact(&out_dir, "pmsa8_mpu.bml", "ll")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&out_dir);
     assert!(
         out.status.success(),
         "build failed:\n{}",
