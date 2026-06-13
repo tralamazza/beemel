@@ -15,9 +15,9 @@ use lsp_types::notification::{
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionResponse, Diagnostic,
-    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, InitializeParams, Location,
-    MarkupContent, MarkupKind, Position, PositionEncodingKind, PublishDiagnosticsParams, Range,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DiagnosticSeverity, GotoDefinitionResponse, Hover, HoverContents, InitializeParams, InlayHint,
+    Location, MarkupContent, MarkupKind, Position, PositionEncodingKind, PublishDiagnosticsParams,
+    Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -157,6 +157,7 @@ fn main() {
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
         completion_provider: Some(lsp_types::CompletionOptions::default()),
+        inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
         position_encoding: Some(position_encoding.clone()),
         ..ServerCapabilities::default()
     };
@@ -294,6 +295,16 @@ impl Server {
             }
             "textDocument/completion" => {
                 let result = self.handle_completion(req);
+                conn.sender
+                    .send(Message::Response(Response {
+                        id,
+                        result: serde_json::to_value(result).ok(),
+                        error: None,
+                    }))
+                    .ok();
+            }
+            "textDocument/inlayHint" => {
+                let result = self.handle_inlay_hints(req);
                 conn.sender
                     .send(Message::Response(Response {
                         id,
@@ -619,6 +630,112 @@ impl Server {
             is_incomplete: false,
             items,
         }))
+    }
+
+    /// `textDocument/inlayHint`: a `: T` hint after each unannotated `var`/`val`
+    /// whose initializer type we can infer (the same best-effort inference hover
+    /// uses). Hints we are not confident about are omitted rather than guessed.
+    /// Only the open document's own declarations are hinted (inlined imports
+    /// have spans in other files), and only those inside the requested range.
+    fn handle_inlay_hints(&self, req: &Request) -> Option<Vec<InlayHint>> {
+        let params: lsp_types::InlayHintParams = serde_json::from_value(req.params.clone()).ok()?;
+        let analysis = self.analysis_cache.get(&params.text_document.uri)?;
+        let source = analysis.source_map.source(analysis.root_file_id);
+
+        let mut decls = Vec::new();
+        for item in &analysis.program.items {
+            if let ast::Item::FnDef(f) = item {
+                collect_inferred_var_decls(&f.body, &analysis.symbols, &mut decls);
+            }
+        }
+
+        let hints = decls
+            .into_iter()
+            // Skip inlined imports: their spans point into other files.
+            .filter(|(name_span, _)| name_span.file == analysis.root_file_id)
+            // The hint sits right after the variable name.
+            .map(|(name_span, ty)| {
+                (
+                    offset_to_pos(source, name_span.end, &self.position_encoding),
+                    ty,
+                )
+            })
+            .filter(|(pos, _)| pos_in_range(*pos, &params.range))
+            .map(|(position, ty)| InlayHint {
+                position,
+                label: lsp_types::InlayHintLabel::String(format!(": {ty}")),
+                kind: Some(lsp_types::InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(false),
+                padding_right: Some(false),
+                data: None,
+            })
+            .collect();
+        Some(hints)
+    }
+}
+
+/// Whether `pos` falls within `range` (inclusive), used to honor the editor's
+/// requested inlay-hint window.
+fn pos_in_range(pos: Position, range: &Range) -> bool {
+    let key = |p: Position| (p.line, p.character);
+    key(range.start) <= key(pos) && key(pos) <= key(range.end)
+}
+
+/// Collect `(name span, inferred type)` for every unannotated `var`/`val` whose
+/// initializer type `infer_init_type` can name, walking the block and every
+/// nested block exhaustively. Annotated declarations and ones we can't infer
+/// are skipped (no hint rather than a wrong one).
+fn collect_inferred_var_decls(
+    block: &ast::Block,
+    symbols: &SymbolTable,
+    out: &mut Vec<(source::Span, String)>,
+) {
+    for stmt in &block.stmts {
+        collect_inferred_var_decls_stmt(stmt, symbols, out);
+    }
+}
+
+fn collect_inferred_var_decls_stmt(
+    stmt: &ast::Stmt,
+    symbols: &SymbolTable,
+    out: &mut Vec<(source::Span, String)>,
+) {
+    match stmt {
+        ast::Stmt::VarDecl(v) => {
+            if v.ty_ann.is_none()
+                && let Some(ty) = infer_init_type(&v.init, symbols)
+            {
+                out.push((v.name.1, ty));
+            }
+        }
+        ast::Stmt::Block(b) => collect_inferred_var_decls(b, symbols, out),
+        ast::Stmt::If(i) => {
+            collect_inferred_var_decls(&i.then_block, symbols, out);
+            if let Some(else_branch) = &i.else_branch {
+                collect_inferred_var_decls_stmt(else_branch, symbols, out);
+            }
+        }
+        ast::Stmt::Loop(l) => collect_inferred_var_decls(&l.body, symbols, out),
+        ast::Stmt::While(w) => collect_inferred_var_decls(&w.body, symbols, out),
+        ast::Stmt::For(f) => collect_inferred_var_decls(&f.body, symbols, out),
+        ast::Stmt::Match(m) => {
+            for arm in &m.arms {
+                collect_inferred_var_decls(&arm.body, symbols, out);
+            }
+        }
+        ast::Stmt::Claim(c) => collect_inferred_var_decls(&c.body, symbols, out),
+        // No nested block to descend, and no declaration to hint.
+        ast::Stmt::Assign(_)
+        | ast::Stmt::CompoundAssign(_)
+        | ast::Stmt::Expr(_)
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Break(_)
+        | ast::Stmt::Continue(_)
+        | ast::Stmt::Asm(_)
+        | ast::Stmt::Assume(_)
+        | ast::Stmt::Assert(_) => {}
     }
 }
 
@@ -2717,5 +2834,90 @@ fn main() @context(thread) {
             Some(root.join("default.target")),
             "no prefix match falls back to the workspace-wide default"
         );
+    }
+
+    // ─── inlay hints (inferred local types) ────────────────────────────
+
+    /// The (name, inferred type) pairs the inlay-hint collector produces for a
+    /// function's body, resolving each hint's name span back to its text.
+    fn inlay_pairs(src: &str) -> Vec<(String, String)> {
+        let (analysis, offset) = analyze_at(src);
+        let f =
+            enclosing_fn(&analysis.program, analysis.root_file_id, offset).expect("enclosing fn");
+        let mut decls = Vec::new();
+        collect_inferred_var_decls(&f.body, &analysis.symbols, &mut decls);
+        let source = analysis.source_map.source(analysis.root_file_id);
+        decls
+            .into_iter()
+            .map(|(span, ty)| (source[span.start..span.end].to_string(), ty))
+            .collect()
+    }
+
+    #[test]
+    fn inlay_hints_infer_unannotated_locals() {
+        // a: literal suffix; c: call return type; e: nested-block literal.
+        // b is annotated (skipped); d is a local reference we don't infer
+        // (skipped, not guessed). Order follows the walk.
+        let src = "\
+fn ret16() -> u16 @context(thread) {
+    return 0u16;
+}
+fn main() @context(thread) {
+    const a = $07u8;
+    var b: u32 = 2u32;
+    const c = ret16();
+    const d = c;
+    if b == 2u32 {
+        const e = 9u16;
+    }
+}
+";
+        assert_eq!(
+            inlay_pairs(src),
+            vec![
+                ("a".to_string(), "u8".to_string()),
+                ("c".to_string(), "u16".to_string()),
+                ("e".to_string(), "u16".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn pos_in_range_is_inclusive_and_line_aware() {
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 4,
+            },
+            end: Position {
+                line: 5,
+                character: 0,
+            },
+        };
+        // Inside, and inclusive at both ends.
+        assert!(pos_in_range(
+            Position {
+                line: 3,
+                character: 0
+            },
+            &range
+        ));
+        assert!(pos_in_range(range.start, &range));
+        assert!(pos_in_range(range.end, &range));
+        // Before the start column on the start line, and past the end.
+        assert!(!pos_in_range(
+            Position {
+                line: 2,
+                character: 3
+            },
+            &range
+        ));
+        assert!(!pos_in_range(
+            Position {
+                line: 5,
+                character: 1
+            },
+            &range
+        ));
     }
 }

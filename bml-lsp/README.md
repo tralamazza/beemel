@@ -10,6 +10,7 @@ Language server for the BML language. Implements the Language Server Protocol us
 | Hover | Type information for functions, statics, peripherals, registers, fields, structs, enums, and locals |
 | Go-to-Definition | Navigate to definitions across modules |
 | Completion | Keywords, globals, locals, import aliases, peripheral registers/fields |
+| Inlay hints | `: T` type hints after unannotated `var`/`val` whose initializer type is inferable (cast, call, struct/literal, global ref); ambiguous forms are left un-hinted |
 
 ## Usage
 
