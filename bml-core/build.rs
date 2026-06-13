@@ -173,11 +173,15 @@ fn main() {
     }
 
     // GMP stays DYNAMIC: LGPL.
+    // libgmp.so on Linux, libgmp.dylib on macOS: accept either so the probe
+    // is not Linux-only.
     let gmp_dir = ["/opt/homebrew/opt/gmp/lib", "/usr/local/opt/gmp/lib", "/usr/lib64", "/usr/lib"]
         .iter()
         .map(Path::new)
-        .find(|p| p.exists() && p.join("libgmp.so").exists())
-        .expect("ikos-static: gmp not found (install gmp-devel)");
+        .find(|p| {
+            p.exists() && (p.join("libgmp.so").exists() || p.join("libgmp.dylib").exists())
+        })
+        .expect("ikos-static: gmp not found (brew install gmp / install gmp-devel)");
     println!("cargo::rustc-link-search=native={}", gmp_dir.display());
     println!("cargo::rustc-link-lib=dylib=gmpxx");
     println!("cargo::rustc-link-lib=dylib=gmp");
