@@ -2,6 +2,7 @@
 
 | Doc | What it is |
 |---|---|
+| [tutorials/](tutorials/) | Hands-on, runnable learning path -- start here if you're new to BML |
 | [language.md](language.md) | The language specification (types, contexts, views, structs, the agent contract table, error codes) |
 | [regions-agents.md](regions-agents.md) | The regions/agents memory-safety model: target physics, ownership windows, multi-core, verify obligations, trust register, hardware status |
 | [verify.md](verify.md) | `bml verify` usage: checks, soundness, suppressions, domains |

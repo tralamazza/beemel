@@ -34,6 +34,7 @@ Requires `opt`, `llc`, and `ld.lld` (LLVM toolchain) for `bml build`.
 
 ## Documentation
 
+- [Tutorials](./doc/tutorials/) -- hands-on, runnable learning path (start here)
 - [Language specification](./doc/language.md)
 - [Design decisions](./doc/design-decisions.md)
 - [IKOS verification](./doc/verify.md)
