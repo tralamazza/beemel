@@ -192,24 +192,32 @@ fn pack(c: Color) -> u32 {
 
 ```bml
 // app.bml
-import rgb;                          // brings rgb's items into scope
+import rgb;                          // import the module
 
 fn main() @context(thread) {
-    var c = Color { r: 0xFFu8, g: 0x80u8, b: 0x00u8 };
-    var n: u32 = pack(c);
+    var c = rgb.Color { r: 0xFFu8, g: 0x80u8, b: 0x00u8 };
+    var n: u32 = rgb.pack(c);
 }
 ```
+
+**Imported items are always qualified.** You reach them through the module's name
+(`rgb.pack`, `rgb.Color`) -- there is no bare/unqualified access. This is the
+provenance rule from the series intro: every name says where it comes from, and
+two modules can both export `init` with no clash (`adc.init()` vs `uart.init()`).
 
 Two import forms:
 
 | Form | Effect |
 |------|--------|
-| `import rgb;` | brings `rgb`'s items into scope, used unqualified |
-| `import rgb as gfx;` | aliased -- access as `gfx.pack(...)` |
+| `import rgb;` | qualify by the module name -- `rgb.pack()`, `rgb.Color` |
+| `import rgb as gfx;` | qualify by an alias -- `gfx.pack()`, `gfx.Color` |
 
-There is no selective `import rgb { pack, Color };` form -- writing one is
-`error[E109]`. `import sub.mod;` resolves to `sub/mod.bml` relative to the
-importer (path segments become subdirectories). `export` lists the public API:
+It works for every kind of item: `rgb.pack(c)` (function), `rgb.Color { ... }`
+and `var c: rgb.Color` (type), `rgb.MAX` (const), `rgb.State@Idle` (enum
+variant). There is no selective `import rgb { pack, Color };` form -- writing one
+is `error[E109]`. `import sub.mod;` resolves to `sub/mod.bml` relative to the
+importer (path segments become subdirectories; the last segment is the
+qualifier). `export` lists the public API:
 
 ```bml
 export fn init, send;       // several at once
@@ -217,20 +225,15 @@ export struct Frame;
 export const RATE;
 ```
 
-A couple of honest specifics about the current implementation:
+One deliberate exception: **peripherals stay bare.** A `peripheral` is global
+hardware (one `RCC` per chip), so even when imported you write `RCC.APB2ENR`, not
+`rcc.RCC.APB2ENR` -- peripherals share one flat namespace across modules. (That's
+why tutorial 01's blinky imports `svd.rcc` but writes `RCC...` directly.)
 
-- Compilation inlines all imported modules into one flat program (a single
-  `.ll`/`.o`). A plain `import rgb;` makes *all* of `rgb`'s items resolvable, so
-  `export` is the API contract you should depend on rather than a hard visibility
-  barrier. It is enforced on the *aliased* path: `gfx.helper` resolves only items
-  `rgb` exported.
-- Aliased access is for *calls and values* -- `gfx.pack(c)`. Construct an aliased
-  module's struct through a function it exports (a small factory), not
-  `gfx.Color { ... }`.
-
-> **From Rust:** `export`/`import` are roughly `pub` + `use`, but flatter -- no
-> `mod` tree, one file per module, and the whole program is merged before
-> codegen. There are no header files (C): the compiler reads `.bml` directly.
+> **From Rust:** `export`/`import` are roughly `pub` + `use`, but flatter -- one
+> file per module, no `mod` tree, and access is always module-qualified (closer
+> to Go than to Rust's `use` that pulls names into local scope). No header files
+> (C): the compiler reads `.bml` directly.
 
 ## Put it together and run it
 

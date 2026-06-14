@@ -896,22 +896,30 @@ Enum values are just integers of the underlying type:
 ## 8. Module system
 
 - One file = one module (`.bml` extension)
-- `import foo;` -- brings module `foo`'s items into scope, used unqualified
-- `import foo as f;` -- aliased import (access via `f.bar()` qualified syntax)
+- **Imported items are always qualified -- there is no flat/unqualified access.**
+  - `import foo;` -- items reached as `foo.bar()`, `foo.Color { ... }`,
+    `foo.MAX`, `foo.State@Idle` (qualifier = the module's last path segment)
+  - `import foo as f;` -- same, under the alias: `f.bar()`, `f.Color`, ...
   - There is no selective `import foo { bar, baz };` form (writing one is `E109`)
+  - A bare reference to an imported item does not resolve (the name is not in
+    scope unqualified) -- this is what makes cross-module names collision-free
+- **Peripherals are the exception: they stay bare.** A `peripheral` is global
+  hardware (one `RCC` per chip), addressed at a fixed address and named in target
+  files; `import svd.rcc;` then `RCC.APB2ENR` -- never `rcc.RCC`. Peripheral names
+  therefore share a single flat namespace across modules.
 - `export fn foo;` -- marks an item part of the public API
   - Also supports: `export struct Foo;`, `export enum Bar;`, `export var X;`, `export const Y;`, `export peripheral Z;`
-  - `export` governs *aliased* access (`f.bar` resolves only exported items); a
-    plain `import foo;` inlines the whole module, so it is the API contract for
-    the alias path rather than a hard visibility barrier
+  - `export` governs the qualified/aliased access surface (`f.bar` resolves only
+    exported items)
 - No circular imports (compile error E500)
 - No header files -- compiler reads `.bml` directly
 - Module-level items are unordered within a file; forward references are fine
 - Module resolution: `import foo` resolves to `foo.bml` in the same directory as the importing file
 - Path-based imports: `import sub.mod` resolves to `sub/mod.bml` relative to the importing file
-  - Intermediate segments become subdirectories; the last segment is the module name
-  - Works with both the plain and aliased import forms
-- Compilation model: all imported items are inlined into a flat merged program (single `.ll`/`.o` output)
+  - Intermediate segments become subdirectories; the last segment is the module name (and the qualifier)
+- Compilation model: imported modules are flattened into one program, each item
+  carried under its qualified name (`module.item`); peripherals keep their bare
+  names. Single `.ll`/`.o` output.
 
 **Export syntax:**
 ```
@@ -923,13 +931,15 @@ export const RATE;
 export peripheral UART1;
 ```
 
-Items not listed in any `export` statement are private to the module and cannot be imported.
+Items not listed in any `export` statement are private to the module.
 
-**Aliased imports:**
+**Qualified access:**
 ```
-import lib as L;
+import sensors;
+import sensors as s;        // optional alias
 fn main() @context(thread) {
-    L.foo();  // qualified access
+    sensors.reset();        // by module name
+    var c: s.Color = s.make();   // or by alias
 }
 ```
 
