@@ -49,10 +49,10 @@ That axis is what the tutorials keep coming back to.
 | 06 | [Data: Structs, Enums, Modules](06-structs-enums-modules.md) | Structs with explicit layout and visible padding, `@repr(C)`/`@repr(packed)`, field endianness (`@be`/`@le`), enums, the Move/Copy rule, and the `import`/`export` module system. |
 | 07 | [Pointers and Views](07-pointers-and-views.md) | `*T` vs `*mut T`, `&`/`&mut`, `null`, pointer arithmetic, function pointers; then `view`/`ring`/`bits` -- bounds-checked descriptors -- and how their Move/Copy behavior differs. |
 | 08 | [Regions and Agents (DMA safety)](08-regions-and-agents.md) | The core differentiator: declaring what a DMA engine or second core may touch, `@dma`/`@external`, why reading agent-shared memory is blocked, and `reclaim` after a completion handshake. |
-| 09 | Verifying with `bml verify` | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
+| 09 | [Verifying with `bml verify`](09-verifying.md) | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
 | 10 | C Interop | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
 
-Tutorials 01-08 are written; the rest are outlined above and will be filled in.
+Tutorials 01-09 are written; tutorial 10 is outlined above and will be filled in.
 
 ## See also
 
