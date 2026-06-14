@@ -382,7 +382,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
     // Phase 1b -- Import resolution
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
-    let (program, aliases) = import_resolver.resolve(program, path);
+    let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -395,7 +395,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
     // `bml check` runs without a target, so byte-order diagnostics use the
     // default (little-endian) order; `build`/`verify` override it from the target.
     let resolver = Resolver::new();
-    let symbols = resolver.resolve(&program, &mut diags, aliases);
+    let symbols = resolver.resolve(&program, &mut diags);
 
     if diags.has_errors() {
         diags.emit(&source_map);
@@ -533,7 +533,7 @@ fn build_file(
 
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
-    let (program, aliases) = import_resolver.resolve(program, path);
+    let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -543,7 +543,7 @@ fn build_file(
     }
 
     let resolver = Resolver::new();
-    let mut symbols = resolver.resolve(&program, &mut diags, aliases);
+    let mut symbols = resolver.resolve(&program, &mut diags);
     // The target's native byte order drives byte-order field diagnostics (E360).
     symbols.target_endianness = target.to_arch().endianness();
     // Core entry points (E408 address-of exemption for the launch handshake).
@@ -809,7 +809,7 @@ fn verify_file(
 
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
-    let (program, aliases) = import_resolver.resolve(program, path);
+    let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -819,7 +819,7 @@ fn verify_file(
     }
 
     let resolver = Resolver::new();
-    let mut symbols = resolver.resolve(&program, &mut diags, aliases);
+    let mut symbols = resolver.resolve(&program, &mut diags);
     // The target's native byte order drives byte-order field diagnostics (E360).
     symbols.target_endianness = target.to_arch().endianness();
     // Core entry points (E408 address-of exemption for the launch handshake).

@@ -523,44 +523,6 @@ impl Server {
                 format!("struct {name} {{\n{}\n}}", fields.join(",\n")),
                 None,
             )
-        } else if let Some(alias_info) = analysis.symbols.import_aliases.get(name) {
-            let mut counts: Vec<String> = Vec::new();
-            let mut funcs = 0;
-            let mut statics = 0;
-            let mut consts = 0;
-            let mut peripherals = 0;
-            let mut structs = 0;
-            let mut enums = 0;
-            for item in alias_info.exports.values() {
-                match item {
-                    ast::Item::FnDef(_) | ast::Item::ExternFnDef(_) => funcs += 1,
-                    ast::Item::StaticDef(_) => statics += 1,
-                    ast::Item::ConstDef(_) => consts += 1,
-                    ast::Item::PeripheralDef(_) => peripherals += 1,
-                    ast::Item::StructDef(_) => structs += 1,
-                    ast::Item::EnumDef(_) => enums += 1,
-                    _ => {}
-                }
-            }
-            if funcs > 0 {
-                counts.push(format!("{funcs} functions"));
-            }
-            if statics > 0 {
-                counts.push(format!("{statics} statics"));
-            }
-            if consts > 0 {
-                counts.push(format!("{consts} consts"));
-            }
-            if peripherals > 0 {
-                counts.push(format!("{peripherals} peripherals"));
-            }
-            if structs > 0 {
-                counts.push(format!("{structs} structs"));
-            }
-            if enums > 0 {
-                counts.push(format!("{enums} enums"));
-            }
-            (format!("import alias `{name}`"), Some(counts.join(", ")))
         } else {
             (format!("ident {name}"), None)
         };
@@ -596,8 +558,7 @@ impl Server {
         let name = &ident.0;
 
         let target_range =
-            find_definition_span(name, &analysis.program, analysis.root_file_id, offset)
-                .or_else(|| find_def_in_aliases(name, &analysis.symbols))?;
+            find_definition_span(name, &analysis.program, analysis.root_file_id, offset)?;
 
         let target_uri = if target_range.file == analysis.root_file_id {
             uri.clone()
@@ -787,14 +748,14 @@ fn analyze_file(
         // Lend the persistent parse cache to the resolver and take it back
         // (now updated) afterwards.
         std::mem::swap(&mut import_resolver.cache, module_cache);
-        let (resolved_program, aliases) = import_resolver.resolve(program, path);
+        let resolved_program = import_resolver.resolve(program, path);
         std::mem::swap(&mut import_resolver.cache, module_cache);
         program = resolved_program;
         source_map = import_resolver.source_map;
         diags.merge(import_resolver.diags);
 
         let resolver = Resolver::new();
-        symbols = resolver.resolve(&program, &mut diags, aliases);
+        symbols = resolver.resolve(&program, &mut diags);
 
         if !diags.has_errors() {
             // With a target, mirror the compiler's target-aware prelude so the
@@ -1539,39 +1500,6 @@ fn find_periph_field<'a>(
     None
 }
 
-fn find_def_in_aliases(name: &str, symbols: &SymbolTable) -> Option<bml_core::source::Span> {
-    use bml_core::ast::Item;
-    for alias_info in symbols.import_aliases.values() {
-        for item in alias_info.exports.values() {
-            match item {
-                Item::FnDef(f) if f.name.0 == name => return Some(f.name.1),
-                Item::ExternFnDef(e) if e.name.0 == name => return Some(e.name.1),
-                Item::StaticDef(s) if s.name.0 == name => return Some(s.name.1),
-                Item::ConstDef(c) if c.name.0 == name => return Some(c.name.1),
-                Item::PeripheralDef(p) => {
-                    if p.name.0 == name {
-                        return Some(p.name.1);
-                    }
-                    for reg in &p.regs {
-                        if reg.name.0 == name {
-                            return Some(reg.name.1);
-                        }
-                        for field in &reg.fields {
-                            if field.name.0 == name {
-                                return Some(field.name.1);
-                            }
-                        }
-                    }
-                }
-                Item::StructDef(s) if s.name.0 == name => return Some(s.name.1),
-                Item::EnumDef(e) if e.name.0 == name => return Some(e.name.1),
-                _ => {}
-            }
-        }
-    }
-    None
-}
-
 fn find_local_def_in_block(name: &str, block: &ast::Block) -> Option<source::Span> {
     for stmt in &block.stmts {
         if let Some(span) = find_local_def_in_stmt(name, stmt) {
@@ -1780,16 +1708,6 @@ fn collect_completions(
             label: name.clone(),
             kind: Some(CompletionItemKind::ENUM),
             detail: Some(format!("enum {name}")),
-            sort_text: Some(format!("1_{name}")),
-            ..Default::default()
-        });
-    }
-
-    for name in symbols.import_aliases.keys() {
-        items.push(CompletionItem {
-            label: name.clone(),
-            kind: Some(CompletionItemKind::MODULE),
-            detail: Some("import alias".to_string()),
             sort_text: Some(format!("1_{name}")),
             ..Default::default()
         });

@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{self, BitSpec, Program, StorageAnnotation};
 use crate::context::Context;
 use crate::errors::DiagnosticBag;
-use crate::imports::AliasInfo;
 use crate::types::{StructInfo, Type};
 
 #[derive(Debug, Default, Clone)]
@@ -14,7 +13,6 @@ pub struct SymbolTable {
     pub peripherals: HashMap<String, PeripheralSymbol>,
     pub structs: HashMap<String, StructInfo>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
-    pub import_aliases: HashMap<String, AliasInfo>,
     /// Possible run contexts per function (`ceiling.rs::propagate_contexts`):
     /// a concrete fn maps to its declared context, an `Any` fn to the union of
     /// its known callers' contexts (empty = no known concrete caller). Closes
@@ -136,7 +134,6 @@ impl Resolver {
                 peripherals: HashMap::new(),
                 structs: HashMap::new(),
                 enums: HashMap::new(),
-                import_aliases: HashMap::new(),
                 fn_possible_contexts: HashMap::new(),
                 entry_fns: std::collections::HashSet::new(),
                 target_endianness: crate::arch::Endianness::default(),
@@ -144,14 +141,7 @@ impl Resolver {
         }
     }
 
-    pub fn resolve(
-        mut self,
-        program: &Program,
-        diags: &mut DiagnosticBag,
-        aliases: HashMap<String, AliasInfo>,
-    ) -> SymbolTable {
-        self.table.import_aliases = aliases;
-
+    pub fn resolve(mut self, program: &Program, diags: &mut DiagnosticBag) -> SymbolTable {
         for item in &program.items {
             match item {
                 ast::Item::FnDef(f) => self.collect_fn(f, diags),

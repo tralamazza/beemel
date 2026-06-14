@@ -18,7 +18,6 @@
 //! are printed so it reproduces. A watchdog turns a single hanging input into a
 //! loud failure instead of a stuck test.
 
-use std::collections::HashMap;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -28,7 +27,6 @@ use std::time::Duration;
 use bml_core::borrow::BorrowChecker;
 use bml_core::checker::Checker;
 use bml_core::errors::DiagnosticBag;
-use bml_core::imports::AliasInfo;
 use bml_core::parser::Parser;
 use bml_core::resolver::Resolver;
 use bml_core::source::SourceMap;
@@ -75,8 +73,7 @@ fn drive_frontend(source: &str) {
     }
 
     let resolver = Resolver::new();
-    let aliases: HashMap<String, AliasInfo> = HashMap::new();
-    let symbols = resolver.resolve(&program, &mut diags, aliases);
+    let symbols = resolver.resolve(&program, &mut diags);
     if diags.has_errors() {
         return;
     }

@@ -7,15 +7,6 @@ use crate::errors::DiagnosticBag;
 use crate::parser::Parser;
 use crate::source::{SourceFile, SourceMap, Span};
 
-pub type Exports = HashMap<String, Item>;
-pub type AliasMap = HashMap<String, AliasInfo>;
-
-#[derive(Debug, Clone)]
-pub struct AliasInfo {
-    pub exports: Exports,
-    pub items: Vec<Item>,
-}
-
 /// Cross-analysis parse cache for imported modules. A long-lived process (the
 /// LSP) holds one of these and threads it through each `ImportResolver` so an
 /// unchanged imported file is read from disk and parsed only once, not on every
@@ -38,7 +29,6 @@ struct CachedModule {
 pub struct ImportResolver {
     pub source_map: SourceMap,
     pub diags: DiagnosticBag,
-    pub aliases: AliasMap,
     /// Persistent across analyses when the caller swaps in its own cache;
     /// otherwise an empty per-run cache. See [`ModuleCache`].
     pub cache: ModuleCache,
@@ -57,13 +47,12 @@ impl ImportResolver {
         ImportResolver {
             source_map: SourceMap::new(),
             diags: DiagnosticBag::new(),
-            aliases: HashMap::new(),
             cache: ModuleCache::default(),
             visiting: Vec::new(),
         }
     }
 
-    pub fn resolve(&mut self, root_program: Program, root_path: &Path) -> (Program, AliasMap) {
+    pub fn resolve(&mut self, root_program: Program, root_path: &Path) -> Program {
         let parent_dir = root_path
             .parent()
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -75,8 +64,7 @@ impl ImportResolver {
         // With all modules flattened in, fold const-valued array lengths
         // (e.g. `[u8; N]`) into literals so type resolution sees a concrete size.
         crate::constfold::fold_array_lengths(&mut program);
-        let aliases = std::mem::take(&mut self.aliases);
-        (program, aliases)
+        program
     }
 
     /// Flatten `program`'s imports into one item list. `prefix` is the qualifier

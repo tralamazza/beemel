@@ -829,7 +829,7 @@ mod tests {
         let program = parser.parse_program();
         assert!(!diags.has_errors(), "parse failed");
 
-        let symbols = Resolver::new().resolve(&program, &mut diags, HashMap::new());
+        let symbols = Resolver::new().resolve(&program, &mut diags);
         assert!(!diags.has_errors(), "resolve failed");
 
         analyze(&program, &symbols)

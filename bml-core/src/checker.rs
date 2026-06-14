@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{self, Expr, Item, LValue, Program, Stmt, StructRepr};
+use crate::ast::{self, Expr, LValue, Program, Stmt, StructRepr};
 use crate::consteval::{self, ConstVal};
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
@@ -2686,50 +2686,6 @@ fn check_expr(
                     diags,
                 );
                 return fn_sym.ret.clone().unwrap_or(Type::Void);
-            }
-
-            // Try import alias: L.foo()
-            if let Expr::FieldAccess(base, field) = func_expr.as_ref()
-                && let Expr::Ident((alias_name, _)) = base.as_ref()
-                && let Some(alias_info) = symbols.import_aliases.get(alias_name)
-                && let Some(item) = alias_info.exports.get(&field.0)
-            {
-                let (alias_structs, alias_enums) =
-                    types::alias_type_defs(&alias_info.items, &symbols.structs, &symbols.enums);
-                return match item {
-                    Item::FnDef(f) => check_ast_call_args(
-                        &f.params,
-                        f.ret.as_ref(),
-                        &f.name.0,
-                        field.1,
-                        args,
-                        symbols,
-                        &alias_structs,
-                        &alias_enums,
-                        scope,
-                        fn_name,
-                        expected_ret,
-                        diags,
-                    ),
-                    Item::ExternFnDef(f) => check_ast_call_args(
-                        &f.params,
-                        f.ret.as_ref(),
-                        &f.name.0,
-                        field.1,
-                        args,
-                        symbols,
-                        &alias_structs,
-                        &alias_enums,
-                        scope,
-                        fn_name,
-                        expected_ret,
-                        diags,
-                    ),
-                    _ => {
-                        let guard = diags.error("cannot call non-function type", "E327", field.1);
-                        Type::Error(guard)
-                    }
-                };
             }
 
             if let Expr::Ident((name, span)) = func_expr.as_ref()
