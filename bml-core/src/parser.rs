@@ -908,19 +908,24 @@ impl<'a> Parser<'a> {
             module.push(self.parse_ident()?);
         }
 
-        let imports = if self.eat(&TokenKind::LBrace) {
-            let mut names = Vec::new();
-            loop {
-                names.push(self.parse_ident()?);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
+        // Selective import (`import m { a, b };`) was removed. Reject the `{`
+        // form with a clear message, and recover by consuming the brace group so
+        // the rest of the file still parses.
+        if self.check(&TokenKind::LBrace) {
+            let brace = self.peek().span;
+            self.advance(); // {
+            self.diags.error(
+                "selective import `import m { ... }` is no longer supported; use \
+                 `import m;` (brings the module's items into scope) or \
+                 `import m as alias;`",
+                "E109",
+                brace,
+            );
+            while !self.check(&TokenKind::RBrace) && !self.is_eof() {
+                self.advance();
             }
-            self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
-            ImportKind::Selective(names)
-        } else {
-            ImportKind::All
-        };
+            self.eat(&TokenKind::RBrace);
+        }
 
         // optional `as alias`
         let alias = if self.eat(&TokenKind::As) {
@@ -930,11 +935,7 @@ impl<'a> Parser<'a> {
         };
 
         self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
-        Some(ImportStmt {
-            module,
-            imports,
-            alias,
-        })
+        Some(ImportStmt { module, alias })
     }
 
     /// `owns P, P.R, ...;` -- a module's exclusive register-ownership claims.

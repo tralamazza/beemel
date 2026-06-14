@@ -1,4 +1,4 @@
-import lib_multi { foo };
+import lib_multi;
 
 fn main() @context(thread) {
     var x = foo();

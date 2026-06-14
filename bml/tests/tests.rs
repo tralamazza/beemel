@@ -736,7 +736,7 @@ assert_pass!(test_block_expr_basic, "block_expr_basic.bml");
 assert_pass!(test_if_expr_basic, "if_expr_basic.bml");
 assert_pass!(test_if_expr_elseif, "if_expr_elseif.bml");
 assert_pass!(test_import_basic, "import_basic.bml");
-assert_pass!(test_import_selective, "import_selective.bml");
+assert_pass!(test_import_multi, "import_multi.bml");
 assert_pass!(test_import_alias, "import_alias.bml");
 assert_ir_contains!(
     test_import_alias_codegen,
@@ -773,7 +773,7 @@ assert_ir_contains!(
 );
 assert_pass!(test_import_path, "import_path.bml");
 assert_pass!(test_import_path_alias, "import_path_alias.bml");
-assert_pass!(test_import_path_selective, "import_path_selective.bml");
+assert_pass!(test_import_path_wildcard, "import_path_wildcard.bml");
 assert_pass!(test_import_shared_dependency, "import_shared_root.bml");
 assert_pass!(
     test_import_alias_collision_isolated,
@@ -1097,7 +1097,11 @@ assert_error!(
 );
 assert_error!(test_block_expr_no_value, "block_expr_no_value.bml", "E328");
 assert_error!(test_mod_not_found, "mod_not_found.bml", "E501");
-assert_error!(test_private_access, "private_access.bml", "E503");
+assert_error!(
+    test_selective_import_removed,
+    "selective_import_removed.bml",
+    "E109"
+);
 assert_error!(test_circular_import, "circular_a.bml", "E500");
 
 #[test]

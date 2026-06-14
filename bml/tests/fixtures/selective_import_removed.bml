@@ -1,0 +1,6 @@
+// Selective import `import m { ... }` was removed (E109). Use `import m;` or
+// `import m as alias;` instead.
+import lib_private { private_fn };
+
+fn main() @context(thread) {
+}

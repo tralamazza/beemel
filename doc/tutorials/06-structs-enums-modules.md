@@ -192,7 +192,7 @@ fn pack(c: Color) -> u32 {
 
 ```bml
 // app.bml
-import rgb { pack, Color };          // selective: name exactly what you use
+import rgb;                          // brings rgb's items into scope
 
 fn main() @context(thread) {
     var c = Color { r: 0xFFu8, g: 0x80u8, b: 0x00u8 };
@@ -200,16 +200,16 @@ fn main() @context(thread) {
 }
 ```
 
-Three import forms:
+Two import forms:
 
 | Form | Effect |
 |------|--------|
-| `import rgb;` | wildcard -- brings in everything `rgb` exports |
-| `import rgb { pack, Color };` | selective -- only the named items |
+| `import rgb;` | brings `rgb`'s items into scope, used unqualified |
 | `import rgb as gfx;` | aliased -- access as `gfx.pack(...)` |
 
-`import sub.mod;` resolves to `sub/mod.bml` relative to the importer (path
-segments become subdirectories). `export` lists the public API:
+There is no selective `import rgb { pack, Color };` form -- writing one is
+`error[E109]`. `import sub.mod;` resolves to `sub/mod.bml` relative to the
+importer (path segments become subdirectories). `export` lists the public API:
 
 ```bml
 export fn init, send;       // several at once
@@ -217,18 +217,13 @@ export struct Frame;
 export const RATE;
 ```
 
-Naming a *non-exported* item in a selective import is an error:
-
-```bml
-import rgb { helper };       // error[E503]: `helper` is not exported from `rgb`
-```
-
 A couple of honest specifics about the current implementation:
 
 - Compilation inlines all imported modules into one flat program (a single
-  `.ll`/`.o`). So `export` strictly governs the *selective-import* and
-  *aliased-access* surface (the API you depend on), which is what `E503` checks;
-  it is not a hard visibility barrier against a wildcard import.
+  `.ll`/`.o`). A plain `import rgb;` makes *all* of `rgb`'s items resolvable, so
+  `export` is the API contract you should depend on rather than a hard visibility
+  barrier. It is enforced on the *aliased* path: `gfx.helper` resolves only items
+  `rgb` exported.
 - Aliased access is for *calls and values* -- `gfx.pack(c)`. Construct an aliased
   module's struct through a function it exports (a small factory), not
   `gfx.Color { ... }`.

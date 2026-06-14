@@ -896,18 +896,21 @@ Enum values are just integers of the underlying type:
 ## 8. Module system
 
 - One file = one module (`.bml` extension)
-- `import foo;` -- wildcard import (imports all exported items)
-- `import foo { bar, baz };` -- selective import (imports only listed items)
+- `import foo;` -- brings module `foo`'s items into scope, used unqualified
 - `import foo as f;` -- aliased import (access via `f.bar()` qualified syntax)
-- `export fn foo;` -- marks public (non-exported items are private)
+  - There is no selective `import foo { bar, baz };` form (writing one is `E109`)
+- `export fn foo;` -- marks an item part of the public API
   - Also supports: `export struct Foo;`, `export enum Bar;`, `export var X;`, `export const Y;`, `export peripheral Z;`
+  - `export` governs *aliased* access (`f.bar` resolves only exported items); a
+    plain `import foo;` inlines the whole module, so it is the API contract for
+    the alias path rather than a hard visibility barrier
 - No circular imports (compile error E500)
 - No header files -- compiler reads `.bml` directly
 - Module-level items are unordered within a file; forward references are fine
 - Module resolution: `import foo` resolves to `foo.bml` in the same directory as the importing file
 - Path-based imports: `import sub.mod` resolves to `sub/mod.bml` relative to the importing file
   - Intermediate segments become subdirectories; the last segment is the module name
-  - Works with all import forms: wildcard, selective, and aliased
+  - Works with both the plain and aliased import forms
 - Compilation model: all imported items are inlined into a flat merged program (single `.ll`/`.o` output)
 
 **Export syntax:**
@@ -1064,7 +1067,7 @@ storage_annotation = "exclusive" "(" ident ")"
               | "dma" | "external" | "section" "(" string ")"
               | "align" "(" int ")"          (* power of two; over-aligns the global *)
 
-import_stmt   = "import" ident ["{" ident {"," ident} "}"] ["as" ident] ";"
+import_stmt   = "import" ident {"." ident} ["as" ident] ";"
 
 export_stmt   = "export" ("fn" | "var" | "const" | "peripheral" | "struct" | "enum")
                 ident {"," ident} ";"
@@ -1362,6 +1365,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E106  | Expected identifier |
 | E107  | Expected integer |
 | E108  | Invalid annotation (duplicate, missing, or malformed) |
+| E109  | Selective import (`import m { ... }`) is no longer supported -- use `import m;` or `import m as alias;` |
 | E112  | (removed -- `var`/`const` may now be declared inside a function body) |
 | E113  | Nesting too deep (expression, type, or block) |
 | E114  | Register-field bit index or range out of range (must be 0..32) |
@@ -1413,7 +1417,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |
 | E501  | Module not found |
-| E503  | Item is not exported from module (private access) |
+| E503  | (removed -- selective imports are gone; `export` is enforced on aliased access via name resolution) |
 | W200  | (unused -- was "import statements not yet supported") |
 | W301  | Integer literal may be truncated in cast |
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |

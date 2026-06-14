@@ -94,7 +94,7 @@ extern fn strlen(s: *u8) -> u32;
 extern fn printf(fmt: *u8) -> i32 @context(thread);
 ```
 
-Usage: `import c { memcpy, memset };`
+Usage: `import c;` (brings the module's `extern fn` declarations into scope).
 
 ## Deferred
 

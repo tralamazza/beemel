@@ -177,20 +177,10 @@ impl ImportResolver {
                         );
                         items.push(Item::Import(import));
                     } else {
-                        // Validate selective imports name only exported items.
-                        if let ast::ImportKind::Selective(names) = &import.imports {
-                            for (ident_name, ident_span) in names {
-                                if !exports.contains_key(ident_name) {
-                                    self.diags.error(
-                                        format!(
-                                            "item `{ident_name}` is not exported from module `{module_name}`"
-                                        ),
-                                        "E503",
-                                        *ident_span,
-                                    );
-                                }
-                            }
-                        }
+                        // Plain `import m;`: `exports` is unused here (a bare
+                        // import brings every item into scope, not just the
+                        // exported set -- `export` governs only aliased access).
+                        let _ = exports;
                         // Inline every item from the resolved child module --
                         // both exported and non-exported -- so the type checker
                         // and IR emitter can resolve calls into private helpers

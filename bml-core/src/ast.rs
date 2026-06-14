@@ -694,14 +694,10 @@ pub enum StorageAnnotation {
 #[derive(Debug, Clone)]
 pub struct ImportStmt {
     pub module: Vec<Ident>,
-    pub imports: ImportKind,
+    /// `import m as a;` -- qualified access via the alias. A bare `import m;`
+    /// has `alias = None` and brings `m`'s items into scope directly. (There is
+    /// no selective `import m { ... }` form.)
     pub alias: Option<Ident>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ImportKind {
-    All,
-    Selective(Vec<Ident>),
 }
 
 #[derive(Debug, Clone)]

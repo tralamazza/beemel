@@ -1,4 +1,4 @@
-import sub.mod { greet };
+import sub.mod;
 
 fn main() @context(thread) {
     var x = greet();

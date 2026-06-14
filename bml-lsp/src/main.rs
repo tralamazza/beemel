@@ -2772,7 +2772,7 @@ fn main() @context(thread) {
 
         let main_path = dir.join("main.bml");
         let main_src = "\
-import helper_lib { helper };
+import helper_lib;
 
 fn main() @context(thread) {
     var x = helper();
