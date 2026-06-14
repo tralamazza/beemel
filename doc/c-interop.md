@@ -55,7 +55,7 @@ Rules:
 | `float`             | `f32`    | `float` |                          |
 | `double`            | `f64`    | `double`|                          |
 | `void`              | (none)   | `void`  | No return type           |
-| `_Bool` (C99)       | `b1`     | `i1`    |                          |
+| `_Bool` (C99)       | `b8`     | `i8`    | C `_Bool` is one byte; `b1` is rejected at the boundary (E356) |
 | `uint8_t`           | `u8`     | `i8`    | stdint.h                 |
 | `int32_t`           | `i32`    | `i32`   | stdint.h                 |
 | `size_t`            | `u32`    | `i32`   | 32-bit on Cortex-M       |

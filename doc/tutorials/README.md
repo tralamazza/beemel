@@ -50,9 +50,9 @@ That axis is what the tutorials keep coming back to.
 | 07 | [Pointers and Views](07-pointers-and-views.md) | `*T` vs `*mut T`, `&`/`&mut`, `null`, pointer arithmetic, function pointers; then `view`/`ring`/`bits` -- bounds-checked descriptors -- and how their Move/Copy behavior differs. |
 | 08 | [Regions and Agents (DMA safety)](08-regions-and-agents.md) | The core differentiator: declaring what a DMA engine or second core may touch, `@dma`/`@external`, why reading agent-shared memory is blocked, and `reclaim` after a completion handshake. |
 | 09 | [Verifying with `bml verify`](09-verifying.md) | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
-| 10 | C Interop | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
+| 10 | [C Interop](10-c-interop.md) | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
 
-Tutorials 01-09 are written; tutorial 10 is outlined above and will be filled in.
+All ten tutorials are written.
 
 ## See also
 
