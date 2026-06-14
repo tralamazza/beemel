@@ -1427,7 +1427,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |
 | E501  | Module not found |
-| E503  | (removed -- selective imports are gone; `export` is enforced on aliased access via name resolution) |
+| E503  | (removed -- selective imports are gone; `export` governs qualified access (`m.x` / `alias.x`) via name resolution) |
 | W200  | (unused -- was "import statements not yet supported") |
 | W301  | Integer literal may be truncated in cast |
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |
