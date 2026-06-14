@@ -1,6 +1,4 @@
 import cycle_then_ok_b;
 
-export fn a;
-
-fn a() @context(thread) {
+export fn a() @context(thread) {
 }

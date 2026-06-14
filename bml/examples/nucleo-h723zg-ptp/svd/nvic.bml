@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral NVIC;
 // Nested Vectored Interrupt
 peripheral NVIC at 0xE000E100 {
     // Interrupt Set-Enable Register

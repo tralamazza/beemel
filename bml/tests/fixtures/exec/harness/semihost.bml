@@ -14,13 +14,6 @@
 // indexing were miscompiled the verdict stays trustworthy -- only the printed
 // detail could be wrong.
 
-export fn ok;
-export fn fail;
-export fn expect_u32;
-export fn expect_u64;
-export fn expect_b1;
-export fn done;
-
 // Generic semihosting trap. Per AAPCS the operation goes in r0 and the
 // parameter in r1, exactly where the two arguments already sit at the trap.
 fn semihost(op: u32, param: u32) {
@@ -35,11 +28,11 @@ fn write0(msg: *u8) {
     semihost(0x04, msg as u32);
 }
 
-fn ok() {
+export fn ok() {
     write0("OK\n");
 }
 
-fn fail() {
+export fn fail() {
     write0("FAIL\n");
 }
 
@@ -58,7 +51,7 @@ fn write_hex(n: u32) {
     write0(&mut buf[0]);
 }
 
-fn expect_u32(actual: u32, expected: u32) {
+export fn expect_u32(actual: u32, expected: u32) {
     if actual == expected {
         ok();
     } else {
@@ -73,7 +66,7 @@ fn expect_u32(actual: u32, expected: u32) {
 // Like `expect_u32` but for 64-bit values. The verdict is the direct `u64 ==`;
 // the failing value is dumped as two 32-bit hex words (high then low), so even
 // if the shift/truncate used only for that dump were wrong the verdict holds.
-fn expect_u64(actual: u64, expected: u64) {
+export fn expect_u64(actual: u64, expected: u64) {
     if actual == expected {
         ok();
     } else {
@@ -87,7 +80,7 @@ fn expect_u64(actual: u64, expected: u64) {
     }
 }
 
-fn expect_b1(actual: b1, expected: b1) {
+export fn expect_b1(actual: b1, expected: b1) {
     if actual == expected {
         ok();
     } else {
@@ -102,6 +95,6 @@ fn expect_b1(actual: b1, expected: b1) {
 }
 
 // SYS_EXIT with ADP_Stopped_ApplicationExit -> QEMU exits cleanly.
-fn done() {
+export fn done() {
     semihost(0x18, 0x20026);
 }

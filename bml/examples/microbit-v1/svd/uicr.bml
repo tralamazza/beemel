@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral UICR;
 // User Information Configuration.
 peripheral UICR at 0x10001000 {
     // Length of code region 0.

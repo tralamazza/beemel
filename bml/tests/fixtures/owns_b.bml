@@ -1,8 +1,7 @@
 import owns_periph;
 owns GPIOZ;
 
-fn touch_b() {
+export fn touch_b() {
     GPIOZ.MODER.MODE0 = 1;
 }
 
-export fn touch_b;

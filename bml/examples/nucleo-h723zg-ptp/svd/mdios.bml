@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral MDIOS;
 // Management data input/output slave
 peripheral MDIOS at 0x40009400 {
     // MDIOS configuration register

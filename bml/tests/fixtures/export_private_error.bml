@@ -1,0 +1,8 @@
+// Qualified access to a non-exported item is rejected (E503). `lib_private`
+// exports `pub_fn` but not `private_fn`; reaching `lib_private.private_fn`
+// names something the module did not `export`.
+import lib_private;
+
+fn main() @context(thread) {
+    var x: u32 = lib_private.private_fn();
+}

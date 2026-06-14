@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral PF;
 // Processor features
 peripheral PF at 0xE000ED78 {
     // Cache Level ID register

@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral SPIS1;
 // SPI slave 1.
 peripheral SPIS1 at 0x40004000 {
     // Acquire SPI semaphore.

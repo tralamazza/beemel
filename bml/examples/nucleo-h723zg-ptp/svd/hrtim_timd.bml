@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral HRTIM_TIMD;
 // High Resolution Timer: TIMD
 peripheral HRTIM_TIMD at 0x40017600 {
     // Timerx Control Register

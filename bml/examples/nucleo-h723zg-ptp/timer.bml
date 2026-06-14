@@ -25,9 +25,6 @@ import svd.tim2;
 import svd.nvic;
 import copy_dma;
 
-export fn timer_init, fn timer_ticks, fn timer_log_sum,
-       fn timer_bench_rate, fn timer_bench_mark;
-
 // This module owns the TIM2 peripheral. It cannot own its RCC enable bit.
 owns TIM2;
 
@@ -42,7 +39,7 @@ var TICKS: u32 @shared;
 // reads would yield a torn, inconsistent snapshot.
 var TICK_LOG: [u32; 4] @shared;
 
-fn timer_init() {
+export fn timer_init() {
     // Enable the TIM2 clock in the shared RCC register, then READ IT BACK:
     // the enable takes bus cycles to propagate, and the first peripheral
     // write issued before it lands is silently dropped (found 2026-06-11:
@@ -88,7 +85,7 @@ var BENCH_LAT_OTHER: u32 @exclusive(tim2_isr);  // max latency elsewhere
 // Re-rate TIM2 for the bench role: PSC 0 (full 64 MHz resolution for the
 // latency read), 5 kHz update rate so windows of tens of microseconds get
 // sampled. TICKS then counts at 5 kHz -- the bench does not heartbeat.
-fn timer_bench_rate() @context(thread) {
+export fn timer_bench_rate() @context(thread) {
     TIM2.CR1.CEN = false;
     TIM2.PSC = 0;
     TIM2.ARR = 12799;
@@ -96,7 +93,7 @@ fn timer_bench_rate() @context(thread) {
     TIM2.CR1.CEN = true;
 }
 
-fn timer_bench_mark(active: u32) @context(thread) {
+export fn timer_bench_mark(active: u32) @context(thread) {
     BENCH_IN_DEF = active;
 }
 
@@ -129,14 +126,14 @@ fn tim2_isr() @isr("TIM2", priority = 2) {
 // the thread level to the derived ceiling -- an unannotated fn would be Any:
 // still protected (conservative critical section), but invisible to the
 // derivation.
-fn timer_ticks() -> u32 @context(thread) {
+export fn timer_ticks() -> u32 @context(thread) {
     return TICKS;
 }
 
 // Atomic multi-word snapshot: sum the whole log inside one claim window so a
 // tick cannot land between the slot reads. The view over the @shared array
 // is only legal inside the window (E405 outside).
-fn timer_log_sum() -> u32 @context(thread) {
+export fn timer_log_sum() -> u32 @context(thread) {
     var sum: u32 = 0;
     claim TICK_LOG {
         const v = view(TICK_LOG);

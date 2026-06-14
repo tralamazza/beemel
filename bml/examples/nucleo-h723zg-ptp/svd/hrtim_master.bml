@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral HRTIM_Master;
 // High Resolution Timer: Master
 peripheral HRTIM_Master at 0x40017400 {
     // Master Timer Control Register

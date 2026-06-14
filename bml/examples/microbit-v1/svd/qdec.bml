@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral QDEC;
 // Rotary decoder.
 peripheral QDEC at 0x40012000 {
     // Start the quadrature decoder.

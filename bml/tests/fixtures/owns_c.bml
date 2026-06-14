@@ -1,8 +1,7 @@
 import owns_periph;
 owns GPIOZ.ODR;
 
-fn touch_c() {
+export fn touch_c() {
     GPIOZ.ODR.ODR0 = false;
 }
 
-export fn touch_c;

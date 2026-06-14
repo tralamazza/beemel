@@ -11,8 +11,6 @@ import eth_dma;
 import phy_lan8742;
 import ptp_clock;
 
-export fn board_bringup, fn delay;
-
 // Empirically tuned from the first tcpdump capture: 1,000,000 loop iterations
 // produced ~15.6 ms between heartbeats on the reset clock tree.
 const HEARTBEAT_DELAY_COUNT: u32 = 64000000;
@@ -83,7 +81,7 @@ fn board_init() {
 // The D2 AHB SRAM clock (where the stack/.data/.bss/DMA buffers live) is ungated
 // in startup before .data/.bss init -- see the [startup] section in
 // stm32h723zg.target.
-fn board_bringup() {
+export fn board_bringup() {
     // Clock tree first: everything after this (PHY autoneg waits, TIM2, the
     // PTP addend) assumes the final 64 MHz SYSCLK. Falls back to HSI loudly
     // (clocks.CLK_STATUS) if the ST-LINK MCO is missing.
@@ -96,7 +94,7 @@ fn board_bringup() {
     ptp_clock.ptp_init();
 }
 
-fn delay() {
+export fn delay() {
     var count: u32 = 0;
     while count < HEARTBEAT_DELAY_COUNT {
         asm { }

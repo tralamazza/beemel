@@ -8,8 +8,6 @@
 // ICIALLU lives at 0xE000EF50 (SCB base + 0x250). Write-only: any value written
 // invalidates the entire instruction cache to the Point of Unification.
 
-export peripheral CM7_CACHE;
-
 peripheral CM7_CACHE at 0xE000EF50 {
     reg ICIALLU offset 0x00 {
     }

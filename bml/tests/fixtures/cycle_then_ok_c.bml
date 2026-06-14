@@ -1,4 +1,2 @@
-export fn c;
-
-fn c() @context(thread) {
+export fn c() @context(thread) {
 }

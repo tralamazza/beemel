@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral BDMA;
 // BDMA
 peripheral BDMA at 0x58025400 {
     // DMA interrupt status register

@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral GPIOTE;
 // GPIO tasks and events.
 peripheral GPIOTE at 0x40006000 {
     // Tasks asssociated with GPIOTE channels.

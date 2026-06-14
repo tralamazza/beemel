@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral GPIOF;
 // GPIO
 peripheral GPIOF at 0x58021400 {
     // GPIO port mode register

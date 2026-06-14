@@ -2,8 +2,6 @@
 // Device: STM32F103 (1.0)
 // STM32F103
 
-export peripheral GPIOC;
-
 // General purpose I/O
 peripheral GPIOC at 0x40011000 {
     // Port configuration register low

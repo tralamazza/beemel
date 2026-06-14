@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral TIMER0;
 // Timer 0.
 peripheral TIMER0 at 0x40008000 {
     // Start Timer.

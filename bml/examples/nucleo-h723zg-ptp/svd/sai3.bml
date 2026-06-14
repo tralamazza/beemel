@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral SAI3;
 // SAI
 peripheral SAI3 at 0x40016000 {
     // Global configuration register

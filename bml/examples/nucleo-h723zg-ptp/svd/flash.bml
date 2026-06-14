@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral Flash;
 // Flash
 peripheral Flash at 0x52002000 {
     // Access control register

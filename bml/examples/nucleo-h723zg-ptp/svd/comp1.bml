@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral COMP1;
 // COMP1
 peripheral COMP1 at 0x58003800 {
     // Comparator status register

@@ -8,4 +8,3 @@ peripheral GPIOZ at 0x40021000 {
     }
 }
 
-export peripheral GPIOZ;

@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral DAC;
 // DAC
 peripheral DAC at 0x40007400 {
     // DAC control register

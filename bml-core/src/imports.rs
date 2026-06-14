@@ -87,7 +87,9 @@ impl ImportResolver {
     /// [`crate::qualify`].
     fn resolve_imports(&mut self, program: Program, parent_dir: &Path, prefix: &str) -> Program {
         let own_names = crate::qualify::top_level_names(&program.items);
-        let mut import_quals: HashSet<String> = HashSet::new();
+        // Per import qualifier -> the set of names that module `export`s. Drives
+        // qualified-access resolution and the E503 export check.
+        let mut import_exports: HashMap<String, HashSet<String>> = HashMap::new();
         let mut items = Vec::new();
         let mut seen_spans: HashSet<Span> = HashSet::new();
         let mut own_items: Vec<Item> = Vec::new();
@@ -116,7 +118,6 @@ impl ImportResolver {
                         },
                         |a| a.0.clone(),
                     );
-                    import_quals.insert(qualifier.clone());
 
                     let Some(path) = self.resolve_module_path(&import.module, parent_dir) else {
                         self.diags.error(
@@ -145,6 +146,12 @@ impl ImportResolver {
                         self.visiting.pop();
                         continue;
                     };
+                    // Record what this module exports (from its own parsed items,
+                    // bare names) so references to `qualifier.x` can be checked.
+                    import_exports.insert(
+                        qualifier.clone(),
+                        crate::qualify::exported_names(&parsed.items),
+                    );
                     let module_dir = path
                         .parent()
                         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -158,19 +165,23 @@ impl ImportResolver {
                         push_unique(&mut items, &mut seen_spans, sub);
                     }
                 }
-                Item::Export(_) => {}
                 other => own_items.push(other),
             }
         }
 
         // Rename this module's own items: own top-level names -> `prefix.name`,
-        // and `q.x` references to imports -> the flat name `"q.x"`.
+        // and `q.x` references to imports -> the flat name `"q.x"`. The renamer
+        // also collects E503 violations (qualified access to a non-exported item).
         let renamer = crate::qualify::Renamer {
             local: own_names,
             prefix: prefix.to_string(),
-            imports: import_quals,
+            exports: import_exports,
+            errors: std::cell::RefCell::new(Vec::new()),
         };
         renamer.rewrite_items(&mut own_items);
+        for (msg, span) in renamer.errors.into_inner() {
+            self.diags.error(msg, "E503", span);
+        }
         for it in own_items {
             push_unique(&mut items, &mut seen_spans, it);
         }
@@ -310,6 +321,6 @@ fn item_def_span(item: &Item) -> Option<Span> {
         // diamond-imported module's claim is not duplicated, while two distinct
         // claims in one file (different spans) are both kept.
         Item::Owns(o) => o.paths.first().map(|p| p.span),
-        Item::Import(_) | Item::Export(_) | Item::ComptimeAssert(_) => None,
+        Item::Import(_) | Item::ComptimeAssert(_) => None,
     }
 }

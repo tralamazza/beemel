@@ -1,11 +1,8 @@
-export struct Point;
-export fn make_point;
-
-struct Point {
+export struct Point {
     x: u32,
     y: u32,
 }
 
-fn make_point() -> Point @context(thread) {
+export fn make_point() -> Point @context(thread) {
     return Point { x: 1, y: 2 };
 }

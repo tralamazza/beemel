@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral DELAY_Block_QUADSPI;
 // DELAY_Block_SDMMC1
 peripheral DELAY_Block_QUADSPI at 0x52006000 {
     // DLYB control register

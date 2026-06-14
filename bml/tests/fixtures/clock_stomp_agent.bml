@@ -10,13 +10,10 @@ peripheral MyDma at 0x40030000 {
         field PTR: u32 bit[2..31]
     }
 }
-export peripheral Clk;
-export peripheral MyDma;
-export fn agent_setup;
 
 owns MyDma;
 
-fn agent_setup() {
+export fn agent_setup() {
     Clk.CR.MYDMAEN = true;
     MyDma.DESCADDR = 0x20001000;
 }

@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral HASH;
 // Hash processor
 peripheral HASH at 0x48021400 {
     // control register

@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral CCM;
 // AES CCM Mode Encryption.
 peripheral CCM at 0x4000F000 {
     // Start generation of key-stream. This operation will stop by itself when completed.

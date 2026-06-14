@@ -12,8 +12,6 @@
 // lights only when the ciphertext matches the known answer.
 import nrf51_periph;
 
-export fn main, fn timer0_isr;
-
 owns ECB;
 owns TIMER0;
 
@@ -27,7 +25,7 @@ var ECB_OK: u32;    // 1 = known-answer match
 var TICKS: u32 @shared;  // timer heartbeat (ISR top accessor)
 var ALIVE: u32;     // main-loop liveness counter
 
-fn timer0_isr() @isr("TIMER0", priority = 1) {
+export fn timer0_isr() @isr("TIMER0", priority = 1) {
     TIMER0.EVENTS_COMPARE0.FIRED = false;
     var t: u32 = TICKS;
     TICKS = t + 1;
@@ -68,7 +66,7 @@ fn ecb_run() {
 
 }
 
-fn main() @context(thread) {
+export fn main() @context(thread) {
     ecb_run();
 
     // 1 Hz heartbeat: 16 MHz / 2^4 = 1 MHz, compare at 1_000_000.

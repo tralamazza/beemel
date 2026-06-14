@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral Ethernet_MAC;
 // Ethernet: media access control (MAC)
 peripheral Ethernet_MAC at 0x40028000 {
     // Operating mode configuration

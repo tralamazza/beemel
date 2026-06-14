@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral I2C2;
 // I2C
 peripheral I2C2 at 0x40005800 {
     // Access: No wait states, except if a write

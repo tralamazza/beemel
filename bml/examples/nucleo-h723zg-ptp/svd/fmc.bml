@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral FMC;
 // FMC
 peripheral FMC at 0x52004000 {
     // This register contains the control

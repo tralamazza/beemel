@@ -466,7 +466,6 @@ fn check_file(path: &Path, stack_analysis: bool) {
                     .collect::<Vec<_>>()
                     .join(".")
             ),
-            ast::Item::Export(e) => println!("  export ({} items)", e.names.len()),
             ast::Item::ExternFnDef(e) => {
                 let ctx_str = if let Some(isr) = &e.isr {
                     if let Some(label) = &isr.label {

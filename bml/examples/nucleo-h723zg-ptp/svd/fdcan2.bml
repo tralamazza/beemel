@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral FDCAN2;
 // FDCAN1
 peripheral FDCAN2 at 0x4000A400 {
     // FDCAN Core Release Register

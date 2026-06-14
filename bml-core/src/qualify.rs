@@ -21,20 +21,29 @@
 //! that matches a top-level name is unambiguously that item -- no scope tracking
 //! is needed to rewrite it.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     Block, Expr, Item, LValue, MatchArm, MatchPattern, Stmt, StorageAnnotation, TypeExpr,
 };
+use crate::source::Span;
 
-/// Renames names in one module's items per the rules in the module docs.
+/// Renames names in one module's items per the rules in the module docs, and
+/// checks that every reference to an imported item names something the imported
+/// module actually `export`ed (collected as `errors`, drained by the caller).
 pub struct Renamer {
     /// This module's own top-level definition names (bare).
     pub local: HashSet<String>,
     /// Qualifier prefix for this module's own items (`""` for the root).
     pub prefix: String,
-    /// The qualifiers this module's `import` statements introduce.
-    pub imports: HashSet<String>,
+    /// The qualifiers this module imports, each mapped to the set of bare names
+    /// that module `export`s. A `q.x` reference is valid only if `x` is in
+    /// `exports[q]`.
+    pub exports: HashMap<String, HashSet<String>>,
+    /// `E503` violations collected during the walk (qualified access to a
+    /// non-exported item): `(message, span)`.
+    pub errors: RefCell<Vec<(String, Span)>>,
 }
 
 impl Renamer {
@@ -52,6 +61,32 @@ impl Renamer {
     fn rename_in_place(&self, name: &mut String) {
         if let Some(q) = self.map(name) {
             *name = q;
+        }
+    }
+
+    /// Whether `q` is one of this module's import qualifiers.
+    fn is_import(&self, q: &str) -> bool {
+        self.exports.contains_key(q)
+    }
+
+    /// Record an `E503` if `q` is an import qualifier and `name` is not in its
+    /// export set. `q`/`name` are the two halves of a `q.name` reference.
+    fn check_export(&self, q: &str, name: &str, span: Span) {
+        if let Some(set) = self.exports.get(q)
+            && !set.contains(name)
+        {
+            self.errors.borrow_mut().push((
+                format!("`{name}` is not exported from module `{q}` (mark it `export`)"),
+                span,
+            ));
+        }
+    }
+
+    /// Export-check an already-dotted `"q.name"` reference (a qualified type,
+    /// struct-init, or enum name produced by the parser).
+    fn check_dotted(&self, dotted: &str, span: Span) {
+        if let Some((q, name)) = dotted.split_once('.') {
+            self.check_export(q, name, span);
         }
     }
 
@@ -127,7 +162,7 @@ impl Renamer {
             // peripheral, qualified by this module's prefix.
             Item::Owns(o) => {
                 for path in &mut o.paths {
-                    if self.imports.contains(&path.peripheral.0) {
+                    if self.is_import(&path.peripheral.0) {
                         if let Some(reg) = path.register.take() {
                             path.peripheral.0 = format!("{}.{}", path.peripheral.0, reg.0);
                         }
@@ -136,9 +171,9 @@ impl Renamer {
                     }
                 }
             }
-            // Imports are consumed by the resolver before rewriting; exports are
-            // dropped. Nothing to rename.
-            Item::Import(_) | Item::Export(_) => {}
+            // Imports are consumed by the resolver before rewriting. Nothing to
+            // rename.
+            Item::Import(_) => {}
         }
     }
 
@@ -223,6 +258,7 @@ impl Renamer {
         for pat in &mut arm.patterns {
             if let MatchPattern::Variant(enum_name, _) = pat {
                 self.rename_in_place(&mut enum_name.0);
+                self.check_dotted(&enum_name.0, enum_name.1);
             }
         }
         self.rewrite_block(&mut arm.body);
@@ -252,8 +288,9 @@ impl Renamer {
             // on a value -- recurse into the base.
             Expr::FieldAccess(base, field) => {
                 if let Expr::Ident(q) = base.as_ref()
-                    && self.imports.contains(&q.0)
+                    && self.is_import(&q.0)
                 {
+                    self.check_export(&q.0, &field.0, field.1);
                     let span = q.1.merge(field.1);
                     *expr = Expr::Ident((format!("{}.{}", q.0, field.0), span));
                 } else {
@@ -309,7 +346,10 @@ impl Renamer {
                     self.rewrite_expr(l);
                 }
             }
-            Expr::EnumVariant { enum_name, .. } => self.rename_in_place(&mut enum_name.0),
+            Expr::EnumVariant { enum_name, .. } => {
+                self.rename_in_place(&mut enum_name.0);
+                self.check_dotted(&enum_name.0, enum_name.1);
+            }
             Expr::ArrayInit(elems, _) => {
                 for e in elems {
                     self.rewrite_expr(e);
@@ -317,6 +357,7 @@ impl Renamer {
             }
             Expr::StructInit { name, fields, .. } => {
                 self.rename_in_place(&mut name.0);
+                self.check_dotted(&name.0, name.1);
                 for (_, e) in fields {
                     self.rewrite_expr(e);
                 }
@@ -345,8 +386,9 @@ impl Renamer {
                 // peripheral `mod.GPIO`) collapses to the flat name `"q.x"`, the
                 // lvalue analogue of the expression rule.
                 if let LValue::Name(q) = inner.as_ref()
-                    && self.imports.contains(&q.0)
+                    && self.is_import(&q.0)
                 {
+                    self.check_export(&q.0, &field.0, field.1);
                     let span = q.1.merge(field.1);
                     *lv = LValue::Name((format!("{}.{}", q.0, field.0), span));
                 }
@@ -362,8 +404,12 @@ impl Renamer {
     fn rewrite_type(&self, ty: &mut TypeExpr) {
         match ty {
             // A dotted `"q.Type"` (already-qualified, from the parser) is left
-            // as-is; a bare local type name is qualified.
-            TypeExpr::Named(n) => self.rename_in_place(&mut n.0),
+            // as-is; a bare local type name is qualified. Either way, a qualified
+            // name is export-checked.
+            TypeExpr::Named(n) => {
+                self.rename_in_place(&mut n.0);
+                self.check_dotted(&n.0, n.1);
+            }
             TypeExpr::Ptr(inner) | TypeExpr::ConstPtr(inner) => self.rewrite_type(inner),
             TypeExpr::View(inner, _) | TypeExpr::Ring(inner, _) => self.rewrite_type(inner),
             TypeExpr::StridedView(inner, _, stride) => {
@@ -411,11 +457,32 @@ pub fn top_level_names(items: &[Item]) -> HashSet<String> {
             Item::StructDef(s) => Some(&s.name.0),
             Item::EnumDef(e) => Some(&e.name.0),
             // Peripherals stay bare (global hardware) -- never qualified.
-            Item::PeripheralDef(_)
-            | Item::Import(_)
-            | Item::Export(_)
-            | Item::Owns(_)
-            | Item::ComptimeAssert(_) => None,
+            Item::PeripheralDef(_) | Item::Import(_) | Item::Owns(_) | Item::ComptimeAssert(_) => {
+                None
+            }
+        };
+        if let Some(n) = name {
+            names.insert(n.clone());
+        }
+    }
+    names
+}
+
+/// The bare names a module marks `export` -- its public API. Peripherals are
+/// global (always reachable bare), so they are not part of the qualified-export
+/// surface and are excluded here.
+#[must_use]
+pub fn exported_names(items: &[Item]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for item in items {
+        let name = match item {
+            Item::FnDef(f) if f.exported => Some(&f.name.0),
+            Item::ExternFnDef(f) if f.exported => Some(&f.name.0),
+            Item::StaticDef(s) if s.exported => Some(&s.name.0),
+            Item::ConstDef(c) if c.exported => Some(&c.name.0),
+            Item::StructDef(s) if s.exported => Some(&s.name.0),
+            Item::EnumDef(e) if e.exported => Some(&e.name.0),
+            _ => None,
         };
         if let Some(n) = name {
             names.insert(n.clone());

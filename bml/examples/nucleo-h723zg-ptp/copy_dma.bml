@@ -19,8 +19,6 @@
 import svd.mdma;
 import svd.rcc;
 
-export fn copy_setup, fn copy_poll, fn copy_isr_peek;
-
 owns MDMA;
 
 var COPY_SRC: [u8; 64] in dma_shared;   // MDMA reads this (D2 SRAM, AXI side)
@@ -30,7 +28,7 @@ var SCRATCH_DONE: u32;                   // CPU-visible: set once the copy is co
 var SCRATCH_FIRST: u32;                  // CPU-visible: byte [1] via the blocking acquire
 var SCRATCH_ISR_SEEN: u32 @shared;       // CPU-visible: byte [2], consumed from the ISR path
 
-fn copy_setup() {
+export fn copy_setup() {
     // Enable the MDMA peripheral clock (shared RCC register).
     RCC.C1_AHB3ENR.MDMAEN = true;
 
@@ -76,7 +74,7 @@ fn copy_setup() {
 
 // Thread-side consumer: claim (masks out the ISR consumer) + the inline
 // completion guard + reclaim. The try-acquire form of the composed window.
-fn copy_poll() {
+export fn copy_poll() {
     claim SCRATCH {
         if MDMA.MDMA_C0ISR.CTCIF0 {
             const v = reclaim(SCRATCH);
@@ -91,7 +89,7 @@ fn copy_poll() {
 // was undetectable before the fold. Same composed window; without the
 // `claim` the reclaim is rejected (E335 pointing at claim), without the
 // flag guard it is E611.
-fn copy_isr_peek() {
+export fn copy_isr_peek() {
     claim SCRATCH {
         if MDMA.MDMA_C0ISR.CTCIF0 {
             const v = reclaim(SCRATCH);

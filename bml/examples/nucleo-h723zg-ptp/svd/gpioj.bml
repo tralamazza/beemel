@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral GPIOJ;
 // GPIO
 peripheral GPIOJ at 0x58022400 {
     // GPIO port mode register

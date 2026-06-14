@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral DMA2;
 // DMA controller
 peripheral DMA2 at 0x40020400 {
     // low interrupt status register

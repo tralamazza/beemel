@@ -10,13 +10,10 @@ peripheral MyDma at 0x40030000 {
         field PTR: u32 bit[0..31]
     }
 }
-export peripheral Rst;
-export peripheral MyDma;
-export fn rst_agent_setup;
 
 owns MyDma;
 
-fn rst_agent_setup() {
+export fn rst_agent_setup() {
     Rst.CR.MYDMARST = false;
     MyDma.DESCADDR = 0x20001000;
 }

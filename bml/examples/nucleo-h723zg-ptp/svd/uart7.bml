@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral UART7;
 // Universal synchronous asynchronous receiver
 peripheral UART7 at 0x40007800 {
     // Control register 1

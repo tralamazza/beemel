@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral RADIO;
 // The radio.
 peripheral RADIO at 0x40001000 {
     // Enable radio in TX mode.

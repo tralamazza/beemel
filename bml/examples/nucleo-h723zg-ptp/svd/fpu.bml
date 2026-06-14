@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral FPU;
 // Floting point unit
 peripheral FPU at 0xE000EF34 {
     // Floating-point context control

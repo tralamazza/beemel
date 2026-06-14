@@ -10,13 +10,6 @@ import svd.ethernet_mac;
 import svd.ethernet_dma;
 import svd.ethernet_mtl;
 
-export fn eth_init_clocks_and_pins, fn eth_init_tx, fn eth_init_rx, fn eth_send_heartbeat, fn eth_poll_rx, fn eth_bench_init, fn eth_bench_poll,
-       fn eth_send_hello, fn eth_send_ping, fn eth_send_status, fn eth_loopback_enable,
-       fn prod_rx_fresh, fn prod_rx_take, fn prod_rx_board, fn prod_rx_seq, fn prod_rx_pay,
-       fn eth_send_ptp, fn eth_ptp_collect_tx_ts, fn ptp_tx_ts_s, fn ptp_tx_ts_ns,
-       fn ptp_rx_fresh, fn ptp_rx_take, fn ptp_rx_seq, fn ptp_rx_ts_s, fn ptp_rx_ts_ns,
-       fn rx_ts_count, fn rx_ts_s, fn rx_ts_ns;
-
 import dwt;
 import timer;
 import phy_lan8742;
@@ -162,7 +155,7 @@ fn configure_rmii_pin_g(pin: u32) {
     }
 }
 
-fn eth_init_clocks_and_pins() {
+export fn eth_init_clocks_and_pins() {
     RCC.C1_AHB4ENR.GPIOAEN = true;
     RCC.C1_AHB4ENR.GPIOBEN = true;
     RCC.C1_AHB4ENR.GPIOCEN = true;
@@ -232,7 +225,7 @@ fn eth_zero_ecc() {
     asm { dsb } : : : "memory";
 }
 
-fn eth_init_tx() {
+export fn eth_init_tx() {
     eth_zero_ecc();
 
     Ethernet_MAC.MACA0LR.ADDRLO = 0x00000002;
@@ -261,7 +254,7 @@ fn eth_init_tx() {
     Ethernet_MAC.MACCR.TE = true;
 }
 
-fn eth_init_rx() {
+export fn eth_init_rx() {
     RX_DESC[0].buf1 = rx_buffer_addr(0);
     RX_DESC[0]._res1 = 0;
     RX_DESC[0].buf2 = 0;
@@ -323,7 +316,6 @@ fn rx_desc_addr(word_index: u32) -> u32 {
     return (&RX_DESC as u32) + ((word_index & 15) * 4);
 }
 
-
 // Wire layout of a heartbeat frame, overlaid directly on TX_BUFFER. The
 // multi-byte counters and the EtherType are `@be`, so writing a field stores it
 // big-endian (network order) while the code keeps native values -- this is what
@@ -362,7 +354,7 @@ fn fill_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) -> u3
     return sizeof(Heartbeat);
 }
 
-fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+export fn eth_send_heartbeat(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     tx_wait_idle();
     const len = fill_heartbeat(board_id, seq, seconds, nanoseconds);
     const di = TX_DESC_INDEX;
@@ -440,7 +432,7 @@ fn rx_rearm(desc_word: u32) {
     Ethernet_DMA.DMACRxDTPR = rx_desc_addr(desc_word);
 }
 
-fn eth_poll_rx() {
+export fn eth_poll_rx() {
     // & 3 re-establishes the ring-index invariant at read: the % 4
     // maintenance is invisible at synthetic entry points (havoc'd static).
     const desc_word = (RX_DESC_INDEX & 3) * RX_DESC_WORDS;
@@ -545,7 +537,7 @@ var BENCH_VIEW_CYC_SUM: u32;
 var BENCH_VIEW_CYC_MAX: u32;
 var BENCH_VIEW_LAST: u32;
 
-fn eth_bench_init() @context(thread) {
+export fn eth_bench_init() @context(thread) {
     dwt.dwt_init();
     timer.timer_bench_rate();
 }
@@ -625,7 +617,7 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
 }
 
 // eth_poll_rx with the consumption swapped for the alternating bench legs.
-fn eth_bench_poll() @context(thread) {
+export fn eth_bench_poll() @context(thread) {
     // & 3 re-establishes the ring-index invariant at read: the % 4
     // maintenance is invisible at synthetic entry points (havoc'd static).
     const desc_word = (RX_DESC_INDEX & 3) * RX_DESC_WORDS;
@@ -706,25 +698,25 @@ var PROD_RX_SEQ: u32;
 var PROD_RX_PAY: [u32; 8];
 var PROD_RX_COUNT: u32;      // product frames accepted (probe-visible)
 
-fn prod_rx_fresh() -> u32 {
+export fn prod_rx_fresh() -> u32 {
     return PROD_RX_FRESH;
 }
 
 // Consume the mailbox: returns the message type and clears FRESH.
-fn prod_rx_take() -> u32 {
+export fn prod_rx_take() -> u32 {
     PROD_RX_FRESH = 0;
     return PROD_RX_TYPE;
 }
 
-fn prod_rx_board() -> u32 {
+export fn prod_rx_board() -> u32 {
     return PROD_RX_BOARD;
 }
 
-fn prod_rx_seq() -> u32 {
+export fn prod_rx_seq() -> u32 {
     return PROD_RX_SEQ;
 }
 
-fn prod_rx_pay(i: u32) -> u32 {
+export fn prod_rx_pay(i: u32) -> u32 {
     return PROD_RX_PAY[i & 7];
 }
 
@@ -783,17 +775,17 @@ fn eth_send_product(msg_type: u32, board_id: u32, seq: u32, seconds: u32, nanose
     TX_FRAME_COUNT +%= 1;
 }
 
-fn eth_send_hello(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+export fn eth_send_hello(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     eth_send_product(1, board_id, seq, seconds, nanoseconds, FW_BUILD, 0, 0, 0, 0, 0, 0, 0);
 }
 
-fn eth_send_ping(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
+export fn eth_send_ping(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
     eth_send_product(2, board_id, seq, seconds, nanoseconds, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 // HEALTH_STATUS payload: fw build, PHY state, PTP lock state, RX frames,
 // TX frames, RX timestamps, PTP offset estimate (i32 ns, raw bits), 0.
-fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32,
+export fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32,
                    ptp_offset: u32, ptp_lock: u32) {
     eth_send_product(3, board_id, echo_seq, seconds, nanoseconds,
         FW_BUILD, phy_lan8742.phy_state(), ptp_lock, RX_PACKET_COUNT, TX_FRAME_COUNT,
@@ -803,7 +795,7 @@ fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32,
 // MAC loopback (MACCR.LM): TX loops to RX inside the MAC. Single-board
 // validation of the full request/response path without a peer or a
 // root-privileged host injector.
-fn eth_loopback_enable() {
+export fn eth_loopback_enable() {
     Ethernet_MAC.MACCR.LM = true;
 }
 
@@ -864,54 +856,54 @@ var PTP_RX_TS_S: u32;     // originTimestamp from the frame
 var PTP_RX_TS_NS: u32;
 var PTP_RX_COUNT: u32;
 
-fn ptp_rx_fresh() -> u32 {
+export fn ptp_rx_fresh() -> u32 {
     return PTP_RX_FRESH;
 }
 
-fn ptp_rx_take() -> u32 {
+export fn ptp_rx_take() -> u32 {
     PTP_RX_FRESH = 0;
     return PTP_RX_TYPE;
 }
 
-fn ptp_rx_seq() -> u32 {
+export fn ptp_rx_seq() -> u32 {
     return PTP_RX_SEQ;
 }
 
-fn ptp_rx_ts_s() -> u32 {
+export fn ptp_rx_ts_s() -> u32 {
     return PTP_RX_TS_S;
 }
 
-fn ptp_rx_ts_ns() -> u32 {
+export fn ptp_rx_ts_ns() -> u32 {
     return PTP_RX_TS_NS;
 }
 
-fn ptp_tx_ts_s() -> u32 {
+export fn ptp_tx_ts_s() -> u32 {
     return PTP_TX_TS_S;
 }
 
-fn ptp_tx_ts_ns() -> u32 {
+export fn ptp_tx_ts_ns() -> u32 {
     return PTP_TX_TS_NS;
 }
 
 // RX hardware timestamps (context descriptors, eth_poll_rx CTXT branch):
 // the count changing is the "a new timestamp landed" signal the roles use
 // to associate a context descriptor with the data frame before it.
-fn rx_ts_count() -> u32 {
+export fn rx_ts_count() -> u32 {
     return RX_TIMESTAMP_COUNT;
 }
 
-fn rx_ts_s() -> u32 {
+export fn rx_ts_s() -> u32 {
     return RX_LAST_TIMESTAMP_SECONDS;
 }
 
-fn rx_ts_ns() -> u32 {
+export fn rx_ts_ns() -> u32 {
     return RX_LAST_TIMESTAMP_NS;
 }
 
 // Build and send one PTPv2 frame. `event` arms TDES2.TTSE so the egress
 // time is written back into the descriptor (collect with
 // eth_ptp_collect_tx_ts immediately after).
-fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1) {
+export fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1) {
     tx_wait_idle();
     var flags: u32 = 0;
     if msg_type == 0 {
@@ -985,7 +977,7 @@ const ZERO_PORT: [u8; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 // Collect the egress timestamp of the event frame just sent: spin (volatile
 // agent-pointer reads, bounded by wire speed) for the descriptor write-back,
 // require TTSS, read TDES1/TDES0 (s/ns). Returns true when collected.
-fn eth_ptp_collect_tx_ts() -> b1 {
+export fn eth_ptp_collect_tx_ts() -> b1 {
     const prev = (TX_DESC_INDEX + TX_DESC_COUNT - 1) % TX_DESC_COUNT;
     const w = prev * TX_DESC_WORDS;
     var spins: u32 = 0;

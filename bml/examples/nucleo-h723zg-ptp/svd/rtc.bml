@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral RTC;
 // RTC
 peripheral RTC at 0x58004000 {
     // The RTC_TR is the calendar time shadow

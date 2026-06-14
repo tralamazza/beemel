@@ -2,10 +2,7 @@
 
 import svd.ethernet_mac;
 
-export struct PtpTime;
-export fn ptp_init, fn ptp_now, fn ptp_step, fn ptp_set_addend, fn ptp_base_addend;
-
-struct PtpTime {
+export struct PtpTime {
     seconds: u32,
     nanoseconds: u32,
 }
@@ -26,7 +23,7 @@ const PTP_SSINC: u32 = 20;
 // error is just the MCO crystal tolerance (tens of ppm, stable).
 const PTP_ADDEND: u32 = 0xC8000000;
 
-fn ptp_init() {
+export fn ptp_init() {
     // Fine update mode. The previous coarse-mode config (TSCFUPDT clear) did not
     // free-run on this MAC, leaving the system time stuck at 0.
     Ethernet_MAC.MACTSCR.TSENA = true;
@@ -54,7 +51,7 @@ fn ptp_init() {
     }
 }
 
-fn ptp_now() -> PtpTime {
+export fn ptp_now() -> PtpTime {
     const seconds = Ethernet_MAC.MACSTSR.TSS;
     const nanoseconds = Ethernet_MAC.MACSTNR.TSSS;
     return PtpTime { seconds: seconds, nanoseconds: nanoseconds };
@@ -64,7 +61,7 @@ fn ptp_now() -> PtpTime {
 // Physics only: the PI policy that decides WHEN and BY HOW MUCH lives in the
 // slave role (main_mic_node.bml).
 
-fn ptp_base_addend() -> u32 {
+export fn ptp_base_addend() -> u32 {
     return PTP_ADDEND;
 }
 
@@ -79,7 +76,7 @@ fn ptp_base_addend() -> u32 {
 // applied -97 ms (exact, minus read latency). The bug was masked in the
 // milestone-10 validation because every overshot step was followed by a
 // corrective +1 s step on the next round (STEPS counted 2 per event).
-fn ptp_step(s: u32, ns: u32, subtract: b1) {
+export fn ptp_step(s: u32, ns: u32, subtract: b1) {
     // Caller contract: ns is a nanosecond field, < 1e9 (both callers pass a
     // normalized borrow result). Makes the 1e9 - ns encoding provable.
     assume(ns < 1000000000);
@@ -104,7 +101,7 @@ fn ptp_step(s: u32, ns: u32, subtract: b1) {
 }
 
 // Rate discipline: load a new addend into the accumulator.
-fn ptp_set_addend(a: u32) {
+export fn ptp_set_addend(a: u32) {
     Ethernet_MAC.MACTSAR.TSAR = a;
     Ethernet_MAC.MACTSCR.TSADDREG = true;
     while Ethernet_MAC.MACTSCR.TSADDREG {

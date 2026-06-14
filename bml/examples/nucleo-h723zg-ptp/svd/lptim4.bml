@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral LPTIM4;
 // Low power timer
 peripheral LPTIM4 at 0x58002C00 {
     // Interrupt and Status Register

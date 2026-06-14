@@ -3,7 +3,6 @@
 // Device: nrf51 (522)
 // nRF51 reference description for radio MCU with ARM 32-bit Cortex-M0 Microcontroller at 16MHz CPU clock
 
-export peripheral PPI;
 // PPI controller.
 peripheral PPI at 0x4001F000 {
     // Enable channel group.

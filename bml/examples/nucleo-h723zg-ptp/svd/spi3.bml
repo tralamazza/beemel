@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral SPI3;
 // Serial peripheral interface
 peripheral SPI3 at 0x40003C00 {
     // control register 1

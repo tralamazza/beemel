@@ -162,9 +162,6 @@ impl Resolver {
                 ast::Item::StructDef(s) => self.collect_struct(s, diags),
                 ast::Item::EnumDef(e) => self.collect_enum(e, diags),
                 ast::Item::Import(_) => {}
-                ast::Item::Export(_) => {
-                    // Export statements are consumed by import resolver
-                }
                 // Defines no symbol; checked separately (owns by the region
                 // pass, comptime_assert during type checking).
                 ast::Item::Owns(_) | ast::Item::ComptimeAssert(_) => {}

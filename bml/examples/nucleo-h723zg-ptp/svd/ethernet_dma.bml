@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral Ethernet_DMA;
 // Ethernet: DMA mode register (DMA)
 peripheral Ethernet_DMA at 0x40029000 {
     // DMA mode register

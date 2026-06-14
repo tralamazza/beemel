@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral CEC;
 // CEC
 peripheral CEC at 0x40006C00 {
     // CEC control register

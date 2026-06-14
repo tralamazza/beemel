@@ -1,6 +1,5 @@
 import lib_c;
-export fn bar;
 
-fn bar() -> u32 @context(thread) {
+export fn bar() -> u32 @context(thread) {
     return lib_c.quux();
 }

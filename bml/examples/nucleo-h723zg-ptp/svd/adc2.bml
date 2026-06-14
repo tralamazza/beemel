@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral ADC2;
 // Analog to Digital Converter
 peripheral ADC2 at 0x40022100 {
     // ADC interrupt and status

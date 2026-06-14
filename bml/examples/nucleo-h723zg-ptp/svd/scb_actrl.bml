@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral SCB_ACTRL;
 // System control block ACTLR
 peripheral SCB_ACTRL at 0xE000E008 {
     // Auxiliary control register

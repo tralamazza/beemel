@@ -6,8 +6,6 @@
 // DWT_LAR (offset 0xFB0) opened with the CoreSight key first; DEMCR.TRCENA
 // (in the debug control block) gates the whole unit.
 
-export fn dwt_init, fn dwt_cycles;
-
 peripheral CDBG at 0xE000EDF0 {
     reg DEMCR offset 0x0C {
         field TRCENA: b1 bit[24]
@@ -26,13 +24,13 @@ peripheral DWT at 0xE0001000 {
     }
 }
 
-fn dwt_init() {
+export fn dwt_init() {
     CDBG.DEMCR.TRCENA = true;
     DWT.LAR = 0xC5ACCE55;
     DWT.CYCCNT = 0;
     DWT.CTRL.CYCCNTENA = true;
 }
 
-fn dwt_cycles() -> u32 {
+export fn dwt_cycles() -> u32 {
     return DWT.CYCCNT.VALUE;
 }

@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral CRYP;
 // Cryptographic processor
 peripheral CRYP at 0x48021000 {
     // control register

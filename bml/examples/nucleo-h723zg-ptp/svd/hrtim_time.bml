@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral HRTIM_TIME;
 // High Resolution Timer: TIME
 peripheral HRTIM_TIME at 0x40017680 {
     // Timerx Control Register

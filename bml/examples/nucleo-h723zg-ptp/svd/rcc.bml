@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral RCC;
 // Reset and clock control
 peripheral RCC at 0x58024400 {
     // clock control register

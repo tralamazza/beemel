@@ -20,6 +20,43 @@ fn qualified_name(e: &Expr) -> Option<Ident> {
     }
 }
 
+/// Set the `exported` flag on a definition item (the `export` modifier). Items
+/// that carry no visibility (`import`/`owns`/`comptime_assert`) pass through; the
+/// caller has already reported `E108` for those.
+fn set_exported(item: Item) -> Item {
+    match item {
+        Item::FnDef(mut f) => {
+            f.exported = true;
+            Item::FnDef(f)
+        }
+        Item::ExternFnDef(mut f) => {
+            f.exported = true;
+            Item::ExternFnDef(f)
+        }
+        Item::StaticDef(mut s) => {
+            s.exported = true;
+            Item::StaticDef(s)
+        }
+        Item::ConstDef(mut c) => {
+            c.exported = true;
+            Item::ConstDef(c)
+        }
+        Item::PeripheralDef(mut p) => {
+            p.exported = true;
+            Item::PeripheralDef(p)
+        }
+        Item::StructDef(mut s) => {
+            s.exported = true;
+            Item::StructDef(s)
+        }
+        Item::EnumDef(mut e) => {
+            e.exported = true;
+            Item::EnumDef(e)
+        }
+        other => other,
+    }
+}
+
 pub struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
@@ -157,7 +194,11 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> &Token {
         let t = &self.tokens[self.pos];
-        self.pos += 1;
+        // Never step past the trailing `Eof` token: a recovery `advance()` at
+        // EOF (e.g. a stray `export` at end of input) must leave `peek()` valid.
+        if self.pos + 1 < self.tokens.len() {
+            self.pos += 1;
+        }
         t
     }
 
@@ -225,14 +266,18 @@ impl<'a> Parser<'a> {
     // --- items ---
 
     fn parse_item(&mut self) -> Option<Item> {
-        match self.peek_kind() {
+        // `export` is a declaration-site modifier: it marks the following
+        // definition public (reachable from importers as `module.name`).
+        let export_span = self.peek_span();
+        let exported = self.eat(&TokenKind::Export);
+
+        let item = match self.peek_kind() {
             TokenKind::Extern => self.parse_extern_fn_def().map(Item::ExternFnDef),
             TokenKind::Fn => self.parse_fn_def().map(Item::FnDef),
             TokenKind::Var => self.parse_static_def().map(Item::StaticDef),
             TokenKind::Const => self.parse_const_def().map(Item::ConstDef),
             TokenKind::Peripheral => self.parse_peripheral_def().map(Item::PeripheralDef),
             TokenKind::Import => self.parse_import().map(Item::Import),
-            TokenKind::Export => self.parse_export().map(Item::Export),
             TokenKind::Owns => self.parse_owns().map(Item::Owns),
             TokenKind::Struct => self.parse_struct_def().map(Item::StructDef),
             TokenKind::Enum => self.parse_enum_def().map(Item::EnumDef),
@@ -249,7 +294,29 @@ impl<'a> Parser<'a> {
                 self.advance();
                 None
             }
+        }?;
+
+        if exported {
+            match &item {
+                Item::FnDef(_)
+                | Item::ExternFnDef(_)
+                | Item::StaticDef(_)
+                | Item::ConstDef(_)
+                | Item::PeripheralDef(_)
+                | Item::StructDef(_)
+                | Item::EnumDef(_) => {}
+                _ => {
+                    self.diags.error(
+                        "`export` can only modify a `fn`/`extern fn`/`var`/`const`/\
+                         `struct`/`enum`/`peripheral` definition",
+                        "E108",
+                        export_span,
+                    );
+                }
+            }
+            return Some(set_exported(item));
         }
+        Some(item)
     }
 
     /// Parse `( expr ) ;` for a keyword form whose keyword has been peeked but
@@ -324,6 +391,7 @@ impl<'a> Parser<'a> {
         .ok()?;
 
         Some(ExternFnDef {
+            exported: false,
             name: sig.name,
             params: sig.params,
             ret: sig.ret,
@@ -340,6 +408,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         Some(FnDef {
+            exported: false,
             name: sig.name,
             params: sig.params,
             ret: sig.ret,
@@ -542,6 +611,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
 
         Some(StaticDef {
+            exported: false,
             name,
             ty,
             storage,
@@ -641,7 +711,12 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Eq, "expected `=`").ok()?;
         let value = self.parse_expr()?;
         self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
-        Some(ConstDef { name, ty, value })
+        Some(ConstDef {
+            exported: false,
+            name,
+            ty,
+            value,
+        })
     }
 
     fn parse_struct_def(&mut self) -> Option<StructDef> {
@@ -670,7 +745,12 @@ impl<'a> Parser<'a> {
 
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
 
-        Some(StructDef { name, repr, fields })
+        Some(StructDef {
+            exported: false,
+            name,
+            repr,
+            fields,
+        })
     }
 
     fn parse_struct_repr(&mut self) -> Option<crate::ast::StructRepr> {
@@ -817,7 +897,12 @@ impl<'a> Parser<'a> {
 
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
 
-        Some(EnumDef { name, ty, variants })
+        Some(EnumDef {
+            exported: false,
+            name,
+            ty,
+            variants,
+        })
     }
 
     fn parse_peripheral_def(&mut self) -> Option<PeripheralDef> {
@@ -839,6 +924,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
 
         Some(PeripheralDef {
+            exported: false,
             name,
             base_addr: addr,
             regs,
@@ -997,45 +1083,6 @@ impl<'a> Parser<'a> {
         }
         self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
         Some(OwnsStmt { paths })
-    }
-
-    fn parse_export(&mut self) -> Option<ExportStmt> {
-        self.advance(); // export
-        let mut names = Vec::new();
-        loop {
-            match self.peek_kind() {
-                TokenKind::Fn => {
-                    self.advance();
-                    names.push(ExportItem::Fn(self.parse_ident()?));
-                }
-                TokenKind::Var => {
-                    self.advance();
-                    names.push(ExportItem::Static(self.parse_ident()?));
-                }
-                TokenKind::Const => {
-                    self.advance();
-                    names.push(ExportItem::Const(self.parse_ident()?));
-                }
-                TokenKind::Peripheral => {
-                    self.advance();
-                    names.push(ExportItem::Peripheral(self.parse_ident()?));
-                }
-                TokenKind::Struct => {
-                    self.advance();
-                    names.push(ExportItem::Struct(self.parse_ident()?));
-                }
-                TokenKind::Enum => {
-                    self.advance();
-                    names.push(ExportItem::Enum(self.parse_ident()?));
-                }
-                _ => break,
-            }
-            if !self.eat(&TokenKind::Comma) {
-                break;
-            }
-        }
-        self.expect(&TokenKind::Semicolon, "expected `;`").ok()?;
-        Some(ExportStmt { names })
     }
 
     // --- types ---

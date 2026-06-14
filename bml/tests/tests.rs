@@ -1102,6 +1102,7 @@ assert_error!(
     "selective_import_removed.bml",
     "E109"
 );
+assert_error!(test_export_private, "export_private_error.bml", "E503");
 assert_error!(test_circular_import, "circular_a.bml", "E500");
 
 #[test]

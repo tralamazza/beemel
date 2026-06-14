@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral MPU;
 // Memory protection unit
 peripheral MPU at 0xE000ED90 {
     // MPU type register

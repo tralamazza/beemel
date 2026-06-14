@@ -7,4 +7,3 @@ peripheral MyDma at 0x40030000 {
         field BUSY: b1 bit[0]
     }
 }
-export peripheral MyDma;

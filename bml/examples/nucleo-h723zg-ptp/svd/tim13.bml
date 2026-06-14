@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral TIM13;
 // General purpose timers
 peripheral TIM13 at 0x40001C00 {
     // control register 1

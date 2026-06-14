@@ -1,5 +1,3 @@
-export fn greet;
-
-fn greet() -> u32 @context(thread) {
+export fn greet() -> u32 @context(thread) {
     return 7;
 }

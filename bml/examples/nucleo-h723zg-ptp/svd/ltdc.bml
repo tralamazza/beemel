@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral LTDC;
 // LCD-TFT Controller
 peripheral LTDC at 0x50001000 {
     // Synchronization Size Configuration

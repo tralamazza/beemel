@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral VREFBUF;
 // VREFBUF
 peripheral VREFBUF at 0x58003C00 {
     // VREFBUF control and status

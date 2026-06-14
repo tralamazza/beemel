@@ -195,7 +195,6 @@ fn pointer_call_facts<'p>(
                 pcf_expr(&cd.value, fn_names, &mut taken, &mut sink);
             }
             Item::Import(_)
-            | Item::Export(_)
             | Item::Owns(_)
             | Item::StructDef(_)
             | Item::EnumDef(_)

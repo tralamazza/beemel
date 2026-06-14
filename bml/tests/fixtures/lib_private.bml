@@ -1,6 +1,4 @@
-export fn pub_fn;
-
-fn pub_fn() -> u32 @context(thread) {
+export fn pub_fn() -> u32 @context(thread) {
     return 1;
 }
 

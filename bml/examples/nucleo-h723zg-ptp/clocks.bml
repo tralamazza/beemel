@@ -30,8 +30,6 @@
 
 import svd.rcc;
 
-export fn clk_init_hse_pll;
-
 // SWD-visible bring-up result. 0 = clk_init_hse_pll never ran.
 const CLK_ERR_HSE: u32 = 1;     // HSERDY timeout -- still on HSI
 const CLK_ERR_PLL: u32 = 2;     // PLL1RDY timeout -- still on HSI
@@ -57,7 +55,7 @@ comptime_assert(PLL_DIVP % 2 == 0);  // odd DIVP1 division is not allowed
 // source is genuinely absent, not slow.
 const CLK_READY_TIMEOUT: u32 = 1000000;
 
-fn clk_init_hse_pll() {
+export fn clk_init_hse_pll() {
     // Bypass must be selected while HSE is off; there is no crystal to drive.
     RCC.CR.HSEBYP = true;
     RCC.CR.HSEON = true;

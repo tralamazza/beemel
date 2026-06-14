@@ -23,7 +23,6 @@ pub enum Item {
     ConstDef(ConstDef),
     PeripheralDef(PeripheralDef),
     Import(ImportStmt),
-    Export(ExportStmt),
     StructDef(StructDef),
     EnumDef(EnumDef),
     /// `comptime_assert(cond);` -- a compile-time assertion on a const
@@ -60,6 +59,9 @@ pub struct ComptimeAssert {
 
 #[derive(Debug, Clone)]
 pub struct FnDef {
+    /// `export` modifier: the item is part of the module's public API,
+    /// reachable from importers as `module.name`. Default `false` (private).
+    pub exported: bool,
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
@@ -74,6 +76,7 @@ pub struct FnDef {
 /// Absent annotations means callable from any context.
 #[derive(Debug, Clone)]
 pub struct ExternFnDef {
+    pub exported: bool,
     pub name: Ident,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
@@ -557,6 +560,7 @@ pub struct IsrAnnotation {
 
 #[derive(Debug, Clone)]
 pub struct StaticDef {
+    pub exported: bool,
     pub name: Ident,
     pub ty: TypeExpr,
     pub storage: Vec<StorageAnnotation>,
@@ -570,6 +574,7 @@ pub struct StaticDef {
 
 #[derive(Debug, Clone)]
 pub struct ConstDef {
+    pub exported: bool,
     pub name: Ident,
     pub ty: TypeExpr,
     pub value: Expr,
@@ -577,6 +582,7 @@ pub struct ConstDef {
 
 #[derive(Debug, Clone)]
 pub struct PeripheralDef {
+    pub exported: bool,
     pub name: Ident,
     pub base_addr: u64,
     pub regs: Vec<RegDef>,
@@ -612,6 +618,7 @@ pub enum BitSpec {
 
 #[derive(Debug, Clone)]
 pub struct StructDef {
+    pub exported: bool,
     pub name: Ident,
     pub repr: StructRepr,
     pub fields: Vec<StructFieldDef>,
@@ -665,6 +672,7 @@ pub enum FieldEndian {
 
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    pub exported: bool,
     pub name: Ident,
     pub ty: TypeExpr,
     pub variants: Vec<EnumVariantDef>,
@@ -698,21 +706,6 @@ pub struct ImportStmt {
     /// has `alias = None` and brings `m`'s items into scope directly. (There is
     /// no selective `import m { ... }` form.)
     pub alias: Option<Ident>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExportStmt {
-    pub names: Vec<ExportItem>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ExportItem {
-    Fn(Ident),
-    Static(Ident),
-    Const(Ident),
-    Peripheral(Ident),
-    Struct(Ident),
-    Enum(Ident),
 }
 
 #[derive(Debug, Clone)]

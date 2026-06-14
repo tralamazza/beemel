@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral AC;
 // Access control
 peripheral AC at 0xE000EF90 {
     // Instruction and Data Tightly-Coupled Memory

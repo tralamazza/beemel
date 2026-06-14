@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral OTG2_HS_DEVICE;
 // USB 1 on the go high speed
 peripheral OTG2_HS_DEVICE at 0x40080800 {
     // OTG_HS device configuration

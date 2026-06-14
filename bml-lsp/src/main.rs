@@ -2767,7 +2767,7 @@ fn main() @context(thread) {
         let lib_path = dir.join("helper_lib.bml");
         fs::write(
             &lib_path,
-            "export fn helper;\n\nfn helper() -> u32 @context(thread) {\n    return 1;\n}\n",
+            "export fn helper() -> u32 @context(thread) {\n    return 1;\n}\n",
         )
         .unwrap();
 

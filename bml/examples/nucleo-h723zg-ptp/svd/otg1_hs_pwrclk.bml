@@ -2,7 +2,6 @@
 // Device: STM32H7x3 (1.8)
 // STM32H7x3
 
-export peripheral OTG1_HS_PWRCLK;
 // USB 1 on the go high speed
 peripheral OTG1_HS_PWRCLK at 0x40040E00 {
     // Power and clock gating control

@@ -2,8 +2,6 @@
 // Device: STM32F103 (1.0)
 // STM32F103
 
-export peripheral RCC;
-
 // Reset and clock control
 peripheral RCC at 0x40021000 {
     // Clock control register
