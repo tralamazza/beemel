@@ -46,13 +46,13 @@ That axis is what the tutorials keep coming back to.
 | 03 | [Peripherals and MMIO](03-peripherals-and-mmio.md) | `peripheral`/`reg`/`field`, bit-fields and read-modify-write, read-only/write-only access, bit-band, and why BML has no `volatile` keyword. Rebuild blinky from first principles. |
 | 04 | [Targets and Building](04-targets-and-building.md) | Anatomy of a `.target` file, the auto-generated linker script, optimization levels, `--save-temps`, `--out-dir`, flashing real hardware vs QEMU, `bml cflags`. |
 | 05 | [Interrupts and Contexts](05-interrupts-and-contexts.md) | `@isr`/`@context`/`@naked`, the vector table, the call-graph rules (ISR cannot call thread, etc.), `@exclusive` ownership, `@shared` + the priority-ceiling protocol, and `claim` windows. |
-| 06 | Data: Structs, Enums, Modules | Structs with explicit layout and visible padding, `@repr(C)`/`@repr(packed)`, field endianness (`@be`/`@le`), enums, the Move/Copy rule, and the `import`/`export` module system. |
+| 06 | [Data: Structs, Enums, Modules](06-structs-enums-modules.md) | Structs with explicit layout and visible padding, `@repr(C)`/`@repr(packed)`, field endianness (`@be`/`@le`), enums, the Move/Copy rule, and the `import`/`export` module system. |
 | 07 | Pointers and Views | `*T` vs `*mut T`, `&`/`&mut`, `null`, pointer arithmetic, function pointers; then `view`/`ring`/`bits` -- bounds-checked descriptors -- and how their Move/Copy behavior differs. |
 | 08 | Regions and Agents (DMA safety) | The core differentiator: declaring what a DMA engine or second core may touch, `@dma`/`@external`, why reading agent-shared memory is blocked, and `reclaim` after a completion handshake. |
 | 09 | Verifying with `bml verify` | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
 | 10 | C Interop | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
 
-Tutorials 01-05 are written; the rest are outlined above and will be filled in.
+Tutorials 01-06 are written; the rest are outlined above and will be filled in.
 
 ## See also
 
