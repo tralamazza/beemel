@@ -4,6 +4,6 @@
 import rst_agent;
 
 fn main() @context(thread) {
-    rst_agent_setup();
+    rst_agent.rst_agent_setup();
     Rst.CR.MYDMARST = true;
 }

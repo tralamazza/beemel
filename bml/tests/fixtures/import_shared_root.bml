@@ -2,6 +2,6 @@ import import_shared_a;
 import import_shared_b;
 
 fn main() @context(thread) {
-    var x = a();
-    var y = b();
+    var x = import_shared_a.a();
+    var y = import_shared_b.b();
 }

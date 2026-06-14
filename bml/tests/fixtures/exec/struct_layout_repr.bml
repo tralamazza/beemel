@@ -20,13 +20,13 @@ struct Packed @repr(packed) {
 }
 
 fn expect_byte(p: *u8, idx: u32, expected: u32) {
-    expect_u32(p[idx] as u32, expected);
+    semihost.expect_u32(p[idx] as u32, expected);
 }
 
 fn main() @context(thread) {
-    expect_u32(sizeof(Explicit), 8);
-    expect_u32(sizeof(CLayout), 8);
-    expect_u32(sizeof(Packed), 5);
+    semihost.expect_u32(sizeof(Explicit), 8);
+    semihost.expect_u32(sizeof(CLayout), 8);
+    semihost.expect_u32(sizeof(Packed), 5);
 
     var explicit = Explicit { tag: 17u8, value: 0x11223344 };
     var explicit_bytes: *u8 = (&explicit) as *u8;
@@ -35,7 +35,7 @@ fn main() @context(thread) {
     expect_byte(explicit_bytes, 2u32, 0);
     expect_byte(explicit_bytes, 3u32, 0);
     expect_byte(explicit_bytes, 4u32, 0x44);
-    expect_u32(explicit.value, 0x11223344);
+    semihost.expect_u32(explicit.value, 0x11223344);
 
     var c = CLayout { tag: 34u8, value: 0x55667788 };
     var c_bytes: *u8 = (&c) as *u8;
@@ -44,7 +44,7 @@ fn main() @context(thread) {
     expect_byte(c_bytes, 2u32, 0);
     expect_byte(c_bytes, 3u32, 0);
     expect_byte(c_bytes, 4u32, 0x88);
-    expect_u32(c.value, 0x55667788);
+    semihost.expect_u32(c.value, 0x55667788);
 
     var packed = Packed { tag: 51u8, value: 0x99AABBCC };
     var packed_bytes: *u8 = (&packed) as *u8;
@@ -53,14 +53,14 @@ fn main() @context(thread) {
     expect_byte(packed_bytes, 2u32, 0xBB);
     expect_byte(packed_bytes, 3u32, 0xAA);
     expect_byte(packed_bytes, 4u32, 0x99);
-    expect_u32(packed.value, 0x99AABBCC);
+    semihost.expect_u32(packed.value, 0x99AABBCC);
 
     packed.value = 0x01020304;
     expect_byte(packed_bytes, 1u32, 0x04);
     expect_byte(packed_bytes, 2u32, 0x03);
     expect_byte(packed_bytes, 3u32, 0x02);
     expect_byte(packed_bytes, 4u32, 0x01);
-    expect_u32(packed.value, 0x01020304);
+    semihost.expect_u32(packed.value, 0x01020304);
 
-    done();
+    semihost.done();
 }

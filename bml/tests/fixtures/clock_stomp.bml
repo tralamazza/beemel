@@ -4,6 +4,6 @@
 import clock_stomp_agent;
 
 fn main() @context(thread) {
-    agent_setup();
+    clock_stomp_agent.agent_setup();
     Clk.CR.MYDMAEN = false;
 }

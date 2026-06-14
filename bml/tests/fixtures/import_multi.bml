@@ -1,5 +1,5 @@
 import lib_multi;
 
 fn main() @context(thread) {
-    var x = foo();
+    var x = lib_multi.foo();
 }

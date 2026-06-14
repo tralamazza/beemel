@@ -51,9 +51,9 @@ fn main() @context(thread) {
     while (q & 2) != 0 {
         q = NVIC.ISPR.BITS;
     }
-    expect_u32(in_hi, 1);
-    expect_u32(in_lo, 0);
-    expect_u32(lo_seen, 1);
-    expect_u32(counter, 1);
-    done();
+    semihost.expect_u32(in_hi, 1);
+    semihost.expect_u32(in_lo, 0);
+    semihost.expect_u32(lo_seen, 1);
+    semihost.expect_u32(counter, 1);
+    semihost.done();
 }

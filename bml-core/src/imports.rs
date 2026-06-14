@@ -43,17 +43,6 @@ pub struct ImportResolver {
     /// otherwise an empty per-run cache. See [`ModuleCache`].
     pub cache: ModuleCache,
     visiting: Vec<PathBuf>,
-    /// Resolved modules, keyed by canonical path. Cached so a module reached
-    /// via two import paths (diamond) shares one parse / one set of `FileId`s,
-    /// keeping span-based dedup stable. Per-run only (a fresh resolver clears
-    /// it), unlike [`ImportResolver::cache`].
-    resolved: HashMap<PathBuf, ResolvedModule>,
-}
-
-#[derive(Clone)]
-struct ResolvedModule {
-    program: Program,
-    export_names: HashSet<String>,
 }
 
 impl Default for ImportResolver {
@@ -71,7 +60,6 @@ impl ImportResolver {
             aliases: HashMap::new(),
             cache: ModuleCache::default(),
             visiting: Vec::new(),
-            resolved: HashMap::new(),
         }
     }
 
@@ -81,7 +69,9 @@ impl ImportResolver {
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         // Track root in visiting so circular imports involving the root are detected
         self.visiting.push(canonicalize(root_path));
-        let mut program = self.resolve_imports(root_program, &parent_dir);
+        // The root program's own items keep their bare names (empty prefix);
+        // every imported module is qualified by its import name / alias.
+        let mut program = self.resolve_imports(root_program, &parent_dir, "");
         // With all modules flattened in, fold const-valued array lengths
         // (e.g. `[u8; N]`) into literals so type resolution sees a concrete size.
         crate::constfold::fold_array_lengths(&mut program);
@@ -89,13 +79,19 @@ impl ImportResolver {
         (program, aliases)
     }
 
-    fn resolve_imports(&mut self, program: Program, parent_dir: &Path) -> Program {
+    /// Flatten `program`'s imports into one item list. `prefix` is the qualifier
+    /// for this program's *own* items (`""` for the root): every imported module
+    /// is recursively flattened under its own qualifier (alias or last path
+    /// segment), and this program's own items are renamed by `prefix` and have
+    /// their references to imports collapsed to flat qualified names. See
+    /// [`crate::qualify`].
+    fn resolve_imports(&mut self, program: Program, parent_dir: &Path, prefix: &str) -> Program {
+        let own_names = crate::qualify::top_level_names(&program.items);
+        let mut import_quals: HashSet<String> = HashSet::new();
         let mut items = Vec::new();
-        let mut seen_defs: HashSet<Span> = HashSet::new();
-        // Wrap-intent spans from this module plus every resolved child. Spans
-        // carry their FileId, so concatenation across modules is sound; a
-        // diamond import contributes duplicate spans, which is harmless (the
-        // verifier only uses them as a suppression set).
+        let mut seen_spans: HashSet<Span> = HashSet::new();
+        let mut own_items: Vec<Item> = Vec::new();
+        // Wrap-intent spans from this module plus every resolved child.
         let mut wrap_spans = program.wrap_spans;
 
         for item in program.items {
@@ -108,9 +104,21 @@ impl ImportResolver {
                         .collect::<Vec<_>>()
                         .join(".");
                     let span = import.module[0].1;
+                    // Qualifier: explicit alias, else the module's last path
+                    // segment. Stable across importers for plain imports, so a
+                    // diamond import dedups to one copy.
+                    let qualifier = import.alias.as_ref().map_or_else(
+                        || {
+                            import
+                                .module
+                                .last()
+                                .map_or(String::new(), |(n, _)| n.clone())
+                        },
+                        |a| a.0.clone(),
+                    );
+                    import_quals.insert(qualifier.clone());
 
-                    let module_path = self.resolve_module_path(&import.module, parent_dir);
-                    let Some(path) = module_path else {
+                    let Some(path) = self.resolve_module_path(&import.module, parent_dir) else {
                         self.diags.error(
                             format!(
                                 "module not found: `{module_name}` (expected `{}.bml`)",
@@ -128,79 +136,43 @@ impl ImportResolver {
                     };
 
                     let canon = canonicalize(&path);
-                    let cycle_state = self.check_cycle(&canon, span);
-                    match cycle_state {
+                    match self.check_cycle(&canon, span) {
                         CycleState::CycleDetected => continue,
-                        CycleState::AlreadyResolved | CycleState::Pushed => {}
+                        CycleState::Pushed => {}
                     }
 
-                    // Use the cached resolved Program when this module has
-                    // already been resolved via another import path. Sharing
-                    // the parse means identical `FileId`s / `Span`s, which is
-                    // what span-based dedup keys on.
-                    let resolved = if let CycleState::AlreadyResolved = cycle_state {
-                        self.resolved
-                            .get(&canon)
-                            .expect("AlreadyResolved implies cached")
-                            .clone()
-                    } else {
-                        let Ok(parsed) = self.load_and_parse(&path, &canon) else {
-                            if matches!(cycle_state, CycleState::Pushed) {
-                                self.visiting.pop();
-                            }
-                            continue;
-                        };
-                        // Collect export names BEFORE resolving nested imports
-                        // (`resolve_imports` drops Export items).
-                        let export_names = collect_export_names(&parsed);
-                        let module_dir = path
-                            .parent()
-                            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-                        let program = self.resolve_imports(parsed, &module_dir);
-                        ResolvedModule {
-                            program,
-                            export_names,
-                        }
-                    };
-
-                    let module_program = &resolved.program;
-                    wrap_spans.extend_from_slice(&module_program.wrap_spans);
-                    let exports = filter_exports(module_program, &resolved.export_names);
-
-                    if let Some(alias) = &import.alias {
-                        self.aliases.insert(
-                            alias.0.clone(),
-                            AliasInfo {
-                                exports,
-                                items: module_program.items.clone(),
-                            },
-                        );
-                        items.push(Item::Import(import));
-                    } else {
-                        // Plain `import m;`: `exports` is unused here (a bare
-                        // import brings every item into scope, not just the
-                        // exported set -- `export` governs only aliased access).
-                        let _ = exports;
-                        // Inline every item from the resolved child module --
-                        // both exported and non-exported -- so the type checker
-                        // and IR emitter can resolve calls into private helpers
-                        // (e.g. lib_b/bar calling lib_c/quux through a wildcard
-                        // import in lib_b). Span-based dedup handles diamond
-                        // imports where a transitively-imported module reaches
-                        // the parent under multiple paths.
-                        for sub_item in &module_program.items {
-                            push_unique_def(&mut items, &mut seen_defs, sub_item.clone());
-                        }
-                    }
-
-                    if let CycleState::Pushed = cycle_state {
-                        self.resolved.insert(canon, resolved);
+                    let Ok(parsed) = self.load_and_parse(&path, &canon) else {
                         self.visiting.pop();
+                        continue;
+                    };
+                    let module_dir = path
+                        .parent()
+                        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+                    let child = self.resolve_imports(parsed, &module_dir, &qualifier);
+                    self.visiting.pop();
+
+                    wrap_spans.extend_from_slice(&child.wrap_spans);
+                    // Child items are already fully qualified; inline (deduped:
+                    // a diamond yields identical qualified names).
+                    for sub in child.items {
+                        push_unique(&mut items, &mut seen_spans, sub);
                     }
                 }
                 Item::Export(_) => {}
-                other => push_unique_def(&mut items, &mut seen_defs, other),
+                other => own_items.push(other),
             }
+        }
+
+        // Rename this module's own items: own top-level names -> `prefix.name`,
+        // and `q.x` references to imports -> the flat name `"q.x"`.
+        let renamer = crate::qualify::Renamer {
+            local: own_names,
+            prefix: prefix.to_string(),
+            imports: import_quals,
+        };
+        renamer.rewrite_items(&mut own_items);
+        for it in own_items {
+            push_unique(&mut items, &mut seen_spans, it);
         }
 
         Program { items, wrap_spans }
@@ -292,9 +264,6 @@ impl ImportResolver {
             );
             return CycleState::CycleDetected;
         }
-        if self.resolved.contains_key(canon) {
-            return CycleState::AlreadyResolved;
-        }
         self.visiting.push(canon.clone());
         CycleState::Pushed
     }
@@ -303,63 +272,17 @@ impl ImportResolver {
 #[derive(Clone, Copy)]
 enum CycleState {
     CycleDetected,
-    AlreadyResolved,
     Pushed,
 }
 
-fn collect_export_names(program: &Program) -> HashSet<String> {
-    let mut exported_names: HashSet<String> = HashSet::new();
-    for item in &program.items {
-        if let Item::Export(export) = item {
-            for export_item in &export.names {
-                let (name, _span) = match export_item {
-                    ast::ExportItem::Fn((n, s)) => (n, s),
-                    ast::ExportItem::Static((n, s)) => (n, s),
-                    ast::ExportItem::Const((n, s)) => (n, s),
-                    ast::ExportItem::Peripheral((n, s)) => (n, s),
-                    ast::ExportItem::Struct((n, s)) => (n, s),
-                    ast::ExportItem::Enum((n, s)) => (n, s),
-                };
-                exported_names.insert(name.clone());
-            }
-        }
-    }
-    exported_names
-}
-
-fn filter_exports(program: &Program, exported_names: &HashSet<String>) -> Exports {
-    let mut exports: Exports = HashMap::new();
-    for item in &program.items {
-        let (name, should_export) = match item {
-            Item::FnDef(f) => (f.name.0.clone(), exported_names.contains(&f.name.0)),
-            Item::ExternFnDef(e) => (e.name.0.clone(), exported_names.contains(&e.name.0)),
-            Item::StaticDef(s) => (s.name.0.clone(), exported_names.contains(&s.name.0)),
-            Item::ConstDef(c) => (c.name.0.clone(), exported_names.contains(&c.name.0)),
-            Item::PeripheralDef(p) => (p.name.0.clone(), exported_names.contains(&p.name.0)),
-            Item::StructDef(s) => (s.name.0.clone(), exported_names.contains(&s.name.0)),
-            Item::EnumDef(e) => (e.name.0.clone(), exported_names.contains(&e.name.0)),
-            _ => continue,
-        };
-        if should_export {
-            exports.insert(name, item.clone());
-        }
-    }
-    exports
-}
-
-fn canonicalize(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Push an item if its defining span hasn't been inlined yet in this scope.
-/// Items without a name span (Import/Export) are always pushed.
-///
-/// Identity is the span of the item's defining name, which is preserved across
-/// `Item::clone()` because Span is Copy. Diamond imports where the same
-/// definition reaches a parent under multiple paths share an identity and
-/// dedup silently. Two distinct definitions that happen to share a name have
-/// different spans, both pass through, and the resolver emits E200.
-fn push_unique_def(items: &mut Vec<Item>, seen: &mut HashSet<Span>, item: Item) {
+/// Push an item unless its defining-name span was already inlined. Identity is
+/// the span (preserved across `Item::clone()` since `Span` is `Copy`): a diamond
+/// import reaches the same definition via the shared cached parse, so the spans
+/// match and it dedups; two genuinely distinct definitions that share a name
+/// have different spans, both pass through, and the resolver emits E200.
+/// (Limitation: importing the *same* file under two different aliases shares the
+/// spans, so only the first qualification survives -- vanishingly rare.)
+fn push_unique(items: &mut Vec<Item>, seen: &mut HashSet<Span>, item: Item) {
     match item_def_span(&item) {
         Some(span) => {
             if seen.insert(span) {
@@ -368,6 +291,10 @@ fn push_unique_def(items: &mut Vec<Item>, seen: &mut HashSet<Span>, item: Item) 
         }
         None => items.push(item),
     }
+}
+
+fn canonicalize(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn item_def_span(item: &Item) -> Option<Span> {

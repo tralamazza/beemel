@@ -17,6 +17,6 @@ fn main() @context(thread) {
         sum = sum + v[k];
         k = k + 1u32;
     }
-    expect_u32(sum, 10u32);
-    done();
+    semihost.expect_u32(sum, 10u32);
+    semihost.done();
 }

@@ -1,7 +1,7 @@
 import lib_struct;
 
 fn main() @context(thread) {
-    var p = Point {
+    var p = lib_struct.Point {
         x: 10,
         y: 20
     };

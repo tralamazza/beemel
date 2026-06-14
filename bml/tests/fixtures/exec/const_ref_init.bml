@@ -14,8 +14,8 @@ const HALF7_ALIAS: f32 = HALF7;
 fn idf(x: f32) -> f32 { return x; }
 
 fn main() @context(thread) {
-    expect_u32(FROM_CONST[0u32], 11);
-    expect_u32(FROM_CONST[3u32], 44);
-    expect_u32(idf(HALF7_ALIAS) as u32, 3); // 3.5 truncates to 3
-    done();
+    semihost.expect_u32(FROM_CONST[0u32], 11);
+    semihost.expect_u32(FROM_CONST[3u32], 44);
+    semihost.expect_u32(idf(HALF7_ALIAS) as u32, 3); // 3.5 truncates to 3
+    semihost.done();
 }

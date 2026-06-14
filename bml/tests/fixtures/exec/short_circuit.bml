@@ -19,38 +19,38 @@ fn bump_false() -> b1 {
 fn main() @context(thread) {
     // RHS skipped: LHS decides.
     var a: b1 = false && bump_true();
-    expect_u32(CALLS, 0);
-    expect_u32(a as u32, 0);
+    semihost.expect_u32(CALLS, 0);
+    semihost.expect_u32(a as u32, 0);
 
     var b: b1 = true || bump_false();
-    expect_u32(CALLS, 0);
-    expect_u32(b as u32, 1);
+    semihost.expect_u32(CALLS, 0);
+    semihost.expect_u32(b as u32, 1);
 
     // RHS evaluated: LHS does not decide.
     var c: b1 = true && bump_true();
-    expect_u32(CALLS, 1);
-    expect_u32(c as u32, 1);
+    semihost.expect_u32(CALLS, 1);
+    semihost.expect_u32(c as u32, 1);
 
     var d: b1 = false || bump_false();
-    expect_u32(CALLS, 2);
-    expect_u32(d as u32, 0);
+    semihost.expect_u32(CALLS, 2);
+    semihost.expect_u32(d as u32, 0);
 
     // Chained: evaluation stops at the first decider.
     // false && X && Y -- neither X nor Y runs.
     var e: b1 = false && bump_true() && bump_true();
-    expect_u32(CALLS, 2);
-    expect_u32(e as u32, 0);
+    semihost.expect_u32(CALLS, 2);
+    semihost.expect_u32(e as u32, 0);
 
     // true && false && X -- first RHS runs, second does not.
     var f: b1 = true && bump_false() && bump_true();
-    expect_u32(CALLS, 3);
-    expect_u32(f as u32, 0);
+    semihost.expect_u32(CALLS, 3);
+    semihost.expect_u32(f as u32, 0);
 
     // Condition position (branch context), mixed with ||.
     if false && bump_true() || true {
         CALLS = CALLS + 10;
     }
-    expect_u32(CALLS, 13);
+    semihost.expect_u32(CALLS, 13);
 
-    done();
+    semihost.done();
 }

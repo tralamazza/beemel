@@ -741,12 +741,12 @@ assert_pass!(test_import_alias, "import_alias.bml");
 assert_ir_contains!(
     test_import_alias_codegen,
     "import_alias.bml",
-    "call i32 @__bml.alias.L.hello()"
+    "call i32 @L.hello()"
 );
 assert_ir_contains!(
     test_import_alias_internal_codegen,
     "import_alias_internal_codegen.bml",
-    "call i32 @__bml.alias.I.helper()"
+    "call i32 @I.helper()"
 );
 assert_pass!(
     test_import_alias_struct_codegen_check,
@@ -755,7 +755,7 @@ assert_pass!(
 assert_ir_contains!(
     test_import_alias_struct_codegen,
     "import_alias_struct_codegen.bml",
-    "call { i32, i32 } @__bml.alias.S.make_point()"
+    "call { i32, i32 } @S.make_point()"
 );
 assert_ir_contains!(
     test_import_alias_symbol_collision,
@@ -769,7 +769,7 @@ assert_pass!(test_import_transitive, "import_transitive.bml");
 assert_ir_contains!(
     test_import_transitive_ir,
     "import_transitive.bml",
-    "call i32 @quux()"
+    "call i32 @lib_c.quux()"
 );
 assert_pass!(test_import_path, "import_path.bml");
 assert_pass!(test_import_path_alias, "import_path_alias.bml");
@@ -1115,7 +1115,7 @@ fn test_circular_import_does_not_poison_later_imports() {
     );
 }
 
-assert_error!(test_rename_collision, "rename_collision.bml", "E200");
+assert_pass!(test_rename_collision, "rename_collision.bml");
 assert_error!(
     test_import_alias_no_unqualified_access,
     "import_alias_no_unqualified_access.bml",

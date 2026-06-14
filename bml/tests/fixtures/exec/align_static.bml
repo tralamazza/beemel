@@ -9,13 +9,13 @@ var a64: [u8; 8] @align(64) = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
 var a256: [u32; 2] @align(256) = [0u32, 0u32];
 
 fn main() @context(thread) {
-    expect_u32((&a16[0]) as u32 % 16, 0);
-    expect_u32((&a64[0]) as u32 % 64, 0);
-    expect_u32((&a256[0]) as u32 % 256, 0);
+    semihost.expect_u32((&a16[0]) as u32 % 16, 0);
+    semihost.expect_u32((&a64[0]) as u32 % 64, 0);
+    semihost.expect_u32((&a256[0]) as u32 % 256, 0);
 
     // Alignment does not disturb the value: the buffer is still usable.
     a16[2] = 0xABCD;
-    expect_u32(a16[2], 0xABCD);
+    semihost.expect_u32(a16[2], 0xABCD);
 
-    done();
+    semihost.done();
 }

@@ -15,15 +15,15 @@ fn main() @context(thread) {
     r[3u32] = 103u32;  // physical 1 (wrap)
 
     // Confirm the physical layout in the backing array.
-    expect_u32(buf[2u32], 100u32);
-    expect_u32(buf[3u32], 101u32);
-    expect_u32(buf[0u32], 102u32);
-    expect_u32(buf[1u32], 103u32);
+    semihost.expect_u32(buf[2u32], 100u32);
+    semihost.expect_u32(buf[3u32], 101u32);
+    semihost.expect_u32(buf[0u32], 102u32);
+    semihost.expect_u32(buf[1u32], 103u32);
 
     // And that reads through the ring agree with the writes.
-    expect_u32(r[0u32], 100u32);
-    expect_u32(r[1u32], 101u32);
-    expect_u32(r[2u32], 102u32);
-    expect_u32(r[3u32], 103u32);
-    done();
+    semihost.expect_u32(r[0u32], 100u32);
+    semihost.expect_u32(r[1u32], 101u32);
+    semihost.expect_u32(r[2u32], 102u32);
+    semihost.expect_u32(r[3u32], 103u32);
+    semihost.done();
 }

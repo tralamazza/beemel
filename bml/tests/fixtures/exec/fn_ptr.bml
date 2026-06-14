@@ -22,17 +22,17 @@ struct Ops {
 
 fn main() @context(thread) {
     var fp: fn(u32) -> u32 = &inc;
-    expect_u32(fp(41), 42); // direct dispatch
+    semihost.expect_u32(fp(41), 42); // direct dispatch
 
     fp = &triple;
-    expect_u32(fp(4), 12); // reassignment retargets
+    semihost.expect_u32(fp(4), 12); // reassignment retargets
 
-    expect_u32(apply(&inc, 10), 11); // through a parameter
-    expect_u32(apply(&triple, 10), 30);
+    semihost.expect_u32(apply(&inc, 10), 11); // through a parameter
+    semihost.expect_u32(apply(&triple, 10), 30);
 
     var ops = Ops { f: &inc };
     var g = ops.f;
-    expect_u32(g(7), 8); // through a struct field
+    semihost.expect_u32(g(7), 8); // through a struct field
 
-    done();
+    semihost.done();
 }

@@ -11,19 +11,19 @@ fn idf(x: f32) -> f32 { return x; }
 fn idd(x: f64) -> f64 { return x; }
 
 fn main() @context(thread) {
-    expect_u32((idf(2.0f) + idf(3.0f)) as u32, 5);
-    expect_u32((idf(10.0f) - idf(4.0f)) as u32, 6);
-    expect_u32((idf(2.5f) * idf(4.0f)) as u32, 10);
-    expect_u32((idf(9.0f) / idf(2.0f)) as u32, 4);          // 4.5 truncates to 4
-    expect_u32((-idf(3.0f) * -idf(2.0f)) as u32, 6);        // fneg
-    expect_u32((idd(1.5d) + idd(2.5d)) as u32, 4);
-    expect_u32((idd(1.25d) * idd(8.0d)) as u32, 10);
-    expect_u32((idf(5.5f) as i32) as u32, 5);               // fptosi
-    expect_u32((idf(1000.0f) as u32), 1000);                // fptoui
-    expect_u32((idf(300.0f) as f64 as f32) as u32, 300);    // fpext/fptrunc
-    expect_u32(((7i32 as f64) as i32) as u32, 7);           // sitofp roundtrip
-    expect_u32((300u32 as f32) as u32, 300);                // uitofp roundtrip
-    expect_u32((true as f32) as u32, 1);                    // bool->float
-    expect_u32((false as f64) as u32, 0);
-    done();
+    semihost.expect_u32((idf(2.0f) + idf(3.0f)) as u32, 5);
+    semihost.expect_u32((idf(10.0f) - idf(4.0f)) as u32, 6);
+    semihost.expect_u32((idf(2.5f) * idf(4.0f)) as u32, 10);
+    semihost.expect_u32((idf(9.0f) / idf(2.0f)) as u32, 4);          // 4.5 truncates to 4
+    semihost.expect_u32((-idf(3.0f) * -idf(2.0f)) as u32, 6);        // fneg
+    semihost.expect_u32((idd(1.5d) + idd(2.5d)) as u32, 4);
+    semihost.expect_u32((idd(1.25d) * idd(8.0d)) as u32, 10);
+    semihost.expect_u32((idf(5.5f) as i32) as u32, 5);               // fptosi
+    semihost.expect_u32((idf(1000.0f) as u32), 1000);                // fptoui
+    semihost.expect_u32((idf(300.0f) as f64 as f32) as u32, 300);    // fpext/fptrunc
+    semihost.expect_u32(((7i32 as f64) as i32) as u32, 7);           // sitofp roundtrip
+    semihost.expect_u32((300u32 as f32) as u32, 300);                // uitofp roundtrip
+    semihost.expect_u32((true as f32) as u32, 1);                    // bool->float
+    semihost.expect_u32((false as f64) as u32, 0);
+    semihost.done();
 }

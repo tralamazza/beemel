@@ -14,19 +14,19 @@ const ALIAS: b1 = OK;
 comptime_assert(ALIAS);
 
 fn main() @context(thread) {
-    expect_u32(X as u32, 44);
-    expect_u32(C8 as u32, 44);
+    semihost.expect_u32(X as u32, 44);
+    semihost.expect_u32(C8 as u32, 44);
 
     // Runtime int -> b8 (formerly an invalid `bitcast i32 to i8`).
     var n: u32 = 300;
     var b: b8 = n as b8;
-    expect_u32(b as u32, 44);
+    semihost.expect_u32(b as u32, 44);
 
     var r: u32 = 0;
     if ALIAS {
         r = 7;
     }
-    expect_u32(r, 7);
+    semihost.expect_u32(r, 7);
 
-    done();
+    semihost.done();
 }

@@ -4,6 +4,22 @@ use crate::errors::DiagnosticBag;
 use crate::lexer::{Lexer, Token, TokenKind};
 use crate::source::{FileId, Span};
 
+/// A bare ident (`Color`) or a single-level `module.Name` field access, returned
+/// as a `(dotted_name, span)` pair. Lets the postfix parser accept qualified
+/// type/struct/enum names (`m.Color`, `m.State@V`, `m.Color { ... }`). Returns
+/// `None` for any other expression, so deeper chains (`a.b.c`) and arbitrary
+/// values never become struct/enum names.
+fn qualified_name(e: &Expr) -> Option<Ident> {
+    match e {
+        Expr::Ident(n) => Some(n.clone()),
+        Expr::FieldAccess(base, field) => match base.as_ref() {
+            Expr::Ident(m) => Some((format!("{}.{}", m.0, field.0), m.1.merge(field.1))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
@@ -1115,6 +1131,15 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let name = self.parse_ident()?;
+                // Qualified type name `module.Type` (an imported type via its
+                // import name or alias), stored as the dotted string
+                // `"module.Type"`; the import resolver rewrites/keys on it.
+                if self.check(&TokenKind::Dot) {
+                    self.advance(); // .
+                    let ty = self.parse_ident()?;
+                    let span = name.1.merge(ty.1);
+                    return Some(TypeExpr::Named((format!("{}.{}", name.0, ty.0), span)));
+                }
                 Some(TypeExpr::Named(name))
             }
         }
@@ -1583,17 +1608,19 @@ impl<'a> Parser<'a> {
                     let field = self.parse_ident()?;
                     left = Expr::FieldAccess(Box::new(left), field);
                 }
-                TokenKind::AtSign if matches!(&left, Expr::Ident(_)) => {
+                // Enum variant `Enum@V` or qualified `module.Enum@V`. The base is
+                // a bare ident or a `module.Enum` field access; the qualified form
+                // is stored as the dotted enum name `"module.Enum"`.
+                TokenKind::AtSign if qualified_name(&left).is_some() => {
                     self.advance();
                     let variant = self.parse_ident()?;
-                    if let Expr::Ident(enum_name) = left {
-                        let span = enum_name.1.merge(variant.1);
-                        left = Expr::EnumVariant {
-                            enum_name,
-                            variant,
-                            span,
-                        };
-                    }
+                    let enum_name = qualified_name(&left).unwrap();
+                    let span = enum_name.1.merge(variant.1);
+                    left = Expr::EnumVariant {
+                        enum_name,
+                        variant,
+                        span,
+                    };
                 }
                 TokenKind::LBracket => {
                     self.advance();
@@ -1601,29 +1628,28 @@ impl<'a> Parser<'a> {
                     self.expect(&TokenKind::RBracket, "expected `]`").ok()?;
                     left = Expr::Index(Box::new(left), Box::new(index));
                 }
-                TokenKind::LBrace if allow_struct => {
-                    if let Expr::Ident(name) = left {
-                        self.advance();
-                        let mut fields = Vec::new();
-                        if !self.check(&TokenKind::RBrace) {
-                            loop {
-                                let fname = self.parse_ident()?;
-                                self.expect(&TokenKind::Colon, "expected `:` after field name")
-                                    .ok()?;
-                                let val = self.parse_expr()?;
-                                fields.push((fname, val));
-                                if !self.eat(&TokenKind::Comma) {
-                                    break;
-                                }
+                // Struct init `Struct { ... }` or qualified `module.Struct { ... }`,
+                // stored as the dotted name `"module.Struct"`.
+                TokenKind::LBrace if allow_struct && qualified_name(&left).is_some() => {
+                    let name = qualified_name(&left).unwrap();
+                    self.advance();
+                    let mut fields = Vec::new();
+                    if !self.check(&TokenKind::RBrace) {
+                        loop {
+                            let fname = self.parse_ident()?;
+                            self.expect(&TokenKind::Colon, "expected `:` after field name")
+                                .ok()?;
+                            let val = self.parse_expr()?;
+                            fields.push((fname, val));
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
                             }
                         }
-                        let end_span = self.peek_span();
-                        self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
-                        let span = name.1.merge(end_span);
-                        left = Expr::StructInit { name, fields, span };
-                    } else {
-                        break;
                     }
+                    let end_span = self.peek_span();
+                    self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
+                    let span = name.1.merge(end_span);
+                    left = Expr::StructInit { name, fields, span };
                 }
                 _ => break,
             }

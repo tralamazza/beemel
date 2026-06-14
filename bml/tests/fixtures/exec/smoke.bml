@@ -2,6 +2,6 @@
 import harness.semihost;
 
 fn main() @context(thread) {
-    expect_u32(2 + 2, 4);
-    done();
+    semihost.expect_u32(2 + 2, 4);
+    semihost.done();
 }

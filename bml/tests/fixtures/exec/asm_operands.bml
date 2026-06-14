@@ -9,24 +9,24 @@ fn main() @context(thread) {
     // output only
     var a: u32 = 0;
     asm { movs $0, #42 } : "=r"(a);
-    expect_u32(a, 42);
+    semihost.expect_u32(a, 42);
 
     // one input, one output: b = c + 1
     var c: u32 = 100;
     var b: u32 = 0;
     asm { adds $0, $1, #1 } : "=r"(b) : "r"(c);
-    expect_u32(b, 101);
+    semihost.expect_u32(b, 101);
 
     // two outputs (struct return) from a two-instruction template
     var x: u32 = 0;
     var y: u32 = 0;
     asm { movs $0, #7
           movs $1, #9 } : "=r"(x), "=r"(y);
-    expect_u32(x, 7);
-    expect_u32(y, 9);
+    semihost.expect_u32(x, 7);
+    semihost.expect_u32(y, 9);
 
     // input-only with a memory clobber (a data barrier)
     asm { dmb } : : : "memory";
 
-    done();
+    semihost.done();
 }

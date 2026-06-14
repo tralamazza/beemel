@@ -546,14 +546,14 @@ var BENCH_VIEW_CYC_MAX: u32;
 var BENCH_VIEW_LAST: u32;
 
 fn eth_bench_init() @context(thread) {
-    dwt_init();
-    timer_bench_rate();
+    dwt.dwt_init();
+    timer.timer_bench_rate();
 }
 
 fn bench_consume_defensive(len: u32) @context(thread) {
-    timer_bench_mark(1);
+    timer.timer_bench_mark(1);
     asm { cpsid i } : : : "memory";
-    const t0 = dwt_cycles();
+    const t0 = dwt.dwt_cycles();
     var i: u32 = 0;
     while i < len {
         BSTAGING[i] = rx_get8(i) as u8; // i < len <= 512 // bml-verify: ignore V101
@@ -565,9 +565,9 @@ fn bench_consume_defensive(len: u32) @context(thread) {
         sum +%= BSTAGING[j] as u32; // j < len <= 512 // bml-verify: ignore V101
         j = j + 1;
     }
-    const t1 = dwt_cycles();
+    const t1 = dwt.dwt_cycles();
     asm { cpsie i } : : : "memory";
-    timer_bench_mark(0);
+    timer.timer_bench_mark(0);
     BENCH_DEF_LAST = sum;
     const dt = t1 -% t0; // CYCCNT delta
     BENCH_DEF_CYC_SUM +%= dt;
@@ -578,14 +578,14 @@ fn bench_consume_defensive(len: u32) @context(thread) {
 }
 
 fn bench_consume_bml(len: u32) @context(thread) {
-    const t0 = dwt_cycles();
+    const t0 = dwt.dwt_cycles();
     var sum: u32 = 0;
     var j: u32 = 0;
     while j < len {
         sum +%= rx_get8(j); // checksum probe: wrap is fine
         j = j + 1;
     }
-    const t1 = dwt_cycles();
+    const t1 = dwt.dwt_cycles();
     BENCH_BML_LAST = sum;
     const dt = t1 -% t0; // CYCCNT delta
     BENCH_BML_CYC_SUM +%= dt;
@@ -604,7 +604,7 @@ fn bench_consume_bml(len: u32) @context(thread) {
 // staleness rule wants a clearing write between observations).
 fn bench_consume_view(base: u32, len: u32) @context(thread) {
     if Ethernet_DMA.DMACSR.RI {
-        const t0 = dwt_cycles();
+        const t0 = dwt.dwt_cycles();
         const v = reclaim(RX_BUFFER);
         var sum: u32 = 0;
         var j: u32 = 0;
@@ -612,7 +612,7 @@ fn bench_consume_view(base: u32, len: u32) @context(thread) {
             sum +%= v[base +% j] as u32; // checksum probe; index bounded by the view assume
             j = j + 1;
         }
-        const t1 = dwt_cycles();
+        const t1 = dwt.dwt_cycles();
         Ethernet_DMA.DMACSR.RI = true;
         BENCH_VIEW_LAST = sum;
         const dt = t1 -% t0; // CYCCNT delta
@@ -796,7 +796,7 @@ fn eth_send_ping(board_id: u32, seq: u32, seconds: u32, nanoseconds: u32) {
 fn eth_send_status(board_id: u32, echo_seq: u32, seconds: u32, nanoseconds: u32,
                    ptp_offset: u32, ptp_lock: u32) {
     eth_send_product(3, board_id, echo_seq, seconds, nanoseconds,
-        FW_BUILD, phy_state(), ptp_lock, RX_PACKET_COUNT, TX_FRAME_COUNT,
+        FW_BUILD, phy_lan8742.phy_state(), ptp_lock, RX_PACKET_COUNT, TX_FRAME_COUNT,
         RX_TIMESTAMP_COUNT, ptp_offset, 0);
 }
 

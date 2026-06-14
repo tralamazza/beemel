@@ -18,14 +18,14 @@ fn main() @context(thread) {
     // if-expression yields the trailing value of the taken branch
     var a: u32 = 5;
     var m: u32 = if a > 3 { 10 } else { 20 };
-    expect_u32(m, 10);
+    semihost.expect_u32(m, 10);
 
     // block-expression yields its trailing value
     var b: u32 = {
         var t: u32 = 6;
         t * 7
     };
-    expect_u32(b, 42);
+    semihost.expect_u32(b, 42);
 
     // while loop with break
     var i: u32 = 0;
@@ -35,14 +35,14 @@ fn main() @context(thread) {
             break;
         }
     }
-    expect_u32(i, 7);
+    semihost.expect_u32(i, 7);
 
     // recursion
-    expect_u32(fib(10), 55);
+    semihost.expect_u32(fib(10), 55);
 
     // call through a function pointer
     var fp: fn(u32) -> u32 = &add_one;
-    expect_u32(fp(41), 42);
+    semihost.expect_u32(fp(41), 42);
 
-    done();
+    semihost.done();
 }

@@ -15,8 +15,8 @@ fn main() @context(thread) {
     buf[N - 1] = 0xBEEF; // index 3 -- in bounds only if [u32; N] folded to 4
     wide[M - 1] = 0xAB;  // index 7 -- in bounds only if [u8; M] folded to 8
 
-    expect_u32(buf[3], 0xBEEF);
-    expect_u32(wide[7] as u32, 0xAB);
+    semihost.expect_u32(buf[3], 0xBEEF);
+    semihost.expect_u32(wide[7] as u32, 0xAB);
 
-    done();
+    semihost.done();
 }

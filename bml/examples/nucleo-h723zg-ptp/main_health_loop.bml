@@ -30,35 +30,35 @@ var LT_LAST_RX: u32;     // sender's RX_PACKET_COUNT from the last STATUS
 var LT_LAST_PHY: u32;    // PHY state word from the last STATUS
 
 fn main() @context(thread) {
-    board_bringup();
-    timer_init();
-    copy_setup();
-    eth_loopback_enable();
+    board.board_bringup();
+    timer.timer_init();
+    copy_dma.copy_setup();
+    eth_dma.eth_loopback_enable();
 
     var ping_seq: u32 = 0;
     var last_tick: u32 = 0;
     loop {
-        eth_poll_rx();
-        if prod_rx_fresh() != 0 {
-            const mtype = prod_rx_take();
+        eth_dma.eth_poll_rx();
+        if eth_dma.prod_rx_fresh() != 0 {
+            const mtype = eth_dma.prod_rx_take();
             if mtype == MSG_HEALTH_PING {
-                const now = ptp_now();
-                eth_send_status(BOARD_ID, prod_rx_seq(), now.seconds, now.nanoseconds, 0, 0);
+                const now = ptp_clock.ptp_now();
+                eth_dma.eth_send_status(BOARD_ID, eth_dma.prod_rx_seq(), now.seconds, now.nanoseconds, 0, 0);
                 LT_STATUS_SENT +%= 1;
             }
             if mtype == MSG_HEALTH_STATUS {
                 LT_STATUS_SEEN +%= 1;
-                LT_LAST_SEQ = prod_rx_seq();
-                LT_LAST_RX = prod_rx_pay(3);
-                LT_LAST_PHY = prod_rx_pay(1);
+                LT_LAST_SEQ = eth_dma.prod_rx_seq();
+                LT_LAST_RX = eth_dma.prod_rx_pay(3);
+                LT_LAST_PHY = eth_dma.prod_rx_pay(1);
             }
         }
-        const t = timer_ticks();
+        const t = timer.timer_ticks();
         if t != last_tick {
             last_tick = t;
-            const now = ptp_now();
+            const now = ptp_clock.ptp_now();
             ping_seq +%= 1;
-            eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
+            eth_dma.eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
             LT_PINGS_SENT +%= 1;
         }
     }

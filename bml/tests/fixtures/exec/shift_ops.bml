@@ -4,20 +4,20 @@
 import harness.semihost;
 
 fn main() @context(thread) {
-    expect_u32(1 << 4, 16);
+    semihost.expect_u32(1 << 4, 16);
 
     // u8 left shift with a (wider) literal count
     var one: u8 = 1u8;
-    expect_u32((one << 7) as u32, 128);
+    semihost.expect_u32((one << 7) as u32, 128);
 
     // unsigned right shift is logical (zero-filled)
     var hi: u32 = 0x80000000;
-    expect_u32(hi >> 4, 0x08000000);
+    semihost.expect_u32(hi >> 4, 0x08000000);
     var u: u32 = 0xFFFFFFF0;
-    expect_u32(u >> 4, 0x0FFFFFFF);
+    semihost.expect_u32(u >> 4, 0x0FFFFFFF);
 
     // signed right shift is arithmetic (sign-extended): -16 >> 2 = -4
-    expect_b1(((-16i32) >> 2) == -4i32, true);
+    semihost.expect_b1(((-16i32) >> 2) == -4i32, true);
 
-    done();
+    semihost.done();
 }

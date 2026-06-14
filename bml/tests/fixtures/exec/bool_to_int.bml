@@ -4,7 +4,7 @@
 import harness.semihost;
 
 fn main() @context(thread) {
-    expect_u32(true as u32, 1);
-    expect_u32(false as u32, 0);
-    done();
+    semihost.expect_u32(true as u32, 1);
+    semihost.expect_u32(false as u32, 0);
+    semihost.done();
 }

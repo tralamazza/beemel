@@ -9,20 +9,20 @@ fn pick(n: u32) -> u32 {
 fn main() @context(thread) {
     // if as an expression, both arms
     var a = true;
-    expect_u32(if a { 1u32 } else { 2u32 }, 1);
-    expect_u32(if !a { 1u32 } else { 2u32 }, 2);
+    semihost.expect_u32(if a { 1u32 } else { 2u32 }, 1);
+    semihost.expect_u32(if !a { 1u32 } else { 2u32 }, 2);
 
     // else-if chain, each branch selected at runtime
-    expect_u32(pick(0), 10);
-    expect_u32(pick(1), 20);
-    expect_u32(pick(2), 30);
+    semihost.expect_u32(pick(0), 10);
+    semihost.expect_u32(pick(1), 20);
+    semihost.expect_u32(pick(2), 30);
 
     // block expression evaluates to its trailing value
     var x: u32 = {
         var t: u32 = 6;
         t * 7
     };
-    expect_u32(x, 42);
+    semihost.expect_u32(x, 42);
 
     // block nested inside an if-expression arm
     var y: u32 = if pick(2) == 30 {
@@ -31,7 +31,7 @@ fn main() @context(thread) {
     } else {
         0
     };
-    expect_u32(y, 6);
+    semihost.expect_u32(y, 6);
 
-    done();
+    semihost.done();
 }

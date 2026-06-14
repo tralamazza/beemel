@@ -9,24 +9,24 @@ fn main() @context(thread) {
 
     // element-scaled: p + 2 points at arr[2]
     var p2: *mut u32 = p + 2;
-    expect_u32(*p2, 30);
+    semihost.expect_u32(*p2, 30);
 
     // write through the pointer, read back via index
     *p2 = 99;
-    expect_u32(arr[2], 99);
+    semihost.expect_u32(arr[2], 99);
 
     // indexing is element-scaled
-    expect_u32(p[3], 40);
+    semihost.expect_u32(p[3], 40);
 
     // pointer difference counts elements, not bytes
     var q: *mut u32 = &mut arr[3];
-    expect_u32((q - p) as u32, 3);
+    semihost.expect_u32((q - p) as u32, 3);
 
     // deref round-trip
     var x: u32 = 7;
     var px: *mut u32 = &mut x;
     *px = 123;
-    expect_u32(x, 123);
+    semihost.expect_u32(x, 123);
 
-    done();
+    semihost.done();
 }

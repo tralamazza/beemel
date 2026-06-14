@@ -10,24 +10,24 @@ const DOUBLE: u32 = N * 2; // const defined in terms of another const
 fn main() @context(thread) {
     // const identifier as a length
     var arr: [u32; N] = [10, 20, 30, 40];
-    expect_u32(arr[3], 40);
+    semihost.expect_u32(arr[3], 40);
 
     // constant arithmetic as a length: ROWS * COLS = 6
     var grid: [u8; ROWS * COLS] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
     grid[5] = 99;
-    expect_u32(grid[5] as u32, 99);
+    semihost.expect_u32(grid[5] as u32, 99);
 
     // length from a const-defined-in-terms-of-a-const (DOUBLE = N * 2 = 8)
     var wide: [u16; DOUBLE] = [0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16, 0u16];
     wide[7] = 1234;
-    expect_u32(wide[7] as u32, 1234);
+    semihost.expect_u32(wide[7] as u32, 1234);
 
     // the same const as a loop bound; sum of arr = 100
     var sum: u32 = 0;
     for i: u32 in 0 upto N {
         sum = sum + arr[i];
     }
-    expect_u32(sum, 100);
+    semihost.expect_u32(sum, 100);
 
-    done();
+    semihost.done();
 }

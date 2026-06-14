@@ -6,29 +6,29 @@ fn main() @context(thread) {
     // signed: arithmetic right shift preserves the sign (-16 >> 2 = -4)
     var s: i32 = -16i32;
     s >>= 2;
-    expect_b1(s == -4i32, true);
+    semihost.expect_b1(s == -4i32, true);
 
     // signed division truncates toward zero (-7 / 2 = -3)
     var d: i32 = -7i32;
     d /= 2i32;
-    expect_b1(d == -3i32, true);
+    semihost.expect_b1(d == -3i32, true);
 
     // narrow wrapping: u8 255 + 1 wraps to 0
     var b: u8 = 255u8;
     b += 1u8;
-    expect_u32(b as u32, 0);
+    semihost.expect_u32(b as u32, 0);
 
     // narrow wrapping: u8 1 - 2 wraps to 255
     var c: u8 = 1u8;
     c -= 2u8;
-    expect_u32(c as u32, 255);
+    semihost.expect_u32(c as u32, 255);
 
     // 64-bit operands
     var x: u64 = 4294967295u64; // 2^32 - 1
     x += 1u64;                  // 2^32
-    expect_u64(x, 4294967296u64);
+    semihost.expect_u64(x, 4294967296u64);
     x *= 3u64;
-    expect_u64(x, 12884901888u64);
+    semihost.expect_u64(x, 12884901888u64);
 
-    done();
+    semihost.done();
 }

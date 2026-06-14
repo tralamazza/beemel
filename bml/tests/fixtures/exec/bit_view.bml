@@ -10,37 +10,37 @@ fn main() @context(thread) {
     var wb: bits mut = bits(buf);
 
     // an unset bit reads false
-    expect_b1(bits(buf)[5u32], false);
+    semihost.expect_b1(bits(buf)[5u32], false);
 
     // set a bit, read it back
     wb[5u32] = true;
-    expect_b1(bits(buf)[5u32], true);
+    semihost.expect_b1(bits(buf)[5u32], true);
 
     // setting a neighbor preserves the first (the RMW keeps other bits)
     wb[3u32] = true;
-    expect_b1(bits(buf)[3u32], true);
-    expect_b1(bits(buf)[5u32], true);
+    semihost.expect_b1(bits(buf)[3u32], true);
+    semihost.expect_b1(bits(buf)[5u32], true);
 
     // byte 0 now holds exactly bits 3 and 5: 0b0010_1000 = 0x28. Reading the raw
     // backing byte confirms no other bit in the byte was disturbed.
     var byte0: u32 = buf[0u32] as u32;
-    expect_u32(byte0, 0x28u32);
+    semihost.expect_u32(byte0, 0x28u32);
 
     // an index crosses into byte 1: logical bit 12 = byte 1, bit 4.
     wb[12u32] = true;
-    expect_b1(bits(buf)[12u32], true);
+    semihost.expect_b1(bits(buf)[12u32], true);
     // bit 4 (same position, byte 0) is a different bit and stays unset.
-    expect_b1(bits(buf)[4u32], false);
+    semihost.expect_b1(bits(buf)[4u32], false);
     // byte 0 unchanged by the byte-1 write.
     var byte0_again: u32 = buf[0u32] as u32;
-    expect_u32(byte0_again, 0x28u32);
+    semihost.expect_u32(byte0_again, 0x28u32);
 
     // clearing a bit writes false without disturbing its neighbor.
     wb[3u32] = false;
-    expect_b1(bits(buf)[3u32], false);
-    expect_b1(bits(buf)[5u32], true);
+    semihost.expect_b1(bits(buf)[3u32], false);
+    semihost.expect_b1(bits(buf)[5u32], true);
     var byte0_cleared: u32 = buf[0u32] as u32;
-    expect_u32(byte0_cleared, 0x20u32);
+    semihost.expect_u32(byte0_cleared, 0x20u32);
 
     // nonzero bit_offset shifts logical->physical: with offset 4, logical 0 maps
     // to physical bit 4. Written through a `*mut u8` pointer-form view.
@@ -48,10 +48,10 @@ fn main() @context(thread) {
     var off: bits mut = bits(&mut c[0u32], 4u32, 28u32);
     off[0u32] = true;
     // confirm via a zero-offset view that physical bit 4 (not 0) was set.
-    expect_b1(bits(c)[4u32], true);
-    expect_b1(bits(c)[0u32], false);
+    semihost.expect_b1(bits(c)[4u32], true);
+    semihost.expect_b1(bits(c)[0u32], false);
     var cbyte0: u32 = c[0u32] as u32;
-    expect_u32(cbyte0, 0x10u32);
+    semihost.expect_u32(cbyte0, 0x10u32);
 
-    done();
+    semihost.done();
 }

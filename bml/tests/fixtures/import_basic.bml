@@ -1,5 +1,5 @@
 import lib_basic;
 
 fn main() @context(thread) {
-    var x = hello();
+    var x = lib_basic.hello();
 }

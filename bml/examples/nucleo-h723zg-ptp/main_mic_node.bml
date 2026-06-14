@@ -25,7 +25,7 @@ var PINGS_ANSWERED: u32;
 // Sync ingress here (RX context descriptor), t3 = Delay_Req egress here
 // (TX descriptor write-back), t4 = Delay_Req ingress at the master (from
 // Delay_Resp). d1 = t2-t1, d2 = t4-t3 (each in ns, u32 wrap, valid while
-// the deltas stay under a second); offset = (d1-d2)/2, path delay =
+// the deltas stay under a second); offset = (d1-d2)/2, path board.delay =
 // (d1+d2)/2 -- the servo (milestone 10) is NOT here yet.
 const PTP_SYNC: u32 = 0;
 const PTP_FOLLOW_UP: u32 = 8;
@@ -58,7 +58,7 @@ var PTP_LOCK: u32;
 var PTP_STEPS: u32;          // coarse steps taken (expect 1)
 var PTP_ADDEND_NOW: u32;     // current disciplined addend (probe)
 var PTP_LOCK_STREAK: u32;
-var PTP_REJECTS: u32;        // rounds rejected by the delay sanity gate
+var PTP_REJECTS: u32;        // rounds rejected by the board.delay sanity gate
 // Round-by-round probe ring (debugger-read): 20-second openocd sampling
 // aliases ~13 rounds per glimpse and hid the real dynamics.
 var PTP_LOG_OFF: [u32; 16];
@@ -66,7 +66,7 @@ var PTP_LOG_DLY: [u32; 16];
 var PTP_LOG_IDX: u32;
 
 fn main() @context(thread) {
-    board_bringup();
+    board.board_bringup();
 
     var seq: u32 = 0;
     var sync_seq: u32 = 0;
@@ -79,32 +79,32 @@ fn main() @context(thread) {
     // knowledge stays valid).
     var servo_freq: i32 = 0;
     var last_hb_s: u32 = 0;
-    // Mirror of the hardware TSAR (ptp_init loaded the base); the servo
+    // Mirror of the hardware TSAR (ptp_clock.ptp_init loaded the base); the servo
     // accumulates on this across rounds AND across re-steps.
-    PTP_ADDEND_NOW = ptp_base_addend();
-    const boot = ptp_now();
-    eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
+    PTP_ADDEND_NOW = ptp_clock.ptp_base_addend();
+    const boot = ptp_clock.ptp_now();
+    eth_dma.eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
-        phy_poll_link();
+        phy_lan8742.phy_poll_link();
         // Service up to 8 frames per outer iteration: the ring is 4 deep
-        // and delay() is long; one poll per delay missed most pings
+        // and board.delay() is long; one poll per board.delay missed most pings
         // (milestone-8 pacing note) and would miss PTP rounds entirely.
         var k: u32 = 0;
         while k < 8 {
             k = k + 1;
-            eth_poll_rx();
-            if t2_pending != 0 && rx_ts_count() != t2_count_at {
-                PTP_T2_S = rx_ts_s();
-                PTP_T2_NS = rx_ts_ns();
+            eth_dma.eth_poll_rx();
+            if t2_pending != 0 && eth_dma.rx_ts_count() != t2_count_at {
+                PTP_T2_S = eth_dma.rx_ts_s();
+                PTP_T2_NS = eth_dma.rx_ts_ns();
                 t2_pending = 0;
                 t2_have = 1;
             }
-            if ptp_rx_fresh() != 0 {
-                const pt = ptp_rx_take();
+            if eth_dma.ptp_rx_fresh() != 0 {
+                const pt = eth_dma.ptp_rx_take();
                 if pt == PTP_SYNC {
-                    sync_seq = ptp_rx_seq();
+                    sync_seq = eth_dma.ptp_rx_seq();
                     t2_pending = 1;
-                    t2_count_at = rx_ts_count();
+                    t2_count_at = eth_dma.rx_ts_count();
                     t2_have = 0;
                     await_resp = 0;
                 }
@@ -112,22 +112,22 @@ fn main() @context(thread) {
                 // Follow_Up kills the round, like a t3 miss). This backs the
                 // `assume(t1ns < 1e9)` in the Delay_Resp handler -- an
                 // assume on attacker-reachable input would be runtime UB.
-                if pt == PTP_FOLLOW_UP && ptp_rx_seq() == sync_seq && t2_have != 0
-                    && ptp_rx_ts_ns() < 1000000000 {
-                    PTP_T1_S = ptp_rx_ts_s();
-                    PTP_T1_NS = ptp_rx_ts_ns();
-                    eth_send_ptp(1, sync_seq, 0, 0, true);
-                    if eth_ptp_collect_tx_ts() {
-                        PTP_T3_S = ptp_tx_ts_s();
-                        PTP_T3_NS = ptp_tx_ts_ns();
+                if pt == PTP_FOLLOW_UP && eth_dma.ptp_rx_seq() == sync_seq && t2_have != 0
+                    && eth_dma.ptp_rx_ts_ns() < 1000000000 {
+                    PTP_T1_S = eth_dma.ptp_rx_ts_s();
+                    PTP_T1_NS = eth_dma.ptp_rx_ts_ns();
+                    eth_dma.eth_send_ptp(1, sync_seq, 0, 0, true);
+                    if eth_dma.eth_ptp_collect_tx_ts() {
+                        PTP_T3_S = eth_dma.ptp_tx_ts_s();
+                        PTP_T3_NS = eth_dma.ptp_tx_ts_ns();
                         await_resp = 1;
                     } else {
                         PTP_T3_MISS +%= 1;
                     }
                 }
-                if pt == PTP_DELAY_RESP && ptp_rx_seq() == sync_seq && await_resp != 0 {
-                    PTP_T4_S = ptp_rx_ts_s();
-                    PTP_T4_NS = ptp_rx_ts_ns();
+                if pt == PTP_DELAY_RESP && eth_dma.ptp_rx_seq() == sync_seq && await_resp != 0 {
+                    PTP_T4_S = eth_dma.ptp_rx_ts_s();
+                    PTP_T4_NS = eth_dma.ptp_rx_ts_ns();
                     // All four collected: publish the raw deltas. t2ns is
                     // our own MAC's RX timestamp (< 1e9 by hardware digital
                     // rollover, TSCTRLSSR); t1ns is wire data whose bound is
@@ -169,7 +169,7 @@ fn main() @context(thread) {
                             ds = ds -% 1 as i32;
                         }
                         if ds >= 0 as i32 {
-                            ptp_step(ds as u32, dns as u32, true);
+                            ptp_clock.ptp_step(ds as u32, dns as u32, true);
                         } else {
                             // Master ahead: add the magnitude.
                             var as_: i32 = 0 as i32 -% ds;
@@ -178,7 +178,7 @@ fn main() @context(thread) {
                                 ans = ans + 1000000000 as i32;
                                 as_ = as_ -% 1 as i32;
                             }
-                            ptp_step(as_ as u32, ans as u32, false);
+                            ptp_clock.ptp_step(as_ as u32, ans as u32, false);
                         }
                         PTP_STEPS +%= 1;
                         PTP_LOCK = 1;
@@ -190,10 +190,10 @@ fn main() @context(thread) {
                         // reference drift every time.
                     } else if (PTP_DELAY_NS as i32) > 50000 as i32
                         || (PTP_DELAY_NS as i32) < (0 as i32 - 50000 as i32) {
-                        // Delay sanity gate: the true path delay is
+                        // Delay sanity gate: the true path board.delay is
                         // microseconds and near-constant; a corrupted
-                        // timestamp pairing distorts the delay estimate as
-                        // much as the offset, so an implausible delay marks
+                        // timestamp pairing distorts the board.delay estimate as
+                        // much as the offset, so an implausible board.delay marks
                         // the whole round as garbage. Standard PTP outlier
                         PTP_REJECTS +%= 1;
                     } else {
@@ -212,7 +212,7 @@ fn main() @context(thread) {
                             // to the thermally wandering on-die HSI, but
                             // against the now-stable off-die reference it
                             // limit-cycled at +/-650 us (sigma 332 us)
-                            // while the path delay sat at a clean 28 ns
+                            // while the path board.delay sat at a clean 28 ns
                             // sigma -- pure servo dynamics recirculating
                             // its own kicks, not measurement noise. A
                             // damped PI averages instead.
@@ -227,7 +227,7 @@ fn main() @context(thread) {
                             // double, settles in ~3 rounds. Gains are this
                             // hot because the noise budget is inverted from
                             // a normal PTP setup: measurement noise is tiny
-                            // (delay sigma ~30 ns) while the reference
+                            // (board.delay sigma ~30 ns) while the reference
                             // random-walks ~200 ppm/min, so the loop should
                             // chase every measurement.
                             // Loop invariant, established by init (0) and
@@ -248,7 +248,7 @@ fn main() @context(thread) {
                             if servo_freq > 70000000 as i32 {
                                 servo_freq = 70000000 as i32;
                             }
-                            var anow: i32 = ptp_base_addend() as i32 + servo_freq - off * 6 as i32;
+                            var anow: i32 = ptp_clock.ptp_base_addend() as i32 + servo_freq - off * 6 as i32;
                             // Authority clamp: ~±2.1% around nominal. The
                             // PTP references are 64 MHz PLL'd from each
                             // board's ST-LINK MCO, which is MEASURED to be
@@ -257,15 +257,15 @@ fn main() @context(thread) {
                             // The old ±16e6 (~±4768 ppm) clamp railed
                             // against that and the servo could never null
                             // the rate. ±70e6 covers two ±1% references.
-                            const lo: i32 = ptp_base_addend() as i32 - 70000000 as i32;
-                            const hi: i32 = ptp_base_addend() as i32 + 70000000 as i32;
+                            const lo: i32 = ptp_clock.ptp_base_addend() as i32 - 70000000 as i32;
+                            const hi: i32 = ptp_clock.ptp_base_addend() as i32 + 70000000 as i32;
                             if anow < lo {
                                 anow = lo;
                             }
                             if anow > hi {
                                 anow = hi;
                             }
-                            ptp_set_addend(anow as u32);
+                            ptp_clock.ptp_set_addend(anow as u32);
                             PTP_ADDEND_NOW = anow as u32;
                             // Lock window 250 us ~ 3 sigma of the measured
                             // floor (sigma 84 us at the 0.376 s cadence).
@@ -284,27 +284,27 @@ fn main() @context(thread) {
                     }
                 }
             }
-            if prod_rx_fresh() != 0 {
-                const mtype = prod_rx_take();
+            if eth_dma.prod_rx_fresh() != 0 {
+                const mtype = eth_dma.prod_rx_take();
                 if mtype == MSG_HEALTH_PING {
-                    const now2 = ptp_now();
-                    eth_send_status(BOARD_ID, prod_rx_seq(), now2.seconds, now2.nanoseconds,
+                    const now2 = ptp_clock.ptp_now();
+                    eth_dma.eth_send_status(BOARD_ID, eth_dma.prod_rx_seq(), now2.seconds, now2.nanoseconds,
                         PTP_OFFSET_EST, PTP_LOCK);
                     PINGS_ANSWERED +%= 1;
                 }
             }
         }
         // Tight loop, heartbeat paced by the PTP clock (1 Hz): with the
-        // old delay() pacing a Sync could sit in the ring for up to a
+        // old board.delay() pacing a Sync could sit in the ring for up to a
         // second before the Delay_Req went out, and the offset formula
         // inflates by rate_error x turnaround / 2 -- with the servo
         // actively changing the rate that is POSITIVE FEEDBACK (measured
         // +-1-2.5 ms limit cycles on the wire). Sub-ms turnaround makes
         // the coupling negligible.
-        const now = ptp_now();
+        const now = ptp_clock.ptp_now();
         if now.seconds != last_hb_s {
             last_hb_s = now.seconds;
-            eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+            eth_dma.eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
             seq +%= 1;
         }
     }

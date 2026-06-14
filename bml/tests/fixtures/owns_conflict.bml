@@ -3,6 +3,6 @@ import owns_a;
 import owns_b;
 
 fn main() @context(thread) {
-    touch_a();
-    touch_b();
+    owns_a.touch_a();
+    owns_b.touch_b();
 }

@@ -18,12 +18,12 @@ fn main() @context(thread) {
     ITEMS[i].b = 21;
     ITEMS[2].a = 30;
 
-    expect_u32(ITEMS[0].a, 10);
-    expect_u32(ITEMS[0].b, 11);
-    expect_u32(ITEMS[1].a, 20);
-    expect_u32(ITEMS[1].b, 21);
-    expect_u32(ITEMS[2].a, 30);
+    semihost.expect_u32(ITEMS[0].a, 10);
+    semihost.expect_u32(ITEMS[0].b, 11);
+    semihost.expect_u32(ITEMS[1].a, 20);
+    semihost.expect_u32(ITEMS[1].b, 21);
+    semihost.expect_u32(ITEMS[2].a, 30);
     // The neighbor field not written stays zero (no clobber).
-    expect_u32(ITEMS[2].b, 0);
-    done();
+    semihost.expect_u32(ITEMS[2].b, 0);
+    semihost.done();
 }

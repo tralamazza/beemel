@@ -74,7 +74,7 @@ fn board_init() {
 //
 // KNOWN GAP (found empirically 2026-06-10): this bring-up is ONE-SHOT. If the
 // cable is unplugged at boot, the MAC/DMA come up against a dead link and stay
-// wedged after the cable returns -- phy_poll_link observes the link bit but
+// wedged after the cable returns -- phy_lan8742.phy_poll_link observes the link bit but
 // never re-runs autonegotiation-dependent MAC config or re-arms the DMA. RX
 // and TX both stay silent until reset. Link-up recovery is a driver follow-up
 // (re-read PHY speed/duplex on the down->up edge, reprogram MACCR, re-arm the
@@ -87,13 +87,13 @@ fn board_bringup() {
     // Clock tree first: everything after this (PHY autoneg waits, TIM2, the
     // PTP addend) assumes the final 64 MHz SYSCLK. Falls back to HSI loudly
     // (clocks.CLK_STATUS) if the ST-LINK MCO is missing.
-    clk_init_hse_pll();
+    clocks.clk_init_hse_pll();
     board_init();
-    eth_init_clocks_and_pins();
-    phy_probe();
-    eth_init_tx();
-    eth_init_rx();
-    ptp_init();
+    eth_dma.eth_init_clocks_and_pins();
+    phy_lan8742.phy_probe();
+    eth_dma.eth_init_tx();
+    eth_dma.eth_init_rx();
+    ptp_clock.ptp_init();
 }
 
 fn delay() {

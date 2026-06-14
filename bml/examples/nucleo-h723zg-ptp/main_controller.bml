@@ -40,9 +40,9 @@ var PTP_T1_MISS: u32;        // Sync egress timestamp not collected
 var PTP_DRESP_SENT: u32;
 
 fn main() @context(thread) {
-    board_bringup();
-    timer_init();
-    copy_setup();
+    board.board_bringup();
+    timer.timer_init();
+    copy_dma.copy_setup();
 
     // The heartbeat cadence now comes from the TIM2 ISR: the ISR counts ticks
     // into the bare-@shared TICKS (timer.bml) and this thread loop fires a
@@ -55,45 +55,45 @@ fn main() @context(thread) {
     var dreq_seq: u32 = 0;
     var dreq_count_at: u32 = 0;
     var last_tick: u32 = 0;
-    const boot = ptp_now();
-    eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
+    const boot = ptp_clock.ptp_now();
+    eth_dma.eth_send_hello(BOARD_ID, 0, boot.seconds, boot.nanoseconds);
     loop {
-        phy_poll_link();
-        eth_poll_rx();
-        copy_poll();
+        phy_lan8742.phy_poll_link();
+        eth_dma.eth_poll_rx();
+        copy_dma.copy_poll();
         // Milestone 9 dispatch: Delay_Req -> wait for its RX hardware
         // timestamp (the context descriptor that follows the frame), then
         // Delay_Resp carrying t4.
-        if ptp_rx_fresh() != 0 {
-            const pt = ptp_rx_take();
+        if eth_dma.ptp_rx_fresh() != 0 {
+            const pt = eth_dma.ptp_rx_take();
             if pt == PTP_DELAY_REQ {
                 dreq_pending = 1;
-                dreq_seq = ptp_rx_seq();
-                dreq_count_at = rx_ts_count();
+                dreq_seq = eth_dma.ptp_rx_seq();
+                dreq_count_at = eth_dma.rx_ts_count();
             }
         }
-        if dreq_pending != 0 && rx_ts_count() != dreq_count_at {
-            eth_send_ptp(PTP_DELAY_RESP, dreq_seq, rx_ts_s(), rx_ts_ns(), false);
+        if dreq_pending != 0 && eth_dma.rx_ts_count() != dreq_count_at {
+            eth_dma.eth_send_ptp(PTP_DELAY_RESP, dreq_seq, eth_dma.rx_ts_s(), eth_dma.rx_ts_ns(), false);
             dreq_pending = 0;
             PTP_DRESP_SENT +%= 1;
         }
         // Milestone 8 dispatch: record any HEALTH_STATUS reply.
-        if prod_rx_fresh() != 0 {
-            const mtype = prod_rx_take();
+        if eth_dma.prod_rx_fresh() != 0 {
+            const mtype = eth_dma.prod_rx_take();
             if mtype == MSG_HEALTH_STATUS {
                 STATUS_SEEN +%= 1;
-                STATUS_LAST_BOARD = prod_rx_board();
-                STATUS_LAST_SEQ = prod_rx_seq();
-                STATUS_LAST_RX = prod_rx_pay(3);
-                STATUS_LAST_LOCK = prod_rx_pay(2);
-                STATUS_LAST_PTPOFF = prod_rx_pay(6);
+                STATUS_LAST_BOARD = eth_dma.prod_rx_board();
+                STATUS_LAST_SEQ = eth_dma.prod_rx_seq();
+                STATUS_LAST_RX = eth_dma.prod_rx_pay(3);
+                STATUS_LAST_LOCK = eth_dma.prod_rx_pay(2);
+                STATUS_LAST_PTPOFF = eth_dma.prod_rx_pay(6);
             }
         }
-        const t = timer_ticks();
+        const t = timer.timer_ticks();
         if t != last_tick {
             last_tick = t;
-            LOG_SUM = timer_log_sum();
-            const now = ptp_now();
+            LOG_SUM = timer.timer_log_sum();
+            const now = ptp_clock.ptp_now();
             // TX is STAGGERED so no tick bursts more than 2 frames: with
             // TSENALL every frame costs TWO RX descriptors (data + context)
             // at the receiver, and the mic's ring is 4 deep -- a 4-frame
@@ -103,16 +103,16 @@ fn main() @context(thread) {
             // Even ticks: Sync + Follow_Up. Odd ticks: heartbeat (+ ping
             // every 4th).
             if (t & 1) != 0 {
-                eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
+                eth_dma.eth_send_heartbeat(BOARD_ID, seq, now.seconds, now.nanoseconds);
             }
             // Two-step Sync every 2nd tick (milestone 10 raised the
             // cadence for servo convergence): event frame, collect the
             // egress timestamp from the write-back, publish in Follow_Up.
             if (t & 1) == 0 {
                 ptp_seq +%= 1;
-                eth_send_ptp(PTP_SYNC, ptp_seq, 0, 0, true);
-                if eth_ptp_collect_tx_ts() {
-                    eth_send_ptp(8, ptp_seq, ptp_tx_ts_s(), ptp_tx_ts_ns(), false);
+                eth_dma.eth_send_ptp(PTP_SYNC, ptp_seq, 0, 0, true);
+                if eth_dma.eth_ptp_collect_tx_ts() {
+                    eth_dma.eth_send_ptp(8, ptp_seq, eth_dma.ptp_tx_ts_s(), eth_dma.ptp_tx_ts_ns(), false);
                     PTP_SYNCS_SENT +%= 1;
                 } else {
                     PTP_T1_MISS +%= 1;
@@ -121,7 +121,7 @@ fn main() @context(thread) {
             // HEALTH_PING every 4th tick (odd phase; see stagger note).
             if (t & 3) == 1 {
                 ping_seq +%= 1;
-                eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
+                eth_dma.eth_send_ping(BOARD_ID, ping_seq, now.seconds, now.nanoseconds);
             }
             // Free-running heartbeat sequence; u32 wraparound is the
             seq +%= 1;

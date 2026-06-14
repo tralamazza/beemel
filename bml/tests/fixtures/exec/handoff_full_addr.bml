@@ -17,6 +17,6 @@ owns FakeDma.PTRREG;
 fn main() @context(thread) {
     FakeDma.PTRREG = 0x20008004; // full byte address, written verbatim
     var readback: u32 = FakeDma.PTRREG;
-    expect_u32(readback, 0x20008004);
-    done();
+    semihost.expect_u32(readback, 0x20008004);
+    semihost.done();
 }

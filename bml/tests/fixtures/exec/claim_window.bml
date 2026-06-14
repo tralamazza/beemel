@@ -23,6 +23,6 @@ fn main() @context(thread) {
             i = i + 1;
         }
     }
-    expect_u32(sum, 100);
-    done();
+    semihost.expect_u32(sum, 100);
+    semihost.done();
 }

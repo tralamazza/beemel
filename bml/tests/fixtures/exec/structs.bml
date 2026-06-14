@@ -14,26 +14,26 @@ struct Line {
 
 fn main() @context(thread) {
     var p = Point { x: 10, y: 20 };
-    expect_u32(p.x, 10);
-    expect_u32(p.y, 20);
+    semihost.expect_u32(p.x, 10);
+    semihost.expect_u32(p.y, 20);
 
     p.x = 30;
-    expect_u32(p.x, 30);
+    semihost.expect_u32(p.x, 30);
 
     // copy semantics: assigning duplicates; mutating the copy leaves the original
     var q = p;
     q.x = 99;
-    expect_u32(p.x, 30);
-    expect_u32(q.x, 99);
+    semihost.expect_u32(p.x, 30);
+    semihost.expect_u32(q.x, 99);
 
     // nested struct field access
     var ln = Line { a: Point { x: 1, y: 2 }, b: Point { x: 3, y: 4 } };
-    expect_u32(ln.a.y, 2);
-    expect_u32(ln.b.x, 3);
+    semihost.expect_u32(ln.a.y, 2);
+    semihost.expect_u32(ln.b.x, 3);
 
     // packed layout: no padding between u32 fields
-    expect_u32(sizeof(Point), 8);
-    expect_u32(sizeof(Line), 16);
+    semihost.expect_u32(sizeof(Point), 8);
+    semihost.expect_u32(sizeof(Line), 16);
 
-    done();
+    semihost.done();
 }

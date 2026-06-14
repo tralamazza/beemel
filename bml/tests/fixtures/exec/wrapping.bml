@@ -7,20 +7,20 @@ import harness.semihost;
 fn main() @context(thread) {
     // u8 add wraps: 255 + 1 = 0
     var a: u8 = 255;
-    expect_u32((a + 1u8) as u32, 0);
+    semihost.expect_u32((a + 1u8) as u32, 0);
 
     // u8 mul wraps: 200 * 2 = 400 mod 256 = 144
     var b: u8 = 200;
-    expect_u32((b * 2u8) as u32, 144);
+    semihost.expect_u32((b * 2u8) as u32, 144);
 
     // u32 sub wraps: 0 - 1 = 0xFFFFFFFF
     var zero: u32 = 0;
-    expect_u32(zero - 1, 4294967295);
+    semihost.expect_u32(zero - 1, 4294967295);
 
     // i8 signed add wraps: 100 + 50 = 150 -> -106 (150 - 256)
-    expect_b1((100i8 + 50i8) == -106i8, true);
+    semihost.expect_b1((100i8 + 50i8) == -106i8, true);
     // and the same value's bit pattern read back as u8 is 150 (= 256 - 106)
-    expect_u32(((100i8 + 50i8) as u8) as u32, 150);
+    semihost.expect_u32(((100i8 + 50i8) as u8) as u32, 150);
 
-    done();
+    semihost.done();
 }

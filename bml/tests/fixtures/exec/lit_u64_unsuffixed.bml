@@ -8,10 +8,10 @@ import harness.semihost;
 
 fn main() @context(thread) {
     var a: u64 = 4294967296; // 2^32, unsuffixed
-    expect_u64(a, 4294967296u64);
+    semihost.expect_u64(a, 4294967296u64);
 
     var b: u64 = 18446744073709551615; // u64::MAX, unsuffixed
-    expect_u64(b, 18446744073709551615u64);
+    semihost.expect_u64(b, 18446744073709551615u64);
 
-    done();
+    semihost.done();
 }

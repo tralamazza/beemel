@@ -22,18 +22,18 @@ fn main() @context(thread) {
     // -- inside the 8K the QEMU machine actually maps, so the write/read-back
     // below exercises real memory (the old 0x20004000 location was unmapped
     // and the round-trip silently hung).
-    expect_b1(pool_addr >= 0x20001800, true);
-    expect_b1(pool_addr < 0x20002000, true);
+    semihost.expect_b1(pool_addr >= 0x20001800, true);
+    semihost.expect_b1(pool_addr < 0x20002000, true);
 
     // An ordinary static lands in the working RAM block, below the pool.
-    expect_b1(normal_addr < 0x20001800, true);
+    semihost.expect_b1(normal_addr < 0x20001800, true);
 
     // Placement does not disturb usability: the buffer still reads back writes.
     // The write goes directly; the read-back goes through a raw `*u32` view, the
     // same idiom the ETH descriptor code uses for agent-shared memory.
     POOL_BUF[1] = 0xCAFE;
     const pool_ptr = &POOL_BUF as *u32;
-    expect_u32(pool_ptr[1], 0xCAFE);
+    semihost.expect_u32(pool_ptr[1], 0xCAFE);
 
-    done();
+    semihost.done();
 }

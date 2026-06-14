@@ -6,20 +6,20 @@ import harness.semihost;
 fn main() @context(thread) {
     // truncate to the low 8 bits: 0x1FF -> 0xFF
     var w: u32 = 0x1FF;
-    expect_u32((w as u8) as u32, 0xFF);
+    semihost.expect_u32((w as u8) as u32, 0xFF);
 
     // zero-extend u8 -> u32
     var c: u8 = 0xFF;
-    expect_u32(c as u32, 255);
+    semihost.expect_u32(c as u32, 255);
 
     // narrowing keeps the low byte: 300 mod 256 = 44
     var n: u32 = 300;
-    expect_u32((n as u8) as u32, 44);
+    semihost.expect_u32((n as u8) as u32, 44);
 
     // sign-extend: 0xFF reinterpreted as i8 is -1, which sign-extends to a
     // 32-bit -1 (0xFFFFFFFF). Going through i8 -> i32 exercises `sext`.
     var s: u8 = 0xFF;
-    expect_u32(((s as i8) as i32) as u32, 4294967295);
+    semihost.expect_u32(((s as i8) as i32) as u32, 4294967295);
 
-    done();
+    semihost.done();
 }

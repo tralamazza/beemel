@@ -122,7 +122,7 @@ fn tim2_isr() @isr("TIM2", priority = 2) {
     // Mixed-sharer consumption: peek at the MDMA buffer from ISR context
     // (copy_dma.bml) -- the composed claim+reclaim window makes this safe
     // against the thread consumer.
-    copy_isr_peek();
+    copy_dma.copy_isr_peek();
 }
 
 // Thread-side reader. Annotated @context(thread) so this access contributes

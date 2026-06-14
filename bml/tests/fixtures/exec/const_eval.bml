@@ -8,17 +8,17 @@ const LEN: u32 = 4;
 
 fn main() @context(thread) {
     var arr: [u32; 4] = [1, 2, 3, 4];
-    expect_u32(arr[3], 4);
+    semihost.expect_u32(arr[3], 4);
 
     // const in arithmetic
-    expect_u32(SCALE * 3, 30);
+    semihost.expect_u32(SCALE * 3, 30);
 
     // const as a loop bound; sum of arr = 10
     var sum: u32 = 0;
     for i: u32 in 0 upto LEN {
         sum = sum + arr[i];
     }
-    expect_u32(sum, 10);
+    semihost.expect_u32(sum, 10);
 
-    done();
+    semihost.done();
 }

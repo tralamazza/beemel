@@ -17,10 +17,10 @@ fn main() @context(thread) {
     // Read: stride 2 over 8 elements -> logical length 4, r[i] == buf[2*i].
     var buf: [u32; 8] = [0u32, 10u32, 20u32, 30u32, 40u32, 50u32, 60u32, 70u32];
     const r: view u32 stride 2 = view(buf, stride 2);
-    expect_u32(r[0u32], 0u32);
-    expect_u32(r[1u32], 20u32);
-    expect_u32(r[2u32], 40u32);
-    expect_u32(r[3u32], 60u32);
+    semihost.expect_u32(r[0u32], 0u32);
+    semihost.expect_u32(r[1u32], 20u32);
+    semihost.expect_u32(r[2u32], 40u32);
+    semihost.expect_u32(r[3u32], 60u32);
 
     // Write through a mutable strided view: w[k] writes buf[2*k] and leaves the
     // skipped (odd) elements untouched. Pins that the multiplier is applied and
@@ -29,18 +29,18 @@ fn main() @context(thread) {
     var w: view mut u32 stride K = view(wbuf, stride K);
     w[0u32] = 100u32;
     w[3u32] = 130u32;
-    expect_u32(wbuf[0], 100u32); // physical 2*0
-    expect_u32(wbuf[1], 1u32); // untouched
-    expect_u32(wbuf[6], 130u32); // physical 2*3
-    expect_u32(wbuf[7], 1u32); // untouched
+    semihost.expect_u32(wbuf[0], 100u32); // physical 2*0
+    semihost.expect_u32(wbuf[1], 1u32); // untouched
+    semihost.expect_u32(wbuf[6], 130u32); // physical 2*3
+    semihost.expect_u32(wbuf[7], 1u32); // untouched
 
     // Non-power-of-two stride: stride 3 over 9 elements -> t[i] == buf[3*i].
     // Distinguishes a real `* 3` multiply from a shift/mask shortcut.
     var tbuf: [u32; 9] = [0u32, 11u32, 22u32, 33u32, 44u32, 55u32, 66u32, 77u32, 88u32];
     const t: view u32 stride 3 = view(tbuf, stride 3);
-    expect_u32(t[0u32], 0u32);
-    expect_u32(t[1u32], 33u32);
-    expect_u32(t[2u32], 66u32);
+    semihost.expect_u32(t[0u32], 0u32);
+    semihost.expect_u32(t[1u32], 33u32);
+    semihost.expect_u32(t[2u32], 66u32);
 
-    done();
+    semihost.done();
 }

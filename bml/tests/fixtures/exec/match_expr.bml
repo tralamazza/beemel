@@ -20,9 +20,9 @@ fn code(c: Cmd) -> u32 {
 }
 
 fn main() @context(thread) {
-    expect_u32(code(Cmd@Stop), 100);
-    expect_u32(code(Cmd@Go), 200);
-    expect_u32(code(Cmd@Pause), 300); // falls to wildcard
-    expect_u32(code(Cmd@Reset), 300); // non-contiguous discriminant, wildcard
-    done();
+    semihost.expect_u32(code(Cmd@Stop), 100);
+    semihost.expect_u32(code(Cmd@Go), 200);
+    semihost.expect_u32(code(Cmd@Pause), 300); // falls to wildcard
+    semihost.expect_u32(code(Cmd@Reset), 300); // non-contiguous discriminant, wildcard
+    semihost.done();
 }

@@ -24,16 +24,16 @@ import timer;
 import copy_dma;
 
 fn main() @context(thread) {
-    board_bringup();
-    timer_init();
-    // tim2_isr's copy_isr_peek reads MDMA registers every tick; without
-    // copy_setup the MDMA clock is off and that read is a bus access to an
+    board.board_bringup();
+    timer.timer_init();
+    // tim2_isr's copy_dma.copy_isr_peek reads MDMA registers every tick; without
+    // copy_dma.copy_setup the MDMA clock is off and that read is a bus access to an
     // unclocked AHB3 peripheral. Same init the controller does.
-    copy_setup();
-    eth_bench_init();
+    copy_dma.copy_setup();
+    eth_dma.eth_bench_init();
 
     loop {
-        phy_poll_link();
-        eth_bench_poll();
+        phy_lan8742.phy_poll_link();
+        eth_dma.eth_bench_poll();
     }
 }

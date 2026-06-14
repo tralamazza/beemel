@@ -2740,8 +2740,9 @@ fn main() @context(thread) {
     /// The `FileId` of the inlined `helper` definition in a resolved program.
     fn helper_file(a: &AnalysisResult) -> source::FileId {
         for item in &a.program.items {
+            // Imported items are flattened under a qualified name (`helper_lib.helper`).
             if let ast::Item::FnDef(f) = item
-                && f.name.0 == "helper"
+                && (f.name.0 == "helper" || f.name.0.ends_with(".helper"))
             {
                 return f.name.1.file;
             }
@@ -2775,7 +2776,7 @@ fn main() @context(thread) {
 import helper_lib;
 
 fn main() @context(thread) {
-    var x = helper();
+    var x = helper_lib.helper();
 }
 ";
         fs::write(&main_path, main_src).unwrap();

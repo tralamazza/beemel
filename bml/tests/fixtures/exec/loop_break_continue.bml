@@ -21,8 +21,8 @@ fn main() @context(thread) {
         }
         sum = sum + i;
     }
-    expect_u32(i, 10u32); // break fired at exactly 10
-    expect_u32(sum, 42u32); // continue skipped i == 3
+    semihost.expect_u32(i, 10u32); // break fired at exactly 10
+    semihost.expect_u32(sum, 42u32); // continue skipped i == 3
 
-    done();
+    semihost.done();
 }

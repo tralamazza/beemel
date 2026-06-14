@@ -16,15 +16,15 @@ enum Small: u8 {
 }
 
 fn main() @context(thread) {
-    expect_u32(Status@A as u32, 10);
-    expect_u32(Status@B as u32, 11);
-    expect_u32(Status@C as u32, 20);
-    expect_u32(Status@D as u32, 21);
-    expect_u32(Small@Z as u32, 2); // u8-backed enum widened to u32
+    semihost.expect_u32(Status@A as u32, 10);
+    semihost.expect_u32(Status@B as u32, 11);
+    semihost.expect_u32(Status@C as u32, 20);
+    semihost.expect_u32(Status@D as u32, 21);
+    semihost.expect_u32(Small@Z as u32, 2); // u8-backed enum widened to u32
 
     // sizeof reflects the underlying integer type
-    expect_u32(sizeof(Status), 4);
-    expect_u32(sizeof(Small), 1);
+    semihost.expect_u32(sizeof(Status), 4);
+    semihost.expect_u32(sizeof(Small), 1);
 
     // match selects the right arm
     var s = Status@C;
@@ -40,7 +40,7 @@ fn main() @context(thread) {
             r = 3;
         }
     }
-    expect_u32(r, 2);
+    semihost.expect_u32(r, 2);
 
-    done();
+    semihost.done();
 }

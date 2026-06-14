@@ -4,20 +4,20 @@ import harness.semihost;
 
 fn main() @context(thread) {
     // logical
-    expect_b1(true || false, true);
-    expect_b1(false || false, false);
-    expect_b1(false || true, true);
-    expect_b1(true && false, false);
-    expect_b1(true && true, true);
+    semihost.expect_b1(true || false, true);
+    semihost.expect_b1(false || false, false);
+    semihost.expect_b1(false || true, true);
+    semihost.expect_b1(true && false, false);
+    semihost.expect_b1(true && true, true);
 
     // bitwise
-    expect_u32(0xF0 & 0x0F, 0);
-    expect_u32(0xF0 | 0x0F, 0xFF);
-    expect_u32(0xFF ^ 0x0F, 0xF0);
+    semihost.expect_u32(0xF0 & 0x0F, 0);
+    semihost.expect_u32(0xF0 | 0x0F, 0xFF);
+    semihost.expect_u32(0xFF ^ 0x0F, 0xF0);
 
     // bitwise NOT complements at the operand width: ~0u8 = 0xFF
     var z: u8 = 0u8;
-    expect_u32((~z) as u32, 0xFF);
+    semihost.expect_u32((~z) as u32, 0xFF);
 
-    done();
+    semihost.done();
 }

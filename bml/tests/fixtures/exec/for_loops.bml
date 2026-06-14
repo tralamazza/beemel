@@ -10,7 +10,7 @@ fn main() @context(thread) {
     for i: u32 in 0 upto 10 {
         sum = sum + i;
     }
-    expect_u32(sum, 45);
+    semihost.expect_u32(sum, 45);
 
     // half-open downto with custom step: 10, 8, 6, 4, 2 -> 30 (step lands on 0
     // exactly; a step that skipped past 0 would underflow the unsigned counter,
@@ -19,28 +19,28 @@ fn main() @context(thread) {
     for j: u32 in 10 downto 0 step 2 {
         s2 = s2 + j;
     }
-    expect_u32(s2, 30);
+    semihost.expect_u32(s2, 30);
 
     // signed counter: -2..2 sums to 0
     var s3: i32 = 0;
     for k: i32 in -2 upto 3 {
         s3 = s3 + k;
     }
-    expect_b1(s3 == 0i32, true);
+    semihost.expect_b1(s3 == 0i32, true);
 
     // empty range runs zero times
     var cnt: u32 = 0;
     for m: u32 in 5 upto 5 {
         cnt = cnt + 1;
     }
-    expect_u32(cnt, 0);
+    semihost.expect_u32(cnt, 0);
 
     // step == 1 is safe at the type boundary: 250..254 -> 5 iterations, no wrap
     var cnt2: u32 = 0;
     for n: u8 in 250 upto 255 {
         cnt2 = cnt2 + 1;
     }
-    expect_u32(cnt2, 5);
+    semihost.expect_u32(cnt2, 5);
 
     // continue advances by step (skips i == 2): 0 + 1 + 3 + 4 = 8
     var s4: u32 = 0;
@@ -50,7 +50,7 @@ fn main() @context(thread) {
         }
         s4 = s4 + p;
     }
-    expect_u32(s4, 8);
+    semihost.expect_u32(s4, 8);
 
-    done();
+    semihost.done();
 }

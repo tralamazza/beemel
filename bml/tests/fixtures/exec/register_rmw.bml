@@ -23,29 +23,29 @@ fn main() @context(thread) {
 
     // write one field, read it back
     FAKE.CR.MID = 5;
-    expect_u32(FAKE.CR.MID, 5);
+    semihost.expect_u32(FAKE.CR.MID, 5);
 
     // writing a neighbouring field preserves the first (RMW keeps other bits)
     FAKE.CR.LOW = 3;
-    expect_u32(FAKE.CR.MID, 5);
-    expect_u32(FAKE.CR.LOW, 3);
+    semihost.expect_u32(FAKE.CR.MID, 5);
+    semihost.expect_u32(FAKE.CR.LOW, 3);
 
     // full register packs both fields at their offsets: MID(5)<<4 | LOW(3) = 0x53
-    expect_u32(FAKE.CR, 0x53);
+    semihost.expect_u32(FAKE.CR, 0x53);
 
     // overwriting a field clears its old bits first
     FAKE.CR.MID = 2;
-    expect_u32(FAKE.CR.MID, 2);
-    expect_u32(FAKE.CR.LOW, 3);
+    semihost.expect_u32(FAKE.CR.MID, 2);
+    semihost.expect_u32(FAKE.CR.LOW, 3);
 
     // single-bit and multi-bit fields in a second register
     FAKE.FLAGS = 0;
     FAKE.FLAGS.EN = true;
     FAKE.FLAGS.MODE = 3;
-    expect_b1(FAKE.FLAGS.EN, true);
-    expect_u32(FAKE.FLAGS.MODE, 3);
+    semihost.expect_b1(FAKE.FLAGS.EN, true);
+    semihost.expect_u32(FAKE.FLAGS.MODE, 3);
     // EN(1) | MODE(3)<<1 = 1 | 6 = 0x7
-    expect_u32(FAKE.FLAGS, 0x7);
+    semihost.expect_u32(FAKE.FLAGS, 0x7);
 
-    done();
+    semihost.done();
 }

@@ -7,24 +7,24 @@ fn main() @context(thread) {
     var a: [u32; 4] = [10, 20, 30, 40];
 
     // initializer values, by constant index
-    expect_u32(a[0], 10);
-    expect_u32(a[3], 40);
+    semihost.expect_u32(a[0], 10);
+    semihost.expect_u32(a[3], 40);
 
     // write then read back, constant index
     a[1] = 99;
-    expect_u32(a[1], 99);
+    semihost.expect_u32(a[1], 99);
 
     // variable index, both write and read
     var i: u32 = 2;
     a[i] = 7;
-    expect_u32(a[i], 7);
+    semihost.expect_u32(a[i], 7);
 
     // sum over the whole array via a loop: 10 + 99 + 7 + 40
     var sum: u32 = 0;
     for k: u32 in 0 upto 4 {
         sum = sum + a[k];
     }
-    expect_u32(sum, 156);
+    semihost.expect_u32(sum, 156);
 
-    done();
+    semihost.done();
 }

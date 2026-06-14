@@ -7,14 +7,14 @@ var G: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
 
 fn main() @context(thread) {
     const v: view u32 = view(G);
-    expect_u32(v[0u32], 10u32);
-    expect_u32(v[3u32], 40u32);
+    semihost.expect_u32(v[0u32], 10u32);
+    semihost.expect_u32(v[3u32], 40u32);
     var sum: u32 = 0u32;
     var i: u32 = 0u32;
     while i < 4u32 {
         sum = sum + v[i];
         i = i + 1u32;
     }
-    expect_u32(sum, 100u32);
-    done();
+    semihost.expect_u32(sum, 100u32);
+    semihost.done();
 }

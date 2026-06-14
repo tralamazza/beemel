@@ -26,35 +26,35 @@ struct Bytes {
 fn main() @context(thread) {
     // array literal of bare elements adopts the declared element type
     var arr: [u8; 4] = [10, 20, 30, 40];
-    expect_u32(arr[0] as u32, 10);
-    expect_u32(arr[3] as u32, 40);
+    semihost.expect_u32(arr[0] as u32, 10);
+    semihost.expect_u32(arr[3] as u32, 40);
 
     // bare literal stored into a narrow array element
     arr[1] = 200;
-    expect_u32(arr[1] as u32, 200);
+    semihost.expect_u32(arr[1] as u32, 200);
 
     // bare literal assigned to a narrow variable
     var x: u8 = 0u8;
     x = 99;
-    expect_u32(x as u32, 99);
+    semihost.expect_u32(x as u32, 99);
 
     // bare literal as a narrow call argument, and a narrow return
-    expect_u32(take_u8(250) as u32, 250);
-    expect_u32(ret_u8() as u32, 250);
+    semihost.expect_u32(take_u8(250) as u32, 250);
+    semihost.expect_u32(ret_u8() as u32, 250);
 
     // u16 arithmetic across a call wraps: 60000 + 10000 = 70000 mod 65536 = 4464
-    expect_u32(add_u16(60000, 10000) as u32, 4464);
+    semihost.expect_u32(add_u16(60000, 10000) as u32, 4464);
 
     // bare literals into narrow struct fields
     var by: Bytes = Bytes { a: 1, b: 2 };
     by.a = 250;
-    expect_u32(by.a as u32, 250);
-    expect_u32(by.b as u32, 2);
+    semihost.expect_u32(by.a as u32, 250);
+    semihost.expect_u32(by.b as u32, 2);
 
     // bare literal stored through a pointer to a narrow type
     var p: *mut u8 = &mut x;
     *p = 123;
-    expect_u32(x as u32, 123);
+    semihost.expect_u32(x as u32, 123);
 
-    done();
+    semihost.done();
 }
