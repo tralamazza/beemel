@@ -1,11 +1,8 @@
 # Minimal target with one region, for the E600 "unknown region" test.
 arch = armv7em
 cpu = cortex-m7
-flash_base = 0x08000000
-flash_size = 1M
-ram_base = 0x20000000
-ram_size = 128K
 
+data_block = dtcm
 [mem.flash]
 base = 0x08000000
 size = 1M

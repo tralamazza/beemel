@@ -5,12 +5,17 @@ arch = armv7m
 cpu = cortex-m3
 priority_bits = 4
 has_bitband = true
-flash_base = 0x08000000
-flash_size = 64K
-ram_base = 0x20000000
-ram_size = 4K
 vector_table_offset = 0x08000000
 
+data_block = ram
 [agent.fakedma]
 kind = dma
 handoff = FakeDma.PTRREG
+
+[mem.flash]
+base = 0x08000000
+size = 64K
+
+[mem.ram]
+base = 0x20000000
+size = 4K

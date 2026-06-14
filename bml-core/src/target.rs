@@ -16,15 +16,11 @@ pub struct Target {
     /// ARMv6-M ignore-warning only makes sense for an explicit `true`.
     has_bitband_set: bool,
     pub has_mpu: bool,
-    pub flash_base: u64,
-    pub flash_size: u64,
-    pub ram_base: u64,
-    pub ram_size: u64,
     pub vector_table_offset: u64,
     /// Name of the mem block that holds `.data`/`.bss`/`.stack` (the working
-    /// RAM) for mem-block targets. The code/flash block is inferred from
-    /// `vector_table_offset`, so with mem blocks the flat `flash_*`/`ram_*` keys
-    /// are unneeded. `None` falls back to the block containing `ram_base`.
+    /// RAM). The code/flash block is inferred from `vector_table_offset`. When a
+    /// target has exactly one non-flash block, `data_block` may be omitted (that
+    /// block is used); with several RAM blocks it must be set.
     pub data_block: Option<String>,
     /// Hardware spinlock physics (`spinlock_base` / `spinlock_count`): a
     /// bank of read-to-claim / write-to-release mutex registers (e.g. the
@@ -72,6 +68,13 @@ pub struct MemBlock {
     /// Defaults to `true` (assume cacheable -- the dangerous case -- so a region
     /// shared with a non-coherent agent must be declared `cacheable = false`).
     pub cacheable: bool,
+    /// Whether this RAM has error-correcting code (ECC). ECC RAM powers up with
+    /// random check bits, so `reset_handler` must word-scrub the whole block at
+    /// cold boot or a later cache linefill over never-written words raises an ECC
+    /// double-error `BusFault` (measured on the NUCLEO-H723ZG). Only `ecc = true`
+    /// blocks are scrubbed; plain RAM defaults to `false` (no scrub -- just the
+    /// usual `.data` copy and `.bss` zero).
+    pub ecc: bool,
 }
 
 impl MemBlock {
@@ -307,10 +310,6 @@ impl Default for Target {
             has_bitband: true,
             has_bitband_set: false,
             has_mpu: true,
-            flash_base: 0x0800_0000,
-            flash_size: 256 * 1024,
-            ram_base: 0x2000_0000,
-            ram_size: 64 * 1024,
             vector_table_offset: 0x0800_0000,
             data_block: None,
             spinlock_base: None,
@@ -411,6 +410,7 @@ impl Target {
                                 base: 0,
                                 size: 0,
                                 cacheable: true,
+                                ecc: false,
                             });
                             target.mem_blocks.len() - 1
                         };
@@ -504,6 +504,9 @@ impl Target {
                     }
                     "cacheable" => {
                         block.cacheable = parse_bool(val, "cacheable", line_num)?;
+                    }
+                    "ecc" => {
+                        block.ecc = parse_bool(val, "ecc", line_num)?;
                     }
                     _ => {
                         return Err(format!("line {}: unknown mem key `{key}`", line_num + 1));
@@ -626,21 +629,14 @@ impl Target {
                     target.has_bitband_set = true;
                 }
                 "has_mpu" => target.has_mpu = parse_bool(val, key, line_num)?,
-                "flash_base" => {
-                    target.flash_base = parse_int(val)
-                        .map_err(|_| format!("line {}: invalid flash_base: {val}", line_num + 1))?;
-                }
-                "flash_size" => {
-                    target.flash_size = parse_int(val)
-                        .map_err(|_| format!("line {}: invalid flash_size: {val}", line_num + 1))?;
-                }
-                "ram_base" => {
-                    target.ram_base = parse_int(val)
-                        .map_err(|_| format!("line {}: invalid ram_base: {val}", line_num + 1))?;
-                }
-                "ram_size" => {
-                    target.ram_size = parse_int(val)
-                        .map_err(|_| format!("line {}: invalid ram_size: {val}", line_num + 1))?;
+                "flash_base" | "flash_size" | "ram_base" | "ram_size" => {
+                    return Err(format!(
+                        "line {}: `{key}` was removed -- declare memory with [mem.*] blocks \
+                         instead, e.g.\n  [mem.flash]\n  base = 0x08000000\n  size = 64K\n  \
+                         [mem.ram]\n  base = 0x20000000\n  size = 20K\nand `data_block = ram` \
+                         when there is more than one RAM block",
+                        line_num + 1
+                    ));
                 }
                 "spinlock_base" => {
                     target.spinlock_base = Some(parse_int(val).map_err(|_| {
@@ -832,8 +828,9 @@ impl Target {
                 return Err(format!("data_block = `{name}` names no [mem.*]"));
             }
             if self.ram_block().is_none() {
-                return Err("mem blocks are defined but no working-RAM block; set \
-                     `data_block = <name>` (or point ram_base into a [mem.*])"
+                return Err("several RAM blocks are defined but none is marked as the \
+                     working RAM; set `data_block = <name>` to the one holding \
+                     .data/.bss/.stack"
                     .to_string());
             }
         }
@@ -1021,20 +1018,18 @@ impl Target {
 
     /// The code/flash block: the mem block holding the vector table (`.text`/
     /// `.rodata` link here, and it is the load region for `.data`). Inferred
-    /// from `vector_table_offset`, which is in flash by definition; falls back to
-    /// the block containing `flash_base` for targets predating the inference.
+    /// from `vector_table_offset`, which is in flash by definition.
     #[must_use]
     pub fn flash_block(&self) -> Option<&MemBlock> {
-        let contains = |addr: u64| {
-            self.mem_blocks
-                .iter()
-                .find(move |m| addr >= m.base && addr < m.end())
-        };
-        contains(self.vector_table_offset).or_else(|| contains(self.flash_base))
+        let addr = self.vector_table_offset;
+        self.mem_blocks
+            .iter()
+            .find(|m| addr >= m.base && addr < m.end())
     }
 
     /// RAM blocks the generated `reset_handler` word-zeroes at boot, BEFORE
-    /// the `.data` copy: every mem block except the code/flash block.
+    /// the `.data` copy: every mem block declared `ecc = true` (and not the
+    /// code/flash block). Plain RAM is not scrubbed -- only `.data`/`.bss`.
     ///
     /// Why (measured on the NUCLEO-H723ZG, 2026-06-12): ECC RAM powers up
     /// with random check bits. Word-zeroing `.data`/`.bss` covers the
@@ -1050,39 +1045,47 @@ impl Target {
         let flash = self.flash_block().map(|m| m.name.clone());
         self.mem_blocks
             .iter()
-            .filter(|m| Some(&m.name) != flash.as_ref())
+            .filter(|m| m.ecc && Some(&m.name) != flash.as_ref())
             .map(|m| (m.base, m.size))
             .collect()
     }
 
     /// The working-RAM block (holds `.data`/`.bss`/`.stack`): the block named by
-    /// `data_block`, else the block containing `ram_base` (back-compat).
+    /// `data_block`, else -- when there is exactly one non-flash block -- that
+    /// block. With several RAM blocks and no `data_block`, returns `None` (a
+    /// validation error).
     #[must_use]
     pub fn ram_block(&self) -> Option<&MemBlock> {
         if let Some(name) = &self.data_block {
             return self.mem_blocks.iter().find(|m| &m.name == name);
         }
-        self.mem_blocks
-            .iter()
-            .find(|m| self.ram_base >= m.base && self.ram_base < m.end())
+        let flash = self.flash_block().map(|m| &m.name);
+        let mut non_flash = self.mem_blocks.iter().filter(|m| Some(&m.name) != flash);
+        let first = non_flash.next();
+        if non_flash.next().is_none() {
+            first
+        } else {
+            None
+        }
     }
 
     #[must_use]
     pub fn generate_linker_script(&self) -> String {
         if self.mem_blocks.is_empty() {
-            self.generate_flat_linker_script()
+            self.generate_default_linker_script()
         } else {
             self.generate_region_linker_script()
         }
     }
 
-    /// The legacy single-FLASH/single-RAM layout, used when no `[mem.*]` blocks
-    /// are present. Driven by the flat `flash_*`/`ram_*` keys.
-    fn generate_flat_linker_script(&self) -> String {
-        let flash_base = format!("0x{:08X}", self.flash_base);
-        let flash_size = format_size(self.flash_size);
-        let ram_base = format!("0x{:08X}", self.ram_base);
-        let ram_size = format_size(self.ram_size);
+    /// A generic single-FLASH/single-RAM layout used only when no target file is
+    /// given (the `Target::default()` no-`--target` convenience). Real targets
+    /// declare memory with `[mem.*]` blocks and take the region layout below.
+    fn generate_default_linker_script(&self) -> String {
+        let flash_base = "0x08000000";
+        let flash_size = "256K";
+        let ram_base = "0x20000000";
+        let ram_size = "64K";
         let vt_offset = format!("0x{:08X}", self.vector_table_offset);
 
         format!(
@@ -1705,8 +1708,7 @@ mod tests {
     const H723_REGIONS: &str = "\
 arch = armv7em
 cpu = cortex-m7
-flash_base = 0x08000000
-ram_base = 0x20000000
+data_block = dtcm
 
 [mem.flash]
 base = 0x08000000
@@ -2034,8 +2036,6 @@ size = 16K
     fn reach_star_reaches_everything() {
         let src = "\
 arch = armv7em
-flash_base = 0x08000000
-ram_base = 0x30000000
 [mem.flash]
 base = 0x08000000
 size = 64K
@@ -2090,8 +2090,7 @@ handoff = P.R align 3
             &base,
             "arch = armv7em\n\
              cpu = cortex-m7\n\
-             flash_base = 0x08000000\n\
-             ram_base = 0x20000000\n\
+             data_block = sram\n\
              [mem.flash]\n\
              base = 0x08000000\n\
              size = 64K\n\
@@ -2313,9 +2312,10 @@ cacheable = false
     }
 
     #[test]
-    fn flat_linker_script_unchanged_without_regions() {
-        // A target with no [region.*] keeps the legacy FLASH/RAM script.
-        let target = t("arch = armv7em\nram_base = 0x20000000\nram_size = 20K\n");
+    fn default_linker_script_without_mem_blocks() {
+        // No `[mem.*]` blocks (the no-`--target` default path) -> the generic
+        // FLASH/RAM layout, with no region sections.
+        let target = t("arch = armv7em\n");
         let ld = target.generate_linker_script();
         assert!(
             ld.contains("FLASH (rx)") && ld.contains("RAM   (rwx)"),
@@ -2329,7 +2329,6 @@ cacheable = false
         // sram1 backs the region but nothing covers the vector table -> rejected.
         let src = "\
 arch = armv7em
-ram_base = 0x30000000
 [mem.sram1]
 base = 0x30000000
 size = 16K
@@ -2348,7 +2347,6 @@ agents = d
     fn extent_parses_and_validates() {
         let src = "\
 arch = armv7em
-ram_base = 0x30000000
 [agent.d]
 kind = dma
 extent = DMA.CNT.COUNT x4
@@ -2361,37 +2359,32 @@ extent = DMA.CNT.COUNT x4
         assert_eq!(eb.scale, 4);
 
         // Default scale is 1 (the field counts bytes).
-        let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT\n",
-        );
+        let target = t("arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT\n");
         let Some(ExtentSpec::Counter(eb1)) = &target.agents[0].channels[0].extent else {
             panic!("expected counter extent");
         };
         assert_eq!(eb1.scale, 1);
 
         // Path must be Peripheral.REGISTER.FIELD; multiplier must be xN.
-        let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT\n",
-        )
-        .unwrap_err();
+        let err =
+            Target::parse("arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT\n").unwrap_err();
         assert!(err.contains("Peripheral.REGISTER.FIELD"), "got: {err}");
-        let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT 4\n",
-        )
-        .unwrap_err();
+        let err =
+            Target::parse("arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT 4\n")
+                .unwrap_err();
         assert!(err.contains("xN"), "got: {err}");
 
         // Unit cross-check clause: `when P.R.F = V`, with or without an
         // explicit multiplier before it.
         let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE = 2\n",
+            "arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE = 2\n",
         );
         let Some(ExtentSpec::Counter(eb)) = &target.agents[0].channels[0].extent else {
             panic!("expected counter extent");
         };
         assert_eq!(eb.unit.as_ref().unwrap(), &("DMA.CTRL.SIZE".to_string(), 2));
         let target = t(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT when DMA.CTRL.SIZE = 1\n",
+            "arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT when DMA.CTRL.SIZE = 1\n",
         );
         let Some(ExtentSpec::Counter(eb)) = &target.agents[0].channels[0].extent else {
             panic!("expected counter extent");
@@ -2399,7 +2392,7 @@ extent = DMA.CNT.COUNT x4
         assert_eq!(eb.scale, 1);
         assert_eq!(eb.unit.as_ref().unwrap().1, 1);
         let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE\n",
+            "arch = armv7em\n[agent.d]\nkind = dma\nextent = DMA.CNT.COUNT x4 when DMA.CTRL.SIZE\n",
         )
         .unwrap_err();
         assert!(err.contains("= <value>"), "got: {err}");
@@ -2409,7 +2402,6 @@ extent = DMA.CNT.COUNT x4
     fn agent_channels_parse_and_merge() {
         let src = "\
 arch = armv7em
-ram_base = 0x30000000
 [agent.dma]
 kind = dma
 enabled_by = RCC.EN.DMA
@@ -2435,10 +2427,9 @@ handoff = DMA.CH1_SAR
         assert_eq!(dma.handoffs().count(), 2);
 
         // Agent-level keys inside a channel section are rejected.
-        let err = Target::parse(
-            "arch = armv7em\nram_base = 0x30000000\n[agent.d]\nkind = dma\n[agent.d.ch0]\nreach = sram\n",
-        )
-        .unwrap_err();
+        let err =
+            Target::parse("arch = armv7em\n[agent.d]\nkind = dma\n[agent.d.ch0]\nreach = sram\n")
+                .unwrap_err();
         assert!(err.contains("belong on the agent"), "got: {err}");
 
         // Re-opening a channel section (include semantics) resumes it:
@@ -2453,7 +2444,6 @@ handoff = DMA.CH1_SAR
     fn agent_level_transaction_keys_form_default_channel() {
         let src = "\
 arch = armv7em
-ram_base = 0x30000000
 [agent.d]
 kind = dma
 handoff = DMA.SAR
@@ -2468,13 +2458,13 @@ completes_by = DMA.ISR.TC
     }
 
     #[test]
-    fn legacy_flat_keys_still_parse() {
-        // Slice 0 is additive: target files with no [mem.*]/[agent.*] sections
-        // keep working on the flat flash_*/ram_* keys.
-        let target = t("arch = armv7em\nram_base = 0x30000000\nram_size = 32K\n");
-        assert!(target.mem_blocks.is_empty());
-        assert!(target.agents.is_empty());
-        assert!(target.regions.is_empty());
-        assert_eq!(target.ram_base, 0x3000_0000);
+    fn flat_keys_are_rejected() {
+        // The flat flash_*/ram_* keys were removed; memory is declared with
+        // [mem.*] blocks only. Using a flat key is a hard error pointing there.
+        let err = Target::parse("arch = armv7em\nflash_base = 0x08000000\n").unwrap_err();
+        assert!(
+            err.contains("removed") && err.contains("[mem."),
+            "got: {err}"
+        );
     }
 }

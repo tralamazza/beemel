@@ -989,18 +989,32 @@ priority_bits = 4
 has_fpu = true
 has_bitband = true
 has_mpu = true
-flash_base = 0x08000000
-flash_size = 256K
-ram_base = 0x20000000
-ram_size = 64K
 vector_table_offset = 0x08000000
+
+[mem.flash]
+base = 0x08000000
+size = 256K
+
+[mem.ram]
+base = 0x20000000
+size = 64K
 ```
 
-- Keys: `arch`, `cpu`, `priority_bits`, `has_fpu`, `has_bitband`, `has_mpu`,
-  `flash_base`, `flash_size`, `ram_base`, `ram_size`, `vector_table_offset`
+- Scalar keys: `arch`, `cpu`, `priority_bits`, `has_fpu`, `has_bitband`,
+  `has_mpu`, `vector_table_offset`, `data_block`
 - `cpu` (optional, e.g. `cortex-m3`, `cortex-m4`, `cortex-m7`) selects the
   `llc` CPU and the default FPU; `arch` (`armv6m`/`armv7m`/`armv7em`) selects
   the instruction set
+- Memory is declared with one or more `[mem.NAME]` blocks, each with `base`,
+  `size`, and optional `cacheable` (default `true`) and `ecc` (default `false`)
+  -- the single way to describe the memory map. The code/flash block is the one
+  containing `vector_table_offset`; the working-RAM block (holding
+  `.data`/`.bss`/`.stack`) is named by `data_block`, or inferred when exactly
+  one non-flash block exists. An `ecc = true` block is word-scrubbed by the
+  generated `reset_handler` at cold boot (ECC RAM safety; see
+  [regions-agents.md](regions-agents.md)). Regions and agent reach refer to
+  blocks by name. (The former flat `flash_base`/`flash_size`/`ram_base`/`ram_size`
+  keys were removed.)
 - `has_bitband = true` enables bit-band alias access for single-bit fields
   on Cortex-M3/M4 (peripheral region `0x4000_0000`–`0x400F_FFFF`,
   SRAM region `0x2000_0000`–`0x200F_FFFF`)

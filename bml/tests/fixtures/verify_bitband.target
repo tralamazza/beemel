@@ -3,7 +3,14 @@
 # whitelist must cover.
 arch = armv7m
 cpu = cortex-m3
-flash_base = 0x08000000
-flash_size = 256K
-ram_base = 0x20000000
-ram_size = 64K
+
+vector_table_offset = 0x08000000
+data_block = ram
+
+[mem.flash]
+base = 0x08000000
+size = 256K
+
+[mem.ram]
+base = 0x20000000
+size = 64K

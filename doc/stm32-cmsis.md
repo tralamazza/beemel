@@ -43,17 +43,17 @@ Where each output field comes from:
 |---|---|
 | `arch`, `cpu`, `has_bitband` | Hardcoded family table (`f4` -> armv7em + bitband + cortex-m4) |
 | `priority_bits`, `has_fpu`, `has_mpu` | `#define __NVIC_PRIO_BITS` / `__FPU_PRESENT` / `__MPU_PRESENT` in `Include/<device>.h` |
-| `flash_base`, `flash_size`, `ram_base`, `ram_size` | `Source/Templates/gcc/linker/*.ld` `MEMORY` block, or (when the repo has no `.ld`) `Source/Templates/iar/linker/*_flash.icf` |
-| `vector_table_offset` | Defaults to `flash_base` |
+| `[mem.flash]`, `[mem.ram]` (`base`/`size`) | `Source/Templates/gcc/linker/*.ld` `MEMORY` block, or (when the repo has no `.ld`) `Source/Templates/iar/linker/*_flash.icf` |
+| `vector_table_offset` | Defaults to the flash block's `base` |
 | `[interrupts]` | `IRQn_Type` enum in `Include/<device>.h`, NVIC slots only |
 
 Edits you may need to make by hand:
 
-- **`flash_size`** — the device header covers a whole variant family. For example
+- **`[mem.flash]` size** — the device header covers a whole variant family. For example
   `stm32f103xb.h` is shared by F103C8 (64K) and F103CB (128K); the linker template uses
   the variant maximum. Trim to your actual SKU.
 - **`vector_table_offset`** — if you boot under a bootloader (DFU, MCUboot), set this to
-  the application offset and adjust `flash_base`/`flash_size` accordingly.
+  the application offset and adjust the `[mem.flash]` `base`/`size` accordingly.
 
 ## 3. Anatomy of the output
 
@@ -70,11 +70,15 @@ has_bitband = true
 has_fpu = true
 has_mpu = true
 
-flash_base = 0x08000000
-flash_size = 256K
-ram_base = 0x20000000
-ram_size = 64K
 vector_table_offset = 0x08000000
+
+[mem.flash]
+base = 0x08000000
+size = 256K
+
+[mem.ram]
+base = 0x20000000
+size = 64K
 
 [interrupts]
 WWDG = 0
@@ -223,7 +227,7 @@ is simpler than any automation.
 
 ## 6. Limitations and gotchas
 
-- **`flash_size`** is the variant family maximum, not your SKU. Trim by hand.
+- **`[mem.flash]` size** is the variant family maximum, not your SKU. Trim by hand.
 - **IRQ label naming** matches the vendor `IRQn_Type` enum, including chip-specific
   composites like `TIM1_BRK_TIM9` (F4) or `DMA1_Channel2_3` (F0). The
   `@isr("LABEL", ...)` string must match exactly.

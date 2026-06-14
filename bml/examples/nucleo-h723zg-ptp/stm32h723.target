@@ -40,13 +40,17 @@ TIM2 = 28
 base = 0x08000000
 size = 1M
 
+# ECC RAM: reset_handler word-scrubs this whole block at cold boot so a later
+# cache linefill over never-written words cannot raise an ECC double-fault.
 [mem.sram]
 base = 0x30000000
 size = 28K
+ecc = true
 
 [mem.dtcm]
 base = 0x20000000
 size = 128K
+ecc = true
 # TCM accesses bypass the caches by construction, so non-cacheable is the
 # physical truth. The generated MPU region this implies is redundant for a TCM
 # (the M7 ignores cacheability attributes there) but harmless -- one of 16.
@@ -55,6 +59,7 @@ cacheable = false
 [mem.dma_pool]
 base = 0x30007000
 size = 4K
+ecc = true
 # Non-cacheable: the ETH/MDMA DMA buffers live here and the CPU shares them with
 # D-cache on. The compiler generates an MPU region enforcing this (no manual
 # cache maintenance), so the CPU's accesses bypass the cache and stay coherent.
