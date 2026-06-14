@@ -44,7 +44,7 @@ That axis is what the tutorials keep coming back to.
 | 01 | [Getting Started](01-getting-started.md) | Install the toolchain, write a self-contained blinky, build it, watch it run in QEMU. The `check` and `build` commands. |
 | 02 | [Values and Control Flow](02-values-and-control-flow.md) | `var`/`const`, the integer/float types, why there are **no** implicit conversions and how `as` works, `b1` vs `b8`, `if`/`while`/`loop`/`for`, `match` over ints and enums, block- and `if`-expressions, compound and wrapping assignment. |
 | 03 | [Peripherals and MMIO](03-peripherals-and-mmio.md) | `peripheral`/`reg`/`field`, bit-fields and read-modify-write, read-only/write-only access, bit-band, and why BML has no `volatile` keyword. Rebuild blinky from first principles. |
-| 04 | Targets and Building | Anatomy of a `.target` file, the auto-generated linker script, optimization levels, `--save-temps`, `--out-dir`, flashing real hardware vs QEMU, `bml cflags`. |
+| 04 | [Targets and Building](04-targets-and-building.md) | Anatomy of a `.target` file, the auto-generated linker script, optimization levels, `--save-temps`, `--out-dir`, flashing real hardware vs QEMU, `bml cflags`. |
 | 05 | Interrupts and Contexts | `@isr`/`@context`/`@naked`, the vector table, the call-graph rules (ISR cannot call thread, etc.), `@exclusive` ownership, `@shared` + the priority-ceiling protocol, and `claim` windows. |
 | 06 | Data: Structs, Enums, Modules | Structs with explicit layout and visible padding, `@repr(C)`/`@repr(packed)`, field endianness (`@be`/`@le`), enums, the Move/Copy rule, and the `import`/`export` module system. |
 | 07 | Pointers and Views | `*T` vs `*mut T`, `&`/`&mut`, `null`, pointer arithmetic, function pointers; then `view`/`ring`/`bits` -- bounds-checked descriptors -- and how their Move/Copy behavior differs. |
@@ -52,7 +52,7 @@ That axis is what the tutorials keep coming back to.
 | 09 | Verifying with `bml verify` | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
 | 10 | C Interop | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
 
-Tutorials 01-03 are written; the rest are outlined above and will be filled in.
+Tutorials 01-04 are written; the rest are outlined above and will be filled in.
 
 ## See also
 

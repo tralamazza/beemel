@@ -195,17 +195,23 @@ arch = armv7m
 cpu = cortex-m3
 priority_bits = 4
 has_bitband = true
-flash_base = 0x08000000
-flash_size = 64K
-ram_base = 0x20000000
-ram_size = 20K
 vector_table_offset = 0x08000000
+
+data_block = ram
+
+[mem.flash]
+base = 0x08000000
+size = 64K
+
+[mem.ram]
+base = 0x20000000
+size = 20K
 ```
 
 The compiler turns this into the right `llc` flags and an auto-generated linker
 script (so flash and RAM end up at the right addresses). Tutorial 04 covers every
 key; for now it's enough that `arch`/`cpu` pick the instruction set and the
-`*_base`/`*_size` keys describe the memory map.
+`[mem.*]` blocks describe the memory map (`base`/`size` per region of memory).
 
 ## Check it, build it, run it
 
