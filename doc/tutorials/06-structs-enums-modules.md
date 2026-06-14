@@ -175,17 +175,14 @@ borrow checker, enough for embedded's mostly-static ownership.
 
 ## Modules
 
-One file is one module (`.bml`). Items are private unless `export`ed, and another
-file pulls them in with `import`.
+One file is one module (`.bml`). Items are private unless marked `export`, and
+another file pulls them in with `import`.
 
 ```bml
 // rgb.bml
-export fn pack;
-export struct Color;
+export struct Color { r: u8, g: u8, b: u8 }   // `export` modifier -> public
 
-struct Color { r: u8, g: u8, b: u8 }
-
-fn pack(c: Color) -> u32 {
+export fn pack(c: Color) -> u32 {
     return (c.r as u32 << 16) | (c.g as u32 << 8) | (c.b as u32);
 }
 ```
@@ -217,23 +214,30 @@ and `var c: rgb.Color` (type), `rgb.MAX` (const), `rgb.State@Idle` (enum
 variant). There is no selective `import rgb { pack, Color };` form -- writing one
 is `error[E109]`. `import sub.mod;` resolves to `sub/mod.bml` relative to the
 importer (path segments become subdirectories; the last segment is the
-qualifier). `export` lists the public API:
+qualifier).
+
+**`export` is a modifier at the definition** (default private), and it's
+*enforced*: reach a non-exported item through its qualifier and you get
+`error[E503]`. Mark the public API on each definition:
 
 ```bml
-export fn init, send;       // several at once
-export struct Frame;
-export const RATE;
+export fn init() { ... }
+export struct Frame { ... }
+export const RATE: u32 = 8;
+// fn helper() { ... }      <- no `export` -> private; `rgb.helper` is E503
 ```
 
-One deliberate exception: **peripherals stay bare.** A `peripheral` is global
-hardware (one `RCC` per chip), so even when imported you write `RCC.APB2ENR`, not
-`rcc.RCC.APB2ENR` -- peripherals share one flat namespace across modules. (That's
-why tutorial 01's blinky imports `svd.rcc` but writes `RCC...` directly.)
+One deliberate exception: **peripherals stay bare** and need no `export`. A
+`peripheral` is global hardware (one `RCC` per chip), so even when imported you
+write `RCC.APB2ENR`, not `rcc.RCC.APB2ENR` -- peripherals share one flat namespace
+across modules. (That's why tutorial 01's blinky imports `svd.rcc` but writes
+`RCC...` directly.)
 
 > **From Rust:** `export`/`import` are roughly `pub` + `use`, but flatter -- one
-> file per module, no `mod` tree, and access is always module-qualified (closer
-> to Go than to Rust's `use` that pulls names into local scope). No header files
-> (C): the compiler reads `.bml` directly.
+> file per module, no `mod` tree, `export` is a `pub`-style modifier at the
+> definition, and access is always module-qualified (closer to Go than to Rust's
+> `use` that pulls names into local scope). No header files (C): the compiler
+> reads `.bml` directly.
 
 ## Put it together and run it
 

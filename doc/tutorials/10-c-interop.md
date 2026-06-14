@@ -112,14 +112,10 @@ Rather than redeclaring `memcpy` in every file, put the declarations in a module
 and import it -- reached qualified, like any import (tutorial 06):
 
 ```bml
-// c.bml
-export fn memcpy;
-export fn memset;
-export fn strlen;
-
-extern fn memcpy(dst: *mut u8, src: *u8, n: u32) -> *mut u8;
-extern fn memset(ptr: *mut u8, val: u8, n: u32) -> *mut u8;
-extern fn strlen(s: *u8) -> u32;
+// c.bml -- mark each public declaration `export` (tutorial 06)
+export extern fn memcpy(dst: *mut u8, src: *u8, n: u32) -> *mut u8;
+export extern fn memset(ptr: *mut u8, val: u8, n: u32) -> *mut u8;
+export extern fn strlen(s: *u8) -> u32;
 ```
 
 ```bml

@@ -907,10 +907,13 @@ Enum values are just integers of the underlying type:
   hardware (one `RCC` per chip), addressed at a fixed address and named in target
   files; `import svd.rcc;` then `RCC.APB2ENR` -- never `rcc.RCC`. Peripheral names
   therefore share a single flat namespace across modules.
-- `export fn foo;` -- marks an item part of the public API
-  - Also supports: `export struct Foo;`, `export enum Bar;`, `export var X;`, `export const Y;`, `export peripheral Z;`
-  - `export` governs the qualified/aliased access surface (`f.bar` resolves only
-    exported items)
+- `export` is a **declaration-site modifier** marking an item public:
+  `export fn foo() { ... }`, `export struct Color { ... }`, `export const RATE: u32 = 8;`,
+  `export enum State: u8 { ... }`, `export var BUF: [u8; 4];`, `export extern fn memcpy(...);`.
+  Default is private.
+  - Enforced: qualified access (`foo.bar`) to a non-exported item is `E503`.
+  - Peripherals do not take `export` -- they are global hardware, always reachable
+    bare (above).
 - No circular imports (compile error E500)
 - No header files -- compiler reads `.bml` directly
 - Module-level items are unordered within a file; forward references are fine
@@ -921,17 +924,17 @@ Enum values are just integers of the underlying type:
   carried under its qualified name (`module.item`); peripherals keep their bare
   names. Single `.ll`/`.o` output.
 
-**Export syntax:**
+**Export syntax** (the modifier precedes the definition):
 ```
-export fn init, send;
-export struct Point;
-export enum State;
-export var BUF;
-export const RATE;
-export peripheral UART1;
+export fn send(b: u8) { ... }
+export struct Point { x: u32, y: u32 }
+export enum State: u8 { Idle = 0, Run = 1 }
+export var BUF: [u8; 4];
+export const RATE: u32 = 8;
 ```
 
-Items not listed in any `export` statement are private to the module.
+Items declared without `export` are private: an importer naming one through its
+qualifier gets `E503`.
 
 **Qualified access:**
 ```
@@ -1040,11 +1043,13 @@ size = 64K
 ```
 program       = { item }
 
-item          = fn_def | extern_fn_def | global_var_def | const_def
-              | peripheral_def | import_stmt | export_stmt
-              | struct_def
-              | enum_def
+item          = [ "export" ] ( fn_def | extern_fn_def | global_var_def
+                              | const_def | struct_def | enum_def )
+              | peripheral_def | import_stmt
               | comptime_assert
+              ;; `export` is a declaration-site modifier (default private);
+              ;; it does not apply to peripherals (global), imports, or
+              ;; comptime_assert.
 
 comptime_assert = "comptime_assert" "(" expr ")" ";"
 
@@ -1078,9 +1083,6 @@ storage_annotation = "exclusive" "(" ident ")"
               | "align" "(" int ")"          (* power of two; over-aligns the global *)
 
 import_stmt   = "import" ident {"." ident} ["as" ident] ";"
-
-export_stmt   = "export" ("fn" | "var" | "const" | "peripheral" | "struct" | "enum")
-                ident {"," ident} ";"
 
 struct_def    = "struct" ident [ "@repr" "(" ("C" | "packed") ")" ]
                 "{" { ident ":" type [ endian_attr ] "," } "}"
@@ -1427,7 +1429,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |
 | E501  | Module not found |
-| E503  | (removed -- selective imports are gone; `export` governs qualified access (`m.x` / `alias.x`) via name resolution) |
+| E503  | Qualified access (`m.x` / `alias.x`) to an item the module did not `export` |
 | W200  | (unused -- was "import statements not yet supported") |
 | W301  | Integer literal may be truncated in cast |
 | W600  | Recursive call chain detected -- stack depth may be under-estimated |
