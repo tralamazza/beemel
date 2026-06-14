@@ -1,0 +1,10 @@
+// Shadowing is rejected (E347): a `var`/`const`/for-loop variable may not reuse
+// a name already visible in the current or any enclosing scope, including
+// parameters. Here the inner `var x` hides the outer `x`.
+fn main() @context(thread) {
+    var x: u32 = 1;
+    if x > 0 {
+        var x: u32 = 2;
+        x = x + 1;
+    }
+}

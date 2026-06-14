@@ -152,12 +152,257 @@ impl Checker {
                 );
             }
             if let ast::Item::FnDef(fn_def) = item {
+                check_shadowing(fn_def, symbols, diags);
                 local_types.extend(check_fn(fn_def, symbols, diags));
                 check_agent_ptr_escape(fn_def, symbols, diags);
             }
         }
         check_comptime_asserts(program, symbols, diags);
         local_types
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shadowing check (E347)
+//
+// A `var`/`const`/for-loop variable may not reuse a name already visible in the
+// current or any enclosing lexical scope, including the function's parameters.
+// Sibling and sequential scopes are independent, so two disjoint blocks -- or two
+// sequential `for i ...` loops -- may reuse a name; only hiding a still-visible
+// binding is rejected.
+//
+// This is a standalone lexical pass, deliberately separate from the type
+// checker's `ScopeStack`: that scope inserts a for-variable into the *enclosing*
+// block (so it persists past the loop) and re-checks loop bodies for the
+// move-analysis fixpoint, both of which would make it report false duplicates.
+// ---------------------------------------------------------------------------
+
+/// Names declared in the lexical scopes currently open, innermost last.
+type ShadowScopes = Vec<HashSet<String>>;
+
+fn check_shadowing(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
+    // Outermost scope: module-level value names. A parameter, local, or for-loop
+    // variable may not hide a module `var`, `const`, `fn`, or `peripheral` -- all
+    // of which are referenced as bare identifiers in value/access position. Type
+    // names (structs/enums) live in a separate namespace and are not seeded.
+    let mut module_scope = HashSet::new();
+    module_scope.extend(symbols.functions.keys().cloned());
+    module_scope.extend(symbols.statics.keys().cloned());
+    module_scope.extend(symbols.consts.keys().cloned());
+    module_scope.extend(symbols.peripherals.keys().cloned());
+
+    // Parameters nest just below the module scope. Routing them through
+    // `shadow_declare` also rejects duplicate parameter names and a parameter
+    // that hides a global.
+    let mut scopes: ShadowScopes = vec![module_scope, HashSet::new()];
+    for p in &fn_def.params {
+        shadow_declare(&p.name, &mut scopes, diags);
+    }
+    shadow_block(&fn_def.body, &mut scopes, diags);
+}
+
+/// Declare `name` in the innermost scope, reporting E347 if it is already
+/// visible anywhere up the scope stack.
+fn shadow_declare(name: &ast::Ident, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag) {
+    if scopes.iter().any(|s| s.contains(&name.0)) {
+        diags.error(
+            format!(
+                "`{}` shadows a binding already in scope; shadowing is not allowed -- \
+                 rename one of them",
+                name.0
+            ),
+            "E347",
+            name.1,
+        );
+    }
+    scopes.last_mut().unwrap().insert(name.0.clone());
+}
+
+fn shadow_block(block: &ast::Block, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag) {
+    scopes.push(HashSet::new());
+    for stmt in &block.stmts {
+        shadow_stmt(stmt, scopes, diags);
+    }
+    if let Some(trailing) = &block.trailing {
+        shadow_expr(trailing, scopes, diags);
+    }
+    scopes.pop();
+}
+
+fn shadow_stmt(stmt: &Stmt, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag) {
+    match stmt {
+        // The initializer is evaluated before the new binding exists, so walk it
+        // first, then declare the name.
+        Stmt::VarDecl(vd) => {
+            shadow_expr(&vd.init, scopes, diags);
+            shadow_declare(&vd.name, scopes, diags);
+        }
+        Stmt::Assign(a) => {
+            shadow_lvalue(&a.target, scopes, diags);
+            shadow_expr(&a.value, scopes, diags);
+        }
+        Stmt::CompoundAssign(a) => {
+            shadow_lvalue(&a.target, scopes, diags);
+            shadow_expr(&a.value, scopes, diags);
+        }
+        Stmt::Expr(e) => shadow_expr(e, scopes, diags),
+        Stmt::If(i) => {
+            shadow_expr(&i.cond, scopes, diags);
+            shadow_block(&i.then_block, scopes, diags);
+            if let Some(else_branch) = &i.else_branch {
+                shadow_stmt(else_branch, scopes, diags);
+            }
+        }
+        Stmt::Loop(l) => shadow_block(&l.body, scopes, diags),
+        Stmt::While(w) => {
+            shadow_expr(&w.cond, scopes, diags);
+            shadow_block(&w.body, scopes, diags);
+        }
+        // The loop variable is scoped to the loop: a dedicated scope holds it and
+        // the body nests inside, so after the loop it is gone and a following
+        // `for` may reuse the name.
+        Stmt::For(f) => {
+            shadow_expr(&f.start, scopes, diags);
+            shadow_expr(&f.end, scopes, diags);
+            if let Some(step) = &f.step {
+                shadow_expr(step, scopes, diags);
+            }
+            scopes.push(HashSet::new());
+            shadow_declare(&f.var, scopes, diags);
+            shadow_block(&f.body, scopes, diags);
+            scopes.pop();
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                shadow_expr(v, scopes, diags);
+            }
+        }
+        Stmt::Break(_) | Stmt::Continue(_) => {}
+        Stmt::Block(b) => shadow_block(b, scopes, diags),
+        Stmt::Match(m) => {
+            shadow_expr(&m.scrutinee, scopes, diags);
+            for arm in &m.arms {
+                shadow_block(&arm.body, scopes, diags);
+            }
+        }
+        Stmt::Asm(a) => {
+            for (_, e) in &a.outputs {
+                shadow_expr(e, scopes, diags);
+            }
+            for (_, e) in &a.inputs {
+                shadow_expr(e, scopes, diags);
+            }
+        }
+        Stmt::Assume(a) => shadow_expr(&a.cond, scopes, diags),
+        Stmt::Assert(a) => shadow_expr(&a.cond, scopes, diags),
+        Stmt::Claim(c) => shadow_block(&c.body, scopes, diags),
+    }
+}
+
+fn shadow_lvalue(lv: &LValue, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag) {
+    match lv {
+        LValue::Name(_) => {}
+        LValue::Field(inner, _) => shadow_lvalue(inner, scopes, diags),
+        LValue::Index(inner, idx) => {
+            shadow_lvalue(inner, scopes, diags);
+            shadow_expr(idx, scopes, diags);
+        }
+        LValue::Deref(e) => shadow_expr(e, scopes, diags),
+    }
+}
+
+/// Walk an expression for embedded blocks (`{ ... }`, `if`/`match` expressions)
+/// that can themselves contain declarations. Exhaustive over `Expr` -- a new
+/// variant must be added here so a declaration nested inside it is not missed.
+fn shadow_expr(expr: &Expr, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag) {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::StringLiteral(..)
+        | Expr::NullLiteral(..)
+        | Expr::Ident(..)
+        | Expr::SizeOf(..)
+        | Expr::EnumVariant { .. } => {}
+        Expr::Unary(_, e) => shadow_expr(e, scopes, diags),
+        Expr::Binary(l, _, r) => {
+            shadow_expr(l, scopes, diags);
+            shadow_expr(r, scopes, diags);
+        }
+        Expr::Call(callee, args) => {
+            shadow_expr(callee, scopes, diags);
+            for a in args {
+                shadow_expr(a, scopes, diags);
+            }
+        }
+        Expr::FieldAccess(e, _) => shadow_expr(e, scopes, diags),
+        Expr::Index(base, idx) => {
+            shadow_expr(base, scopes, diags);
+            shadow_expr(idx, scopes, diags);
+        }
+        Expr::Group(e) => shadow_expr(e, scopes, diags),
+        Expr::Cast(e, _) => shadow_expr(e, scopes, diags),
+        Expr::ViewNew {
+            base, len, stride, ..
+        } => {
+            shadow_expr(base, scopes, diags);
+            if let Some(l) = len {
+                shadow_expr(l, scopes, diags);
+            }
+            if let Some(s) = stride {
+                shadow_expr(s, scopes, diags);
+            }
+        }
+        Expr::RingNew {
+            base,
+            capacity,
+            head,
+            len,
+            ..
+        } => {
+            shadow_expr(base, scopes, diags);
+            if let Some(c) = capacity {
+                shadow_expr(c, scopes, diags);
+            }
+            shadow_expr(head, scopes, diags);
+            shadow_expr(len, scopes, diags);
+        }
+        Expr::BitNew {
+            base,
+            bit_offset,
+            len_bits,
+            ..
+        } => {
+            shadow_expr(base, scopes, diags);
+            if let Some(o) = bit_offset {
+                shadow_expr(o, scopes, diags);
+            }
+            if let Some(l) = len_bits {
+                shadow_expr(l, scopes, diags);
+            }
+        }
+        Expr::ArrayInit(elems, _) => {
+            for e in elems {
+                shadow_expr(e, scopes, diags);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, e) in fields {
+                shadow_expr(e, scopes, diags);
+            }
+        }
+        Expr::Match(m) => {
+            shadow_expr(&m.scrutinee, scopes, diags);
+            for arm in &m.arms {
+                shadow_block(&arm.body, scopes, diags);
+            }
+        }
+        Expr::Block(b) => shadow_block(&b.block, scopes, diags),
+        Expr::If(i) => {
+            shadow_expr(&i.cond, scopes, diags);
+            shadow_block(&i.then_block, scopes, diags);
+            shadow_expr(&i.else_branch, scopes, diags);
+        }
     }
 }
 

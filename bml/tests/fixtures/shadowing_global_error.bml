@@ -1,0 +1,8 @@
+// Shadowing a module-level name is rejected (E347): the local `RATE` hides the
+// module `const RATE`, which a bare `RATE` reference could no longer reach.
+const RATE: u32 = 8;
+
+fn main() @context(thread) {
+    var RATE: u32 = 2;
+    RATE = RATE + 1;
+}

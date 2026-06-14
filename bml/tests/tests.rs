@@ -296,6 +296,8 @@ assert_pass!(test_const_aggregate_len, "const_aggregate_len.bml");
 assert_error!(test_len_bad_arg, "len_bad_arg_error.bml", "E326");
 assert_error!(test_len_redefine, "len_redefine_error.bml", "E345");
 assert_error!(test_cast_to_b1, "cast_to_b1_error.bml", "E346");
+assert_error!(test_shadowing, "shadowing_error.bml", "E347");
+assert_error!(test_shadowing_global, "shadowing_global_error.bml", "E347");
 assert_error!(
     test_const_nonconst_init,
     "const_nonconst_init_error.bml",

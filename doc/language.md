@@ -18,6 +18,15 @@ local and `const` is an immutable binding; when a local `const`'s initializer is
 itself a compile-time constant it may also be used in const positions (e.g. an
 array length), otherwise it is an ordinary immutable runtime binding.
 
+**No shadowing.** A parameter, local `var`/`const`, or `for`-loop variable may
+not reuse a name that is already visible: another binding in the current or an
+enclosing scope of the same function, or a module-level `var`/`const`/`fn`/
+`peripheral` (`E347`). Disjoint scopes are independent, so two sequential
+`for i ...` loops, or two sibling blocks, may reuse a name -- only hiding a
+still-visible binding is rejected. Type names (`struct`/`enum`) are a separate
+namespace and are not affected; module-level names must already be unique among
+themselves (`E200`). Rename one of the bindings.
+
 ### Built-in types
 
 | Type  | Width | LLVM   | Notes |
@@ -1401,6 +1410,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
 | E345  | `len` is a reserved builtin and cannot be defined as a function |
 | E346  | Cast to `b1` requires a `b1` source; compare instead (e.g. `x != 0`) |
+| E347  | Variable shadowing -- a parameter/`var`/`const`/for-loop variable reuses a name already visible in an enclosing scope, including a module-level `var`/`const`/`fn`/`peripheral` |
 | E359  | `@be`/`@le` field endianness requires a multi-byte integer type (u16/u32/u64/i16/i32/i64) |
 | E360  | Cannot take the address of a field stored in a non-native byte order (target-dependent) |
 
