@@ -71,7 +71,7 @@ cargo test --test tests -- test_verify_
 needed at run time:
 
 ```bash
-cargo build --release -p bml --features ikos-static
+cargo build --release -p beemel --features ikos-static
 ```
 
 You do NOT need to run the "Build IKOS" cmake commands above first: when the
