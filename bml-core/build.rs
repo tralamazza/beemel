@@ -138,11 +138,16 @@ fn main() {
 
     // Boost (static, BSL license). The set mirrors what ikos-analyzer links:
     // filesystem + thread and their internal dependencies.
-    let boost_dir = ["/opt/homebrew/opt/boost/lib", "/usr/local/opt/boost/lib", "/usr/lib64", "/usr/lib"]
-        .iter()
-        .map(Path::new)
-        .find(|p| p.exists() && p.join("libboost_filesystem.a").exists())
-        .expect("ikos-static: boost not found (install boost-devel)");
+    let boost_dir = [
+        "/opt/homebrew/opt/boost/lib",
+        "/usr/local/opt/boost/lib",
+        "/usr/lib64",
+        "/usr/lib",
+    ]
+    .iter()
+    .map(Path::new)
+    .find(|p| p.exists() && p.join("libboost_filesystem.a").exists())
+    .expect("ikos-static: boost not found (install boost-devel)");
     println!("cargo::rustc-link-search=native={}", boost_dir.display());
     for lib in [
         "boost_filesystem",
@@ -175,13 +180,16 @@ fn main() {
     // GMP stays DYNAMIC: LGPL.
     // libgmp.so on Linux, libgmp.dylib on macOS: accept either so the probe
     // is not Linux-only.
-    let gmp_dir = ["/opt/homebrew/opt/gmp/lib", "/usr/local/opt/gmp/lib", "/usr/lib64", "/usr/lib"]
-        .iter()
-        .map(Path::new)
-        .find(|p| {
-            p.exists() && (p.join("libgmp.so").exists() || p.join("libgmp.dylib").exists())
-        })
-        .expect("ikos-static: gmp not found (brew install gmp / install gmp-devel)");
+    let gmp_dir = [
+        "/opt/homebrew/opt/gmp/lib",
+        "/usr/local/opt/gmp/lib",
+        "/usr/lib64",
+        "/usr/lib",
+    ]
+    .iter()
+    .map(Path::new)
+    .find(|p| p.exists() && (p.join("libgmp.so").exists() || p.join("libgmp.dylib").exists()))
+    .expect("ikos-static: gmp not found (brew install gmp / install gmp-devel)");
     println!("cargo::rustc-link-search=native={}", gmp_dir.display());
     println!("cargo::rustc-link-lib=dylib=gmpxx");
     println!("cargo::rustc-link-lib=dylib=gmp");
@@ -219,11 +227,9 @@ fn find_llvm_config() -> PathBuf {
                 .find(|p| p.exists())
                 .map(Path::to_path_buf)
                 .or_else(|| {
-                    std::env::split_paths(
-                        &std::env::var("PATH").unwrap_or_default(),
-                    )
-                    .find(|dir| dir.join("llvm-config-18").exists())
-                    .map(|dir| dir.join("llvm-config-18"))
+                    std::env::split_paths(&std::env::var("PATH").unwrap_or_default())
+                        .find(|dir| dir.join("llvm-config-18").exists())
+                        .map(|dir| dir.join("llvm-config-18"))
                 })
                 .expect("ikos-static: no LLVM 18 llvm-config found; set BML_LLVM_CONFIG")
         },
