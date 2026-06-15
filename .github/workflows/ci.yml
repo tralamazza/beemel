@@ -14,6 +14,15 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      # The codegen/verify tests run the `bml` binary, which shells out to bare
+      # `opt`/`llc` from PATH. The runner has no LLVM by default, so without this
+      # those tests fail with "Failed to run opt: No such file or directory".
+      # Project targets LLVM 18; `.ll` is version-stable (doc/design-decisions.md).
+      - name: Install LLVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets
       - run: cargo test
