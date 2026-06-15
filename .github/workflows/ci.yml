@@ -29,4 +29,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The gate: a non-zero exit (threshold exceeded) fails the job. jscpd also
+      # writes report/jscpd-report.md via the markdown reporter (.jscpd.json),
+      # which the next step publishes to the run summary on pass or fail.
       - run: npx --yes jscpd@4.2.4
+      - name: Publish duplication report to step summary
+        if: always()
+        run: |
+          if [ -f report/jscpd-report.md ]; then
+            cat report/jscpd-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "jscpd report not generated" >> "$GITHUB_STEP_SUMMARY"
+          fi
