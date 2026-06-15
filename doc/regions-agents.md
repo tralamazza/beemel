@@ -130,6 +130,12 @@ agents = mdma              # cpu agent always implicitly included
 TIM2 = 28
 ```
 
+Top-level keys beyond the example: `vector_table_offset` (the reset-vector
+address; the flash mem block is *inferred* from it), and the capability flags
+`has_fpu` / `has_mpu` / `has_bitband` (`has_bitband` auto-clears on ARMv6-M with
+a warning). A mem block also takes `ecc = true` -- an ECC RAM the reset handler
+word-scrubs at cold boot so the check bits are valid before first read.
+
 Key reference (agent level):
 
 - `reach = <blocks>` -- the project's claim of what the agent touches.
@@ -188,8 +194,10 @@ SystemInit slot), `[boot_block]` (literal words emitted after the vector
 table -- the RP2350's 5-word Arm IMAGE_DEF; chip-agnostic mechanism).
 
 Register paths resolve against the SVD modules the program imports;
-unresolvable paths are build errors. Raw addresses in target files were
-rejected as unreviewable.
+unresolvable paths are build errors. Raw addresses in target files are
+unrepresentable by construction -- no key takes an address, register paths are
+the only form -- so an accidental literal fails at SVD resolution rather than
+silently configuring hardware (there is no explicit "reject raw address" guard).
 
 ## Layer 2: policy (regions)
 
@@ -226,7 +234,9 @@ A region names a mem block and lists the agents that share it.
   mutates is wrapped in `Type::AgentShared` at resolution
   (`region.rs::apply_derived_move`) -- the index-READ restriction (E326)
   comes from placement, with index-writes still legal (fill before
-  release). `@dma`/`@external` remain as explicit annotations for
+  release) on the bare `AgentShared(Array)` carrier; under `@shared in R`
+  everything, writes included, is blocked outside a `claim` (the carriers
+  nest). `@dma`/`@external` remain as explicit annotations for
   non-region cases; both resolve to the same carrier.
 - **`addr in R` struct fields** -- in-memory handoffs (descriptor buffer
   pointers). Layout-identical to `u32`; a write asserts the value lies in
@@ -366,7 +376,7 @@ Empirical IKOS facts the encodings are built on (measured, not assumed):
 
 | Code | Check |
 |---|---|
-| E326 | index-read of agent-shared memory (derived-Move; read through `reclaim`) |
+| E326 | index-read of agent-shared memory (derived-Move; read through `reclaim`) -- the shared "cannot index" code, of which this is one use |
 | E335 | `view()` over agent-shared memory (use `reclaim`); reclaim of `@shared in R` outside `claim` |
 | E600-E602 | region placement: unknown region; initializer on NOBITS region memory; `@section` + `in R` conflict |
 | E603-E605 | `owns`: bad path; cross-module conflict; handoff register written without ownership |
@@ -375,7 +385,7 @@ Empirical IKOS facts the encodings are built on (measured, not assumed):
 | E611 | reclaim guard: missing/wrong-polarity completion check, release between guard and reclaim, stale re-observation without a clearing write |
 | E612 | software port select not established for where the handed-off address lives |
 | E614 | `claim` misuse: non-`@shared` target, calls, escapes |
-| E615 | mutable static reachable from multiple cores (relaxes to require-claim with spinlock physics) |
+| E615 | mutable static reachable from multiple cores (relaxes to require-claim with spinlock physics); also `entry = <fn>` naming an undefined function |
 | E616 | a view outliving its justification window (claim escape, out-of-guard mention, use after release) |
 | E617 | `@extent` declaration shape |
 | E618 | extent unit cross-check (`when P.R.F = V` not established at arming) |
@@ -394,13 +404,13 @@ each recorded when found:
 |---|---|---|
 | `cacheable` on a mem block | trusted physics | a wrong value is at least visible silicon config (generated MPU), not silence |
 | `bus` window transcription | trusted transcription | reach is checked against it; the transcription itself is read off the manual |
-| Loop back-edge carries | lexical blind spot | a view/flag fact carried across one lexical guard by a loop back-edge (E611 staleness, E616) |
+| Loop back-edge carries | lexical blind spot | a view/flag fact carried across one lexical guard by a loop back-edge (E611 staleness, E616). A conservative loop-carry reject is implementable but depends on `cleared_by` first (see below) -- without it, it false-positives correct STM32 DMA loops; attempted and reverted on those grounds |
 | Addresses cast to integers | provenance domain | `&X as u32` stashed and dereferenced later is the verify/IKOS domain, not the lexical windows |
 | In-memory delivery association | precision | a descriptor's `addr in R` field delivery associates the descriptor, not the pointed-to buffer |
 | Entry address reuse | trusted policy | a declared entry's address used as an ordinary callback dodges E408 |
 | Computed ISER values | conservative smear | an undecodable enable assigns the ISR to all cores |
 | System exceptions | unmodeled | SysTick/PendSV priorities live in SHPR, not modeled |
-| `cleared_by` vocabulary | deferred | chips whose flag-clear is a separate register (H7 IFCR) get vocabulary when a double-observation idiom appears |
+| `cleared_by` vocabulary | deferred | chips whose flag-clear is a separate register (H7 IFCR) get vocabulary when a double-observation idiom appears. The `clears` set only recognizes a write to the flag's OWN register, so an STM32 ISR/IFCR clear is invisible (a latent false-positive in the straight-line staleness check, dormant only because no example double-observes). Prerequisite for any loop-back-edge guard: a continuous DMA loop that re-arms and clears via IFCR would be wrongly rejected without it. Demonstrated first consumer: H723 MDMA (`MDMA_C0ISR.CTCIF0` is readonly, cleared only via `MDMA_C0IFCR.CCTCIF0`) -- a correct continuous-copy loop is rejected today. Candidate: `cleared_by = P.R.F` alongside `completes_by`, refining the "when done" question (no new axis) |
 | Arm-then-deliver order | assumed | an extent count written before any handoff is unconstrained |
 | Directly calling another core's entry | undetected | entries are pinned so the launcher's `&entry` does not poison the tree |
 | Agent concurrency on reclaimed buffers (verify) | unmodeled | reclaim views load without havoc; the lexical E611/E616 windows are the guard |
