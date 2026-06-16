@@ -27,9 +27,12 @@ use std::time::Duration;
 use bml_core::borrow::BorrowChecker;
 use bml_core::checker::Checker;
 use bml_core::errors::DiagnosticBag;
+use bml_core::ir::IrEmitter;
 use bml_core::parser::Parser;
+use bml_core::region;
 use bml_core::resolver::Resolver;
 use bml_core::source::SourceMap;
+use bml_core::target::Target;
 
 // ─── PRNG (xorshift64*, same convention as the exec.rs generators) ───────────
 struct Rng(u64);
@@ -56,10 +59,12 @@ static ITER: AtomicU64 = AtomicU64::new(0);
 static DONE: AtomicBool = AtomicBool::new(false);
 static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
 
-/// Run the whole front end on `source`, discarding diagnostics. Import
-/// resolution is intentionally skipped: it touches the filesystem, which a
-/// fuzzer must not do. Every other phase runs. We only care that it returns
-/// (no panic / overflow / hang), not what it concludes.
+/// Run the whole pipeline on `source`, discarding diagnostics: the front end
+/// (lexer -> parser -> resolver -> checker -> borrow), then, if it accepted the
+/// program, the derived-Move/region passes and IR emission -- a crash in any of
+/// them (`ir.rs` especially) is a compiler bug. Import resolution is
+/// intentionally skipped: it touches the filesystem, which a fuzzer must not do.
+/// We only care that it returns (no panic / overflow / hang), not what it concludes.
 fn drive_frontend(source: &str) {
     let mut source_map = SourceMap::new();
     let file_id = source_map.add_file_with_source(PathBuf::from("fuzz.bml"), source.to_string());
@@ -73,7 +78,7 @@ fn drive_frontend(source: &str) {
     }
 
     let resolver = Resolver::new();
-    let symbols = resolver.resolve(&program, &mut diags);
+    let mut symbols = resolver.resolve(&program, &mut diags);
     if diags.has_errors() {
         return;
     }
@@ -83,6 +88,40 @@ fn drive_frontend(source: &str) {
         return;
     }
     BorrowChecker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        return;
+    }
+
+    // The front end accepted this program; drive IR emission too, so a crash in
+    // `ir.rs` (the largest stage, never otherwise fuzzed) is caught. Mirror the
+    // real build's pre-IR pipeline (bml/src/main.rs): derived-Move wrapping, a
+    // re-check, and region checks, against a default (regionless) target -- else
+    // IR would see types the real pipeline never produces and could "crash" on
+    // programs `bml build` would have rejected. A region-using input bails at
+    // `region::check` here exactly as targetless `bml build` does.
+    let target = Target::default();
+    region::apply_derived_move(&program, &target, &mut symbols);
+    Checker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        return;
+    }
+    BorrowChecker::check(&program, &symbols, &mut diags);
+    if diags.has_errors() {
+        return;
+    }
+    region::check(&program, &symbols, &target, &mut diags);
+    if diags.has_errors() {
+        return;
+    }
+
+    let mut emitter = IrEmitter::new(
+        target.to_arch(),
+        target.interrupts.clone(),
+        target.has_bitband,
+        false,
+        None,
+    );
+    let _ = emitter.emit(&program, &symbols);
 }
 
 /// Feed one input to the front end under `catch_unwind`. Returns the captured
