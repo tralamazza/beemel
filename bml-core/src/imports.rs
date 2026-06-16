@@ -32,6 +32,11 @@ pub struct ImportResolver {
     /// Persistent across analyses when the caller swaps in its own cache;
     /// otherwise an empty per-run cache. See [`ModuleCache`].
     pub cache: ModuleCache,
+    /// Global library search roots, tried *after* the importing file's own
+    /// directory (so a local module always shadows a library one). Empty by
+    /// default; the CLI fills it from `--lib`/`$BML_PATH`/the dev fallback. See
+    /// [`resolve_module_path`](ImportResolver::resolve_module_path).
+    pub lib_roots: Vec<PathBuf>,
     visiting: Vec<PathBuf>,
 }
 
@@ -48,6 +53,7 @@ impl ImportResolver {
             source_map: SourceMap::new(),
             diags: DiagnosticBag::new(),
             cache: ModuleCache::default(),
+            lib_roots: Vec::new(),
             visiting: Vec::new(),
         }
     }
@@ -108,16 +114,18 @@ impl ImportResolver {
                     );
 
                     let Some(path) = self.resolve_module_path(&import.module, parent_dir) else {
+                        // List every candidate tried (relative dir, then each lib
+                        // root) so a lib-path miss is diagnosable, like target
+                        // `include`. Mirrors `target::resolve_include`.
+                        let searched = std::iter::once(parent_dir)
+                            .chain(self.lib_roots.iter().map(PathBuf::as_path))
+                            .map(|root| {
+                                module_candidate(root, &import.module).display().to_string()
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         self.diags.error(
-                            format!(
-                                "module not found: `{module_name}` (expected `{}.bml`)",
-                                import
-                                    .module
-                                    .iter()
-                                    .map(|(name, _)| name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join("/"),
-                            ),
+                            format!("module not found: `{module_name}`; searched: {searched}"),
                             "E501",
                             span,
                         );
@@ -177,17 +185,16 @@ impl ImportResolver {
         Program { items, wrap_spans }
     }
 
+    /// Resolve `import a.b.c;` to a file: the importing file's own directory
+    /// first, then each library root in order (intermediate segments are
+    /// directories, the last is `<name>.bml`). The first existing file wins, so
+    /// a local module always shadows a library one. Returns `None` if no
+    /// candidate exists.
     fn resolve_module_path(&self, segments: &[ast::Ident], parent_dir: &Path) -> Option<PathBuf> {
-        let _ = self;
-        let mut candidate = parent_dir.to_path_buf();
-        for (i, (seg, _)) in segments.iter().enumerate() {
-            if i == segments.len() - 1 {
-                candidate.push(format!("{seg}.bml"));
-            } else {
-                candidate.push(seg);
-            }
-        }
-        candidate.exists().then_some(candidate)
+        std::iter::once(parent_dir)
+            .chain(self.lib_roots.iter().map(PathBuf::as_path))
+            .map(|root| module_candidate(root, segments))
+            .find(|candidate| candidate.exists())
     }
 
     fn load_and_parse(&mut self, path: &Path, canon: &Path) -> Result<Program, ()> {
@@ -292,6 +299,20 @@ fn push_unique(items: &mut Vec<Item>, seen: &mut HashSet<Span>, item: Item) {
     }
 }
 
+/// Build the candidate path for import `segments` under `root`: intermediate
+/// segments are directories, the last is `<name>.bml` (`a.b.c` -> `root/a/b/c.bml`).
+fn module_candidate(root: &Path, segments: &[ast::Ident]) -> PathBuf {
+    let mut candidate = root.to_path_buf();
+    for (i, (seg, _)) in segments.iter().enumerate() {
+        if i == segments.len() - 1 {
+            candidate.push(format!("{seg}.bml"));
+        } else {
+            candidate.push(seg);
+        }
+    }
+    candidate
+}
+
 fn canonicalize(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -310,5 +331,70 @@ fn item_def_span(item: &Item) -> Option<Span> {
         // claims in one file (different spans) are both kept.
         Item::Owns(o) => o.paths.first().map(|p| p.span),
         Item::Import(_) | Item::ComptimeAssert(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::{FileId, Span};
+
+    fn seg(name: &str) -> ast::Ident {
+        (name.to_string(), Span::new(FileId::new(), 0, 0))
+    }
+
+    // `import foo.svd.bar;` resolves from a library root when no local file
+    // exists -- the import-side analogue of the target `include` lib fallback.
+    #[test]
+    fn import_resolves_from_lib_root() {
+        let base = std::env::temp_dir().join(format!("bml_imp_lib_{}", std::process::id()));
+        let proj = base.join("proj");
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(lib.join("foo/svd")).unwrap();
+        std::fs::write(lib.join("foo/svd/bar.bml"), "// lib module\n").unwrap();
+
+        let mut r = ImportResolver::new();
+        r.lib_roots = vec![lib.clone()];
+        let segs = [seg("foo"), seg("svd"), seg("bar")];
+        assert_eq!(
+            r.resolve_module_path(&segs, &proj),
+            Some(lib.join("foo/svd/bar.bml"))
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // A local module shadows a library one reachable by the same import path.
+    #[test]
+    fn import_local_shadows_lib() {
+        let base = std::env::temp_dir().join(format!("bml_imp_shadow_{}", std::process::id()));
+        let proj = base.join("proj");
+        let lib = base.join("lib");
+        std::fs::create_dir_all(proj.join("foo/svd")).unwrap();
+        std::fs::create_dir_all(lib.join("foo/svd")).unwrap();
+        std::fs::write(proj.join("foo/svd/bar.bml"), "// local\n").unwrap();
+        std::fs::write(lib.join("foo/svd/bar.bml"), "// lib\n").unwrap();
+
+        let mut r = ImportResolver::new();
+        r.lib_roots = vec![lib];
+        let segs = [seg("foo"), seg("svd"), seg("bar")];
+        assert_eq!(
+            r.resolve_module_path(&segs, &proj),
+            Some(proj.join("foo/svd/bar.bml")),
+            "local module must shadow the lib one"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // Neither relative nor any lib root has the module -> None (caller emits E501).
+    #[test]
+    fn import_unresolved_is_none() {
+        let base = std::env::temp_dir().join(format!("bml_imp_none_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let r = ImportResolver::new(); // empty lib_roots
+        assert_eq!(r.resolve_module_path(&[seg("nope")], &base), None);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

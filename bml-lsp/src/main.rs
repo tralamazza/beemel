@@ -3,6 +3,7 @@ use bml_core::borrow::BorrowChecker;
 use bml_core::checker::{Checker, LocalTypes};
 use bml_core::errors::{self, DiagnosticBag, Level};
 use bml_core::imports::{ImportResolver, ModuleCache};
+use bml_core::libpath::assemble_lib_roots;
 use bml_core::parser::Parser;
 use bml_core::region;
 use bml_core::resolver::{self, Resolver, SymbolTable};
@@ -69,6 +70,10 @@ struct Config {
     /// `targets`: (prefix dir, target file), sorted longest-prefix-first so the
     /// first matching entry is the most specific.
     target_map: Vec<(PathBuf, PathBuf)>,
+    /// Library search roots (the `libs` initializationOption, plus `$BML_PATH`
+    /// and the dev fallback) for resolving target `include`s and source
+    /// `import`s, mirroring the CLI's `--lib`. See [`assemble_lib_roots`].
+    lib_roots: Vec<PathBuf>,
 }
 
 impl Config {
@@ -97,6 +102,7 @@ fn parse_config(opts: Option<&serde_json::Value>, workspace_root: Option<PathBuf
     };
     let mut default_target = None;
     let mut target_map = Vec::new();
+    let mut lib_dirs: Vec<PathBuf> = Vec::new();
     if let Some(opts) = opts {
         if let Some(t) = opts.get("target").and_then(|v| v.as_str()) {
             default_target = Some(resolve(t));
@@ -111,6 +117,15 @@ fn parse_config(opts: Option<&serde_json::Value>, workspace_root: Option<PathBuf
             // picks the most specific match.
             target_map.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.components().count()));
         }
+        // `libs`: extra library search roots (like the CLI's `--lib`). Resolved
+        // relative to the workspace root; `$BML_PATH`/dev fallback added below.
+        if let Some(libs) = opts.get("libs").and_then(|v| v.as_array()) {
+            for lib in libs {
+                if let Some(lib) = lib.as_str() {
+                    lib_dirs.push(resolve(lib));
+                }
+            }
+        }
     }
     // `resolve` (which borrows workspace_root) is no longer needed, so the root
     // can move into the config unchanged.
@@ -118,6 +133,7 @@ fn parse_config(opts: Option<&serde_json::Value>, workspace_root: Option<PathBuf
         workspace_root,
         default_target,
         target_map,
+        lib_roots: assemble_lib_roots(&lib_dirs),
     }
 }
 
@@ -410,7 +426,7 @@ impl Server {
             .config
             .target_path_for(file)
             .or_else(|| discover_target(file, self.config.workspace_root.as_deref()))?;
-        match Target::from_file(&target_path) {
+        match Target::from_file_with_libs(&target_path, &self.config.lib_roots) {
             Ok(target) => {
                 self.logged_target_errors.remove(&target_path);
                 Some(target)
@@ -433,7 +449,13 @@ impl Server {
         // This document is now being analyzed, so it's no longer pending.
         self.dirty.remove(uri);
         let target = self.resolve_target(path);
-        let (analysis, diags) = analyze_file(path, source, &mut self.module_cache, target.as_ref());
+        let (analysis, diags) = analyze_file(
+            path,
+            source,
+            &mut self.module_cache,
+            target.as_ref(),
+            &self.config.lib_roots,
+        );
 
         let lsp_diags: Vec<Diagnostic> = diags
             .diagnostics()
@@ -731,6 +753,7 @@ fn analyze_file(
     source: &str,
     module_cache: &mut ModuleCache,
     target: Option<&Target>,
+    lib_roots: &[PathBuf],
 ) -> (AnalysisResult, DiagnosticBag) {
     let mut source_map = SourceMap::new();
     let file_id = source_map.add_file_with_source(path.to_path_buf(), source.to_string());
@@ -745,6 +768,7 @@ fn analyze_file(
     if !diags.has_errors() {
         let mut import_resolver = ImportResolver::new();
         import_resolver.source_map = source_map;
+        import_resolver.lib_roots = lib_roots.to_vec();
         // Lend the persistent parse cache to the resolver and take it back
         // (now updated) afterwards.
         std::mem::swap(&mut import_resolver.cache, module_cache);
@@ -2205,6 +2229,7 @@ mod tests {
             &source,
             &mut ModuleCache::default(),
             None,
+            &[],
         );
         assert!(!diags.has_errors());
         collect_completions(
@@ -2426,6 +2451,7 @@ fn main() {
             &source,
             &mut ModuleCache::default(),
             None,
+            &[],
         );
         (analysis, offset, diags)
     }
@@ -2624,7 +2650,7 @@ fn main() @context(thread) {
         fs::write(dir.join("biglib.bml"), &biglib).unwrap();
 
         let (analysis, diags) =
-            analyze_file(&main_path, main_src, &mut ModuleCache::default(), None);
+            analyze_file(&main_path, main_src, &mut ModuleCache::default(), None, &[]);
         assert!(!diags.has_errors(), "snippet should analyze cleanly");
 
         let ident = find_ident_at(&analysis.program, analysis.root_file_id, call_off)
@@ -2701,12 +2727,12 @@ fn main() @context(thread) {
 
         let mut cache = ModuleCache::default();
 
-        let (a1, d1) = analyze_file(&main_path, main_src, &mut cache, None);
+        let (a1, d1) = analyze_file(&main_path, main_src, &mut cache, None, &[]);
         assert!(!d1.has_errors(), "first analysis should be clean");
         let f1 = helper_file(&a1);
         assert_eq!(a1.source_map.get_path(f1), lib_path.as_path());
 
-        let (a2, d2) = analyze_file(&main_path, main_src, &mut cache, None);
+        let (a2, d2) = analyze_file(&main_path, main_src, &mut cache, None, &[]);
         assert!(!d2.has_errors(), "second analysis should be clean");
         let f2 = helper_file(&a2);
 
@@ -2740,7 +2766,7 @@ fn main() @context(thread) {
         let source = fs::read_to_string(&probe).expect("probe.bml present");
 
         // Target-less (today's LSP): the agent-shared rejection misfires.
-        let (_, no_target) = analyze_file(&probe, &source, &mut ModuleCache::default(), None);
+        let (_, no_target) = analyze_file(&probe, &source, &mut ModuleCache::default(), None, &[]);
         assert!(
             no_target
                 .diagnostics()
@@ -2752,8 +2778,13 @@ fn main() @context(thread) {
         // With the target: derived-Move wraps the dma_buf arrays in
         // AgentShared, reclaim is legal, and the whole example checks clean.
         let target = Target::from_file(&dir.join("pico2w.target")).expect("pico2w.target loads");
-        let (_, with_target) =
-            analyze_file(&probe, &source, &mut ModuleCache::default(), Some(&target));
+        let (_, with_target) = analyze_file(
+            &probe,
+            &source,
+            &mut ModuleCache::default(),
+            Some(&target),
+            &[],
+        );
         assert!(
             !with_target.has_errors(),
             "probe.bml should analyze clean with its target, got: {:?}",
@@ -2763,6 +2794,59 @@ fn main() @context(thread) {
                 .map(|d| format!("{} {}", d.code, d.message))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// The LSP resolves a source `import` from a configured library root -- the
+    /// editor-side analogue of the CLI's `--lib`. Without lib roots the import is
+    /// unresolved (E501); with the root it resolves.
+    #[test]
+    fn lib_import_resolves_via_lib_roots() {
+        use std::fs;
+
+        let base = std::env::temp_dir().join(format!("bml_lsp_lib_{}", std::process::id()));
+        let proj = base.join("proj");
+        let lib = base.join("lib");
+        fs::create_dir_all(&proj).unwrap();
+        fs::create_dir_all(lib.join("mychip/svd")).unwrap();
+        fs::write(
+            lib.join("mychip/svd/gpio.bml"),
+            "peripheral GPIO at 0x50000000 {\n\
+             \x20   reg DIRSET offset 0x0 {\n\
+             \x20       field PIN0: b1 bit[0]\n\
+             \x20   }\n\
+             }\n",
+        )
+        .unwrap();
+        let main_path = proj.join("main.bml");
+        let source =
+            "import mychip.svd.gpio;\n\nfn main() @context(thread) {\n    GPIO.DIRSET = 1;\n}\n";
+
+        // No lib roots: the lib-qualified import does not resolve.
+        let (_, no_lib) = analyze_file(&main_path, source, &mut ModuleCache::default(), None, &[]);
+        assert!(
+            no_lib.diagnostics().iter().any(|d| d.code == "E501"),
+            "without lib roots the import should fail to resolve"
+        );
+
+        // With the lib root: the import resolves (no E501).
+        let (_, with_lib) = analyze_file(
+            &main_path,
+            source,
+            &mut ModuleCache::default(),
+            None,
+            std::slice::from_ref(&lib),
+        );
+        assert!(
+            !with_lib.diagnostics().iter().any(|d| d.code == "E501"),
+            "import should resolve via lib_roots, got: {:?}",
+            with_lib
+                .diagnostics()
+                .iter()
+                .map(|d| format!("{} {}", d.code, d.message))
+                .collect::<Vec<_>>()
+        );
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     /// Discovery (fallback `a`) picks the include *root*: probe.bml's directory

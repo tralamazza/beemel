@@ -325,28 +325,51 @@ impl Default for Target {
 }
 
 impl Target {
-    /// Load target configuration from a file.
+    /// Load target configuration from a file, resolving `include` directives
+    /// against the including file's own directory only.
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be read or contains invalid content.
     pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        Self::from_file_with_libs(path, &[])
+    }
+
+    /// Load target configuration from a file, resolving `include` directives
+    /// against `lib_roots` as a global fallback.
+    ///
+    /// Each `include` is searched for in the including file's own directory
+    /// first, then in each library root in order; the first existing file wins,
+    /// so a local file always shadows a library one. `lib_roots` is the global
+    /// search path (e.g. `--lib` dirs and `$BML_PATH`); `from_file` passes `&[]`
+    /// for local-only resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a file cannot be read, an `include` resolves to no
+    /// existing file, or the merged result is invalid.
+    pub fn from_file_with_libs(
+        path: &std::path::Path,
+        lib_roots: &[std::path::PathBuf],
+    ) -> Result<Self, String> {
         let mut target = Target::default();
         let mut loaded = std::collections::HashSet::new();
-        target.load_file(path, &mut loaded)?;
+        target.load_file(path, lib_roots, &mut loaded)?;
         target.finalize()?;
         Ok(target)
     }
 
     /// Load `path` and the targets it `include`s onto `self`. Each `include` is
-    /// resolved relative to the including file and applied *first*, so a project
-    /// target that includes a base inherits its definitions and may then
-    /// override or extend them (later wins). Each file is applied at most once
-    /// (`loaded` dedups diamonds and terminates cycles). Validation happens once
-    /// on the merged result, in `from_file`.
+    /// resolved by `resolve_include` (the including file's directory first, then
+    /// `lib_roots`) and applied *first*, so a project target that includes a
+    /// base inherits its definitions and may then override or extend them (later
+    /// wins). Each file is applied at most once (`loaded` dedups diamonds and
+    /// terminates cycles). Validation happens once on the merged result, in
+    /// `from_file_with_libs`.
     fn load_file(
         &mut self,
         path: &std::path::Path,
+        lib_roots: &[std::path::PathBuf],
         loaded: &mut std::collections::HashSet<std::path::PathBuf>,
     ) -> Result<(), String> {
         let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -357,7 +380,8 @@ impl Target {
             .map_err(|e| format!("cannot read target {}: {e}", path.display()))?;
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         for inc in scan_includes(&content) {
-            self.load_file(&dir.join(inc), loaded)?;
+            let resolved = resolve_include(dir, &inc, lib_roots)?;
+            self.load_file(&resolved, lib_roots, loaded)?;
         }
         self.apply(&content)
             .map_err(|e| format!("{}: {e}", path.display()))
@@ -1282,9 +1306,36 @@ pub fn included_paths(content: &str) -> Vec<String> {
     scan_includes(content)
 }
 
+/// Resolve an `include = <name>` directive: the including file's own directory
+/// first, then each library root in order. The first existing file wins, so a
+/// local file always shadows a library one. Errors (listing every directory
+/// searched) when no candidate exists.
+fn resolve_include(
+    local_dir: &std::path::Path,
+    inc: &str,
+    lib_roots: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let local = local_dir.join(inc);
+    if local.exists() {
+        return Ok(local);
+    }
+    for root in lib_roots {
+        let candidate = root.join(inc);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    let mut searched = vec![local_dir.display().to_string()];
+    searched.extend(lib_roots.iter().map(|r| r.display().to_string()));
+    Err(format!(
+        "cannot resolve include `{inc}`: not found in {}",
+        searched.join(", ")
+    ))
+}
+
 /// Collect the values of top-level `include = <path>` directives -- those before
 /// the first `[section]` header (top-level keys must precede any section). Paths
-/// are resolved relative to the including file by `load_file`.
+/// are resolved by `resolve_include` (local directory first, then lib roots).
 fn scan_includes(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in input.lines() {
@@ -2147,8 +2198,68 @@ handoff = P.R align 3
         let proj = dir.join("proj.target");
         fs::write(&proj, "include = nope.target\narch = armv7em\n").unwrap();
         let err = Target::from_file(&proj).unwrap_err();
-        assert!(err.contains("cannot read target"), "got: {err}");
+        assert!(err.contains("cannot resolve include"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A thin project target `include`s a chip file that exists ONLY in a library
+    // root, not next to the project file. Resolution must fall back to the lib
+    // root, and the project layer still overrides on top (later wins).
+    #[test]
+    fn include_resolves_from_lib_root() {
+        let base = std::env::temp_dir().join(format!("bml_tgt_lib_{}", std::process::id()));
+        let proj_dir = base.join("proj");
+        let lib_dir = base.join("lib");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        // `has_fpu` is set only by the lib chip file; `cpu` is overridden locally.
+        fs::write(
+            lib_dir.join("chip.target"),
+            "arch = armv7em\ncpu = cortex-m7\nhas_fpu = true\n",
+        )
+        .unwrap();
+        let proj = proj_dir.join("board.target");
+        fs::write(&proj, "include = chip.target\ncpu = cortex-m4\n").unwrap();
+
+        let libs = vec![lib_dir.clone()];
+        let t = Target::from_file_with_libs(&proj, &libs).expect("lib include resolves");
+        assert!(t.has_fpu, "physics inherited from the lib chip file");
+        assert_eq!(t.cpu.as_deref(), Some("cortex-m4"), "project override wins");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // The same include name exists both next to the project file and in the lib
+    // root, with a different cpu. The local file must shadow the lib one.
+    #[test]
+    fn include_local_shadows_lib() {
+        let base = std::env::temp_dir().join(format!("bml_tgt_shadow_{}", std::process::id()));
+        let proj_dir = base.join("proj");
+        let lib_dir = base.join("lib");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        fs::write(
+            lib_dir.join("chip.target"),
+            "arch = armv7em\ncpu = cortex-m7\n",
+        )
+        .unwrap();
+        fs::write(
+            proj_dir.join("chip.target"),
+            "arch = armv7em\ncpu = cortex-m4\n",
+        )
+        .unwrap();
+        let proj = proj_dir.join("board.target");
+        fs::write(&proj, "include = chip.target\n").unwrap();
+
+        let libs = vec![lib_dir.clone()];
+        let t = Target::from_file_with_libs(&proj, &libs).expect("local include wins");
+        assert_eq!(
+            t.cpu.as_deref(),
+            Some("cortex-m4"),
+            "local file must shadow the lib one"
+        );
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     // With mem blocks, the code block is inferred from vector_table_offset and

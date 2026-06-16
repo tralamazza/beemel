@@ -18,6 +18,7 @@ use bml_core::checker::Checker;
 use bml_core::errors::DiagnosticBag;
 use bml_core::imports::ImportResolver;
 use bml_core::ir::IrEmitter;
+use bml_core::libpath::assemble_lib_roots;
 use bml_core::parser::Parser;
 use bml_core::region;
 use bml_core::resolver::Resolver;
@@ -42,24 +43,36 @@ fn main() {
         }
         "check" => {
             let mut stack_analysis = false;
+            let mut lib_dirs: Vec<PathBuf> = vec![];
             let mut path: Option<PathBuf> = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
                     "--stack" => stack_analysis = true,
+                    "--lib" => {
+                        i += 1;
+                        if i < args.len() {
+                            lib_dirs.push(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--lib requires a path");
+                            process::exit(1);
+                        }
+                    }
                     other => path = Some(PathBuf::from(other)),
                 }
                 i += 1;
             }
             let path = path.unwrap_or_else(|| {
-                eprintln!("Usage: bml check [--stack] <file.bml>");
+                eprintln!("Usage: bml check [--stack] [--lib <dir>]... <file.bml>");
                 process::exit(1);
             });
-            check_file(&path, stack_analysis);
+            let lib_roots = assemble_lib_roots(&lib_dirs);
+            check_file(&path, stack_analysis, &lib_roots);
         }
         "build" => {
             let mut target_path: Option<PathBuf> = None;
             let mut link_libs: Vec<PathBuf> = vec![];
+            let mut lib_dirs: Vec<PathBuf> = vec![];
             let mut source_path: Option<PathBuf> = None;
             let mut out_dir: Option<PathBuf> = None;
             let mut opt_level = "s".to_string();
@@ -96,6 +109,15 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "--lib" => {
+                        i += 1;
+                        if i < args.len() {
+                            lib_dirs.push(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--lib requires a path");
+                            process::exit(1);
+                        }
+                    }
                     "--save-temps" => {
                         save_temps = true;
                     }
@@ -124,13 +146,14 @@ fn main() {
 
             let source_path = source_path.unwrap_or_else(|| {
                 eprintln!(
-                    "Usage: bml build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps] [--out-dir <dir>] [--link <lib>]... [--stack] <file.bml>"
+                    "Usage: bml build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps] [--out-dir <dir>] [--link <lib>]... [--lib <dir>]... [--stack] <file.bml>"
                 );
                 process::exit(1);
             });
 
+            let lib_roots = assemble_lib_roots(&lib_dirs);
             let target = match &target_path {
-                Some(p) => Target::from_file(p).unwrap_or_else(|e| {
+                Some(p) => Target::from_file_with_libs(p, &lib_roots).unwrap_or_else(|e| {
                     eprintln!("Error parsing target: {e}");
                     process::exit(1);
                 }),
@@ -146,10 +169,12 @@ fn main() {
                 debug,
                 stack_analysis,
                 out_dir.as_deref(),
+                &lib_roots,
             );
         }
         "verify" => {
             let mut target_path: Option<PathBuf> = None;
+            let mut lib_dirs: Vec<PathBuf> = vec![];
             let mut domain = "interval-congruence".to_string();
             let mut checks: Vec<String> = vec![];
             let mut ikos_bin: Option<PathBuf> = None;
@@ -212,6 +237,15 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "--lib" => {
+                        i += 1;
+                        if i < args.len() {
+                            lib_dirs.push(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--lib requires a path");
+                            process::exit(1);
+                        }
+                    }
                     "--save-temps" => {
                         save_temps = true;
                     }
@@ -261,12 +295,13 @@ fn main() {
             }
 
             let source_path = source_path.unwrap_or_else(|| {
-                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>] [--save-temps] [--out-dir <dir>] <file.bml>");
+                eprintln!("Usage: bml verify [--target <file.target>] [--domain <name>] [--checks <list>] [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>] [--save-temps] [--out-dir <dir>] [--lib <dir>]... <file.bml>");
                 process::exit(1);
             });
 
+            let lib_roots = assemble_lib_roots(&lib_dirs);
             let target = match &target_path {
-                Some(p) => Target::from_file(p).unwrap_or_else(|e| {
+                Some(p) => Target::from_file_with_libs(p, &lib_roots).unwrap_or_else(|e| {
                     eprintln!("Error parsing target: {e}");
                     process::exit(1);
                 }),
@@ -283,10 +318,12 @@ fn main() {
                 fail_on,
                 output_format,
                 out_dir.as_deref(),
+                &lib_roots,
             );
         }
         "cflags" => {
             let mut target_path: Option<PathBuf> = None;
+            let mut lib_dirs: Vec<PathBuf> = vec![];
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
@@ -299,6 +336,15 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "--lib" => {
+                        i += 1;
+                        if i < args.len() {
+                            lib_dirs.push(PathBuf::from(&args[i]));
+                        } else {
+                            eprintln!("--lib requires a path");
+                            process::exit(1);
+                        }
+                    }
                     other => {
                         eprintln!("Unknown option for cflags: {other}");
                         process::exit(1);
@@ -307,13 +353,15 @@ fn main() {
                 i += 1;
             }
             let target_path = target_path.unwrap_or_else(|| {
-                eprintln!("Usage: bml cflags --target <file.target>");
+                eprintln!("Usage: bml cflags [--lib <dir>]... --target <file.target>");
                 process::exit(1);
             });
-            let target = Target::from_file(&target_path).unwrap_or_else(|e| {
-                eprintln!("{e}");
-                process::exit(1);
-            });
+            let lib_roots = assemble_lib_roots(&lib_dirs);
+            let target =
+                Target::from_file_with_libs(&target_path, &lib_roots).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    process::exit(1);
+                });
             let flags = target.to_gcc_flags().unwrap_or_else(|e| {
                 eprintln!("{e}");
                 process::exit(1);
@@ -332,15 +380,15 @@ fn print_usage() {
     eprintln!("Usage: bml <command> [options]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  check [--stack] <file.bml>                    Type-check a source file");
+    eprintln!("  check [--stack] [--lib <dir>]... <file.bml>   Type-check a source file");
     eprintln!("  build [--target <file.target>] [--opt=<level>] [--debug] [--save-temps]");
-    eprintln!("        [--out-dir <dir>] [--link <lib>]... [--stack] <file.bml>");
+    eprintln!("        [--out-dir <dir>] [--link <lib>]... [--lib <dir>]... [--stack] <file.bml>");
     eprintln!("                                                 Compile and optionally link");
     eprintln!("  verify [--target <file.target>] [--domain <name>] [--checks <list>]");
     eprintln!("         [--ikos-bin <path>] [--fail-on <level>] [--format <fmt>]");
-    eprintln!("         [--save-temps] [--out-dir <dir>] <file.bml>");
+    eprintln!("         [--save-temps] [--out-dir <dir>] [--lib <dir>]... <file.bml>");
     eprintln!("                                                 Run IKOS static analysis");
-    eprintln!("  cflags --target <file.target>                 Print arm-none-eabi-gcc flags");
+    eprintln!("  cflags [--lib <dir>]... --target <file.target> Print arm-none-eabi-gcc flags");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --opt=<level>   Optimization level: 0, 1, 2, 3, s, z (default: s)");
@@ -351,13 +399,17 @@ fn print_usage() {
     eprintln!("  --stack         Perform compile-time stack usage analysis");
     eprintln!("  --target <path> Target specification file");
     eprintln!("  --link <lib>    Link with library (.a / .o), repeatable");
+    eprintln!("  --lib <dir>     Library search root for target `include`s and source");
+    eprintln!("                  `import`s, repeatable. Searched after the including/");
+    eprintln!("                  importing file's own directory; also reads $BML_PATH and");
+    eprintln!("                  the in-tree lib/ for dev builds");
     eprintln!("  --fail-on <l>   Exit non-zero when any finding meets level: error,");
     eprintln!("                  warning, info, or never (default: error)");
     eprintln!("  --format <fmt>  Output format: text or json (default: text)");
     eprintln!("  --help, -h      Show this help");
 }
 
-fn check_file(path: &Path, stack_analysis: bool) {
+fn check_file(path: &Path, stack_analysis: bool, lib_roots: &[PathBuf]) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
 
@@ -382,6 +434,7 @@ fn check_file(path: &Path, stack_analysis: bool) {
     // Phase 1b -- Import resolution
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
+    import_resolver.lib_roots = lib_roots.to_vec();
     let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
@@ -510,6 +563,7 @@ fn build_file(
     debug: bool,
     stack_analysis: bool,
     out_dir: Option<&Path>,
+    lib_roots: &[PathBuf],
 ) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
@@ -533,6 +587,7 @@ fn build_file(
 
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
+    import_resolver.lib_roots = lib_roots.to_vec();
     let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
@@ -786,6 +841,7 @@ fn verify_file(
     fail_on: FailOn,
     output_format: OutputFormat,
     out_dir: Option<&Path>,
+    lib_roots: &[PathBuf],
 ) {
     let mut source_map = SourceMap::new();
     let mut diags = DiagnosticBag::new();
@@ -809,6 +865,7 @@ fn verify_file(
 
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
+    import_resolver.lib_roots = lib_roots.to_vec();
     let program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);

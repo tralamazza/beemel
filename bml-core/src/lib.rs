@@ -12,6 +12,7 @@ pub mod errors;
 pub mod imports;
 pub mod ir;
 pub mod lexer;
+pub mod libpath;
 pub mod parser;
 pub mod qualify;
 pub mod region;

@@ -1,19 +1,8 @@
-# BBC micro:bit V1 (nRF51822-QFAA)
-# Cortex-M0, 256KB flash, 16KB RAM
-arch = armv6m
-cpu = cortex-m0
-priority_bits = 2
-has_bitband = false
-has_fpu = false
-has_mpu = false
-vector_table_offset = 0x00000000
-
-data_block = ram
-
-[mem.flash]
-base = 0x00000000
-size = 256K
-
-[mem.ram]
-base = 0x20000000
-size = 16K
+# BBC micro:bit V1 -- project target.
+#
+# The chip physics (memory map for the nRF51822-QFAA) live in the shipped
+# library target `lib/nrf51/nrf51.target`, resolved via the lib search path
+# (dev builds find the in-tree lib/ automatically; otherwise pass `--lib`).
+# This blinky/scroll program uses no DMA agents and declares no regions, so the
+# project layer is just the chip selection.
+include = nrf51/nrf51.target

@@ -1,0 +1,26 @@
+# nRF51 (Nordic Semiconductor) -- chip physics. Shipped library target.
+#
+# Cortex-M0, ARMv6-M. Memory is sized for the nRF51822-QFAA (256 KB flash,
+# 16 KB RAM) as used on the BBC micro:bit V1; a different package on this die
+# overrides [mem.flash]/[mem.ram] in its own project target.
+#
+# Physics only: this file carries NO [region.*]. Regions are project policy
+# (how a program carves and shares RAM), so a project `include`s this file and
+# declares its own regions.
+arch = armv6m
+cpu = cortex-m0
+priority_bits = 2
+has_bitband = false
+has_fpu = false
+has_mpu = false
+vector_table_offset = 0x00000000
+
+data_block = ram
+
+[mem.flash]
+base = 0x00000000
+size = 256K
+
+[mem.ram]
+base = 0x20000000
+size = 16K
