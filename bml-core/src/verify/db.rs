@@ -255,7 +255,12 @@ pub fn read_findings(db_path: &Path) -> Result<Vec<Finding>, VerifyError> {
                 .filter_map(|(_, id)| operand_map.get(id).cloned())
                 .filter(|name| !name.is_empty())
                 .collect();
-            let message = if operand_names.is_empty() {
+            // Prefer the abstract ranges IKOS recorded in `info` (operand
+            // intervals for native checks; bml's witness operands for asserts)
+            // over the bare SSA operand names.
+            let message = if let Some(summary) = render_info(c.info.as_deref(), &code) {
+                format!("[{severity}][{code}] {check} violation ({summary})")
+            } else if operand_names.is_empty() {
                 format!("[{severity}][{code}] {check} violation")
             } else {
                 format!(
@@ -277,4 +282,69 @@ pub fn read_findings(db_path: &Path) -> Result<Vec<Finding>, VerifyError> {
     }
 
     Ok(findings)
+}
+
+/// Render an IKOS interval object `{type, lb, ub}` as `in [lb, ub]` (ASCII).
+/// `lb`/`ub` are serialized `MachineInt`; accept either a JSON number or a
+/// string (large unsigned values may serialize as strings).
+fn interval_str(v: &serde_json::Value) -> Option<String> {
+    let obj = v.as_object()?;
+    let num = |k: &str| -> Option<String> {
+        match obj.get(k)? {
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            serde_json::Value::String(s) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    let lb = num("lb")?;
+    let ub = num("ub")?;
+    Some(format!("in [{lb}, {ub}]"))
+}
+
+/// Render the IKOS `info` JSON (operand abstract ranges) into a human summary
+/// like `offset in [0, 1073741824], access_size in [4, 4]`, or `None` when
+/// `info` carries nothing renderable. IKOS already records these for native
+/// checks (buffer-overflow, division-by-zero); the `witness` list is bml's own
+/// assert operands -- `[bytes, cap]` for an extent obligation, `[value]` for a
+/// reachability one (labeled by length, since both map to V200).
+fn render_info(info: Option<&str>, code: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(info?).ok()?;
+    let obj = val.as_object()?;
+    let mut parts: Vec<String> = Vec::new();
+
+    // Native-check fields: top-level intervals, plus scalar ints like
+    // `array_element_size`. Nested/array fields (e.g. `points_to`) are skipped.
+    for (key, v) in obj {
+        if key == "witness" {
+            continue;
+        }
+        if let Some(interval) = interval_str(v) {
+            parts.push(format!("{key} {interval}"));
+        } else if let Some(n) = v.as_i64() {
+            parts.push(format!("{key} {n}"));
+        }
+    }
+
+    // bml assert witness operands, labeled by position.
+    if let Some(arr) = obj.get("witness").and_then(|w| w.as_array()) {
+        let labels: &[&str] = match (code, arr.len()) {
+            ("V200", 2) => &["bytes", "cap"],
+            ("V200", 1) => &["value"],
+            _ => &[],
+        };
+        for (i, v) in arr.iter().enumerate() {
+            if let Some(interval) = interval_str(v) {
+                match labels.get(i) {
+                    Some(l) => parts.push(format!("{l} {interval}")),
+                    None => parts.push(format!("arg{i} {interval}")),
+                }
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }

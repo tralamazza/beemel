@@ -3134,6 +3134,40 @@ fn test_verify_desc_extent_nomask_v200() {
     );
 }
 
+// Witness operands: a failing assert carries the inferred ranges of the
+// compared quantities (the fork records them in the check `info`; db.rs renders
+// them). For the unmasked descriptor extent the whole control word becomes the
+// byte count -- the report shows 1073742336 (= 512 | 0x40000000) against the
+// 512-byte buffer, the value we previously had to hand-derive.
+#[test]
+fn test_verify_extent_witness_ranges() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) = bml_verify_args("desc_extent_nomask.bml", &["--target", &target]);
+    assert!(
+        !ok && stderr.contains("bytes in [1073742336") && stderr.contains("cap in [512"),
+        "the V200 message should carry the witness ranges (bytes vs cap):\n{stderr}"
+    );
+}
+
+// Native-check witnesses: IKOS already records operand intervals for
+// buffer-overflow; db.rs surfaces them instead of the bare SSA operand name.
+#[test]
+fn test_verify_boa_witness_ranges() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_boa_oob.bml");
+    assert!(
+        !ok && output.contains("offset in [") && output.contains("access_size in ["),
+        "the V100 message should carry the offset/access_size ranges:\n{output}"
+    );
+}
+
 // Transfer-extent obligation (`extent_by`): arming the agent within the
 // delivered buffer is proven; arming past it is a DEFINITE assert error
 // (both sides constant: count*scale vs sizeof of the delivered static).

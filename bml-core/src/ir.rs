@@ -588,7 +588,9 @@ impl IrEmitter {
     }
 
     /// Emit `assert(lo <= value < hi)` via `__ikos_assert`. IKOS reports it as
-    /// proven (silent), unproven (warning), or violated (error).
+    /// proven (silent), unproven (warning), or violated (error). `value` is
+    /// passed as a witness operand so an unproven/violated report carries its
+    /// inferred range.
     fn emit_range_assert(&mut self, value_reg: &str, lo: u64, hi: u64, dbg: &str) {
         let lo_ok = self.new_reg();
         let hi_ok = self.new_reg();
@@ -598,7 +600,9 @@ impl IrEmitter {
         self.line(&format!("{hi_ok} = icmp ult i32 {value_reg}, {hi}"));
         self.line(&format!("{both} = and i1 {lo_ok}, {hi_ok}"));
         self.line(&format!("{zext} = zext i1 {both} to i32"));
-        self.line(&format!("call void @__ikos_assert(i32 {zext}){dbg}"));
+        self.line(&format!(
+            "call void @__ikos_assert(i32 {zext}, i32 {value_reg}){dbg}"
+        ));
     }
 
     #[must_use]
@@ -780,7 +784,10 @@ impl IrEmitter {
         if self.verify_mode {
             // IKOS recognizes these by name and imports them as analysis
             // intrinsics. Keep them verify-only so normal builds stay clean.
-            self.line("declare void @__ikos_assert(i32)");
+            // __ikos_assert is variadic: arg0 is the checked condition; any
+            // trailing i32 args are witness operands the fork reports as
+            // inferred intervals (see emit_range_assert and the extent sites).
+            self.line("declare void @__ikos_assert(i32, ...)");
             self.line("declare void @__ikos_forget_mem(ptr, i32)");
             // Capacity shadows for the extent obligation, initialized to
             // u32::MAX (= unconstrained until a handoff delivers a buffer).
@@ -3909,7 +3916,9 @@ impl IrEmitter {
                                 self.line(&format!("{ok} = icmp ule i32 {bytes}, {cap}"));
                                 let z = self.new_reg();
                                 self.line(&format!("{z} = zext i1 {ok} to i32"));
-                                self.line(&format!("call void @__ikos_assert(i32 {z}){dbg}"));
+                                self.line(&format!(
+                                    "call void @__ikos_assert(i32 {z}, i32 {bytes}, i32 {cap}){dbg}"
+                                ));
                             }
                         }
                     }
@@ -4022,7 +4031,9 @@ impl IrEmitter {
                             self.line(&format!("{ok} = icmp ule i32 {bytes}, {cap}"));
                             let z = self.new_reg();
                             self.line(&format!("{z} = zext i1 {ok} to i32"));
-                            self.line(&format!("call void @__ikos_assert(i32 {z}){dbg}"));
+                            self.line(&format!(
+                                "call void @__ikos_assert(i32 {z}, i32 {bytes}, i32 {cap}){dbg}"
+                            ));
                         }
                         // Encode a `@be` field to its stored (byte-swapped) form.
                         let endian = Self::field_endian(struct_name, idx, symbols);
