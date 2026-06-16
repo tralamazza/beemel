@@ -3101,6 +3101,39 @@ fn test_verify_desc_extent_overrun_rejected() {
     );
 }
 
+// Masked descriptor extent, end-to-end through IKOS: with `mask 0x3FFF` a control
+// word carrying a set bit above the length verifies clean (the mask isolates the
+// low 14 bits); the unmasked twin reports the V200 the mask exists to express
+// away. IKOS-gated (skips without BML_IKOS_BIN).
+#[test]
+fn test_verify_desc_extent_mask_clean() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) = bml_verify_args("desc_extent_mask.bml", &["--target", &target]);
+    assert!(
+        ok && !stderr.contains("[V200]"),
+        "a masked extent (control bit set, length in range) must verify clean:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_verify_desc_extent_nomask_v200() {
+    if !ikos_available() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let target = fixture_target("verify_handoff.target");
+    let (ok, _stdout, stderr) = bml_verify_args("desc_extent_nomask.bml", &["--target", &target]);
+    assert!(
+        !ok && stderr.contains("[V200]"),
+        "without the mask the whole control word is the byte count, overrunning the buffer; \
+         expected V200:\n{stderr}"
+    );
+}
+
 // Transfer-extent obligation (`extent_by`): arming the agent within the
 // delivered buffer is proven; arming past it is a DEFINITE assert error
 // (both sides constant: count*scale vs sizeof of the delivered static).

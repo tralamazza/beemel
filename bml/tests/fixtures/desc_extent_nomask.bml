@@ -1,0 +1,16 @@
+// The unmasked twin of desc_extent_mask.bml: identical, but `@extent(buf1)`
+// reads the WHOLE control word as the byte count. With the control bit set the
+// word is ~1 GiB, so IKOS reports a (correct-for-the-declaration) V200 overrun
+// against the 512-byte buffer -- the situation the mask exists to express away.
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1),
+}
+
+var BUF: [u32; 128] @align(32) in dma_shared;
+var TX: [TxDesc; 2] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    TX[0].buf1 = &BUF as u32;
+    TX[0].control = 512 | 0x40000000;
+}
