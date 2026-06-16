@@ -1,5 +1,5 @@
 [submodule "ikos"]
 	path = ikos
 	url = https://github.com/tralamazza/ikos.git
-	branch = feat/llvm18
+	branch = beemel
 	ignore = dirty
