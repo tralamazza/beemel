@@ -43,9 +43,10 @@ owns Ethernet_DMA;
 struct TxDesc @repr(packed) {
     buf1: addr in dma_shared,        // DES0: TX buffer byte address
     buf2: u32,                       // DES1: second buffer (unused)
-    control: u32 @extent(buf1),      // DES2: B1L buffer-1 length, in bytes --
-                                     // verify asserts it fits the buffer
-                                     // delivered through buf1
+    control: u32 @extent(buf1, mask 0x3FFF), // DES2: B1L length in bits 13:0; the
+                                     // mask isolates it from control bits packed
+                                     // in the same word (TTSE bit 30), so verify
+                                     // checks only the length fits buf1.
     status: u32,                     // DES3: OWN | FD | LD | length
 }
 comptime_assert(sizeof(TxDesc) == 16);
@@ -955,11 +956,8 @@ export fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1
     if event {
         ctl = ctl | PTP_TTSE;
     }
-    // The @extent(buf1) obligation reads the whole DES2 word as a byte
-    // count, but TTSE (bit 30) shares the word with B1L -- a definite
-    // false violation when set. Masked/sub-field extents are a RECORDED
-    // MODEL GAP (doc/regions-agents.md open items).
-    // bml-verify: ignore V200
+    // @extent(buf1, mask 0x3FFF) isolates the B1L length from TTSE (bit 30), so
+    // setting the timestamp bit no longer trips a false extent V200.
     TX_DESC[di].control = ctl;
     TX_DESC[di].status = TX_DESC_OWN | TX_DESC_FD | TX_DESC_LD | (len & TX_DESC_LEN_MASK);
     asm { dmb } : : : "memory";

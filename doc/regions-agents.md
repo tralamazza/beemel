@@ -243,10 +243,12 @@ A region names a mem block and lists the agents that share it.
   R (verify), E607 checks the region exists, E608 checks transitive reach
   (a descriptor delivered to an agent must not carry a field pointing into
   a region that agent cannot reach).
-- **`@extent(addr_field [, xN])` struct-field attribute** -- a length field
-  arms the buffer delivered through its `addr in R` sibling (the ETH TX
-  control word). Declaration sanity is E617; the check itself is a verify
-  obligation, same capacity-shadow encoding as `extent`.
+- **`@extent(addr_field [, xN] [, mask N])` struct-field attribute** -- a length
+  field arms the buffer delivered through its `addr in R` sibling (the ETH TX
+  control word). The optional `mask N` ANDs the field before the obligation, so
+  only the length sub-field counts when control bits share the word (EQOS TDES2:
+  B1L bits 13:0 vs TTSE bit 30). Declaration sanity is E617; the check itself is
+  a verify obligation, same capacity-shadow encoding as `extent`.
 
 ## Ownership windows
 
@@ -467,12 +469,10 @@ indefinitely under the derived volatile.
 
 ## Open items
 
-- **Masked/sub-field extents**: `@extent(addr_field)` reads the WHOLE
-  descriptor word as the byte count, but hardware packs control bits into
-  the same word (EQOS TDES2 = B1L length in bits 13:0 plus TTSE/IOC in
-  the top bits) -- setting TTSE made a definite false V200. Candidate
-  form: `@extent(buf1, mask 0x3FFF)`. Suppressed-with-comment in the
-  example until then.
+- **Masked/sub-field extents** (DONE): `@extent(buf1, mask 0x3FFF)` ships (see
+  Layer 3). The H723 ETH TX descriptor uses it; with TTSE set the program now
+  verifies clean and the `ignore V200` suppression was dropped -- validated
+  against the submodule IKOS.
 - **Gates on non-agent peripherals**: the derived enable read-back covers
   DECLARED gates (`enabled_by`, an agent property). The gate that actually
   bit on silicon (TIM2EN -- TIM2 is no agent) has no declaration site, so
