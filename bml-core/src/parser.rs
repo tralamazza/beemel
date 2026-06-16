@@ -830,32 +830,47 @@ impl<'a> Parser<'a> {
                         .ok()?;
                     let addr_field = self.parse_ident()?;
                     let mut scale = 1u32;
+                    let mut mask: Option<u64> = None;
+                    // Optional, in fixed order: `, xN` then `, mask N`.
                     if self.eat(&TokenKind::Comma) {
                         let mspan = self.peek_span();
-                        let TokenKind::Ident(m) = self.peek_kind() else {
+                        let TokenKind::Ident(tok) = self.peek_kind() else {
                             self.diags.error(
-                                "expected `xN` multiplier in `@extent(field, xN)`",
+                                "expected `xN` or `mask N` in `@extent(field, ...)`",
                                 "E108",
                                 mspan,
                             );
                             return None;
                         };
-                        match m.strip_prefix('x').and_then(|n| n.parse::<u32>().ok()) {
-                            Some(n) if n > 0 => scale = n,
-                            _ => {
-                                self.diags.error(
-                                    "expected `xN` multiplier (N > 0) in `@extent(field, xN)`",
-                                    "E108",
-                                    mspan,
-                                );
-                                return None;
+                        if tok.starts_with('x') {
+                            match tok.strip_prefix('x').and_then(|n| n.parse::<u32>().ok()) {
+                                Some(n) if n > 0 => scale = n,
+                                _ => {
+                                    self.diags.error(
+                                        "expected `xN` multiplier (N > 0) in `@extent(field, xN)`",
+                                        "E108",
+                                        mspan,
+                                    );
+                                    return None;
+                                }
                             }
+                            self.advance();
+                            // An optional `, mask N` may follow the multiplier.
+                            if self.eat(&TokenKind::Comma) {
+                                mask = Some(self.parse_extent_mask()?);
+                            }
+                        } else {
+                            // No multiplier; this first comma arg must be `mask N`.
+                            mask = Some(self.parse_extent_mask()?);
                         }
-                        self.advance();
                     }
                     self.expect(&TokenKind::RParen, "expected `)` to close `@extent`")
                         .ok()?;
-                    extent = Some(crate::ast::FieldExtent { addr_field, scale });
+                    extent = Some(crate::ast::FieldExtent {
+                        addr_field,
+                        scale,
+                        mask,
+                    });
                 }
                 _ => {
                     self.diags.error(
@@ -868,6 +883,27 @@ impl<'a> Parser<'a> {
             }
         }
         Some((endian, extent))
+    }
+
+    /// Parse the `mask N` tail of `@extent(field, [xN,] mask N)`: the `mask`
+    /// keyword (an ident) followed by an integer literal.
+    fn parse_extent_mask(&mut self) -> Option<u64> {
+        let span = self.peek_span();
+        let TokenKind::Ident(kw) = self.peek_kind() else {
+            self.diags
+                .error("expected `mask N` in `@extent`", "E108", span);
+            return None;
+        };
+        if kw.as_str() != "mask" {
+            self.diags.error(
+                "expected `xN` or `mask N` in `@extent(field, ...)`",
+                "E108",
+                span,
+            );
+            return None;
+        }
+        self.advance(); // `mask`
+        self.parse_int_literal()
     }
 
     fn parse_enum_def(&mut self) -> Option<EnumDef> {

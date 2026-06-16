@@ -1,0 +1,8 @@
+// E617: a zero @extent mask would make the byte count always 0, silently
+// disabling the obligation.
+struct D @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1, mask 0),
+}
+var X: u32;
+fn main() @context(thread) { X = 1; }

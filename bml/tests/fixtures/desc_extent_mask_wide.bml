@@ -1,0 +1,7 @@
+// E617: the @extent mask does not fit the 32-bit length field.
+struct D @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1, mask 0x100000000),
+}
+var X: u32;
+fn main() @context(thread) { X = 1; }

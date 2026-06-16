@@ -1,0 +1,11 @@
+// @extent composition: multiplier `x4` then `mask 0x3FFF`, in that order.
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1, x4, mask 0x3FFF),
+}
+var BUF: [u32; 128] @align(32) in dma_shared;
+var TX: [TxDesc; 1] @align(32) in dma_shared;
+fn main() @context(thread) {
+    TX[0].buf1 = &BUF as u32;
+    TX[0].control = 64;
+}

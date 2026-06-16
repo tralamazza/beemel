@@ -641,7 +641,7 @@ pub struct StructFieldDef {
     /// stays native. Endianness is a storage property, not part of the value
     /// type: `s.field` still has the plain integer type.
     pub endian: FieldEndian,
-    /// `@extent(addr_field [, xN])`: this integer field carries the transfer
+    /// `@extent(addr_field [, xN] [, mask N])`: this integer field carries the transfer
     /// LENGTH for the buffer delivered through the named `addr in R` sibling,
     /// in units of N bytes (default 1). Verify mode asserts every write of
     /// this field, scaled to bytes, fits the delivered buffer -- the
@@ -657,6 +657,12 @@ pub struct FieldExtent {
     pub addr_field: Ident,
     /// Bytes per count unit (1 = the field counts bytes).
     pub scale: u32,
+    /// `mask N`: AND-mask applied to the field value before scaling, so only
+    /// the length sub-field feeds the obligation. Descriptor control words pack
+    /// the length with control bits (EQOS TDES2: B1L bits 13:0 vs TTSE bit 30);
+    /// without a mask, setting a control bit inflates the byte count into a
+    /// false overrun. `None` = use the whole word.
+    pub mask: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

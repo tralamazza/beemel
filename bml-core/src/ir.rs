@@ -131,11 +131,11 @@ pub struct IrEmitter {
     extent_asserts: HashMap<(String, String, String), (u32, Vec<String>)>,
     /// Descriptor extents (verify mode), from `@extent` struct-field
     /// annotations: `(struct, addr field)` -> capacity shadow name, and
-    /// `(struct, length field)` -> `(byte scale, shadow name)`. The in-memory
-    /// analogue of `extent_cap_shadows`/`extent_asserts`; built from the AST
-    /// at `emit()`. Empty outside verify.
+    /// `(struct, length field)` -> `(byte scale, optional AND-mask, shadow name)`.
+    /// The in-memory analogue of `extent_cap_shadows`/`extent_asserts`; built
+    /// from the AST at `emit()`. Empty outside verify.
     desc_cap_shadows: HashMap<(String, String), String>,
-    desc_extent_asserts: HashMap<(String, String), (u32, String)>,
+    desc_extent_asserts: HashMap<(String, String), (u32, Option<u64>, String)>,
     /// Region name -> derived alignment floor (bytes). A static placed `in R`
     /// gets at least this alignment, so the source need not hand-write
     /// `@align(N)`: alignment is physics (cache line of cacheable memory shared
@@ -545,7 +545,7 @@ impl IrEmitter {
                 );
                 self.desc_extent_asserts.insert(
                     (sd.name.0.clone(), field.name.0.clone()),
-                    (ext.scale, shadow),
+                    (ext.scale, ext.mask, shadow),
                 );
             }
         }
@@ -3997,13 +3997,25 @@ impl IrEmitter {
                         // `@extent` length field asserts the byte length fits
                         // the buffer last delivered through the addr sibling.
                         if self.verify_mode
-                            && let Some((scale, shadow)) = self
+                            && let Some((scale, mask, shadow)) = self
                                 .desc_extent_asserts
                                 .get(&(struct_name.clone(), field.0.clone()))
                                 .cloned()
                         {
+                            // A descriptor control word packs the length sub-field
+                            // with control bits (EQOS TDES2: B1L bits 13:0 vs TTSE
+                            // bit 30). `@extent(.., mask N)` isolates the length
+                            // bits BEFORE scaling, so a set control bit cannot
+                            // inflate the byte count into a false overrun (V200).
+                            let count = if let Some(m) = mask {
+                                let masked = self.new_reg();
+                                self.line(&format!("{masked} = and i32 {val_reg}, {m}"));
+                                masked
+                            } else {
+                                val_reg.clone()
+                            };
                             let bytes = self.new_reg();
-                            self.line(&format!("{bytes} = mul i32 {val_reg}, {scale}"));
+                            self.line(&format!("{bytes} = mul i32 {count}, {scale}"));
                             let cap = self.new_reg();
                             self.line(&format!("{cap} = load i32, ptr @{shadow}"));
                             let ok = self.new_reg();

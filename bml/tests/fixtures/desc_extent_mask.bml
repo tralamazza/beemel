@@ -1,0 +1,17 @@
+// Masked descriptor extent: the control word packs the length (low 14 bits)
+// with a control bit (bit 30, the EQOS TDES2 TTSE analogue). `@extent(buf1,
+// mask 0x3FFF)` feeds only the length bits to the obligation, so setting the
+// control bit cannot inflate the byte count into a false overrun (V200).
+struct TxDesc @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1, mask 0x3FFF),
+}
+
+var BUF: [u32; 128] @align(32) in dma_shared;
+var TX: [TxDesc; 2] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    TX[0].buf1 = &BUF as u32;
+    // 512-byte length with the control bit set; only the low 14 bits count.
+    TX[0].control = 512 | 0x40000000;
+}

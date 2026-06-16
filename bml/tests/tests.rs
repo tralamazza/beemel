@@ -2991,6 +2991,82 @@ assert_error!(
     "E617"
 );
 
+// Masked sub-field extent (`@extent(addr_field [, xN] [, mask N])`): a
+// descriptor control word packs the length with control bits, so the obligation
+// must read only the length sub-field. Declaration sanity is E617 (mask nonzero,
+// fits the 32-bit field); a missing literal is E107. The mask is composable with
+// the multiplier in the fixed order `xN` then `mask N`.
+assert_error!(
+    test_desc_extent_mask_zero_rejected,
+    "desc_extent_mask_zero.bml",
+    "E617"
+);
+assert_error!(
+    test_desc_extent_mask_wide_rejected,
+    "desc_extent_mask_wide.bml",
+    "E617"
+);
+assert_error!(
+    test_desc_extent_mask_noint_rejected,
+    "desc_extent_mask_noint.bml",
+    "E107"
+);
+
+#[test]
+fn test_desc_extent_mask_builds() {
+    let (ok, stderr) = bml_build_with_target("desc_extent_mask.bml", Some("verify_handoff.target"));
+    assert!(ok, "a masked `@extent` should build; stderr:\n{stderr}");
+}
+
+#[test]
+fn test_desc_extent_mask_with_multiplier_builds() {
+    let (ok, stderr) =
+        bml_build_with_target("desc_extent_mask_x.bml", Some("verify_handoff.target"));
+    assert!(
+        ok,
+        "`@extent(buf1, x4, mask 0x3FFF)` should build; stderr:\n{stderr}"
+    );
+}
+
+// The mask is ANDed into the count BEFORE the `count*N <= capacity` extent
+// compare, so a set control bit cannot inflate the byte count. The `.verify.ll`
+// is written before IKOS runs (see test_verify_out_dir_redirects_artifacts), so
+// this needs no IKOS binary -- a bogus `--ikos-bin` is fine.
+#[test]
+fn test_desc_extent_mask_emits_and_before_compare() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let fixture = "desc_extent_mask.bml";
+    let out = unique_out_dir("desc_extent_mask_ir");
+    let _ = Command::new(env!("CARGO_BIN_EXE_bml"))
+        .arg("verify")
+        .arg("--ikos-bin")
+        .arg("/nonexistent-ikos")
+        .arg("--target")
+        .arg(dir.join("verify_handoff.target"))
+        .arg("--out-dir")
+        .arg(&out)
+        .arg(dir.join(fixture))
+        .env("TMPDIR", &out)
+        .output()
+        .expect("failed to run bml verify");
+    let ir = std::fs::read_to_string(out_artifact(&out, fixture, "verify.ll")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&out);
+
+    // 0x3FFF = 16383: the length bits, ANDed out before the extent multiply.
+    let mask_at = ir
+        .find("16383")
+        .unwrap_or_else(|| panic!("expected the @extent mask 0x3FFF (=16383) in verify IR:\n{ir}"));
+    let cmp_at = ir
+        .find("icmp ule i32")
+        .unwrap_or_else(|| panic!("expected the extent `icmp ule i32` compare:\n{ir}"));
+    assert!(
+        mask_at < cmp_at,
+        "the mask must be applied before the extent compare:\n{ir}"
+    );
+}
+
 #[test]
 fn test_verify_desc_extent_ok() {
     if !ikos_available() {

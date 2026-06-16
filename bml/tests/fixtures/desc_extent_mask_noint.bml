@@ -1,0 +1,7 @@
+// E107: `mask` without an integer literal.
+struct D @repr(packed) {
+    buf1: addr in dma_shared,
+    control: u32 @extent(buf1, mask),
+}
+var X: u32;
+fn main() @context(thread) { X = 1; }

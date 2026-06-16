@@ -511,6 +511,30 @@ fn validate_struct_layouts(program: &Program, symbols: &SymbolTable, diags: &mut
                         field.name.1,
                     );
                 }
+                // `mask N`: must be nonzero (a zero mask makes the byte count
+                // always 0, silently disabling the obligation) and fit the
+                // 32-bit field constrained just above.
+                if let Some(mask) = ext.mask {
+                    if mask == 0 {
+                        diags.error(
+                            format!(
+                                "`@extent(.., mask 0)` on `{}.{}`: mask must be nonzero",
+                                s.name.0, field.name.0
+                            ),
+                            "E617",
+                            field.name.1,
+                        );
+                    } else if mask > u64::from(u32::MAX) {
+                        diags.error(
+                            format!(
+                                "`@extent(.., mask 0x{mask:X})` on `{}.{}`: mask does not fit the 32-bit field",
+                                s.name.0, field.name.0
+                            ),
+                            "E617",
+                            field.name.1,
+                        );
+                    }
+                }
             }
             if field.endian != ast::FieldEndian::Native && !is_multibyte_int(ty) {
                 let attr = match field.endian {
