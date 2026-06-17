@@ -1,0 +1,73 @@
+// ARMv6-M NVIC -- ARM-defined core peripheral (vendor SVDs omit the ARM core
+// block), shared across ARMv6-M cores (Cortex-M0/M0+/M1). Curated from the
+// ARMv6-M ARM (DDI0419E, B3.4). ARMv6-M supports up to 32 external interrupts
+// (a single bank -- one ISER/ICER/ISPR/ICPR each, not the v7m/v8m arrays) and
+// has no IABR or security (ITNS) registers.
+//
+// Per-core PPB, banked: each core enables interrupts in its own copy; the
+// enable's location decides which core takes the IRQ.
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field SETENA: u32 bit[0..31]    // write 1 to enable IRQ n; reads the enabled state
+    }
+    reg ICER offset 0x080 {
+        field CLRENA: u32 bit[0..31]    // write 1 to disable IRQ n
+    }
+    reg ISPR offset 0x100 {
+        field SETPEND: u32 bit[0..31]   // write 1 to set IRQ n pending
+    }
+    reg ICPR offset 0x180 {
+        field CLRPEND: u32 bit[0..31]   // write 1 to clear IRQ n pending
+    }
+    // Priority registers NVIC_IPR0..7 (0xE000E400 + 4n): four 8-bit priority
+    // fields each (ARMv6-M implements only the top 2 bits of each, and the IPR
+    // registers are word-access-only). Normally set by the compiler from `@isr`.
+    reg IPR0 offset 0x300 {
+        field PRI_0: u32 bit[0..7]
+        field PRI_1: u32 bit[8..15]
+        field PRI_2: u32 bit[16..23]
+        field PRI_3: u32 bit[24..31]
+    }
+    reg IPR1 offset 0x304 {
+        field PRI_4: u32 bit[0..7]
+        field PRI_5: u32 bit[8..15]
+        field PRI_6: u32 bit[16..23]
+        field PRI_7: u32 bit[24..31]
+    }
+    reg IPR2 offset 0x308 {
+        field PRI_8: u32 bit[0..7]
+        field PRI_9: u32 bit[8..15]
+        field PRI_10: u32 bit[16..23]
+        field PRI_11: u32 bit[24..31]
+    }
+    reg IPR3 offset 0x30C {
+        field PRI_12: u32 bit[0..7]
+        field PRI_13: u32 bit[8..15]
+        field PRI_14: u32 bit[16..23]
+        field PRI_15: u32 bit[24..31]
+    }
+    reg IPR4 offset 0x310 {
+        field PRI_16: u32 bit[0..7]
+        field PRI_17: u32 bit[8..15]
+        field PRI_18: u32 bit[16..23]
+        field PRI_19: u32 bit[24..31]
+    }
+    reg IPR5 offset 0x314 {
+        field PRI_20: u32 bit[0..7]
+        field PRI_21: u32 bit[8..15]
+        field PRI_22: u32 bit[16..23]
+        field PRI_23: u32 bit[24..31]
+    }
+    reg IPR6 offset 0x318 {
+        field PRI_24: u32 bit[0..7]
+        field PRI_25: u32 bit[8..15]
+        field PRI_26: u32 bit[16..23]
+        field PRI_27: u32 bit[24..31]
+    }
+    reg IPR7 offset 0x31C {
+        field PRI_28: u32 bit[0..7]
+        field PRI_29: u32 bit[8..15]
+        field PRI_30: u32 bit[16..23]
+        field PRI_31: u32 bit[24..31]
+    }
+}

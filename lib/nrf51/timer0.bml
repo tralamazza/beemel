@@ -7,7 +7,10 @@
 peripheral TIMER0 at 0x40008000 {
     // Start Timer.
     // access: write-only
-    reg TASKS_START offset 0x00 {}
+    reg TASKS_START offset 0x00 {
+        // Nordic TASKS_* are 1-bit triggers at bit 0 (not in the SVD; curated).
+        field START: b1 bit[0]
+    }
     // Stop Timer.
     // access: write-only
     reg TASKS_STOP offset 0x04 {}
@@ -33,7 +36,10 @@ peripheral TIMER0 at 0x40008000 {
     // access: write-only
     reg TASKS_CAPTURE3 offset 0x4C {}
     // Compare event on CC[n] match.
-    reg EVENTS_COMPARE0 offset 0x140 {}
+    reg EVENTS_COMPARE0 offset 0x140 {
+        // Nordic EVENTS_* are 1-bit flags at bit 0 (not in the SVD; curated).
+        field FIRED: b1 bit[0]
+    }
     // Compare event on CC[n] match.
     reg EVENTS_COMPARE1 offset 0x144 {}
     // Compare event on CC[n] match.

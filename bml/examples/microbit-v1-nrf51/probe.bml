@@ -10,7 +10,10 @@
 //
 // Visual check: the top-left LED (ROW1 = P0.13 high, COL1 = P0.4 low)
 // lights only when the ciphertext matches the known answer.
-import nrf51_periph;
+import nrf51.ecb;
+import nrf51.gpio;
+import nrf51.timer0;
+import armv6m.nvic;
 
 owns ECB;
 owns TIMER0;

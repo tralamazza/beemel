@@ -1,7 +1,38 @@
-# BBC micro:bit v1 -- board + project target. The chip file carries all the
-# physics; this file is the thin project layer (the user-facing layering
-# rule: chip files may be verbose, project files stay small).
-include = nrf51.target
+# BBC micro:bit v1 (nRF51822) -- board + project target.
+#
+# Chip physics (Cortex-M0, memory map) come from the shipped
+# lib/nrf51/nrf51.target. This program drives the AES ECB EasyDMA engine, so it
+# adds the ECB agent and carves RAM for its buffer here -- NOT in the shared chip
+# file: a GPIO-only nRF51 program must not be forced to import ECB just to load
+# the target (the agent's `completes_by = ECB...` resolves against the program's
+# peripherals). The ECB engine + RAM split are still chip facts; they live in the
+# project layer only because of that import constraint.
+include = nrf51/nrf51.target
+
+# Carve the top 1 KB of the 16 KB RAM for EasyDMA buffers: re-open [mem.ram]
+# smaller (key-level merge keeps base) and add ecb_ram.
+[mem.ram]
+size = 15K
+
+[mem.ecb_ram]
+base = 0x20003C00
+size = 1K
+
+# The AES ECB engine is its own bus master walking ECBDATAPTR (EasyDMA). EasyDMA
+# can only address RAM -- a flash pointer fails silently -- so the bus window is
+# RAM only. There is no count register: the block is a FIXED 48 bytes
+# (KEY|CLEARTEXT|CIPHERTEXT), so the extent is the literal size (E619: the
+# delivered buffer must be >= 48 bytes).
+[agent.ecb]
+kind = dma
+reach = ecb_ram
+bus = 0x20000000..0x20004000
+handoff = ECB.ECBDATAPTR
+completes_by = ECB.EVENTS_ENDECB.READY
+extent = 48
+
+[interrupts]
+TIMER0 = 8
 
 [region.ecb_buf]
 mem = ecb_ram

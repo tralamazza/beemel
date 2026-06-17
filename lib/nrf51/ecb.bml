@@ -7,12 +7,19 @@
 peripheral ECB at 0x4000E000 {
     // Start ECB block encrypt. If a crypto operation is running, this will not initiate a new encryption and the ERRORECB event will be triggered.
     // access: write-only
-    reg TASKS_STARTECB offset 0x00 {}
+    reg TASKS_STARTECB offset 0x00 {
+        // Nordic TASKS_* are 1-bit triggers: write 1 to bit 0 to start. The bit
+        // is not in the SVD (curated from the nRF51 reference / nrf51_periph).
+        field START: b1 bit[0]
+    }
     // Stop current ECB encryption. If a crypto operation is running, this will will trigger the ERRORECB event.
     // access: write-only
     reg TASKS_STOPECB offset 0x04 {}
     // ECB block encrypt complete.
-    reg EVENTS_ENDECB offset 0x100 {}
+    reg EVENTS_ENDECB offset 0x100 {
+        // Nordic EVENTS_* are 1-bit flags at bit 0 (curated; not in the SVD).
+        field READY: b1 bit[0]
+    }
     // ECB block encrypt aborted due to a STOPECB task or due to an error.
     reg EVENTS_ERRORECB offset 0x104 {}
     // Interrupt enable set register.
