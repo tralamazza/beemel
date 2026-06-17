@@ -42,8 +42,8 @@ verification. They are not guarantees.
 A blinking LED on an STM32F103 ("Blue Pill"):
 
 ```bml
-import svd.rcc;
-import svd.gpioc;
+import stm32f103.rcc;
+import stm32f103.gpioc;
 
 fn main() @context(thread) {
     RCC.APB2ENR.IOPCEN = 1;          // enable the GPIO-C clock
@@ -59,9 +59,10 @@ fn main() @context(thread) {
 }
 ```
 
-`svd.rcc` / `svd.gpioc` are generated from the vendor's CMSIS-SVD with
-[bml-svd](https://github.com/tralamazza/bml-svd); ready-made chip definitions for
-several MCUs also ship in [lib/](lib), imported as e.g. `import nrf51.gpio;`.
+`stm32f103.rcc` / `stm32f103.gpioc` are ready-made chip definitions shipped in
+[lib/](lib) (one of several MCUs). They start life generated from the vendor's
+CMSIS-SVD with [bml-svd](https://github.com/tralamazza/bml-svd), then are curated
+against the datasheet -- the source of truth.
 
 ## Status
 

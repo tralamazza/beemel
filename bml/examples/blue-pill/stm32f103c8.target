@@ -1,17 +1,8 @@
-# STM32F103C8T6 (Blue Pill)
-# Cortex-M3, 64KB flash, 20KB RAM
-arch = armv7m
-cpu = cortex-m3
-priority_bits = 4
-has_bitband = true
-vector_table_offset = 0x08000000
-
-data_block = ram
-
-[mem.flash]
-base = 0x08000000
-size = 64K
-
-[mem.ram]
-base = 0x20000000
-size = 20K
+# STM32F103C8T6 (Blue Pill) -- project target.
+#
+# Chip physics (Cortex-M3, memory map for the C8's 64 KB flash / 20 KB RAM)
+# come from the shipped lib/stm32f103/stm32f103.target, resolved via the lib
+# search path (dev builds find the in-tree lib/ automatically; otherwise pass
+# `--lib`). This blinky program uses no DMA agents and declares no regions, so
+# the project layer is just the chip selection.
+include = stm32f103/stm32f103.target

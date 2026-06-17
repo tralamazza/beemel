@@ -6,16 +6,18 @@ Minimal LED blink for the STM32F103C8T6 "Blue Pill" board, written in [BML](../.
 
 | File | Purpose |
 |------|---------|
-| `stm32f103c8.target` | Target definition (Cortex-M3, 64 KB flash, 20 KB RAM) |
+| `stm32f103c8.target` | Project target -- selects the chip via `include = stm32f103/stm32f103.target` |
 | `blinky.bml` | Blinks the on-board LED (PC13, active low) |
 | `blinky-qemu.bml` | Blinks PC8 (LD4) for QEMU's `stm32vldiscovery` machine |
-| `rcc.bml` | Full RCC peripheral (SVD-generated, reference) |
-| `gpioc.bml` | Full GPIOC peripheral (SVD-generated, reference) |
 | `flash.sh` | Build, link, and flash with st-flash |
 | `debug.sh` | Build (DWARF), start OpenOCD + GDB debug session |
 | `run-qemu.sh` | Build + link + run the QEMU variant |
 
-`blinky.bml` and `blinky-qemu.bml` have inline peripheral definitions (only the registers they need). No imports, no SVD -- self-contained.
+The chip physics (memory map) and the `RCC` / `GPIOC` peripherals come from the
+shipped library at `lib/stm32f103/`: `stm32f103c8.target` pulls the physics in
+with `include`, and `blinky.bml` / `blinky-qemu.bml` `import stm32f103.rcc` and
+`import stm32f103.gpioc`. Dev builds find the in-tree `lib/` automatically; an
+installed `bml` needs `--lib <dir>` or `$BML_PATH`.
 
 ## Building
 

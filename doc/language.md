@@ -906,7 +906,7 @@ Enum values are just integers of the underlying type:
     scope unqualified) -- this is what makes cross-module names collision-free
 - **Peripherals are the exception: they stay bare.** A `peripheral` is global
   hardware (one `RCC` per chip), addressed at a fixed address and named in target
-  files; `import svd.rcc;` then `RCC.APB2ENR` -- never `rcc.RCC`. Peripheral names
+  files; `import stm32f103.rcc;` then `RCC.APB2ENR` -- never `rcc.RCC`. Peripheral names
   therefore share a single flat namespace across modules.
 - `export` is a **declaration-site modifier** marking an item public:
   `export fn foo() { ... }`, `export struct Color { ... }`, `export const RATE: u32 = 8;`,
