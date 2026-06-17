@@ -1,14 +1,16 @@
 # NUCLEO-H723ZG PTP example -- project target.
 #
-# Includes the chip physics (stm32h723.target: memory map, ETH DMA agent, reset
-# bring-up) and adds only what is this project's policy: the region the ETH
-# buffers/descriptors are placed in and shared with the DMA. `bml` is still
-# given a single --target (this file); the include is resolved relative to it.
+# Includes the chip physics (the shipped lib/stm32h723/stm32h723.target: memory
+# map, ETH DMA agent, reset bring-up) and adds only what is this project's
+# policy: the region the ETH buffers/descriptors are placed in and shared with
+# the DMA. `bml` is still given a single --target (this file); the include is
+# resolved via the library search path (dev builds find the in-tree lib/;
+# otherwise pass --lib / set $BML_PATH).
 #
 # Inherited definitions can be overridden here (last wins) -- e.g. a future MPU
 # story would add `[mem.dma_pool] cacheable = false` to flip the inherited flag
 # without restating base/size.
-include = stm32h723.target
+include = stm32h723/stm32h723.target
 
 [region.dma_shared]
 mem = dma_pool

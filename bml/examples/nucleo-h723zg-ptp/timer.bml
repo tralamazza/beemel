@@ -20,9 +20,9 @@
 // peripheral is initialized; priority is static physics, enable is runtime
 // policy.
 
-import svd.rcc;
-import svd.tim2;
-import svd.nvic;
+import stm32h723.rcc;
+import stm32h723.tim2;
+import stm32h723.nvic;
 import copy_dma;
 
 // This module owns the TIM2 peripheral. It cannot own its RCC enable bit.

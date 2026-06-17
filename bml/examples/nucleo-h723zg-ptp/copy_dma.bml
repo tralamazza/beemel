@@ -16,8 +16,8 @@
 // `port_by ... ahbs` and SCRATCH's mem block sits behind an ahbs-tagged bus
 // window (E612). Removing the DBUS line is a compile error instead of a
 // runtime bus fault.
-import svd.mdma;
-import svd.rcc;
+import stm32h723.mdma;
+import stm32h723.rcc;
 
 owns MDMA;
 

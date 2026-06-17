@@ -1,6 +1,6 @@
 // LAN8742 PHY helpers for the NUCLEO-H723ZG Ethernet jack.
 
-import svd.ethernet_mac;
+import stm32h723.ethernet_mac;
 
 const PHY_ADDR_UNKNOWN: u32 = 0xFFFFFFFF;
 const PHY_READ_INVALID: u32 = 0xFFFFFFFF;

@@ -4,7 +4,7 @@
 // entrypoints; everything common to power-on stays here so both roles share one
 // init path. See BRINGUP.md milestone 7.
 
-import svd.scb;
+import stm32h723.scb;
 import cache;
 import clocks;
 import eth_dma;

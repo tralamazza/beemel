@@ -2777,7 +2777,13 @@ fn main() @context(thread) {
 
         // With the target: derived-Move wraps the dma_buf arrays in
         // AgentShared, reclaim is legal, and the whole example checks clean.
-        let target = Target::from_file(&dir.join("pico2w.target")).expect("pico2w.target loads");
+        // pico2w.target now includes the shipped lib/rp2350/rp2350.target, so it
+        // needs the library search path (the dev fallback finds the in-tree lib/).
+        let target = Target::from_file_with_libs(
+            &dir.join("pico2w.target"),
+            &bml_core::libpath::assemble_lib_roots(&[]),
+        )
+        .expect("pico2w.target loads");
         let (_, with_target) = analyze_file(
             &probe,
             &source,

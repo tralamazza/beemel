@@ -806,6 +806,15 @@ fn keyword_or_ident(s: &str) -> TokenKind {
         .map_or_else(|| TokenKind::Ident(s.to_string()), |(_, kind)| kind.clone())
 }
 
+/// The canonical source text of a keyword token (reverse of [`KEYWORDS`]), or
+/// `None` if `kind` is not a keyword. Lets the parser accept a keyword as a
+/// module-path segment, so a module file may be named after a peripheral that
+/// collides with a BML keyword (e.g. `dma.bml`).
+#[must_use]
+pub fn keyword_text(kind: &TokenKind) -> Option<&'static str> {
+    KEYWORDS.iter().find(|(_, k)| k == kind).map(|(s, _)| *s)
+}
+
 fn parse_int_suffix(lex: &mut Lexer) -> IntSuffix {
     let pos = lex.pos;
     let rest = lex.source.get(pos..).unwrap_or("");

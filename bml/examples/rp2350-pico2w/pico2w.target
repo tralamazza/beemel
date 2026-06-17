@@ -1,10 +1,11 @@
 # Raspberry Pi Pico 2 W -- board + project target.
 #
-# Layering: rp2350.target is chip physics; this file adds BOARD physics (the
-# external QSPI flash -- the chip has none, so flash size is a board fact)
-# and project policy (regions). Same include mechanism as the H723 split,
-# stretched to three layers without new vocabulary.
-include = rp2350.target
+# Layering: the shipped lib/rp2350/rp2350.target is chip physics; this file adds
+# BOARD physics (the external QSPI flash -- the chip has none, so flash size is a
+# board fact) and project policy (regions). Same include mechanism as the H723
+# split, stretched to three layers without new vocabulary; the chip include is
+# resolved via the library search path (dev builds find the in-tree lib/).
+include = rp2350/rp2350.target
 
 # 4 MB QSPI flash, memory-mapped through the XIP window.
 [mem.flash]

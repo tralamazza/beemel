@@ -1,14 +1,14 @@
 // Minimal ETH MAC/DMA bring-up skeleton.
 
-import svd.rcc;
-import svd.syscfg;
-import svd.gpioa;
-import svd.gpiob;
-import svd.gpioc;
-import svd.gpiog;
-import svd.ethernet_mac;
-import svd.ethernet_dma;
-import svd.ethernet_mtl;
+import stm32h723.rcc;
+import stm32h723.syscfg;
+import stm32h723.gpioa;
+import stm32h723.gpiob;
+import stm32h723.gpioc;
+import stm32h723.gpiog;
+import stm32h723.ethernet_mac;
+import stm32h723.ethernet_dma;
+import stm32h723.ethernet_mtl;
 
 import dwt;
 import timer;

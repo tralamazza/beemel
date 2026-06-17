@@ -1,0 +1,12 @@
+// Cortex-M33 SCB (System Control Block) -- an ARM-defined core peripheral,
+// shared across any Cortex-M33 part. Vendor SVDs omit the ARM core block, so it
+// is hand-written here rather than generated. Minimal fault-diagnosis set;
+// extend as projects need it.
+peripheral SCB at 0xE000ED00 {
+    reg ICSR offset 0x04 {
+        field VECTACTIVE: u32 bit[0..8]
+    }
+    reg CFSR offset 0x28 {
+        field RAW: u32 bit[0..31]
+    }
+}

@@ -1041,9 +1041,9 @@ impl<'a> Parser<'a> {
     fn parse_import(&mut self) -> Option<ImportStmt> {
         self.advance(); // import
 
-        let mut module = vec![self.parse_ident()?];
+        let mut module = vec![self.parse_path_segment()?];
         while self.eat(&TokenKind::Dot) {
-            module.push(self.parse_ident()?);
+            module.push(self.parse_path_segment()?);
         }
 
         // Selective import (`import m { a, b };`) was removed. Reject the `{`
@@ -2035,6 +2035,31 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse one module-path segment: an identifier, or a keyword used as a
+    /// name. A module file may be named after a peripheral that collides with a
+    /// BML keyword (e.g. `dma.bml`); the import path is only a file locator, so
+    /// the keyword's spelling is recovered and accepted here. This is scoped to
+    /// import paths -- ordinary identifiers (vars, fns, ...) stay keyword-free.
+    fn parse_path_segment(&mut self) -> Option<Ident> {
+        if let TokenKind::Ident(s) = self.peek_kind() {
+            let name = s.clone();
+            let span = self.peek_span();
+            self.advance();
+            Some((name, span))
+        } else if let Some(kw) = crate::lexer::keyword_text(self.peek_kind()) {
+            let span = self.peek_span();
+            self.advance();
+            Some((kw.to_string(), span))
+        } else {
+            self.diags.error(
+                format!("expected module name, found `{:?}`", self.peek_kind()),
+                "E106",
+                self.peek_span(),
+            );
+            None
+        }
+    }
+
     fn parse_int_literal(&mut self) -> Option<u64> {
         if let TokenKind::IntLiteral(n, _) = self.peek_kind() {
             let v = *n;
@@ -2159,6 +2184,27 @@ mod tests {
         let expr = Parser::new(src, FileId::new(), &mut diags).parse_expr();
         assert!(!diags.has_errors(), "unexpected parse errors for `{src}`");
         expr.expect("expression should parse")
+    }
+
+    // A module file may be named after a peripheral that collides with a BML
+    // keyword (e.g. RP2350's `dma.bml`, where `dma` is the `@dma` keyword). The
+    // import path is a locator, so a keyword is accepted as a segment.
+    #[test]
+    fn import_path_segment_may_be_a_keyword() {
+        let mut diags = DiagnosticBag::new();
+        let program =
+            Parser::new("import rp2350.svd.dma;", FileId::new(), &mut diags).parse_program();
+        assert!(!diags.has_errors(), "keyword module segment should parse");
+        let import = program
+            .items
+            .iter()
+            .find_map(|it| match it {
+                crate::ast::Item::Import(i) => Some(i),
+                _ => None,
+            })
+            .expect("an import item");
+        let segs: Vec<&str> = import.module.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(segs, ["rp2350", "svd", "dma"]);
     }
 
     // Model B precedence: a prefix unary operator binds tighter than `as`, so

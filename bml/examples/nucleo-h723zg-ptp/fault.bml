@@ -22,7 +22,7 @@
 //   bit, marks it). CFSR bit 10 = IMPRECISERR, bit 9 = PRECISERR
 //   (BFAR valid iff bit 15).
 
-import svd.scb;
+import stm32h723.scb;
 
 var FAULT_WHO: u32;    // 0 clean; 0xDEADFA17 = recorder fired
 var FAULT_VECT: u32;   // ICSR.VECTACTIVE (3 = HardFault)

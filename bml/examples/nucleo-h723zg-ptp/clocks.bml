@@ -28,7 +28,7 @@
 // SWS) with a bounded spin -- if the ST-LINK MCO is absent the board stays on
 // HSI and reports the failing step in CLK_STATUS instead of hanging.
 
-import svd.rcc;
+import stm32h723.rcc;
 
 // SWD-visible bring-up result. 0 = clk_init_hse_pll never ran.
 const CLK_ERR_HSE: u32 = 1;     // HSERDY timeout -- still on HSI

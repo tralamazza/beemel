@@ -1,6 +1,6 @@
 // ETH PTP timestamp clock helpers.
 
-import svd.ethernet_mac;
+import stm32h723.ethernet_mac;
 
 export struct PtpTime {
     seconds: u32,

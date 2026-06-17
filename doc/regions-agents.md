@@ -86,7 +86,8 @@ ECB -- every capable peripheral is its own bus master).
   reach claims, an `entry`). `include = <chip>.target` composes them
   (key-level merge, re-opening a section resumes it, everything overridable).
   Shipped chip files live in `lib/<part>/<part>.target` (with the chip's
-  generated peripherals under `lib/<part>/svd/`); `include` resolves the
+  peripherals alongside it as `lib/<part>/<peripheral>.bml`, curated from the
+  datasheet); `include` resolves the
   importing file's own directory first, then the lib search path
   (`--lib`/`$BML_PATH`/the in-tree `lib/`), so a local file shadows a
   library one. See `lib/README.md`.
