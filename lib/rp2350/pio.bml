@@ -45,7 +45,7 @@ export enum SM0_EXECCTRL_STATUS_N: u8 {
 }
 
 // Programmable IO block
-peripheral PIO1 at 0x50300000 {
+peripheral_type PIO {
     // PIO control register
     reg CTRL offset 0x00 {
         field NEXTPREV_CLKDIV_RESTART: b1 bit[26] writeonly  // Write 1 to restart the clock dividers of state machines in neighbouring PIO blocks, as specified by NEXT_PIO_MASK and PREV_PIO_MASK in the same write.
@@ -675,4 +675,7 @@ peripheral PIO1 at 0x50300000 {
         field SM0_RXNEMPTY: b1 bit[0] readonly
     }
 }
+peripheral PIO0: PIO at 0x50200000;
+peripheral PIO1: PIO at 0x50300000;
+peripheral PIO2: PIO at 0x50400000;
 

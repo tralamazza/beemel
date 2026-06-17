@@ -36,7 +36,7 @@ export enum IC_CON_SPEED: u8 {
 }
 
 // DW_apb_i2c address block
-peripheral I2C1 at 0x40098000 {
+peripheral_type I2C {
     // I2C Control Register. This register can be written only when the DW_apb_i2c is disabled, which corresponds to the IC_ENABLE[0] register being set to 0. Writes at other times have no effect.
     reg IC_CON offset 0x00 {
         field STOP_DET_IF_MASTER_ACTIVE: b1 bit[10] readonly  // Master issues the STOP_DET interrupt irrespective of whether master is active or not
@@ -293,4 +293,6 @@ peripheral I2C1 at 0x40098000 {
         field IC_COMP_TYPE: u32 bit[0..31] readonly  // Designware Component Type number = 0x44_57_01_40. This assigned unique hex value is constant and is derived from the two ASCII letters 'DW' followed by a 16-bit unsigned number.
     }
 }
+peripheral I2C0: I2C at 0x40090000;
+peripheral I2C1: I2C at 0x40098000;
 

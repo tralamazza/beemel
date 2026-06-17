@@ -39,7 +39,7 @@ export enum TMDS_CTRL_PIX_SHIFT: u8 {
 }
 
 // Single-cycle IO block 
-peripheral SIO at 0xD0000000 {
+peripheral_type SIO_t {
     // Processor core identifier
     reg CPUID offset 0x00 {
         field CPUID: u32 bit[0..31] readonly  // Value is 0 when read from processor core 0, and 1 when read from processor core 1.
@@ -574,4 +574,6 @@ peripheral SIO at 0xD0000000 {
         field TMDS_POP_DOUBLE_L2: u32 bit[0..31] readonly
     }
 }
+peripheral SIO: SIO_t at 0xD0000000;
+peripheral SIO_NS: SIO_t at 0xD0020000;
 

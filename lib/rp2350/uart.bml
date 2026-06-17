@@ -29,7 +29,7 @@
 //             1x HSTX peripheral
 //     
 
-peripheral UART0 at 0x40070000 {
+peripheral_type UART {
     // Data Register, UARTDR
     reg UARTDR offset 0x00 {
         field OE: b1 bit[11] readonly  // Overrun error. This bit is set to 1 if data is received and the receive FIFO is already full. This is cleared to 0 once there is an empty space in the FIFO and a new character can be written to it.
@@ -196,4 +196,6 @@ peripheral UART0 at 0x40070000 {
         field UARTPCELLID3: u32 bit[0..7] readonly  // These bits read back as 0xB1
     }
 }
+peripheral UART0: UART at 0x40070000;
+peripheral UART1: UART at 0x40078000;
 

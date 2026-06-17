@@ -29,7 +29,7 @@
 //             1x HSTX peripheral
 //     
 
-peripheral PLL_SYS at 0x40050000 {
+peripheral_type PLL {
     // Control and Status 
     reg CS offset 0x00 {
         field LOCK: b1 bit[31] readonly  // PLL is locked
@@ -70,4 +70,6 @@ peripheral PLL_SYS at 0x40050000 {
         field LOCK_N_STICKY: b1 bit[0] readonly
     }
 }
+peripheral PLL_SYS: PLL at 0x40050000;
+peripheral PLL_USB: PLL at 0x40058000;
 

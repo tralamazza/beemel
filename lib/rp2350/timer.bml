@@ -30,7 +30,7 @@
 //     
 
 // Controls time and alarms
-peripheral TIMER0 at 0x400B0000 {
+peripheral_type TIMER {
     // Write to bits 63:32 of time always write timelw before timehw
     reg TIMEHW offset 0x00 {
         field TIMEHW: u32 bit[0..31] writeonly
@@ -121,4 +121,6 @@ peripheral TIMER0 at 0x400B0000 {
         field ALARM_0: b1 bit[0] readonly
     }
 }
+peripheral TIMER0: TIMER at 0x400B0000;
+peripheral TIMER1: TIMER at 0x400B8000;
 

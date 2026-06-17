@@ -30,7 +30,7 @@
 //     
 
 // TEAL registers accessible through the debug interface
-peripheral PPB at 0xE0000000 {
+peripheral_type PPB_t {
     // Provides the interface for generating Instrumentation packets
     reg ITM_STIM0 offset 0x00 {
         field STIMULUS: u32 bit[0..31]  // Data to write to the Stimulus Port FIFO, for forwarding as an Instrumentation packet. The size of write access determines the type of Instrumentation packet generated.
@@ -1786,4 +1786,6 @@ peripheral PPB at 0xE0000000 {
         field PRMBL_3: u32 bit[0..7] readonly  // Preamble[3]. Contains bits[31:24] of the component identification code.
     }
 }
+peripheral PPB: PPB_t at 0xE0000000;
+peripheral PPB_NS: PPB_t at 0xE0020000;
 

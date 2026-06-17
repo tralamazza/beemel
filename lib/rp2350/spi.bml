@@ -29,7 +29,7 @@
 //             1x HSTX peripheral
 //     
 
-peripheral SPI0 at 0x40080000 {
+peripheral_type SPI {
     // Control register 0, SSPCR0 on page 3-4
     reg SSPCR0 offset 0x00 {
         field SCR: u32 bit[8..15]  // Serial clock rate. The value SCR is used to generate the transmit and receive bit rate of the PrimeCell SSP. The bit rate is: F SSPCLK CPSDVSR x (1+SCR) where CPSDVSR is an even value from 2-254, programmed through the SSPCPSR register and SCR is a value from 0-255.
@@ -127,4 +127,6 @@ peripheral SPI0 at 0x40080000 {
         field SSPPCELLID3: u32 bit[0..7] readonly  // These bits read back as 0xB1
     }
 }
+peripheral SPI0: SPI at 0x40080000;
+peripheral SPI1: SPI at 0x40088000;
 
