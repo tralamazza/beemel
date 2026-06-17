@@ -976,8 +976,22 @@ peripheral GPIOA at 0x40020000 {
 - Field types must be explicitly declared -- `field NAME: TYPE bit[N]` for a single bit
   or `field NAME: TYPE bit[L..H]` for a bit range. Single bits are typically `b1`,
   multi-bit ranges `u32`.
-- Fields may carry an access modifier after the bit spec: `readonly` or `writeonly`.
-  Omitted = read-write.
+- A field may instead declare its enumerated values inline, *after* the bit spec, with a
+  named `enum`: `field NAME bit[L..H] enum EnumName { V0 = n0, V1 = n1, ... }`. This is
+  exactly sugar for a top-level `export enum EnumName` plus `field NAME: EnumName bit[L..H]`
+  -- the variants are referenced as usual (`PERIPH.REG.NAME = EnumName@V0`). A field carries
+  either an explicit `: TYPE` or an inline `enum`, never both (`E110`) and never neither
+  (`E111`). The enum's backing type is inferred as the smallest unsigned that holds its
+  largest discriminant.
+
+  ```
+  reg BITMODE offset 0x508 {
+      field BITMODE bit[0..1] enum Bitmode { Bit16 = 0, Bit08 = 1, Bit24 = 2, Bit32 = 3 }
+  }
+  // ... TIMER.BITMODE.BITMODE = Bitmode@Bit32;
+  ```
+- Fields may carry an access modifier after the bit spec (and after any inline enum):
+  `readonly` or `writeonly`. Omitted = read-write.
 
   ```
   reg CR offset 0x00 {
@@ -1075,7 +1089,13 @@ peripheral_def= "peripheral" ident "at" int "{" { reg_def } "}"
 
 reg_def       = "reg" ident "offset" int "{" { field_def } "}"
 
-field_def     = "field" ident ":" type "bit" "[" int [ ".." int ] "]" [ access ]
+field_def     = "field" ident
+                  ( ":" type "bit" "[" int [ ".." int ] "]"
+                  | "bit" "[" int [ ".." int ] "]" "enum" ident enum_body )
+                  [ access ]
+              ;; exactly one type source: the explicit `: type` (no inline enum)
+              ;; or the trailing inline `enum` (no leading type)
+enum_body     = "{" { ident [ "=" int ] [ "," ] } "}"
 access        = "readonly" | "writeonly"
 
 storage_annotation = "exclusive" "(" ident ")"
@@ -1089,7 +1109,7 @@ struct_def    = "struct" ident [ "@repr" "(" ("C" | "packed") ")" ]
                 "{" { ident ":" type [ endian_attr ] "," } "}"
 endian_attr   = "@be" | "@le"   (* multi-byte integer fields only *)
 
-enum_def      = "enum" ident ":" type "{" { ident ["=" int] "," } "}"
+enum_def      = "enum" ident ":" type enum_body
 
 stmt          = var_decl | assign | expr_stmt | if_stmt | loop_stmt
               | while_stmt | for_stmt | return_stmt | break_stmt | continue_stmt

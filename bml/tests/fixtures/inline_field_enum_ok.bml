@@ -1,0 +1,17 @@
+// Inline named field enum: the enum is declared at the field site and used
+// exactly like a top-level enum-typed field (write, read, match).
+peripheral MyDma at 0x40030000 {
+    reg CTRL offset 0x0c {
+        field SIZE bit[0..1] enum SizeSel { Byte = 0, Half = 1, Word = 2 }
+    }
+}
+
+export fn main() @context(thread) {
+    MyDma.CTRL.SIZE = SizeSel@Word;
+    var s: SizeSel = MyDma.CTRL.SIZE;
+    match s {
+        SizeSel@Byte { asm { } }
+        SizeSel@Half { asm { } }
+        SizeSel@Word { asm { } }
+    }
+}

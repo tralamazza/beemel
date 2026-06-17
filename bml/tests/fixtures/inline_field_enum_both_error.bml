@@ -1,0 +1,6 @@
+// A field may carry an explicit type OR an inline enum, never both (E110).
+peripheral P at 0x40030000 {
+    reg R offset 0x0 {
+        field F: u32 bit[0..1] enum E { A = 0, B = 1 }
+    }
+}

@@ -298,6 +298,35 @@ assert_error!(test_len_redefine, "len_redefine_error.bml", "E345");
 assert_error!(test_cast_to_b1, "cast_to_b1_error.bml", "E346");
 assert_error!(test_shadowing, "shadowing_error.bml", "E347");
 assert_error!(test_shadowing_global, "shadowing_global_error.bml", "E347");
+
+// Inline named field enums: `field F bit[..] enum Name { .. }`. The OK fixture
+// writes, reads, and matches an inline-enum field; the error fixtures cover the
+// "both an explicit type and an inline enum" (E110) and "no type at all" (E111)
+// cases.
+assert_pass!(test_inline_field_enum_ok, "inline_field_enum_ok.bml");
+assert_error!(
+    test_inline_field_enum_both,
+    "inline_field_enum_both_error.bml",
+    "E110"
+);
+assert_error!(
+    test_inline_field_enum_missing_type,
+    "inline_field_enum_missing_type_error.bml",
+    "E111"
+);
+
+// An inline field enum is pure parser desugar: it must lower to byte-identical
+// IR to the hand-written top-level `enum` + `field F: Enum` equivalent.
+#[test]
+fn test_inline_field_enum_desugars_identically() {
+    let inline = extract_fn_body(&bml_ir("inline_field_enum_ok.bml"), "@main");
+    let explicit = extract_fn_body(&bml_ir("inline_field_enum_explicit.bml"), "@main");
+    assert!(!inline.is_empty(), "inline `main` body was empty");
+    assert_eq!(
+        inline, explicit,
+        "inline field enum must lower identically to a top-level enum + typed field"
+    );
+}
 assert_error!(
     test_const_nonconst_init,
     "const_nonconst_init_error.bml",

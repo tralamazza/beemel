@@ -1,0 +1,6 @@
+// A field needs a type: either an explicit `: TYPE` or an inline enum (E111).
+peripheral P at 0x40030000 {
+    reg R offset 0x0 {
+        field F bit[0..1]
+    }
+}

@@ -57,6 +57,31 @@ fn set_exported(item: Item) -> Item {
     }
 }
 
+/// Backing integer type for a synthesized inline field enum: the smallest
+/// unsigned that holds the largest resolved discriminant. Mirrors the
+/// resolver's positional rule (an explicit `= n` sets the value and the next
+/// auto-increment, an omitted value is previous+1, starting at 0), so the
+/// chosen type never under-sizes the enum (`collect_enum` would otherwise raise
+/// `E323`). Values past `u32::MAX` get `u32` and fail in the resolver, where
+/// the proper diagnostic lives.
+fn enum_backing_ty(variants: &[EnumVariantDef], span: Span) -> TypeExpr {
+    let mut next: u64 = 0;
+    let mut max: u64 = 0;
+    for v in variants {
+        let val = v.value.unwrap_or(next);
+        max = max.max(val);
+        next = val.wrapping_add(1);
+    }
+    let name = if u8::try_from(max).is_ok() {
+        "u8"
+    } else if u16::try_from(max).is_ok() {
+        "u16"
+    } else {
+        "u32"
+    };
+    TypeExpr::Named((name.to_string(), span))
+}
+
 pub struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
@@ -76,6 +101,12 @@ pub struct Parser<'a> {
     /// so the verifier can suppress V130 (unsigned-int-overflow) exactly
     /// where wrap was declared. See `BinaryOp::AddWrap`.
     wrap_spans: Vec<Span>,
+    /// Top-level enums synthesized from inline field-enum declarations
+    /// (`field F bit[..] enum Name { .. }`). The parser is the one place that
+    /// elaborates them; they are drained into `Program.items` in
+    /// `parse_program` so they flow through the normal top-level enum pipeline
+    /// (resolver/checker/codegen unchanged).
+    synth_enums: Vec<EnumDef>,
 }
 
 /// Maximum nesting depth for expressions, types, and blocks combined. Chosen to
@@ -130,6 +161,7 @@ impl<'a> Parser<'a> {
             depth: 0,
             depth_error_emitted: false,
             wrap_spans: Vec::new(),
+            synth_enums: Vec::new(),
         }
     }
 
@@ -168,6 +200,14 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        // Enums synthesized from inline field enums, appended as ordinary
+        // top-level items. Order is irrelevant: the resolver collects every
+        // enum before resolving peripheral field types (pass 2e).
+        items.extend(
+            std::mem::take(&mut self.synth_enums)
+                .into_iter()
+                .map(Item::EnumDef),
+        );
         Program {
             items,
             wrap_spans: std::mem::take(&mut self.wrap_spans),
@@ -912,6 +952,20 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Colon, "expected `:` after enum name")
             .ok()?;
         let ty = self.parse_type_expr()?;
+        let variants = self.parse_enum_body()?;
+
+        Some(EnumDef {
+            exported: false,
+            name,
+            ty,
+            variants,
+        })
+    }
+
+    /// Parse the `{ V0 [= n0], V1 [= n1], ... }` variant body of an enum,
+    /// shared by top-level `enum` declarations and inline field enums. Assumes
+    /// the opening `{` is next.
+    fn parse_enum_body(&mut self) -> Option<Vec<EnumVariantDef>> {
         self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
 
         let mut variants = Vec::new();
@@ -932,13 +986,7 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
-
-        Some(EnumDef {
-            exported: false,
-            name,
-            ty,
-            variants,
-        })
+        Some(variants)
     }
 
     fn parse_peripheral_def(&mut self) -> Option<PeripheralDef> {
@@ -1005,10 +1053,14 @@ impl<'a> Parser<'a> {
     fn parse_field_def(&mut self) -> Option<FieldDef> {
         self.expect(&TokenKind::Field, "expected `field`").ok()?;
         let name = self.parse_ident()?;
-        self.expect(&TokenKind::Colon, "expected `:`").ok()?;
 
-        // Required type annotation before the bit spec
-        let ty = self.parse_type_expr()?;
+        // Optional explicit type before the bit spec. Omitted when an inline
+        // `enum { .. }` follows the bit spec (which then supplies the type).
+        let explicit_ty = if self.eat(&TokenKind::Colon) {
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
 
         let bit_spec = if self.eat(&TokenKind::Bit) {
             self.expect(&TokenKind::LBracket, "expected `[`").ok()?;
@@ -1028,7 +1080,48 @@ impl<'a> Parser<'a> {
             return None;
         };
 
+        // Optional inline enum: `enum Name { V = n, ... }`. Desugars to a
+        // synthesized `export enum Name` (collected in `synth_enums`, emitted as
+        // a top-level item) plus a field whose type names it -- reusing the
+        // enum-typed-field path end to end.
+        let inline_enum_ty = if self.check(&TokenKind::Enum) {
+            self.advance(); // enum
+            let enum_name = self.parse_ident()?;
+            let variants = self.parse_enum_body()?;
+            let backing = enum_backing_ty(&variants, enum_name.1);
+            self.synth_enums.push(EnumDef {
+                exported: true,
+                name: enum_name.clone(),
+                ty: backing,
+                variants,
+            });
+            Some(TypeExpr::Named(enum_name))
+        } else {
+            None
+        };
+
         let access = self.parse_access_modifier();
+
+        // Exactly one of {explicit type, inline enum} supplies the field type.
+        let ty = match (explicit_ty, inline_enum_ty) {
+            (Some(_), Some(_)) => {
+                self.diags.error(
+                    "field has both an explicit type and an inline enum; use one",
+                    "E110",
+                    name.1,
+                );
+                return None;
+            }
+            (Some(t), None) | (None, Some(t)) => t,
+            (None, None) => {
+                self.diags.error(
+                    "field needs a type: `field NAME: TYPE bit[..]` or `field NAME bit[..] enum N { .. }`",
+                    "E111",
+                    name.1,
+                );
+                return None;
+            }
+        };
 
         Some(FieldDef {
             name,

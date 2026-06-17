@@ -1,0 +1,24 @@
+// Hand-written equivalent of inline_field_enum_ok.bml: a top-level enum plus a
+// field that names it. The inline form must lower to byte-identical IR -- it is
+// pure parser desugar (see test_inline_field_enum_desugars_identically).
+export enum SizeSel: u8 {
+    Byte = 0,
+    Half = 1,
+    Word = 2,
+}
+
+peripheral MyDma at 0x40030000 {
+    reg CTRL offset 0x0c {
+        field SIZE: SizeSel bit[0..1]
+    }
+}
+
+export fn main() @context(thread) {
+    MyDma.CTRL.SIZE = SizeSel@Word;
+    var s: SizeSel = MyDma.CTRL.SIZE;
+    match s {
+        SizeSel@Byte { asm { } }
+        SizeSel@Half { asm { } }
+        SizeSel@Word { asm { } }
+    }
+}
