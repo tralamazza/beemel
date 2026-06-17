@@ -2764,9 +2764,13 @@ fn main() @context(thread) {
         let dir = rp2350_example_dir();
         let probe = dir.join("probe.bml");
         let source = fs::read_to_string(&probe).expect("probe.bml present");
+        // probe.bml imports the shipped lib peripherals, so resolution needs the
+        // library search path (the dev fallback finds the in-tree lib/).
+        let libs = bml_core::libpath::assemble_lib_roots(&[]);
 
         // Target-less (today's LSP): the agent-shared rejection misfires.
-        let (_, no_target) = analyze_file(&probe, &source, &mut ModuleCache::default(), None, &[]);
+        let (_, no_target) =
+            analyze_file(&probe, &source, &mut ModuleCache::default(), None, &libs);
         assert!(
             no_target
                 .diagnostics()
@@ -2779,17 +2783,14 @@ fn main() @context(thread) {
         // AgentShared, reclaim is legal, and the whole example checks clean.
         // pico2w.target now includes the shipped lib/rp2350/rp2350.target, so it
         // needs the library search path (the dev fallback finds the in-tree lib/).
-        let target = Target::from_file_with_libs(
-            &dir.join("pico2w.target"),
-            &bml_core::libpath::assemble_lib_roots(&[]),
-        )
-        .expect("pico2w.target loads");
+        let target = Target::from_file_with_libs(&dir.join("pico2w.target"), &libs)
+            .expect("pico2w.target loads");
         let (_, with_target) = analyze_file(
             &probe,
             &source,
             &mut ModuleCache::default(),
             Some(&target),
-            &[],
+            &libs,
         );
         assert!(
             !with_target.has_errors(),

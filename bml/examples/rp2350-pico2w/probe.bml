@@ -9,7 +9,13 @@
 // mistake variants in the plan doc notes): handoff writes without `owns` are
 // E605, an unguarded reclaim is E611, reach outside the declared blocks dies
 // at target load against the crossbar windows.
-import rp2350_periph;
+import rp2350.dma as dmac;   // alias: `dma` collides with the @dma keyword; the
+                             // alias gives a usable qualifier for its enums.
+import rp2350.resets;
+import rp2350.sio;
+import rp2350.psm;
+import cortex_m33.nvic;
+import cortex_m33.scb;
 
 owns DMA;
 
@@ -61,10 +67,10 @@ fn dma_setup() {
     DMA.CH0_READ_ADDR = &SRC as u32;     // release: source side
     DMA.CH0_WRITE_ADDR = &DST as u32;    // release: destination side
     DMA.CH0_TRANS_COUNT.COUNT = 16;
-    DMA.CH0_CTRL_TRIG.TREQ_SEL = 0x3F;   // permanent request (mem-to-mem)
+    DMA.CH0_CTRL_TRIG.TREQ_SEL = dmac.CH0_CTRL_TRIG_TREQ_SEL@PERMANENT;   // permanent request (mem-to-mem)
     DMA.CH0_CTRL_TRIG.INCR_READ = true;
     DMA.CH0_CTRL_TRIG.INCR_WRITE = true;
-    DMA.CH0_CTRL_TRIG.DATA_SIZE = 2;     // word
+    DMA.CH0_CTRL_TRIG.DATA_SIZE = dmac.CH0_CTRL_TRIG_DATA_SIZE@SIZE_WORD;     // word
     DMA.CH0_CTRL_TRIG.EN = true;         // trigger
 
     // Native blocking acquire: BUSY is busy-HIGH (completes_by = !BUSY), so
@@ -111,7 +117,7 @@ fn dma_poll() {
 // note: written from an ISR-root fn -- model says core0; it may actually
 // run on either core, a documented v0 limitation.)
 fn HardFault() {
-    FAULT_WHO = 0xDEAD0000 + SIO.CPUID.CORE;
+    FAULT_WHO = 0xDEAD0000 + SIO.CPUID.CPUID;
     FAULT_ICSR = SCB.ICSR.VECTACTIVE;
     FAULT_CFSR = SCB.CFSR.RAW;
     loop {
@@ -123,7 +129,7 @@ fn HardFault() {
 // VLD) and W1Cs the sticky error bits.
 fn fifo_isr() @isr("SIO_IRQ_FIFO", priority = 1) {
     if SIO.FIFO_ST.VLD {
-        var w: u32 = SIO.FIFO_RD.DATA;
+        var w: u32 = SIO.FIFO_RD.FIFO_RD;
         FIFO_LAST = w;
         var m: u32 = FIFO_MSGS;
         FIFO_MSGS = m + 1;  // free-running drain counter; wrap intended // bml-verify: ignore V130
@@ -133,7 +139,7 @@ fn fifo_isr() @isr("SIO_IRQ_FIFO", priority = 1) {
 
 fn core1_main() @context(thread) {
     NVIC.ISER = 1 << 25;  // SIO_IRQ_FIFO into CORE1's banked NVIC
-    CORE1_COUNT = 1000 + SIO.CPUID.CORE;  // CPUID is 0/1; the +1000 cannot meaningfully wrap (MMIO havoc artifact) // bml-verify: ignore V130
+    CORE1_COUNT = 1000 + SIO.CPUID.CPUID;  // CPUID is 0/1; the +1000 cannot meaningfully wrap (MMIO havoc artifact) // bml-verify: ignore V130
     // Acknowledge over the inter-core FIFO -- the sanctioned cross-core
     // channel (E615's first real catch was core0 reading CORE1_COUNT
     // directly in an earlier version of this launch logic).
@@ -172,7 +178,7 @@ fn fifo_push(w: u32) {
 
 fn fifo_pop() -> u32 {
     while !SIO.FIFO_ST.VLD {}
-    return SIO.FIFO_RD.DATA;
+    return SIO.FIFO_RD.FIFO_RD;
 }
 
 // The bootrom launch handshake (datasheet 5.3): walk core1 through
@@ -190,7 +196,7 @@ fn core1_launch() {
         if seq == 5 { cmd = (&core1_main as u32) | 1; }         // entry PC (thumb bit)
         if cmd == 0 {
             while SIO.FIFO_ST.VLD {
-                var drain: u32 = SIO.FIFO_RD.DATA;
+                var drain: u32 = SIO.FIFO_RD.FIFO_RD;
             }
             asm { sev } : : : "memory";
         }
@@ -234,7 +240,7 @@ fn core1_start() {
         var i: u32 = 0;
         while !ok && i < 200000 {
             if SIO.FIFO_ST.VLD {
-                const ack = SIO.FIFO_RD.DATA;
+                const ack = SIO.FIFO_RD.FIFO_RD;
                 if ack == 0xC0FFEE01 {
                     ok = true;
                 }
@@ -253,7 +259,7 @@ fn main() @context(thread) {
         var a: u32 = ALIVE;
         ALIVE = a + 1;  // free-running core1 loop counter; u32 wrap intended // bml-verify: ignore V130
         if SIO.FIFO_ST.VLD {
-            const w = SIO.FIFO_RD.DATA;
+            const w = SIO.FIFO_RD.FIFO_RD;
             if (w & 0xFFFF0000) == 0xBEA70000 {
                 var b: u32 = CORE0_BEATS;
                 CORE0_BEATS = b + 1;  // free-running FIFO beat counter // bml-verify: ignore V130

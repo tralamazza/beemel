@@ -2476,7 +2476,7 @@ fn record_write(
 ) {
     let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
     let rhs_disabling = rhs.is_some_and(is_disabling);
-    let rhs_literal = rhs.and_then(literal_value);
+    let rhs_literal = rhs.and_then(|e| literal_value(e).or_else(|| enum_discriminant(e, symbols)));
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
@@ -2531,6 +2531,23 @@ fn literal_value(e: &Expr) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+/// The discriminant of an enum-variant expression (`Enum@Variant`), resolved
+/// against the symbol table. An enum-typed register field is written with a
+/// variant, not an int literal, so the E618 `when field = N` cross-check uses
+/// this to recover the numeric value (e.g. `CH0_CTRL_TRIG_DATA_SIZE@SIZE_WORD`
+/// -> 2). `enum_name` is the flattened qualified name the resolver keyed on.
+fn enum_discriminant(e: &Expr, symbols: &SymbolTable) -> Option<u64> {
+    let Expr::EnumVariant {
+        enum_name, variant, ..
+    } = e
+    else {
+        return None;
+    };
+    let (_, variants) = symbols.enums.get(&enum_name.0)?;
+    let disc = variants.iter().find(|(n, _)| *n == variant.0)?.1;
+    u64::try_from(disc).ok()
 }
 
 /// Whether `e` is a provably-disabling literal (`false` or `0`), possibly

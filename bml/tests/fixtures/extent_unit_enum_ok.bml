@@ -1,0 +1,31 @@
+// E618 positive with an ENUM-typed unit field: the `when CTRL.SIZE = 2` cross-
+// check must resolve the enum-variant write (`SizeSel@Word`, discriminant 2).
+// Regression for enum_discriminant in region.rs (an SVD-generated field is often
+// enum-typed, so the unit write is `= Enum@Variant`, not an int literal).
+enum SizeSel: u8 {
+    Byte = 0,
+    Half = 1,
+    Word = 2,
+}
+
+peripheral MyDma at 0x40030000 {
+    reg DESCADDR offset 0x00 {
+        field PTR: u32 bit[2..31]
+    }
+    reg XFERCNT offset 0x08 {
+        field COUNT: u32 bit[0..15]
+    }
+    reg CTRL offset 0x0c {
+        field SIZE: SizeSel bit[0..1]
+    }
+}
+
+owns MyDma;
+
+var DESC: [u32; 8] @align(32) in dma_shared;
+
+fn main() @context(thread) {
+    MyDma.CTRL.SIZE = SizeSel@Word;
+    MyDma.DESCADDR = &DESC as u32;
+    MyDma.XFERCNT.COUNT = 8;
+}

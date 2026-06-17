@@ -2944,6 +2944,18 @@ fn test_extent_unit_ok() {
     );
 }
 
+// E618 with an ENUM-typed unit field: `MyDma.CTRL.SIZE = SizeSel@Word` (=2)
+// must satisfy `when CTRL.SIZE = 2`. Regression for enum_discriminant resolving
+// an enum-variant write to its discriminant.
+#[test]
+fn test_extent_unit_enum_ok() {
+    let (ok, stderr) = bml_build_with_target("extent_unit_enum_ok.bml", Some("extent_unit.target"));
+    assert!(
+        ok,
+        "enum-typed unit field written via @variant should satisfy E618; stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn test_extent_unit_missing_rejected() {
     let (ok, stderr) = bml_build_with_target("extent_unit_missing.bml", Some("extent_unit.target"));
