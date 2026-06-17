@@ -1,7 +1,8 @@
 # Peripheral types + instances
 
-Status: design spec (not implemented). Goal: remove the dominant duplication in
-`lib/` -- the same IP block copied per instance and per chip -- with a typed,
+Status: Slice 1 IMPLEMENTED (intra-file; see below). Slice 2 and cross-file
+templates are still design-only. Goal: remove the dominant duplication in `lib/`
+-- the same IP block copied per instance and per chip -- with a typed,
 checker-visible feature and NO preprocessor (see the no-macros constraint).
 
 ## Problem
@@ -75,28 +76,41 @@ verify changes.
 
 ## Two slices
 
-### Slice 1 -- register-def dedup (small, pure front-end)
+### Slice 1 -- register-def dedup -- IMPLEMENTED (parser-level desugar, intra-file)
 
-Forms 1 + 2 above. Touchpoints:
+Forms 1 + 2 above. Built as a PARSER desugar (the same approach as inline field
+enums), NOT a resolver pass: `peripheral_type` and instances never become `Item`s
+and never reach the resolver/checker/codegen, so those are completely untouched.
+Scope: the template and its instances must live in the SAME source file (the
+elaboration runs per-file in `parse_program`; imported files are each parsed the
+same way, so a chip's `gpio.bml` = one template + N instances works whether it is
+the root or imported). Cross-FILE templates (a template in `lib/ip/` instantiated
+from another file) are NOT supported -- that needs the after-merge variant (see
+below) and is a follow-up.
 
-- `lexer.rs`: add `peripheral_type` to `KEYWORDS` (one entry, like `comptime_assert`).
-- `ast.rs`: `Item::PeripheralType(...)`; instance body becomes
-  `enum PeripheralBody { Inline(Vec<RegDef>), OfType(Ident) }`.
-- `parser.rs`: `peripheral_type` is its own top-level item (dispatched like
-  `struct`/`enum`); `peripheral` then disambiguates only instance (`ident ":"`)
-  vs anonymous (`ident "at"`).
-- `resolver.rs`: a pre-pass builds `types: HashMap<String, Vec<RegDef>>`; each
-  `OfType` instance resolves its regs from the type, then inserts a
-  `PeripheralSymbol` via the existing path at :403. Runs before the field-enum
-  re-resolution pass (:627). Types are not inserted into `table.peripherals`.
-- `checker.rs`: do not add type names to `module_scope`; error on value-use of a
-  type.
-- codegen / region / verify: zero change.
-- `bml-svd`: emit `derivedFrom` groups as one type + instance lines instead of
-  expanding (it already parses `derived_from`).
+As built:
+- `lexer.rs`: `peripheral_type` added to `KEYWORDS` (one hard keyword).
+- `ast.rs`: parser-internal `PeripheralTypeDef` / `PeripheralInstanceDef` structs
+  (NOT in the `Item` enum -- they are elaborated away).
+- `parser.rs`: `parse_program` collects templates + instances into accumulators
+  (lookahead `peripheral IDENT :` distinguishes an instance from anonymous
+  `peripheral IDENT at`), then `materialize_peripheral_instances` clones each
+  template's regs into an ordinary `Item::PeripheralDef`. Inline field enums in a
+  template are synthesized once (shared by all instances).
+- resolver / checker / codegen / region / verify: ZERO change.
 
-New diagnostics: type-used-as-value; instance-of-unknown-type; dup-instance
-reuses existing E200.
+Diagnostics: `E112` instance of an unknown `peripheral_type`; `E115` duplicate
+`peripheral_type` name; `E108` `export` on a `peripheral_type`. Verified by a
+byte-identical-IR test (template + 2 instances vs two hand-written peripherals).
+
+Cross-file follow-up (NOT built): run an `elaborate_peripheral_types(&mut Program)`
+pass after `import_resolver.resolve()` in `bml/src/main.rs` (the merged, mutable
+program) so a template in one module can be instantiated from another. Requires
+`qualify.rs` to treat the template name + the instance's type reference like a
+struct/enum type so they qualify consistently.
+
+`bml-svd` adoption (emit `derivedFrom` groups as one template + instance lines
+instead of expanding) is a separate follow-up in that repo.
 
 ### Slice 2 -- driver dedup over instances (medium; needs monomorphization)
 

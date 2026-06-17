@@ -1,0 +1,14 @@
+// A peripheral_type (register-layout template) instantiated at two addresses.
+// Each instance is an ordinary peripheral after parser elaboration.
+peripheral_type GpioPort {
+    reg MODER offset 0x00 { field MODE0: u32 bit[0..1] }
+    reg ODR offset 0x14 { field ODR0: b1 bit[0] }
+}
+
+peripheral GPIOA: GpioPort at 0x40020000;
+peripheral GPIOB: GpioPort at 0x40020400;
+
+export fn main() @context(thread) {
+    GPIOA.MODER.MODE0 = 1;
+    GPIOB.ODR.ODR0 = true;
+}

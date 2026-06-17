@@ -1,0 +1,5 @@
+// Two peripheral_types with the same name collide (E115).
+peripheral_type T { reg R offset 0x0 { field F: b1 bit[0] } }
+peripheral_type T { reg R offset 0x0 { field F: b1 bit[0] } }
+
+peripheral X: T at 0x40020000;

@@ -1010,6 +1010,32 @@ peripheral GPIOA at 0x40020000 {
 - STM `cmsis-device-fX` device repos can be imported into `.target` files with
   [`bml-cmsis`](./stm32-cmsis.md)
 
+### Peripheral types (register-layout templates)
+
+When several peripherals share an identical register layout (GPIO ports, the
+instances of a reused IP block), declare the layout once as a `peripheral_type`
+(no name, no address) and bind each instance to an address:
+
+```
+peripheral_type GpioPort {
+    reg MODER offset 0x00 { field MODE0: u32 bit[0..1] }
+    reg ODR   offset 0x14 { field ODR0: b1 bit[0] }
+}
+
+peripheral GPIOA: GpioPort at 0x40020000;
+peripheral GPIOB: GpioPort at 0x40020400;
+```
+
+Each `peripheral NAME: TYPE at ADDR;` is exactly sugar for a full `peripheral
+NAME at ADDR { ... }` with the template's registers cloned in -- the instances
+are ordinary peripherals (bare global access `GPIOA.MODER.MODE0`, target/agent
+binding by name, etc.). A `peripheral_type` is not itself addressable. The
+template and its instances must live in the **same source file** (order within
+the file does not matter); an instance of an undeclared template is `E112`, a
+duplicate template name is `E115`. Inline field enums inside a template are
+declared once and shared by every instance. See
+[peripheral-types.md](./peripheral-types.md).
+
 ## 10. Target files
 
 ```
@@ -1060,11 +1086,11 @@ program       = { item }
 
 item          = [ "export" ] ( fn_def | extern_fn_def | global_var_def
                               | const_def | struct_def | enum_def )
-              | peripheral_def | import_stmt
+              | peripheral_def | peripheral_type_def | import_stmt
               | comptime_assert
               ;; `export` is a declaration-site modifier (default private);
-              ;; it does not apply to peripherals (global), imports, or
-              ;; comptime_assert.
+              ;; it does not apply to peripherals (global), peripheral_type
+              ;; (intra-file), imports, or comptime_assert.
 
 comptime_assert = "comptime_assert" "(" expr ")" ";"
 
@@ -1085,7 +1111,10 @@ global_var_def = "var" ident ":" type
 
 const_def     = "const" ident ":" type "=" expr ";"
 
-peripheral_def= "peripheral" ident "at" int "{" { reg_def } "}"
+peripheral_def= "peripheral" ident "at" int "{" { reg_def } "}"          (* anonymous *)
+              | "peripheral" ident ":" ident "at" int ";"                (* instance of a peripheral_type *)
+
+peripheral_type_def = "peripheral_type" ident "{" { reg_def } "}"
 
 reg_def       = "reg" ident "offset" int "{" { field_def } "}"
 

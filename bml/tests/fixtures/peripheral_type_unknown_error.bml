@@ -1,0 +1,2 @@
+// An instance must reference a peripheral_type declared in the same file (E112).
+peripheral GPIOA: NoSuchType at 0x40020000;

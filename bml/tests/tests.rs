@@ -327,6 +327,38 @@ fn test_inline_field_enum_desugars_identically() {
         "inline field enum must lower identically to a top-level enum + typed field"
     );
 }
+
+// peripheral_type (register-layout template) + instances. The OK fixtures cover
+// plain templates and the inline-enum-in-template composition; the error
+// fixtures cover an instance of an unknown type (E112) and a duplicate template
+// name (E115).
+assert_pass!(test_peripheral_type_ok, "peripheral_type_ok.bml");
+assert_pass!(test_peripheral_type_enum_ok, "peripheral_type_enum_ok.bml");
+assert_error!(
+    test_peripheral_type_unknown,
+    "peripheral_type_unknown_error.bml",
+    "E112"
+);
+assert_error!(
+    test_peripheral_type_dup,
+    "peripheral_type_dup_error.bml",
+    "E115"
+);
+
+// A peripheral_type instance is pure parser desugar: it must lower to byte-
+// identical IR to two hand-written peripherals with the same register layout.
+#[test]
+fn test_peripheral_type_desugars_identically() {
+    let templ = bml_ir("peripheral_type_ok.bml");
+    let explicit = bml_ir("peripheral_type_explicit.bml");
+    let templ_main = extract_fn_body(&templ, "@main");
+    assert!(!templ_main.is_empty(), "template `main` body was empty");
+    assert_eq!(
+        templ_main,
+        extract_fn_body(&explicit, "@main"),
+        "peripheral_type instances must lower identically to hand-written peripherals"
+    );
+}
 assert_error!(
     test_const_nonconst_init,
     "const_nonconst_init_error.bml",

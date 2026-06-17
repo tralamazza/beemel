@@ -588,6 +588,28 @@ pub struct PeripheralDef {
     pub regs: Vec<RegDef>,
 }
 
+/// A `peripheral_type NAME { regs }` -- a named register-layout template with no
+/// address or instance name. Parser-internal: it never reaches a `Program`. The
+/// parser collects these and materializes each `peripheral NAME: TYPE at ADDR;`
+/// instance into an ordinary `PeripheralDef` with the type's `regs` cloned in, so
+/// the resolver/checker/codegen never see the template (see
+/// `Parser::parse_program`). Not an `Item` for that reason.
+#[derive(Debug, Clone)]
+pub struct PeripheralTypeDef {
+    pub name: Ident,
+    pub regs: Vec<RegDef>,
+}
+
+/// A `peripheral NAME: TYPE at ADDR;` instance. Parser-internal (see
+/// [`PeripheralTypeDef`]); elaborated into a `PeripheralDef`.
+#[derive(Debug, Clone)]
+pub struct PeripheralInstanceDef {
+    pub exported: bool,
+    pub name: Ident,
+    pub type_name: Ident,
+    pub base_addr: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegDef {
     pub name: Ident,

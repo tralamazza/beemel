@@ -1,0 +1,15 @@
+// peripheral_type composed with an inline field enum: the template declares the
+// enum once; both instances reference the single synthesized SizeSel enum.
+peripheral_type Dma {
+    reg CTRL offset 0x0 {
+        field SIZE bit[0..1] enum SizeSel { Byte = 0, Half = 1, Word = 2 }
+    }
+}
+
+peripheral DMA0: Dma at 0x40030000;
+peripheral DMA1: Dma at 0x40031000;
+
+export fn main() @context(thread) {
+    DMA0.CTRL.SIZE = SizeSel@Word;
+    DMA1.CTRL.SIZE = SizeSel@Byte;
+}
