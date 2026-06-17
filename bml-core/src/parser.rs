@@ -1014,6 +1014,7 @@ impl<'a> Parser<'a> {
         Some(PeripheralDef {
             exported: false,
             name,
+            of_type: None,
             base_addr: addr,
             regs,
         })

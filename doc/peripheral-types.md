@@ -1,10 +1,10 @@
 # Peripheral types + instances
 
-Status: Slice 1 IMPLEMENTED, intra-file AND cross-file (see below). Slice 2
-(template as a fn parameter) is still design-only. Goal: remove the dominant
-duplication in `lib/` -- the same IP block copied per instance and per chip --
-with a typed, checker-visible feature and NO preprocessor (see the no-macros
-constraint).
+Status: Slices 1 AND 2 IMPLEMENTED (slice 1 intra-file + cross-file; slice 2 =
+template as a function parameter, monomorphized). Goal: remove the dominant
+duplication in `lib/` -- the same IP block copied per instance and per chip, and
+the same driver written per instance -- with a typed, checker-visible feature and
+NO preprocessor (see the no-macros constraint).
 
 ## Problem
 
@@ -116,41 +116,62 @@ templates (root module) keep bare `Enum@Variant`.
 `bml-svd` adoption (emit `derivedFrom` groups as one template + instance lines
 instead of expanding) is a separate follow-up in that repo.
 
-### Slice 2 -- driver dedup over instances (medium; needs monomorphization)
+### Slice 2 -- driver dedup over instances -- IMPLEMENTED (monomorphization)
 
 A `peripheral_type` used as a parameter type -- one driver serves all instances:
 
 ```bml
 fn usart_init(u: Usart, brr: u32) {     // Usart is a peripheral_type
-    u.CR1.UE  = 0;
-    u.BRR     = brr;
-    u.CR1.UE  = 1;
+    u.CR1.UE = false;
+    u.BRR    = brr;
+    u.CR1.UE = true;
 }
 
 usart_init(USART1, 0x1A1);
 usart_init(USART2, 0x1A1);
 ```
 
-Design decision: instances are compile-time constants; `usart_init` is
-monomorphized per instance-arg (the concrete base address is substituted/inlined
-at each call). This preserves the non-negotiables -- constant MMIO addresses,
-region/agent binding, verify. Cost: no runtime instance selection (you cannot
-store an instance in a `var` and pick at runtime); branch and call with each
-constant instance if you must. The alternative -- `u` as a runtime base address
--- was rejected: it defeats verify and cannot bind `owns`/handoff, which are
-keyed on named instances.
+Instances are compile-time constants; the driver is MONOMORPHIZED per instance
+argument (concrete base address substituted at codegen), preserving the
+non-negotiables: constant MMIO addresses, region/agent binding, verify. No runtime
+instance selection (you cannot store an instance in a `var` and pick at runtime).
 
-Touchpoints add: `TypeExpr` `peripheral_type` variant; checker checks `u.REG.FIELD`
-against the type and pins the arg to a compile-time instance of that type;
-codegen specializes per (fn, instance).
+As built:
+- `types.rs`: a `Type::PeripheralHandle(name)` carries the template name. A param
+  naming a `peripheral_type` is upgraded to a handle in resolver pass 2b and in
+  `check_fn` (via `upgrade_peripheral_handle`) -- localized, not threaded through
+  `resolve_type_expr`'s ~60 call sites.
+- `resolver.rs`/`imports.rs`: the template's layout survives as a type
+  (`SymbolTable::peripheral_types`); each materialized instance records its
+  `type_name` so an argument can be matched to a handle parameter.
+- `checker.rs`: `peripheral_reg_map` routes `u.REG[.FIELD]` to the template
+  layout (one path shared with global peripherals); a handle argument must be a
+  compile-time instance of the matching type or a pass-through handle (else
+  `E308`); a handle used as a value is `E309`.
+- `ir.rs`: lowering a call to a handle driver resolves the instance(s), queues a
+  specialization, and emits a mangled call (`usart_init$USART1`) with handle args
+  dropped; `emit_function_bodies` emits ordinary functions then drains the
+  worklist (transitive: `a(u){ b(u) }` works). The generic driver is never
+  emitted; handle params are dropped from the specialized signature, and
+  `u.REG` lowers via `subst_periph` to the instance's address.
 
 ## owns / regions interaction
 
 - Slice 1: none -- instances are named, bindings work as today.
-- Slice 2 (open, lean answer): the caller owns, the driver borrows. `owns USART1;`
-  stays at the concrete-instance level in the calling module; `usart_init` just
-  requires its argument to be owned by the caller. Fits module-level `owns` over
-  concrete names without inventing per-parameter ownership.
+- Slice 2 (as built): caller owns, driver borrows. The region pass runs on the
+  AST before monomorphization and sees `u.REG` (abstract), so a driver's handle
+  access is NOT independently region-checked; ownership stays with the CALLER
+  (it `owns USART1;` and calls the driver). No `region.rs` change.
+
+A handle is valid ONLY as a function parameter, used as `u.REG[.FIELD]` or passed
+to another driver. Using it as a value, `&u`, or taking the address of a handle
+driver is rejected (`E309`); a handle as a non-parameter type (return, `var`,
+struct field, `*Usart`) is not supported. No runtime instance selection.
+
+Note: a driver that writes a handoff register through its handle parameter is
+correctly keyed on the concrete instance at codegen (the post-write fence and
+verify obligations resolve `u` -> instance); ownership of that instance remains
+the caller's (the region pass runs before monomorphization and sees `u.REG`).
 
 ## Open questions / tradeoffs
 

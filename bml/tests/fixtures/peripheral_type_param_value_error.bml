@@ -1,0 +1,9 @@
+// A peripheral_type handle has no runtime value; using it as one (here, storing
+// it in a variable) is rejected (E309). It may only be accessed as `u.REG[.FIELD]`
+// or passed to another driver.
+peripheral_type Usart { reg CR1 offset 0x00 { field UE: b1 bit[0] } }
+peripheral USART1: Usart at 0x40011000;
+
+fn usart_init(u: Usart) { var x: u32 = u; }
+
+export fn main() @context(thread) { usart_init(USART1); }

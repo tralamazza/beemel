@@ -595,6 +595,11 @@ pub struct PeripheralDef {
     pub name: Ident,
     pub base_addr: u64,
     pub regs: Vec<RegDef>,
+    /// The `peripheral_type` this instance was materialized from
+    /// (`peripheral GPIOA: GpioPort at ...` -> `Some("GpioPort")`), or `None`
+    /// for an anonymous peripheral. Lets the resolver tag the instance so a
+    /// `peripheral_type` function parameter can be checked against it (slice 2).
+    pub of_type: Option<Ident>,
 }
 
 /// A `peripheral_type NAME { regs }` -- a named register-layout template with no

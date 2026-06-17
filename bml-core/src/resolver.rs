@@ -11,6 +11,11 @@ pub struct SymbolTable {
     pub statics: HashMap<String, StaticSymbol>,
     pub consts: HashMap<String, ConstSymbol>,
     pub peripherals: HashMap<String, PeripheralSymbol>,
+    /// `peripheral_type` register layouts (templates), keyed by type name. Unlike
+    /// `peripherals` these have no address -- they are types a function parameter
+    /// can name (`fn f(u: Usart)`), checked against an instance whose
+    /// `PeripheralSymbol::type_name` matches (slice 2).
+    pub peripheral_types: HashMap<String, PeripheralTypeSymbol>,
     pub structs: HashMap<String, StructInfo>,
     pub enums: HashMap<String, (crate::types::Type, Vec<(String, i64)>)>,
     /// Possible run contexts per function (`ceiling.rs::propagate_contexts`):
@@ -97,6 +102,17 @@ pub struct ConstSymbol {
 pub struct PeripheralSymbol {
     pub base_addr: u64,
     pub regs: HashMap<String, RegSymbol>,
+    /// The `peripheral_type` this instance was materialized from, or `None` for
+    /// an anonymous peripheral. Used to match a `peripheral_type` parameter to a
+    /// concrete instance argument (slice 2).
+    pub type_name: Option<String>,
+}
+
+/// A `peripheral_type` register layout (no address). The type-level counterpart
+/// of `PeripheralSymbol`, named by a function parameter.
+#[derive(Debug, Clone)]
+pub struct PeripheralTypeSymbol {
+    pub regs: HashMap<String, RegSymbol>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +148,7 @@ impl Resolver {
                 statics: HashMap::new(),
                 consts: HashMap::new(),
                 peripherals: HashMap::new(),
+                peripheral_types: HashMap::new(),
                 structs: HashMap::new(),
                 enums: HashMap::new(),
                 fn_possible_contexts: HashMap::new(),
@@ -152,10 +169,12 @@ impl Resolver {
                 ast::Item::StructDef(s) => self.collect_struct(s, diags),
                 ast::Item::EnumDef(e) => self.collect_enum(e, diags),
                 ast::Item::Import(_) => {}
-                // Elaborated away before the resolver in the normal pipeline
-                // (`imports::elaborate_peripheral_types`); only the fuzzer, which
-                // skips import resolution, can reach these -- ignore them.
-                ast::Item::PeripheralType(_) | ast::Item::PeripheralInstance(_) => {}
+                // The template's layout is collected as a type (a function
+                // parameter may name it). Its instances were materialized into
+                // PeripheralDefs before the resolver; a raw PeripheralInstance
+                // only reaches here via the fuzzer (skips import resolution).
+                ast::Item::PeripheralType(t) => self.collect_peripheral_type(t, diags),
+                ast::Item::PeripheralInstance(_) => {}
                 // Defines no symbol; checked separately (owns by the region
                 // pass, comptime_assert during type checking).
                 ast::Item::Owns(_) | ast::Item::ComptimeAssert(_) => {}
@@ -326,8 +345,39 @@ impl Resolver {
             return;
         }
 
+        let regs = self.resolve_reg_map(&name, &p.regs, diags);
+        self.table.peripherals.insert(
+            name,
+            PeripheralSymbol {
+                base_addr: p.base_addr,
+                regs,
+                type_name: p.of_type.as_ref().map(|t| t.0.clone()),
+            },
+        );
+    }
+
+    /// Collect a `peripheral_type` template's register layout as a type. The
+    /// E115/E200 uniqueness checks ran in `elaborate_peripheral_types`; here we
+    /// just record the layout (last write wins on an already-reported dup).
+    fn collect_peripheral_type(&mut self, t: &ast::PeripheralTypeDef, diags: &mut DiagnosticBag) {
+        let regs = self.resolve_reg_map(&t.name.0, &t.regs, diags);
+        self.table
+            .peripheral_types
+            .insert(t.name.0.clone(), PeripheralTypeSymbol { regs });
+    }
+
+    /// Resolve a register list into the symbol-table layout. Shared by
+    /// `collect_peripheral` (instances) and `collect_peripheral_type`
+    /// (templates). Field enum types are re-resolved in pass 2e once every enum
+    /// is collected.
+    fn resolve_reg_map(
+        &self,
+        name: &str,
+        reg_defs: &[ast::RegDef],
+        diags: &mut DiagnosticBag,
+    ) -> HashMap<String, RegSymbol> {
         let mut regs = HashMap::new();
-        for reg in &p.regs {
+        for reg in reg_defs {
             if regs.contains_key(&reg.name.0) {
                 diags.error(
                     format!("duplicate register `{}` in peripheral `{name}`", reg.name.0),
@@ -403,14 +453,7 @@ impl Resolver {
                 },
             );
         }
-
-        self.table.peripherals.insert(
-            name,
-            PeripheralSymbol {
-                base_addr: p.base_addr,
-                regs,
-            },
-        );
+        regs
     }
 
     fn collect_struct(&mut self, s: &ast::StructDef, diags: &mut DiagnosticBag) {
@@ -553,16 +596,23 @@ impl Resolver {
         }
 
         // Pass 2b: re-resolve function parameter and return types
-        // (struct names in params/ret that were Unresolved in pass 1)
+        // (struct names in params/ret that were Unresolved in pass 1). A param
+        // naming a `peripheral_type` is upgraded to a `PeripheralHandle` here
+        // (slice 2) -- only valid on a `fn`, not an `extern fn`.
+        let periph_type_names: std::collections::HashSet<String> =
+            self.table.peripheral_types.keys().cloned().collect();
         for item in &program.items {
             match item {
                 ast::Item::FnDef(f) => {
                     if let Some(fn_sym) = self.table.functions.get_mut(&f.name.0) {
                         for (i, param) in f.params.iter().enumerate() {
-                            fn_sym.params[i].1 = crate::types::resolve_type_expr(
-                                &param.ty,
-                                &self.table.structs,
-                                &self.table.enums,
+                            fn_sym.params[i].1 = crate::types::upgrade_peripheral_handle(
+                                crate::types::resolve_type_expr(
+                                    &param.ty,
+                                    &self.table.structs,
+                                    &self.table.enums,
+                                ),
+                                &periph_type_names,
                             );
                         }
                         if let Some(ret_ty) = &f.ret {
@@ -628,22 +678,49 @@ impl Resolver {
             }
         }
 
-        // Pass 2e: re-resolve peripheral field types
+        // Pass 2e: re-resolve peripheral field types now that every enum/struct
+        // is collected (collection order has peripherals before enums). Covers
+        // both instances (peripherals) and `peripheral_type` templates.
         for item in &program.items {
-            if let ast::Item::PeripheralDef(p) = item
-                && let Some(periph_sym) = self.table.peripherals.get_mut(&p.name.0)
-            {
-                for reg in &p.regs {
-                    if let Some(reg_sym) = periph_sym.regs.get_mut(&reg.name.0) {
-                        for field in &reg.fields {
-                            if let Some(field_sym) = reg_sym.fields.get_mut(&field.name.0) {
-                                field_sym.ty = crate::types::resolve_type_expr(
-                                    &field.ty,
-                                    &self.table.structs,
-                                    &self.table.enums,
-                                );
-                            }
-                        }
+            match item {
+                ast::Item::PeripheralDef(p) => {
+                    if let Some(periph_sym) = self.table.peripherals.get_mut(&p.name.0) {
+                        Self::reresolve_field_types(
+                            &p.regs,
+                            &mut periph_sym.regs,
+                            &self.table.structs,
+                            &self.table.enums,
+                        );
+                    }
+                }
+                ast::Item::PeripheralType(t) => {
+                    if let Some(ty_sym) = self.table.peripheral_types.get_mut(&t.name.0) {
+                        Self::reresolve_field_types(
+                            &t.regs,
+                            &mut ty_sym.regs,
+                            &self.table.structs,
+                            &self.table.enums,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Re-resolve each field's type against the now-complete struct/enum tables
+    /// (pass 2e). Shared by peripheral instances and `peripheral_type` templates.
+    fn reresolve_field_types(
+        reg_defs: &[ast::RegDef],
+        regs: &mut HashMap<String, RegSymbol>,
+        structs: &HashMap<String, StructInfo>,
+        enums: &crate::types::EnumDefs,
+    ) {
+        for reg in reg_defs {
+            if let Some(reg_sym) = regs.get_mut(&reg.name.0) {
+                for field in &reg.fields {
+                    if let Some(field_sym) = reg_sym.fields.get_mut(&field.name.0) {
+                        field_sym.ty = crate::types::resolve_type_expr(&field.ty, structs, enums);
                     }
                 }
             }

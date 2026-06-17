@@ -71,6 +71,13 @@ pub enum Type {
     Struct(String, StructRepr, Vec<(String, Type)>),
     // User-defined enum types: name + underlying type + (variant_name, discriminant)
     Enum(String, Box<Type>, Vec<(String, i64)>),
+    /// A `peripheral_type` named as a function parameter (`fn f(u: Usart)`). The
+    /// `String` is the template name; the layout is looked up in
+    /// `SymbolTable::peripheral_types`. A handle is a compile-time stand-in for a
+    /// concrete instance: every call must pass a statically-known peripheral, and
+    /// codegen monomorphizes the function per instance, so a handle never reaches
+    /// value-emission (slice 2).
+    PeripheralHandle(String),
     // A named type whose lookup hasn't run yet. Produced during the early
     // resolver passes; should never escape post-resolution. The resolver's
     // finalization pass converts any leftover Unresolved into `Error` after
@@ -124,6 +131,7 @@ impl fmt::Display for Type {
             Type::Addr(region) => write!(f, "addr in {region}"),
             Type::Struct(name, _, _) => write!(f, "struct {name}"),
             Type::Enum(name, _, _) => write!(f, "enum {name}"),
+            Type::PeripheralHandle(name) => write!(f, "{name}"),
             Type::Unresolved(name) => write!(f, "{name}"),
             Type::Fn(params, ret) => {
                 let p: Vec<String> = params.iter().map(ToString::to_string).collect();
@@ -164,6 +172,9 @@ impl Type {
             | Type::Null
             // An address slot is a plain value (like u32): Copy.
             | Type::Addr(_)
+            // A peripheral_type handle is a compile-time reference to a global
+            // peripheral -- Copy, so it can be passed to several drivers.
+            | Type::PeripheralHandle(_)
             | Type::Error(_) => Semantics::Copy,
             // A readonly view is Copy; a mutable view is Move (so the move
             // checker forbids use-after-move and aliasing two mutable views).
@@ -344,6 +355,24 @@ pub fn resolve_type_expr<S: ::std::hash::BuildHasher>(
         }
         TypeExpr::Addr((region, _)) => Type::Addr(region.clone()),
         TypeExpr::Void(_) => Type::Void,
+    }
+}
+
+/// Upgrade a resolved type for a position where a `peripheral_type` is a valid
+/// type (a function parameter or return): if it is an unresolved name that is a
+/// `peripheral_type`, turn it into a `PeripheralHandle` (slice 2). Everywhere
+/// else a `peripheral_type` name stays `Unresolved` and finalizes to an error.
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn upgrade_peripheral_handle(
+    ty: Type,
+    peripheral_type_names: &std::collections::HashSet<String>,
+) -> Type {
+    match ty {
+        Type::Unresolved(name) if peripheral_type_names.contains(&name) => {
+            Type::PeripheralHandle(name)
+        }
+        other => other,
     }
 }
 
@@ -558,7 +587,9 @@ pub fn align_of(ty: &Type) -> u32 {
         | Type::Shared(inner, _)
         | Type::Mmio(inner)
         | Type::AgentShared(inner) => align_of(inner),
-        Type::Unresolved(_) | Type::Null | Type::Error(_) => 4,
+        // A handle has no runtime layout (it is monomorphized away); 4 is a
+        // safe placeholder, like the other non-value types.
+        Type::PeripheralHandle(_) | Type::Unresolved(_) | Type::Null | Type::Error(_) => 4,
     }
 }
 

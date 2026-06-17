@@ -42,6 +42,17 @@ pub struct IrEmitter {
     /// volatile: the agent is a concurrent writer the optimizer cannot see
     /// (a hoisted OWN-bit spin became an infinite branch on the H723).
     agent_ptr_locals: std::collections::HashSet<String>,
+    /// While emitting a monomorphized function (a driver specialized for a
+    /// concrete instance), maps each `peripheral_type` handle parameter name to
+    /// that instance, so `u.REG` lowers as `INSTANCE.REG`. Empty otherwise
+    /// (slice 2).
+    handle_subst: HashMap<String, String>,
+    /// Monomorphization worklist: handle-parameter functions still to emit, as
+    /// (fn name, one concrete instance per handle parameter, in order). Pushed
+    /// when a call to a handle fn is lowered; drained after the ordinary
+    /// functions. `handle_spec_done` guards against re-emitting one (slice 2).
+    handle_spec_queue: Vec<(String, Vec<String>)>,
+    handle_spec_done: std::collections::HashSet<(String, Vec<String>)>,
     /// Spans of COMPILER-generated arithmetic that wraps by design, recorded
     /// in verify mode only: the ring view's `head + i` (bounded by the
     /// subsequent `% cap` regardless of wrap) and the bit view's
@@ -317,7 +328,139 @@ fn block_has_calls(block: &ast::Block) -> bool {
         || block.trailing.as_ref().is_some_and(|e| expr_has_calls(e))
 }
 
+// --- peripheral_type monomorphization (slice 2) ---
+
+/// Whether a parameter names a `peripheral_type` (a handle parameter).
+fn is_handle_param(param: &ast::Param, symbols: &SymbolTable) -> bool {
+    matches!(&param.ty, ast::TypeExpr::Named((n, _)) if symbols.peripheral_types.contains_key(n))
+}
+
+fn fn_has_handle_params(fn_def: &ast::FnDef, symbols: &SymbolTable) -> bool {
+    fn_def.params.iter().any(|p| is_handle_param(p, symbols))
+}
+
+/// Positions of a function's `peripheral_type` (handle) parameters, from its
+/// resolved signature.
+fn handle_param_positions(fname: &str, symbols: &SymbolTable) -> Vec<usize> {
+    symbols.functions.get(fname).map_or_else(Vec::new, |s| {
+        s.params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, t))| matches!(t, Type::PeripheralHandle(_)).then_some(i))
+            .collect()
+    })
+}
+
+/// Mangled name of a monomorphized function: `fn$INST0$INST1...`.
+fn mangle_spec(name: &str, instances: &[String]) -> String {
+    let mut s = name.to_string();
+    for inst in instances {
+        s.push('$');
+        s.push_str(inst);
+    }
+    s
+}
+
+/// Map each handle parameter name to its concrete instance for a specialization.
+fn build_handle_subst(
+    fn_def: &ast::FnDef,
+    instances: &[String],
+    symbols: &SymbolTable,
+) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    let mut insts = instances.iter();
+    for p in &fn_def.params {
+        if is_handle_param(p, symbols)
+            && let Some(inst) = insts.next()
+        {
+            m.insert(p.name.0.clone(), inst.clone());
+        }
+    }
+    m
+}
+
 impl IrEmitter {
+    /// Resolve a base identifier to the peripheral it denotes, applying the
+    /// active handle substitution: `u` -> the instance the current specialized
+    /// function was emitted for. A non-handle name is returned unchanged. Owned
+    /// so the result does not extend a `&self` borrow into a `&mut self` body
+    /// inside a let-chain.
+    fn subst_periph(&self, name: &str) -> String {
+        self.handle_subst
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    /// Lower a call to a `peripheral_type` driver: resolve each handle argument
+    /// to its concrete instance (the active substitution for a pass-through,
+    /// else the global instance name), queue the specialization, and emit a call
+    /// to the mangled name with the handle arguments dropped (slice 2).
+    fn emit_handle_call(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        handle_positions: &[usize],
+        symbols: &SymbolTable,
+        fn_name: &str,
+        dbg_sfx: &str,
+    ) -> String {
+        let instances: Vec<String> = handle_positions
+            .iter()
+            .map(|&i| match &args[i] {
+                Expr::Ident((name, _)) => self
+                    .handle_subst
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone()),
+                // The checker rejects a non-identifier handle argument (E308) and
+                // codegen only runs on error-free programs, so this is dead.
+                other => unreachable!(
+                    "non-identifier peripheral handle argument reached codegen: {other:?}"
+                ),
+            })
+            .collect();
+        let mangled = mangle_spec(callee, &instances);
+        let key = (callee.to_string(), instances);
+        if self.handle_spec_done.insert(key.clone()) {
+            self.handle_spec_queue.push(key);
+        }
+
+        let param_tys: Vec<Type> = symbols.functions.get(callee).map_or_else(Vec::new, |s| {
+            s.params.iter().map(|(_, t)| t.clone()).collect()
+        });
+        let mut arg_parts = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            if handle_positions.contains(&i) {
+                continue; // handle args carry no runtime value
+            }
+            let reg = self.emit_expr(arg, symbols, fn_name);
+            let ty = self.expr_type(arg, symbols);
+            if let Some(pty) = param_tys.get(i) {
+                let reg = self.coerce_int(reg, &ty, pty);
+                arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+            } else {
+                arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
+            }
+        }
+        let arg_str = arg_parts.join(", ");
+        let ret_ty = symbols
+            .functions
+            .get(callee)
+            .and_then(|s| s.ret.as_ref())
+            .map_or_else(|| "void".to_string(), llvm_type);
+        if ret_ty == "void" {
+            self.line(&format!("call void @{mangled}({arg_str}){dbg_sfx}"));
+            String::new()
+        } else {
+            let reg = self.new_reg();
+            self.line(&format!(
+                "{reg} = call {ret_ty} @{mangled}({arg_str}){dbg_sfx}"
+            ));
+            reg
+        }
+    }
+
     #[must_use]
     pub fn new(
         arch: Arch,
@@ -353,6 +496,9 @@ impl IrEmitter {
             verify_mode: false,
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
+            handle_subst: HashMap::new(),
+            handle_spec_queue: Vec::new(),
+            handle_spec_done: std::collections::HashSet::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -413,6 +559,9 @@ impl IrEmitter {
             verify_mode: true,
             current_fn_name: String::new(),
             agent_ptr_locals: std::collections::HashSet::new(),
+            handle_subst: HashMap::new(),
+            handle_spec_queue: Vec::new(),
+            handle_spec_done: std::collections::HashSet::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -1050,17 +1199,47 @@ impl IrEmitter {
     }
 
     fn emit_function_bodies(&mut self, program: &Program, symbols: &SymbolTable) {
+        // Ordinary functions. A function with `peripheral_type` parameters is a
+        // driver template -- not emitted directly; lowering a call to it queues
+        // a per-instance specialization (slice 2).
         for item in &program.items {
-            if let ast::Item::FnDef(fn_def) = item {
-                self.emit_function(fn_def, symbols);
+            if let ast::Item::FnDef(fn_def) = item
+                && !fn_has_handle_params(fn_def, symbols)
+            {
+                self.emit_function(fn_def, symbols, None);
+            }
+        }
+        // Drain the monomorphization worklist; a specialization's own body may
+        // queue further specializations (transitive: `a(u){ b(u) }`).
+        while let Some((fname, instances)) = self.handle_spec_queue.pop() {
+            if let Some(fn_def) = program.items.iter().find_map(|it| match it {
+                ast::Item::FnDef(f) if f.name.0 == fname => Some(f),
+                _ => None,
+            }) {
+                let mangled = mangle_spec(&fname, &instances);
+                self.handle_subst = build_handle_subst(fn_def, &instances, symbols);
+                self.emit_function(fn_def, symbols, Some(&mangled));
+                self.handle_subst.clear();
             }
         }
     }
 
-    fn emit_function(&mut self, fn_def: &ast::FnDef, symbols: &SymbolTable) {
+    /// Emit a function. `name_override` is the mangled name for a monomorphized
+    /// driver specialization; `None` emits the function under its own name.
+    /// `peripheral_type` (handle) parameters are dropped from the signature --
+    /// they carry no runtime value (the body uses `self.handle_subst`).
+    fn emit_function(
+        &mut self,
+        fn_def: &ast::FnDef,
+        symbols: &SymbolTable,
+        name_override: Option<&str>,
+    ) {
         self.counter = 0;
         self.alloca_counter = 0;
+        // current_fn_name stays the generic name: the verify preempt map is
+        // keyed on it. The mangled name is used only for the emitted symbol.
         self.current_fn_name.clone_from(&fn_def.name.0);
+        let emit_name = name_override.unwrap_or(&fn_def.name.0);
         self.agent_ptr_locals = crate::region::agent_ptr_locals(&fn_def.body, symbols);
         let fn_sym = symbols.functions.get(&fn_def.name.0);
         let is_isr = fn_sym.is_some_and(|s| s.context.is_isr());
@@ -1073,6 +1252,7 @@ impl IrEmitter {
         let param_strs: Vec<String> = fn_def
             .params
             .iter()
+            .filter(|p| !is_handle_param(p, symbols))
             .map(|p| {
                 let pty = llvm_type(&crate::types::resolve_type_expr(
                     &p.ty,
@@ -1107,6 +1287,7 @@ impl IrEmitter {
             let param_type_ids: Vec<String> = fn_def
                 .params
                 .iter()
+                .filter(|p| !is_handle_param(p, symbols))
                 .map(|p| {
                     let bml_ty =
                         crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
@@ -1130,8 +1311,7 @@ impl IrEmitter {
             .unwrap();
             writeln!(
                 self.debug_metadata,
-                "!{id} = distinct !DISubprogram(name: \"{}\", scope: !{cu}, file: !{file}, line: {line}, type: !{st_id}, spFlags: DISPFlagDefinition, unit: !{cu})",
-                fn_def.name.0
+                "!{id} = distinct !DISubprogram(name: \"{emit_name}\", scope: !{cu}, file: !{file}, line: {line}, type: !{st_id}, spFlags: DISPFlagDefinition, unit: !{cu})"
             )
             .unwrap();
             self.fn_scope_id = Some(id);
@@ -1148,7 +1328,7 @@ impl IrEmitter {
             .unwrap_or_default();
         self.line(&format!(
             "define {ret_ty} @{}({}) #{}{section_attr} {}{{",
-            fn_def.name.0,
+            emit_name,
             param_strs.join(", "),
             attr_num,
             dbg_fn_suffix
@@ -1162,9 +1342,14 @@ impl IrEmitter {
             crate::arch::arm::emit_tailchain_prologue(self, has_calls);
         }
 
-        // Alloca for parameters
+        // Alloca for parameters. Handle parameters are dropped (no runtime
+        // value); `u.REG` accesses resolve through `self.handle_subst` instead.
         self.locals.clear();
-        for param in &fn_def.params {
+        for param in fn_def
+            .params
+            .iter()
+            .filter(|p| !is_handle_param(p, symbols))
+        {
             let bml_type =
                 crate::types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums);
             let pty = llvm_type(&bml_type);
@@ -1199,10 +1384,13 @@ impl IrEmitter {
             crate::arch::arm::emit_ipr_stores(self, &prios);
         }
 
-        // Emit body
+        // Emit body. Handle parameters are dropped (no runtime value), so they
+        // are excluded here too -- otherwise the implicit inline-asm param->reg
+        // mapping would shift every following parameter by one slot.
         self.current_fn_params = fn_def
             .params
             .iter()
+            .filter(|p| !is_handle_param(p, symbols))
             .map(|p| {
                 let bml_type =
                     crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
@@ -2488,6 +2676,21 @@ impl IrEmitter {
                 };
 
                 if let Some(direct_name) = direct_name {
+                    // Call to a `peripheral_type` driver: monomorphize. Resolve
+                    // the concrete instance for each handle argument, queue the
+                    // specialization, and call the mangled name with the handle
+                    // arguments dropped (slice 2).
+                    let handle_positions = handle_param_positions(&direct_name, symbols);
+                    if !handle_positions.is_empty() {
+                        return self.emit_handle_call(
+                            &direct_name,
+                            args,
+                            &handle_positions,
+                            symbols,
+                            fn_name,
+                            &dbg_sfx,
+                        );
+                    }
                     let param_tys: Option<Vec<Type>> = symbols
                         .functions
                         .get(&direct_name)
@@ -2570,7 +2773,7 @@ impl IrEmitter {
             Expr::FieldAccess(base, field) => {
                 // Handle peripheral register access: GPIOA.ODR → volatile load
                 if let Expr::Ident((periph_name, _)) = base.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
@@ -2584,7 +2787,7 @@ impl IrEmitter {
                 // Handle peripheral field read: GPIOA.ODR.ODR3 → volatile load + bit extract
                 if let Expr::FieldAccess(inner, reg_field) = base.as_ref()
                     && let Expr::Ident((periph_name, _)) = inner.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&reg_field.0)
                     && let Some(field_def) = reg.fields.get(&field.0)
                 {
@@ -3436,7 +3639,7 @@ impl IrEmitter {
         if let ast::LValue::Field(base, field) = &ca.target
             && let ast::LValue::Field(inner, reg_name) = base.as_ref()
             && let ast::LValue::Name((periph_name, _)) = inner.as_ref()
-            && let Some(p) = symbols.peripherals.get(periph_name)
+            && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
             && let Some(reg) = p.regs.get(&reg_name.0)
             && let Some(field_def) = reg.fields.get(&field.0)
         {
@@ -3657,7 +3860,7 @@ impl IrEmitter {
             Expr::FieldAccess(base, field) => {
                 // Peripheral register address-of: &GPIOA.ODR
                 if let Expr::Ident((periph_name, _)) = base.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
@@ -3821,10 +4024,15 @@ impl IrEmitter {
             LValue::Field(base, field) => {
                 // Peripheral register write: GPIOA.ODR = val
                 if let LValue::Name((periph_name, _)) = base.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
+                    // Inside a monomorphized driver `periph_name` is the handle
+                    // parameter; resolve it to the concrete instance so the
+                    // handoff/extent/gate obligations (and the post-write fence)
+                    // key on the real peripheral, not `u` (slice 2).
+                    let pname = self.subst_periph(periph_name);
                     // Verify mode: a write to a handoff register asserts the
                     // stored byte address lies within the owning agent's
                     // reachable memory. IKOS discharges it from the provenance
@@ -3834,7 +4042,7 @@ impl IrEmitter {
                     if self.verify_mode
                         && let Some(&(lo, hi)) = self
                             .handoff_reach_bounds
-                            .get(&format!("{periph_name}.{}", field.0))
+                            .get(&format!("{pname}.{}", field.0))
                     {
                         self.emit_range_assert(val_reg, lo, hi, &dbg);
                     }
@@ -3845,7 +4053,7 @@ impl IrEmitter {
                     if self.verify_mode
                         && let Some(shadow) = self
                             .extent_cap_shadows
-                            .get(&(periph_name.clone(), field.0.clone()))
+                            .get(&(pname.clone(), field.0.clone()))
                     {
                         let cap = value_expr
                             .and_then(delivered_static_name)
@@ -3860,18 +4068,21 @@ impl IrEmitter {
                         "store volatile i32 {val_reg}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
-                    self.emit_handoff_completion(periph_name, &field.0);
-                    self.emit_gate_readback(periph_name, &field.0, addr);
+                    self.emit_handoff_completion(&pname, &field.0);
+                    self.emit_gate_readback(&pname, &field.0, addr);
                     return val_reg.to_string();
                 }
                 // Peripheral field write: GPIOA.ODR.ODR3 = val
                 if let LValue::Field(inner_base, reg_field) = base.as_ref()
                     && let LValue::Name((periph_name, _)) = inner_base.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&reg_field.0)
                     && let Some(field_def) = reg.fields.get(&field.0)
                 {
                     let addr = p.base_addr + reg.offset;
+                    // Resolve a handle parameter to its concrete instance for the
+                    // obligation/fence keying (slice 2; see the register-write path).
+                    let pname = self.subst_periph(periph_name);
                     // Bit-band: single-bit field within bit-band region.
                     if self.has_bitband
                         && let Some(alias) =
@@ -3882,7 +4093,7 @@ impl IrEmitter {
                             "store volatile i32 {alias_val}, ptr inttoptr ({ptr_ty} {alias} to ptr){dbg}",
                             ptr_ty = self.arch.ptr_type()
                         ));
-                        self.emit_gate_readback(periph_name, &reg_field.0, addr);
+                        self.emit_gate_readback(&pname, &reg_field.0, addr);
                         return alias_val;
                     }
                     // Fallback RMW write
@@ -3905,7 +4116,7 @@ impl IrEmitter {
                     // it against the capacity shadows (sizeof is a constant,
                     // so the interval domain needs no base/limit relation).
                     if self.verify_mode {
-                        let key = (periph_name.clone(), reg_field.0.clone(), field.0.clone());
+                        let key = (pname.clone(), reg_field.0.clone(), field.0.clone());
                         if let Some((scale, shadows)) = self.extent_asserts.get(&key).cloned() {
                             let bytes = self.new_reg();
                             self.line(&format!("{bytes} = mul i32 {widened}, {scale}"));
@@ -3940,8 +4151,8 @@ impl IrEmitter {
                         "store volatile i32 {new_val}, ptr inttoptr ({ptr_ty} {addr} to ptr){dbg}",
                         ptr_ty = self.ptr_type()
                     ));
-                    self.emit_handoff_completion(periph_name, &reg_field.0);
-                    self.emit_gate_readback(periph_name, &reg_field.0, addr);
+                    self.emit_handoff_completion(&pname, &reg_field.0);
+                    self.emit_gate_readback(&pname, &reg_field.0, addr);
                     return new_val;
                 }
                 // Struct field write: GEP + store. Resolve the base to the
@@ -5021,7 +5232,7 @@ impl IrEmitter {
                 // Peripheral field type lookup
                 if let Expr::FieldAccess(inner, reg_field) = base.as_ref()
                     && let Expr::Ident((periph_name, _)) = inner.as_ref()
-                    && let Some(p) = symbols.peripherals.get(periph_name)
+                    && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
                     && let Some(reg) = p.regs.get(&reg_field.0)
                     && let Some(field_sym) = reg.fields.get(&field.0)
                 {
@@ -5301,8 +5512,9 @@ fn llvm_type(ty: &Type) -> String {
         Type::Addr(_) => "i32".into(),
         // Post-resolver these shouldn't appear; if they do, emit a safe i32
         // so we still produce valid (if meaningless) IR for already-broken
-        // input rather than panicking.
-        Type::Unresolved(_) | Type::Error(_) => "i32".into(),
+        // input rather than panicking. A peripheral_type handle is monomorphized
+        // away (its param is dropped), so it never reaches codegen as a value.
+        Type::PeripheralHandle(_) | Type::Unresolved(_) | Type::Error(_) => "i32".into(),
         Type::Struct(_, repr, fields) => {
             let inner: Vec<String> = fields.iter().map(|(_, ty)| llvm_type(ty)).collect();
             if *repr == ast::StructRepr::Packed {
@@ -5342,7 +5554,9 @@ fn default_value_literal(ty: &Type) -> String {
         | Type::Mmio(inner)
         | Type::AgentShared(inner) => default_value_literal(inner),
         Type::Null => "null".to_string(),
-        Type::Void | Type::Unresolved(_) | Type::Error(_) => "0".to_string(),
+        Type::Void | Type::PeripheralHandle(_) | Type::Unresolved(_) | Type::Error(_) => {
+            "0".to_string()
+        }
     }
 }
 

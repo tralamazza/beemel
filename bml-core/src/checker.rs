@@ -704,6 +704,9 @@ fn extern_abi_value_error_inner(
         | Type::Shared(_, _)
         | Type::Mmio(_)
         | Type::AgentShared(_) => Err("storage-qualified types cannot cross extern boundaries".to_string()),
+        Type::PeripheralHandle(_) => {
+            Err("a `peripheral_type` handle cannot cross extern boundaries".to_string())
+        }
         Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
     }
 }
@@ -757,6 +760,9 @@ fn extern_abi_pointee_error(
         }
         Type::Exclusive(_) | Type::Shared(_, _) | Type::Mmio(_) | Type::AgentShared(_) => {
             Err("pointers to storage-qualified types cannot cross extern boundaries".to_string())
+        }
+        Type::PeripheralHandle(_) => {
+            Err("a `peripheral_type` handle cannot cross extern boundaries".to_string())
         }
         Type::Unresolved(_) | Type::Null | Type::Error(_) => Ok(()),
     }
@@ -1118,9 +1124,15 @@ fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBa
         .as_ref()
         .map(|ty| types::resolve_type_expr(ty, &symbols.structs, &symbols.enums));
 
-    // Add parameters to the outermost scope
+    // Add parameters to the outermost scope. A param naming a `peripheral_type`
+    // is upgraded to a `PeripheralHandle` so `u.REG.FIELD` resolves against the
+    // template layout (slice 2).
+    let periph_type_names: HashSet<String> = symbols.peripheral_types.keys().cloned().collect();
     for param in &fn_def.params {
-        let ty = types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums);
+        let ty = types::upgrade_peripheral_handle(
+            types::resolve_type_expr(&param.ty, &symbols.structs, &symbols.enums),
+            &periph_type_names,
+        );
         scope.insert(
             param.name.0.clone(),
             VarInfo {
@@ -2284,6 +2296,61 @@ fn stmt_may_break(stmt: &Stmt) -> bool {
     }
 }
 
+/// A `peripheral_type` argument must be a bare identifier naming a compile-time
+/// peripheral instance of the expected type (`type_name` matches), or another
+/// handle parameter of that type (pass-through). Anything else is `E308`:
+/// monomorphization needs the instance statically.
+fn check_peripheral_handle_arg(
+    arg: &Expr,
+    expected: &str,
+    param_name: &str,
+    callee: &str,
+    symbols: &SymbolTable,
+    scope: &ScopeStack,
+    diags: &mut DiagnosticBag,
+) {
+    if let Expr::Ident((arg_name, span)) = arg {
+        if let Some(p) = symbols.peripherals.get(arg_name) {
+            if p.type_name.as_deref() == Some(expected) {
+                return;
+            }
+            diags.error(
+                format!(
+                    "argument `{param_name}` of `{callee}` expects a `{expected}` instance, \
+                     but `{arg_name}` is not one"
+                ),
+                "E308",
+                *span,
+            );
+            return;
+        }
+        if let Some(info) = scope.lookup(arg_name)
+            && let Type::PeripheralHandle(t) = &info.ty
+        {
+            if t == expected {
+                return;
+            }
+            diags.error(
+                format!(
+                    "argument `{param_name}` of `{callee}` expects a `{expected}` instance, \
+                     got a `{t}` handle"
+                ),
+                "E308",
+                *span,
+            );
+            return;
+        }
+    }
+    diags.error(
+        format!(
+            "argument `{param_name}` of `{callee}` must be a compile-time peripheral instance \
+             of type `{expected}`"
+        ),
+        "E308",
+        arg.span(),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::only_used_in_recursion)]
 fn check_call_args(
@@ -2299,6 +2366,14 @@ fn check_call_args(
 ) {
     if args.len() == fn_sym.params.len() {
         for (arg, (param_name, param_ty)) in args.iter().zip(fn_sym.params.iter()) {
+            // A `peripheral_type` parameter (slice 2) is monomorphized, so its
+            // argument must be a statically-known peripheral instance of the
+            // matching type (or another handle param of that type, for
+            // pass-through) -- not an arbitrary value.
+            if let Type::PeripheralHandle(t) = param_ty {
+                check_peripheral_handle_arg(arg, t, param_name, name, symbols, scope, diags);
+                continue;
+            }
             let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
             if !types::types_compatible(param_ty, &arg_ty)
                 && !unsuffixed_literal_fits(arg, param_ty)
@@ -2374,6 +2449,27 @@ fn check_ast_call_args(
     })
 }
 
+/// The register map a base identifier denotes when used as `NAME.REG[.FIELD]`:
+/// a global peripheral instance, or a `peripheral_type` handle parameter in
+/// scope (slice 2). `None` for anything else (the caller then falls through to
+/// struct field access). Lets the peripheral-access checks serve both forms with
+/// one code path.
+fn peripheral_reg_map<'a>(
+    name: &str,
+    scope: &ScopeStack,
+    symbols: &'a SymbolTable,
+) -> Option<&'a std::collections::HashMap<String, crate::resolver::RegSymbol>> {
+    if let Some(p) = symbols.peripherals.get(name) {
+        return Some(&p.regs);
+    }
+    if let Some(info) = scope.lookup(name)
+        && let Type::PeripheralHandle(t) = &info.ty
+    {
+        return symbols.peripheral_types.get(t).map(|s| &s.regs);
+    }
+    None
+}
+
 #[allow(clippy::only_used_in_recursion)]
 fn check_expr(
     expr: &Expr,
@@ -2413,6 +2509,21 @@ fn check_expr(
             // Check local scope first
             if let Some(info) = scope.lookup(name) {
                 let ty = info.ty.clone();
+                // A `peripheral_type` handle reaches this generic value path only
+                // by misuse: `NAME.REG[.FIELD]` access and call pass-through are
+                // handled before here. A handle has no runtime value (it is
+                // monomorphized away), so reject using it as one (slice 2).
+                if let Type::PeripheralHandle(t) = &ty {
+                    let guard = diags.error(
+                        format!(
+                            "`{name}` is a `{t}` handle; use it as `{name}.REG` / \
+                             `{name}.REG.FIELD` or pass it to a driver, not as a value"
+                        ),
+                        "E309",
+                        *span,
+                    );
+                    return Type::Error(guard);
+                }
                 if info.moved {
                     diags.error(format!("use of moved value: `{name}`"), "E304", *span);
                     return ty;
@@ -2442,6 +2553,24 @@ fn check_expr(
             }
             // Check functions
             if let Some(fn_sym) = symbols.functions.get(name) {
+                // A driver with a `peripheral_type` parameter is monomorphized
+                // per instance and has no single address: it cannot be used as a
+                // value / function pointer, only called directly (slice 2).
+                if fn_sym
+                    .params
+                    .iter()
+                    .any(|(_, t)| matches!(t, Type::PeripheralHandle(_)))
+                {
+                    let guard = diags.error(
+                        format!(
+                            "cannot take the address of `{name}`: it has a `peripheral_type` \
+                             parameter and is monomorphized per instance -- call it directly"
+                        ),
+                        "E309",
+                        *span,
+                    );
+                    return Type::Error(guard);
+                }
                 // Declared core entries are exempt from E408: the launch
                 // handshake takes their address for HARDWARE (another
                 // core's boot), not for a bml pointer call, so a concrete
@@ -2769,9 +2898,9 @@ fn check_expr(
             // Try peripheral register/field read patterns first
             match base.as_ref() {
                 Expr::Ident((periph_name, _)) => {
-                    // GPIOA.REG -- register read
-                    if let Some(p) = symbols.peripherals.get(periph_name) {
-                        if let Some(reg) = p.regs.get(&field.0) {
+                    // GPIOA.REG (or `u.REG` for a peripheral_type param) -- register read
+                    if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
+                        if let Some(reg) = regs.get(&field.0) {
                             if reg.access == crate::ast::Access::WriteOnly {
                                 diags.error(
                                     format!(
@@ -2794,9 +2923,9 @@ fn check_expr(
                 }
                 Expr::FieldAccess(inner, reg_field) => {
                     if let Expr::Ident((periph_name, _)) = inner.as_ref() {
-                        // GPIOA.REG.FIELD -- field read
-                        if let Some(p) = symbols.peripherals.get(periph_name) {
-                            if let Some(reg) = p.regs.get(&reg_field.0) {
+                        // GPIOA.REG.FIELD (or `u.REG.FIELD` for a param) -- field read
+                        if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
+                            if let Some(reg) = regs.get(&reg_field.0) {
                                 if let Some(field_sym) = reg.fields.get(&field.0) {
                                     if field_sym.access == crate::ast::Access::WriteOnly {
                                         diags.error(
@@ -3577,6 +3706,24 @@ fn read_place_info(
     match expr {
         Expr::Ident((name, span)) => {
             if let Some(info) = scope.lookup(name) {
+                // A `peripheral_type` handle has no runtime storage (it is
+                // monomorphized away), so it has no address and cannot be
+                // borrowed as a place -- e.g. `&u` (slice 2).
+                if let Type::PeripheralHandle(t) = &info.ty {
+                    let guard = diags.error(
+                        format!(
+                            "`{name}` is a `{t}` handle; it has no address and cannot be borrowed \
+                             -- use `{name}.REG` / `{name}.REG.FIELD` or pass it to a driver"
+                        ),
+                        "E309",
+                        *span,
+                    );
+                    return PlaceInfo {
+                        ty: Type::Error(guard),
+                        mut_borrow_error: None,
+                        addr_borrow_error: None,
+                    };
+                }
                 if info.moved {
                     diags.error(format!("use of moved value: `{name}`"), "E304", *span);
                 }
@@ -3786,9 +3933,9 @@ fn check_lvalue(
             // Try peripheral register/field write patterns first
             match base.as_ref() {
                 LValue::Name((periph_name, _)) => {
-                    // GPIOA.REG = val -- register write
-                    if let Some(p) = symbols.peripherals.get(periph_name) {
-                        if let Some(reg) = p.regs.get(&field.0) {
+                    // GPIOA.REG = val (or `u.REG` for a param) -- register write
+                    if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
+                        if let Some(reg) = regs.get(&field.0) {
                             if reg.access == crate::ast::Access::ReadOnly {
                                 diags.error(
                                     format!(
@@ -3811,9 +3958,9 @@ fn check_lvalue(
                 }
                 LValue::Field(inner, reg_field) => {
                     if let LValue::Name((periph_name, _)) = inner.as_ref() {
-                        // GPIOA.REG.FIELD = val -- field write
-                        if let Some(p) = symbols.peripherals.get(periph_name) {
-                            if let Some(reg) = p.regs.get(&reg_field.0) {
+                        // GPIOA.REG.FIELD = val (or `u.REG.FIELD` for a param) -- field write
+                        if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
+                            if let Some(reg) = regs.get(&reg_field.0) {
                                 if let Some(field_sym) = reg.fields.get(&field.0) {
                                     if field_sym.access == crate::ast::Access::ReadOnly {
                                         diags.error(

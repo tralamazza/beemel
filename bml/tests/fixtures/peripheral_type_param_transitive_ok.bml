@@ -1,0 +1,10 @@
+// Transitive monomorphization: a handle driver calling another handle driver.
+// setup(USART1) specializes setup$USART1, whose `enable(u)` call specializes
+// enable$USART1 in turn.
+peripheral_type Usart { reg CR1 offset 0x00 { field UE: b1 bit[0] } }
+peripheral USART1: Usart at 0x40011000;
+
+fn enable(u: Usart) { u.CR1.UE = true; }
+fn setup(u: Usart) { enable(u); }
+
+export fn main() @context(thread) { setup(USART1); }

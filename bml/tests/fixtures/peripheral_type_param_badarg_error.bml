@@ -1,0 +1,9 @@
+// A peripheral_type parameter requires a compile-time peripheral instance of the
+// matching type; a plain value is rejected (E308) -- monomorphization needs the
+// instance statically.
+peripheral_type Usart { reg CR1 offset 0x00 { field UE: b1 bit[0] } }
+peripheral USART1: Usart at 0x40011000;
+
+fn usart_init(u: Usart) { u.CR1.UE = true; }
+
+export fn main() @context(thread) { usart_init(42); }

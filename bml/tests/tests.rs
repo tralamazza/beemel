@@ -353,6 +353,82 @@ assert_error!(
     "peripheral_type_name_collision_error.bml",
     "E200"
 );
+
+// peripheral_type as a function parameter (slice 2): one driver, many instances.
+assert_pass!(
+    test_peripheral_type_param_ok,
+    "peripheral_type_param_ok.bml"
+);
+assert_pass!(
+    test_peripheral_type_param_transitive,
+    "peripheral_type_param_transitive_ok.bml"
+);
+// A handle argument must be a compile-time instance (E308); a handle cannot be
+// used as a value (E309).
+assert_error!(
+    test_peripheral_type_param_badarg,
+    "peripheral_type_param_badarg_error.bml",
+    "E308"
+);
+assert_error!(
+    test_peripheral_type_param_value,
+    "peripheral_type_param_value_error.bml",
+    "E309"
+);
+// A handle has no address: `&u` and taking the address of a handle driver are
+// both rejected (E309) -- monomorphization leaves nothing to point at.
+assert_error!(
+    test_peripheral_type_param_addr,
+    "peripheral_type_param_addr_error.bml",
+    "E309"
+);
+assert_error!(
+    test_peripheral_type_param_fnaddr,
+    "peripheral_type_param_fnaddr_error.bml",
+    "E309"
+);
+
+// A peripheral_type parameter is monomorphized: one specialized function per
+// instance argument (writing that instance's base address), the generic
+// function is not emitted, and calls go to the mangled names.
+#[test]
+fn test_peripheral_type_param_monomorphizes() {
+    let ir = bml_ir("peripheral_type_param_ok.bml");
+    for spec in ["@usart_init$USART1(", "@usart_init$USART2("] {
+        assert!(
+            ir.contains(&format!("define void {spec}")),
+            "expected a specialization `{spec}`\n--- IR ---\n{ir}"
+        );
+    }
+    assert!(
+        !ir.contains("define void @usart_init("),
+        "the generic driver must not be emitted\n--- IR ---\n{ir}"
+    );
+    // USART1 base 0x40011000, USART2 base 0x40004400 -- each specialization
+    // touches its own peripheral.
+    assert!(
+        ir.contains("1073811456") || ir.contains("1073811464"),
+        "USART1 base missing"
+    );
+    assert!(
+        ir.contains("1073759232") || ir.contains("1073759240"),
+        "USART2 base missing"
+    );
+}
+
+// Transitive monomorphization: `setup$USART1` calls `enable$USART1`.
+#[test]
+fn test_peripheral_type_param_transitive_ir() {
+    let ir = bml_ir("peripheral_type_param_transitive_ok.bml");
+    assert!(
+        ir.contains("define void @setup$USART1(") && ir.contains("define void @enable$USART1("),
+        "both specializations should be emitted\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("call void @enable$USART1("),
+        "setup$USART1 should call enable$USART1\n--- IR ---\n{ir}"
+    );
+}
 assert_error!(
     test_peripheral_type_unknown,
     "peripheral_type_unknown_error.bml",

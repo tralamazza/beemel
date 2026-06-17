@@ -1,0 +1,11 @@
+// A driver with a peripheral_type parameter is monomorphized per instance and
+// has no single address: taking its address / using it as a function pointer is
+// rejected (E309). Call it directly instead.
+peripheral_type Usart { reg CR1 offset 0x00 { field UE: b1 bit[0] } }
+peripheral USART1: Usart at 0x40011000;
+
+fn drv(u: Usart) { u.CR1.UE = true; }
+
+var SLOT: u32;
+
+export fn main() @context(thread) { SLOT = &drv as u32; }

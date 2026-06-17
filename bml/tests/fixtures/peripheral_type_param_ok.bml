@@ -1,0 +1,20 @@
+// peripheral_type as a function parameter (slice 2): one driver, two instances.
+// Codegen monomorphizes -- usart_init$USART1 / usart_init$USART2, each writing
+// its own base address; the generic usart_init is not emitted.
+peripheral_type Usart {
+    reg CR1 offset 0x00 { field UE: b1 bit[0] }
+    reg BRR offset 0x08 {}
+}
+peripheral USART1: Usart at 0x40011000;
+peripheral USART2: Usart at 0x40004400;
+
+fn usart_init(u: Usart, brr: u32) {
+    u.CR1.UE = false;
+    u.BRR = brr;
+    u.CR1.UE = true;
+}
+
+export fn main() @context(thread) {
+    usart_init(USART1, 0x1A1);
+    usart_init(USART2, 0x1A1);
+}

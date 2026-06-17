@@ -344,28 +344,37 @@ fn elaborate_peripheral_types(program: &mut Program, diags: &mut DiagnosticBag) 
     let mut out = Vec::with_capacity(program.items.len());
     for item in std::mem::take(&mut program.items) {
         match item {
-            Item::PeripheralType(t) => match templates.entry(t.name.0.clone()) {
-                Entry::Vacant(e) => {
-                    e.insert((t.regs, t.name.1));
+            Item::PeripheralType(t) => {
+                match templates.entry(t.name.0.clone()) {
+                    Entry::Vacant(e) => {
+                        e.insert((t.regs.clone(), t.name.1));
+                    }
+                    Entry::Occupied(_) => {
+                        diags.error(
+                            format!("duplicate `peripheral_type` `{}`", t.name.0),
+                            "E115",
+                            t.name.1,
+                        );
+                    }
                 }
-                Entry::Occupied(_) => {
-                    diags.error(
-                        format!("duplicate `peripheral_type` `{}`", t.name.0),
-                        "E115",
-                        t.name.1,
-                    );
-                }
-            },
+                // Retain the template: the resolver collects its layout as a
+                // type so a `peripheral_type` can be a function parameter
+                // (slice 2). It defines no runtime symbol; other passes skip it.
+                out.push(Item::PeripheralType(t));
+            }
             Item::PeripheralInstance(inst) => instances.push(inst),
             other => out.push(other),
         }
     }
 
     // A template name is global like a peripheral name; reject a collision with
-    // any other global (the resolver would for a peripheral, but never sees the
-    // stripped template). Instance names become peripherals, so include them.
+    // any other global (the resolver collects the template's layout as a type
+    // but does not dup-check its name against other kinds). Exclude the
+    // templates themselves (they are what we are checking; dup templates are
+    // E115 above). Instance names become peripherals, so include them.
     let mut globals: std::collections::HashSet<String> = out
         .iter()
+        .filter(|it| !matches!(it, Item::PeripheralType(_)))
         .filter_map(item_name)
         .map(str::to_owned)
         .collect();
@@ -376,14 +385,18 @@ fn elaborate_peripheral_types(program: &mut Program, diags: &mut DiagnosticBag) 
         }
     }
 
-    // Materialize: each instance gets its own copy of the template's registers.
+    // Materialize: each instance gets its own copy of the template's registers,
+    // tagged with the template name so the checker can match it against a
+    // `peripheral_type` parameter.
     for inst in instances {
         if let Some((regs, _)) = templates.get(&inst.type_name.0) {
+            let regs = regs.clone();
             out.push(Item::PeripheralDef(ast::PeripheralDef {
                 exported: inst.exported,
                 name: inst.name,
                 base_addr: inst.base_addr,
-                regs: regs.clone(),
+                regs,
+                of_type: Some(inst.type_name),
             }));
         } else {
             diags.error(

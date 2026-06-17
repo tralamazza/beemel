@@ -1039,6 +1039,22 @@ declared once and shared by every instance (in a cross-file template the enum is
 qualified by the template's module, so reference it as `module.Enum@Variant`).
 See [peripheral-types.md](./peripheral-types.md).
 
+- A `peripheral_type` can also be a **function parameter**, so one driver serves
+  every instance:
+
+  ```
+  fn usart_init(u: Usart, brr: u32) { u.CR1.UE = false; u.BRR = brr; u.CR1.UE = true; }
+  usart_init(USART1, 0x1A1);   // each call is monomorphized per instance
+  ```
+
+  Inside the body the parameter is used as `u.REG` / `u.REG.FIELD` (and may be
+  passed to another driver). The argument must be a compile-time peripheral
+  instance of the matching type -- not a runtime value (`E308`); a handle used as
+  a plain value is `E309`. The compiler emits one specialized function per
+  instance (the generic body is not emitted), so the addresses stay compile-time
+  constants. Ownership is the caller's: a driver's `u.REG` access is not
+  region-checked; the caller `owns` the concrete instance.
+
 ## 10. Target files
 
 ```
