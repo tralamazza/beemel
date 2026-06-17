@@ -548,6 +548,8 @@ fn check_file(path: &Path, stack_analysis: bool, lib_roots: &[PathBuf]) {
                 );
             }
             ast::Item::Owns(o) => println!("  owns ({} registers)", o.paths.len()),
+            // Elaborated into PeripheralDefs before this point; never present here.
+            ast::Item::PeripheralType(_) | ast::Item::PeripheralInstance(_) => {}
             ast::Item::ComptimeAssert(_) => {}
         }
     }

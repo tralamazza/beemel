@@ -70,6 +70,10 @@ impl ImportResolver {
         // With all modules flattened in, fold const-valued array lengths
         // (e.g. `[u8; N]`) into literals so type resolution sees a concrete size.
         crate::constfold::fold_array_lengths(&mut program);
+        // Materialize `peripheral_type` instances now that every module is
+        // merged -- a template may be declared in one file and instantiated in
+        // another. After this the program holds only ordinary `PeripheralDef`s.
+        elaborate_peripheral_types(&mut program, &mut self.diags);
         program
     }
 
@@ -317,6 +321,98 @@ fn canonicalize(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Elaborate `peripheral_type` templates + instances on the fully merged
+/// program: collect every template by its (global) name, replace each
+/// `peripheral NAME: TYPE at ADDR;` instance with an ordinary `PeripheralDef`
+/// whose registers are cloned from the template, and drop the templates. A
+/// template and its instances may live in different modules -- this runs after
+/// the import merge precisely so cross-file instantiation works. The resolver,
+/// checker, codegen, and region passes never see the template/instance items.
+///
+/// `E115` = two templates share a name; `E200` = a template name collides with
+/// another global (templates are stripped here, so the resolver's own E200 never
+/// sees them -- this restores the same global-uniqueness peripherals get);
+/// `E112` = an instance names a template that does not exist in the compilation.
+fn elaborate_peripheral_types(program: &mut Program, diags: &mut DiagnosticBag) {
+    use std::collections::hash_map::Entry;
+
+    // One pass: take the template registers by MOVE (no clone -- the originals
+    // are dropped), defer instances (so a template may follow its instances or
+    // sit in another file), and keep everything else.
+    let mut templates: HashMap<String, (Vec<ast::RegDef>, Span)> = HashMap::new();
+    let mut instances: Vec<ast::PeripheralInstanceDef> = Vec::new();
+    let mut out = Vec::with_capacity(program.items.len());
+    for item in std::mem::take(&mut program.items) {
+        match item {
+            Item::PeripheralType(t) => match templates.entry(t.name.0.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert((t.regs, t.name.1));
+                }
+                Entry::Occupied(_) => {
+                    diags.error(
+                        format!("duplicate `peripheral_type` `{}`", t.name.0),
+                        "E115",
+                        t.name.1,
+                    );
+                }
+            },
+            Item::PeripheralInstance(inst) => instances.push(inst),
+            other => out.push(other),
+        }
+    }
+
+    // A template name is global like a peripheral name; reject a collision with
+    // any other global (the resolver would for a peripheral, but never sees the
+    // stripped template). Instance names become peripherals, so include them.
+    let mut globals: std::collections::HashSet<String> = out
+        .iter()
+        .filter_map(item_name)
+        .map(str::to_owned)
+        .collect();
+    globals.extend(instances.iter().map(|i| i.name.0.clone()));
+    for (name, (_, span)) in &templates {
+        if globals.contains(name) {
+            diags.error(format!("duplicate name: `{name}`"), "E200", *span);
+        }
+    }
+
+    // Materialize: each instance gets its own copy of the template's registers.
+    for inst in instances {
+        if let Some((regs, _)) = templates.get(&inst.type_name.0) {
+            out.push(Item::PeripheralDef(ast::PeripheralDef {
+                exported: inst.exported,
+                name: inst.name,
+                base_addr: inst.base_addr,
+                regs: regs.clone(),
+            }));
+        } else {
+            diags.error(
+                format!("unknown `peripheral_type` `{}`", inst.type_name.0),
+                "E112",
+                inst.type_name.1,
+            );
+        }
+    }
+    program.items = out;
+}
+
+/// The declared name of a top-level item, or `None` for the nameless ones
+/// (`owns`/`import`/`comptime_assert`).
+fn item_name(item: &Item) -> Option<&str> {
+    match item {
+        Item::FnDef(f) => Some(&f.name.0),
+        Item::ExternFnDef(e) => Some(&e.name.0),
+        Item::StaticDef(s) => Some(&s.name.0),
+        Item::ConstDef(c) => Some(&c.name.0),
+        Item::PeripheralDef(p) => Some(&p.name.0),
+        Item::PeripheralType(t) => Some(&t.name.0),
+        Item::PeripheralInstance(p) => Some(&p.name.0),
+        Item::StructDef(s) => Some(&s.name.0),
+        Item::EnumDef(e) => Some(&e.name.0),
+        Item::Owns(_) | Item::Import(_) | Item::ComptimeAssert(_) => None,
+    }
+}
+
 fn item_def_span(item: &Item) -> Option<Span> {
     match item {
         Item::FnDef(f) => Some(f.name.1),
@@ -324,6 +420,8 @@ fn item_def_span(item: &Item) -> Option<Span> {
         Item::StaticDef(s) => Some(s.name.1),
         Item::ConstDef(c) => Some(c.name.1),
         Item::PeripheralDef(p) => Some(p.name.1),
+        Item::PeripheralType(t) => Some(t.name.1),
+        Item::PeripheralInstance(p) => Some(p.name.1),
         Item::StructDef(s) => Some(s.name.1),
         Item::EnumDef(e) => Some(e.name.1),
         // An `owns` clause has no name; key dedup on its first path's span so a

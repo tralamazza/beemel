@@ -3,7 +3,6 @@ use crate::ast::*;
 use crate::errors::DiagnosticBag;
 use crate::lexer::{Lexer, Token, TokenKind};
 use crate::source::{FileId, Span};
-use std::collections::HashMap;
 
 /// A bare ident (`Color`) or a single-level `module.Name` field access, returned
 /// as a `(dotted_name, span)` pair. Lets the postfix parser accept qualified
@@ -45,6 +44,10 @@ fn set_exported(item: Item) -> Item {
         Item::PeripheralDef(mut p) => {
             p.exported = true;
             Item::PeripheralDef(p)
+        }
+        Item::PeripheralInstance(mut p) => {
+            p.exported = true;
+            Item::PeripheralInstance(p)
         }
         Item::StructDef(mut s) => {
             s.exported = true;
@@ -108,16 +111,6 @@ pub struct Parser<'a> {
     /// `parse_program` so they flow through the normal top-level enum pipeline
     /// (resolver/checker/codegen unchanged).
     synth_enums: Vec<EnumDef>,
-    /// `peripheral_type` templates collected during parsing. Each instance
-    /// (`peripheral NAME: TYPE at ADDR;`) is materialized in `parse_program`
-    /// into an ordinary `PeripheralDef` with the template's regs cloned in;
-    /// the templates themselves never reach the `Program`, so the rest of the
-    /// compiler is unchanged. Intra-file: the template and its instances must
-    /// live in the same source file (order within the file does not matter).
-    peripheral_types: Vec<PeripheralTypeDef>,
-    /// Pending `peripheral NAME: TYPE at ADDR;` instances, materialized against
-    /// `peripheral_types` at the end of `parse_program`.
-    peripheral_instances: Vec<PeripheralInstanceDef>,
 }
 
 /// Maximum nesting depth for expressions, types, and blocks combined. Chosen to
@@ -173,8 +166,6 @@ impl<'a> Parser<'a> {
             depth_error_emitted: false,
             wrap_spans: Vec::new(),
             synth_enums: Vec::new(),
-            peripheral_types: Vec::new(),
-            peripheral_instances: Vec::new(),
         }
     }
 
@@ -205,39 +196,6 @@ impl<'a> Parser<'a> {
     pub fn parse_program(&mut self) -> Program {
         let mut items = Vec::new();
         while !self.is_eof() {
-            // `peripheral_type` templates and `peripheral NAME: TYPE at ADDR;`
-            // instances are collected here and elaborated after the loop -- they
-            // never become `Item`s, so the rest of the compiler is untouched. A
-            // tentative `export` is consumed so the lookahead sees the construct;
-            // if it turns out to be neither, we rewind and let `parse_item`
-            // handle the item (including its `export`).
-            let start = self.pos;
-            let exported = self.eat(&TokenKind::Export);
-            if self.check(&TokenKind::PeripheralType) {
-                if exported {
-                    self.diags.error(
-                        "`export` is not allowed on `peripheral_type`",
-                        "E108",
-                        self.peek_span(),
-                    );
-                }
-                if let Some(t) = self.parse_peripheral_type_def() {
-                    self.peripheral_types.push(t);
-                } else {
-                    self.skip_to_next_item();
-                }
-                continue;
-            }
-            if self.check(&TokenKind::Peripheral) && self.peripheral_instance_ahead() {
-                if let Some(mut inst) = self.parse_peripheral_instance() {
-                    inst.exported = exported;
-                    self.peripheral_instances.push(inst);
-                } else {
-                    self.skip_to_next_item();
-                }
-                continue;
-            }
-            self.pos = start; // not a template/instance: rewind, parse normally
             match self.parse_item() {
                 Some(item) => items.push(item),
                 None => {
@@ -246,7 +204,6 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.materialize_peripheral_instances(&mut items);
         // Enums synthesized from inline field enums, appended as ordinary
         // top-level items. Order is irrelevant: the resolver collects every
         // enum before resolving peripheral field types (pass 2e).
@@ -266,42 +223,6 @@ impl<'a> Parser<'a> {
     /// Assumes `peek_kind() == Peripheral`.
     fn peripheral_instance_ahead(&self) -> bool {
         self.tokens.get(self.pos + 2).map(|t| &t.kind) == Some(&TokenKind::Colon)
-    }
-
-    /// Replace collected `peripheral` instances with ordinary `PeripheralDef`s,
-    /// cloning the named template's registers. Templates are intra-file: an
-    /// instance must reference a `peripheral_type` declared in the same file.
-    fn materialize_peripheral_instances(&mut self, items: &mut Vec<Item>) {
-        let types = std::mem::take(&mut self.peripheral_types);
-        let instances = std::mem::take(&mut self.peripheral_instances);
-
-        let mut by_name: HashMap<String, &Vec<RegDef>> = HashMap::new();
-        for t in &types {
-            if by_name.insert(t.name.0.clone(), &t.regs).is_some() {
-                self.diags.error(
-                    format!("duplicate `peripheral_type` `{}`", t.name.0),
-                    "E115",
-                    t.name.1,
-                );
-            }
-        }
-
-        for inst in instances {
-            if let Some(regs) = by_name.get(&inst.type_name.0) {
-                items.push(Item::PeripheralDef(PeripheralDef {
-                    exported: inst.exported,
-                    name: inst.name,
-                    base_addr: inst.base_addr,
-                    regs: (*regs).clone(),
-                }));
-            } else {
-                self.diags.error(
-                    format!("unknown `peripheral_type` `{}`", inst.type_name.0),
-                    "E112",
-                    inst.type_name.1,
-                );
-            }
-        }
     }
 
     // --- helpers ---
@@ -406,7 +327,11 @@ impl<'a> Parser<'a> {
             TokenKind::Fn => self.parse_fn_def().map(Item::FnDef),
             TokenKind::Var => self.parse_static_def().map(Item::StaticDef),
             TokenKind::Const => self.parse_const_def().map(Item::ConstDef),
+            TokenKind::Peripheral if self.peripheral_instance_ahead() => self
+                .parse_peripheral_instance()
+                .map(Item::PeripheralInstance),
             TokenKind::Peripheral => self.parse_peripheral_def().map(Item::PeripheralDef),
+            TokenKind::PeripheralType => self.parse_peripheral_type_def().map(Item::PeripheralType),
             TokenKind::Import => self.parse_import().map(Item::Import),
             TokenKind::Owns => self.parse_owns().map(Item::Owns),
             TokenKind::Struct => self.parse_struct_def().map(Item::StructDef),
@@ -433,6 +358,7 @@ impl<'a> Parser<'a> {
                 | Item::StaticDef(_)
                 | Item::ConstDef(_)
                 | Item::PeripheralDef(_)
+                | Item::PeripheralInstance(_)
                 | Item::StructDef(_)
                 | Item::EnumDef(_) => {}
                 _ => {
@@ -1084,19 +1010,7 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident()?;
         self.expect(&TokenKind::At, "expected `at`").ok()?;
         let addr = self.parse_int_literal()?;
-        self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
-
-        let mut regs = Vec::new();
-        while !self.check(&TokenKind::RBrace) && !self.is_eof() {
-            if let Some(r) = self.parse_reg_def() {
-                regs.push(r);
-            } else {
-                self.skip_to_semicolon_or_brace();
-            }
-        }
-
-        self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
-
+        let regs = self.parse_reg_body()?;
         Some(PeripheralDef {
             exported: false,
             name,
@@ -1107,12 +1021,18 @@ impl<'a> Parser<'a> {
 
     /// `peripheral_type NAME { reg ... }` -- a register-layout template (no
     /// address). Same body grammar as a peripheral; collected and elaborated
-    /// away in `parse_program`. Assumes `peek_kind() == PeripheralType`.
+    /// away after the import merge. Assumes `peek_kind() == PeripheralType`.
     fn parse_peripheral_type_def(&mut self) -> Option<PeripheralTypeDef> {
         self.advance(); // peripheral_type
         let name = self.parse_ident()?;
-        self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
+        let regs = self.parse_reg_body()?;
+        Some(PeripheralTypeDef { name, regs })
+    }
 
+    /// Parse the `{ reg ... }` register list shared by `peripheral` and
+    /// `peripheral_type`. Assumes the opening `{` is next.
+    fn parse_reg_body(&mut self) -> Option<Vec<RegDef>> {
+        self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
         let mut regs = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.is_eof() {
             if let Some(r) = self.parse_reg_def() {
@@ -1121,9 +1041,8 @@ impl<'a> Parser<'a> {
                 self.skip_to_semicolon_or_brace();
             }
         }
-
         self.expect(&TokenKind::RBrace, "expected `}`").ok()?;
-        Some(PeripheralTypeDef { name, regs })
+        Some(regs)
     }
 
     /// `peripheral NAME: TYPE at ADDR;` -- an instance of a `peripheral_type`.

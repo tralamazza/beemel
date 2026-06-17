@@ -199,6 +199,8 @@ fn pointer_call_facts<'p>(
             | Item::StructDef(_)
             | Item::EnumDef(_)
             | Item::PeripheralDef(_)
+            | Item::PeripheralType(_)
+            | Item::PeripheralInstance(_)
             | Item::ExternFnDef(_)
             | Item::ComptimeAssert(_) => {}
         }

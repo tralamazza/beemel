@@ -1,0 +1,8 @@
+// A peripheral_type template with an inline field enum, in its own module. When
+// instantiated from another file the enum is qualified by THIS module, so the
+// instantiator references it as `<alias>.SizeSel@Variant`.
+peripheral_type Dma {
+    reg CTRL offset 0x0 {
+        field SIZE bit[0..1] enum SizeSel { Byte = 0, Half = 1, Word = 2 }
+    }
+}

@@ -25,7 +25,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Block, Expr, Item, LValue, MatchArm, MatchPattern, Stmt, StorageAnnotation, TypeExpr,
+    Block, Expr, Item, LValue, MatchArm, MatchPattern, RegDef, Stmt, StorageAnnotation, TypeExpr,
 };
 use crate::source::Span;
 
@@ -61,6 +61,16 @@ impl Renamer {
     fn rename_in_place(&self, name: &mut String) {
         if let Some(q) = self.map(name) {
             *name = q;
+        }
+    }
+
+    /// Qualify the field types of a register list -- shared by `peripheral` and
+    /// `peripheral_type` (e.g. an enum-typed field naming a module-local enum).
+    fn rewrite_reg_field_types(&self, regs: &mut [RegDef]) {
+        for reg in regs {
+            for field in &mut reg.fields {
+                self.rewrite_type(&mut field.ty);
+            }
         }
     }
 
@@ -148,12 +158,16 @@ impl Renamer {
             }
             Item::PeripheralDef(p) => {
                 self.rename_in_place(&mut p.name.0);
-                for reg in &mut p.regs {
-                    for field in &mut reg.fields {
-                        self.rewrite_type(&mut field.ty);
-                    }
-                }
+                self.rewrite_reg_field_types(&mut p.regs);
             }
+            // A `peripheral_type` is global like a peripheral (its name is not
+            // qualified), but its field types must be rewritten so an inline
+            // enum synthesized in this module still resolves after the template
+            // is cloned into instances in another module.
+            Item::PeripheralType(t) => self.rewrite_reg_field_types(&mut t.regs),
+            // An instance's own name and its `peripheral_type` reference are both
+            // global (bare); nothing to qualify.
+            Item::PeripheralInstance(_) => {}
             Item::ComptimeAssert(a) => self.rewrite_expr(&mut a.cond),
             // `owns` references a peripheral by name. The grammar parses `a.b`
             // as peripheral `a` + register `b`; disambiguate with import
@@ -456,10 +470,14 @@ pub fn top_level_names(items: &[Item]) -> HashSet<String> {
             Item::ConstDef(c) => Some(&c.name.0),
             Item::StructDef(s) => Some(&s.name.0),
             Item::EnumDef(e) => Some(&e.name.0),
-            // Peripherals stay bare (global hardware) -- never qualified.
-            Item::PeripheralDef(_) | Item::Import(_) | Item::Owns(_) | Item::ComptimeAssert(_) => {
-                None
-            }
+            // Peripherals stay bare (global hardware) -- never qualified. A
+            // `peripheral_type` and its instances are global the same way.
+            Item::PeripheralDef(_)
+            | Item::PeripheralType(_)
+            | Item::PeripheralInstance(_)
+            | Item::Import(_)
+            | Item::Owns(_)
+            | Item::ComptimeAssert(_) => None,
         };
         if let Some(n) = name {
             names.insert(n.clone());

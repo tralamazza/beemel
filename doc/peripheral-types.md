@@ -1,9 +1,10 @@
 # Peripheral types + instances
 
-Status: Slice 1 IMPLEMENTED (intra-file; see below). Slice 2 and cross-file
-templates are still design-only. Goal: remove the dominant duplication in `lib/`
--- the same IP block copied per instance and per chip -- with a typed,
-checker-visible feature and NO preprocessor (see the no-macros constraint).
+Status: Slice 1 IMPLEMENTED, intra-file AND cross-file (see below). Slice 2
+(template as a fn parameter) is still design-only. Goal: remove the dominant
+duplication in `lib/` -- the same IP block copied per instance and per chip --
+with a typed, checker-visible feature and NO preprocessor (see the no-macros
+constraint).
 
 ## Problem
 
@@ -76,38 +77,41 @@ verify changes.
 
 ## Two slices
 
-### Slice 1 -- register-def dedup -- IMPLEMENTED (parser-level desugar, intra-file)
+### Slice 1 -- register-def dedup -- IMPLEMENTED (intra-file AND cross-file)
 
-Forms 1 + 2 above. Built as a PARSER desugar (the same approach as inline field
-enums), NOT a resolver pass: `peripheral_type` and instances never become `Item`s
-and never reach the resolver/checker/codegen, so those are completely untouched.
-Scope: the template and its instances must live in the SAME source file (the
-elaboration runs per-file in `parse_program`; imported files are each parsed the
-same way, so a chip's `gpio.bml` = one template + N instances works whether it is
-the root or imported). Cross-FILE templates (a template in `lib/ip/` instantiated
-from another file) are NOT supported -- that needs the after-merge variant (see
-below) and is a follow-up.
+Forms 1 + 2 above, elaborated AFTER the import merge so a template and its
+instances may live in different files (the cross-chip case: a shared IP block in
+`lib/ip/`, instantiated per chip). Template names are GLOBAL, exactly like
+peripheral names -- a template just has to be in the compilation (pulled in by an
+`import`), and instances reference it bare.
 
 As built:
 - `lexer.rs`: `peripheral_type` added to `KEYWORDS` (one hard keyword).
-- `ast.rs`: parser-internal `PeripheralTypeDef` / `PeripheralInstanceDef` structs
-  (NOT in the `Item` enum -- they are elaborated away).
-- `parser.rs`: `parse_program` collects templates + instances into accumulators
-  (lookahead `peripheral IDENT :` distinguishes an instance from anonymous
-  `peripheral IDENT at`), then `materialize_peripheral_instances` clones each
-  template's regs into an ordinary `Item::PeripheralDef`. Inline field enums in a
-  template are synthesized once (shared by all instances).
-- resolver / checker / codegen / region / verify: ZERO change.
+- `ast.rs`: `Item::PeripheralType(PeripheralTypeDef)` and
+  `Item::PeripheralInstance(PeripheralInstanceDef)` -- carried through merge +
+  qualify, then elaborated away (never reach the resolver/checker/codegen).
+- `parser.rs`: `parse_item` emits the two items; a `peripheral IDENT :` lookahead
+  distinguishes an instance from anonymous `peripheral IDENT at`.
+- `qualify.rs`: template + instance names stay global (excluded from
+  `top_level_names`); a template's field types ARE rewritten so an inline enum
+  synthesized in its module resolves once cloned into instances elsewhere.
+- `imports.rs`: `elaborate_peripheral_types(&mut Program, &mut diags)` runs at the
+  end of `ImportResolver::resolve()` (after the merge + `fold_array_lengths`, so
+  it covers the CLI and the LSP uniformly): collect every template by global name,
+  replace each instance with a `PeripheralDef` cloning the template's regs, drop
+  the templates.
+- resolver / checker / codegen / region / verify: ZERO change. (The fuzzer skips
+  import resolution, so those passes carry benign no-op arms for the two items.)
 
 Diagnostics: `E112` instance of an unknown `peripheral_type`; `E115` duplicate
 `peripheral_type` name; `E108` `export` on a `peripheral_type`. Verified by a
-byte-identical-IR test (template + 2 instances vs two hand-written peripherals).
+byte-identical-IR test (template + 2 instances vs two hand-written peripherals)
+and a cross-file pass test.
 
-Cross-file follow-up (NOT built): run an `elaborate_peripheral_types(&mut Program)`
-pass after `import_resolver.resolve()` in `bml/src/main.rs` (the merged, mutable
-program) so a template in one module can be instantiated from another. Requires
-`qualify.rs` to treat the template name + the instance's type reference like a
-struct/enum type so they qualify consistently.
+Note: an inline field enum inside a CROSS-FILE template is qualified by the
+template's module, so reference its variants as `module.Enum@Variant` (the same
+rule as any cross-module enum; the error names the qualified type). Intra-file
+templates (root module) keep bare `Enum@Variant`.
 
 `bml-svd` adoption (emit `derivedFrom` groups as one template + instance lines
 instead of expanding) is a separate follow-up in that repo.

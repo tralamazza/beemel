@@ -1,0 +1,12 @@
+// Cross-file peripheral_type: the template is declared in peripheral_type_ip.bml
+// and instantiated here. The template is global, so it just needs to be in the
+// compilation -- pulled in by the import -- and is referenced bare.
+import peripheral_type_ip;
+
+peripheral GPIOA: GpioPort at 0x40020000;
+peripheral GPIOB: GpioPort at 0x40020400;
+
+export fn main() @context(thread) {
+    GPIOA.MODER.MODE0 = 1;
+    GPIOB.ODR.ODR0 = true;
+}

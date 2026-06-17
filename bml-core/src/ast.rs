@@ -22,6 +22,15 @@ pub enum Item {
     StaticDef(StaticDef),
     ConstDef(ConstDef),
     PeripheralDef(PeripheralDef),
+    /// A `peripheral_type` register-layout template. Carried through import
+    /// merge + qualify, then elaborated away: each `PeripheralInstance` is
+    /// materialized into a `PeripheralDef` and the templates are dropped (see
+    /// `imports::elaborate_peripheral_types`). The resolver/checker/codegen
+    /// never see these.
+    PeripheralType(PeripheralTypeDef),
+    /// A `peripheral NAME: TYPE at ADDR;` instance, elaborated into a
+    /// `PeripheralDef` after merge. See [`Item::PeripheralType`].
+    PeripheralInstance(PeripheralInstanceDef),
     Import(ImportStmt),
     StructDef(StructDef),
     EnumDef(EnumDef),

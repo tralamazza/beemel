@@ -438,8 +438,11 @@ fn validate_type_annotations(program: &Program, symbols: &SymbolTable, diags: &m
                 }
             }
             // Enum underlying types are named integers and cannot carry a
-            // strided-view stride.
+            // strided-view stride. peripheral_type/instance are elaborated away
+            // before the checker (only the fuzzer can reach them) -- ignore.
             ast::Item::EnumDef(_)
+            | ast::Item::PeripheralType(_)
+            | ast::Item::PeripheralInstance(_)
             | ast::Item::Import(_)
             | ast::Item::Owns(_)
             | ast::Item::ComptimeAssert(_) => {}

@@ -152,6 +152,10 @@ impl Resolver {
                 ast::Item::StructDef(s) => self.collect_struct(s, diags),
                 ast::Item::EnumDef(e) => self.collect_enum(e, diags),
                 ast::Item::Import(_) => {}
+                // Elaborated away before the resolver in the normal pipeline
+                // (`imports::elaborate_peripheral_types`); only the fuzzer, which
+                // skips import resolution, can reach these -- ignore them.
+                ast::Item::PeripheralType(_) | ast::Item::PeripheralInstance(_) => {}
                 // Defines no symbol; checked separately (owns by the region
                 // pass, comptime_assert during type checking).
                 ast::Item::Owns(_) | ast::Item::ComptimeAssert(_) => {}

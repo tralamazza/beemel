@@ -334,6 +334,25 @@ fn test_inline_field_enum_desugars_identically() {
 // name (E115).
 assert_pass!(test_peripheral_type_ok, "peripheral_type_ok.bml");
 assert_pass!(test_peripheral_type_enum_ok, "peripheral_type_enum_ok.bml");
+// Cross-file: template in peripheral_type_ip.bml, instances here. Elaboration
+// runs after the import merge, so this resolves.
+assert_pass!(
+    test_peripheral_type_crossfile,
+    "peripheral_type_crossfile_ok.bml"
+);
+// Cross-file template whose inline enum is qualified by the template's module
+// (variant referenced via the import alias) -- exercises the qualify interaction.
+assert_pass!(
+    test_peripheral_type_crossfile_enum,
+    "peripheral_type_enum_crossfile_ok.bml"
+);
+// A template name collides with another global (a struct) -> E200, the same
+// global uniqueness peripherals get (templates are stripped before the resolver).
+assert_error!(
+    test_peripheral_type_name_collision,
+    "peripheral_type_name_collision_error.bml",
+    "E200"
+);
 assert_error!(
     test_peripheral_type_unknown,
     "peripheral_type_unknown_error.bml",

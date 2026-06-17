@@ -1029,12 +1029,15 @@ peripheral GPIOB: GpioPort at 0x40020400;
 Each `peripheral NAME: TYPE at ADDR;` is exactly sugar for a full `peripheral
 NAME at ADDR { ... }` with the template's registers cloned in -- the instances
 are ordinary peripherals (bare global access `GPIOA.MODER.MODE0`, target/agent
-binding by name, etc.). A `peripheral_type` is not itself addressable. The
-template and its instances must live in the **same source file** (order within
-the file does not matter); an instance of an undeclared template is `E112`, a
+binding by name, etc.). A `peripheral_type` is not itself addressable. Like a
+peripheral, a template name is **global**: the template and its instances may
+live in different files -- the template just has to be in the compilation, pulled
+in by an `import` (so a shared IP block can sit in `lib/ip/` and be instantiated
+per chip). An instance of a template that is not in the compilation is `E112`, a
 duplicate template name is `E115`. Inline field enums inside a template are
-declared once and shared by every instance. See
-[peripheral-types.md](./peripheral-types.md).
+declared once and shared by every instance (in a cross-file template the enum is
+qualified by the template's module, so reference it as `module.Enum@Variant`).
+See [peripheral-types.md](./peripheral-types.md).
 
 ## 10. Target files
 

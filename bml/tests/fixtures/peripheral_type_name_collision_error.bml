@@ -1,0 +1,10 @@
+// A peripheral_type name is global like a peripheral name; colliding with another
+// global (here a struct) is a duplicate name (E200) -- the same uniqueness every
+// other global gets, even though templates are stripped before the resolver.
+struct Gpio { x: u32 }
+
+peripheral_type Gpio { reg R offset 0x0 { field F: b1 bit[0] } }
+
+peripheral P: Gpio at 0x40020000;
+
+export fn main() @context(thread) { P.R.F = true; }
