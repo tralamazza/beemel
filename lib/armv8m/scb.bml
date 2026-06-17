@@ -1,0 +1,104 @@
+// ARMv8-M SCB (System Control Block) -- ARM-defined core peripheral (vendor SVDs
+// omit the ARM core block), shared across ARMv8-M cores. Curated from the
+// ARMv8-M ARM (DDI0553B). The fault-address registers (MMFAR/BFAR) and CPUID are
+// modelled as whole 32-bit values; the rest carry their named fields.
+peripheral SCB at 0xE000ED00 {
+    // CPU ID Base Register (read-only).
+    reg CPUID offset 0x000 {
+        field REVISION: u32 bit[0..3] readonly
+        field PARTNO: u32 bit[4..15] readonly
+        field ARCHITECTURE: u32 bit[16..19] readonly
+        field VARIANT: u32 bit[20..23] readonly
+        field IMPLEMENTER: u32 bit[24..31] readonly
+    }
+    // Interrupt Control and State Register.
+    reg ICSR offset 0x004 {
+        field VECTACTIVE: u32 bit[0..8] readonly   // exception number currently executing
+        field RETTOBASE: b1 bit[11] readonly
+        field VECTPENDING: u32 bit[12..20] readonly
+        field ISRPENDING: b1 bit[22] readonly
+        field PENDSTCLR: b1 bit[25]    // SysTick clear-pending
+        field PENDSTSET: b1 bit[26]    // SysTick set-pending
+        field PENDSVCLR: b1 bit[27]
+        field PENDSVSET: b1 bit[28]
+        field PENDNMICLR: b1 bit[30]
+        field PENDNMISET: b1 bit[31]
+    }
+    // Vector Table Offset Register.
+    reg VTOR offset 0x008 {
+        field TBLOFF: u32 bit[7..31]
+    }
+    // Application Interrupt and Reset Control Register. Writes need VECTKEY=0x05FA.
+    reg AIRCR offset 0x00C {
+        field VECTCLRACTIVE: b1 bit[1]
+        field SYSRESETREQ: b1 bit[2]   // request a system reset
+        field SYSRESETREQS: b1 bit[3]  // (security extension)
+        field PRIGROUP: u32 bit[8..10]
+        field BFHFNMINS: b1 bit[13]
+        field PRIS: b1 bit[14]
+        field ENDIANNESS: b1 bit[15] readonly
+        field VECTKEY: u32 bit[16..31] // write 0x05FA; reads as VECTKEYSTAT
+    }
+    // System Control Register (low-power).
+    reg SCR offset 0x010 {
+        field SLEEPONEXIT: b1 bit[1]
+        field SLEEPDEEP: b1 bit[2]
+        field SEVONPEND: b1 bit[4]
+    }
+    // Configuration and Control Register.
+    reg CCR offset 0x014 {
+        field USERSETMPEND: b1 bit[1]
+        field UNALIGN_TRP: b1 bit[3]   // trap unaligned accesses
+        field DIV_0_TRP: b1 bit[4]     // trap divide-by-zero
+        field BFHFNMIGN: b1 bit[8]
+        field STKOFHFNMIGN: b1 bit[10]
+        field DC: b1 bit[16]           // data cache enable (Cortex-M7; see cortex_m7)
+        field IC: b1 bit[17]           // instruction cache enable
+        field BP: b1 bit[18]           // branch prediction enable
+    }
+    // System Handler Priority Registers (priority bytes per system handler).
+    reg SHPR1 offset 0x018 {
+        field PRI_4: u32 bit[0..7]     // MemManage
+        field PRI_5: u32 bit[8..15]    // BusFault
+        field PRI_6: u32 bit[16..23]   // UsageFault
+        field PRI_7: u32 bit[24..31]   // SecureFault (security extension)
+    }
+    reg SHPR2 offset 0x01C {
+        field PRI_11: u32 bit[24..31]  // SVCall
+    }
+    reg SHPR3 offset 0x020 {
+        field PRI_14: u32 bit[16..23]  // PendSV
+        field PRI_15: u32 bit[24..31]  // SysTick
+    }
+    // System Handler Control and State Register (fault enables + status).
+    reg SHCSR offset 0x024 {
+        field MEMFAULTACT: b1 bit[0]
+        field BUSFAULTACT: b1 bit[1]
+        field USGFAULTACT: b1 bit[3]
+        field MEMFAULTENA: b1 bit[16]  // enable MemManage fault
+        field BUSFAULTENA: b1 bit[17]  // enable BusFault
+        field USGFAULTENA: b1 bit[18]  // enable UsageFault
+        field SECUREFAULTENA: b1 bit[19] // (security extension)
+    }
+    // Configurable Fault Status Register: a byte-packed union of the MemManage,
+    // BusFault and UsageFault status bytes. Read the whole register (`SCB.CFSR`)
+    // for a raw diagnosis word, or a sub-field for one fault class.
+    reg CFSR offset 0x028 {
+        field MMFSR: u32 bit[0..7]     // MemManage Fault Status
+        field BFSR: u32 bit[8..15]     // BusFault Status
+        field UFSR: u32 bit[16..31]    // UsageFault Status
+    }
+    // HardFault Status Register.
+    reg HFSR offset 0x02C {
+        field VECTTBL: b1 bit[1]       // vector-table read fault
+        field FORCED: b1 bit[30]       // configurable fault escalated to HardFault
+        field DEBUGEVT: b1 bit[31]
+    }
+    // MemManage / BusFault address registers (the faulting address).
+    reg MMFAR offset 0x034 {
+        field ADDRESS: u32 bit[0..31]
+    }
+    reg BFAR offset 0x038 {
+        field ADDRESS: u32 bit[0..31]
+    }
+}

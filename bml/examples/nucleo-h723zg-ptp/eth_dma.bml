@@ -10,7 +10,7 @@ import stm32h723.ethernet_mac;
 import stm32h723.ethernet_dma;
 import stm32h723.ethernet_mtl;
 
-import dwt;
+import armv7m.dwt;
 import timer;
 import phy_lan8742;
 

@@ -124,8 +124,9 @@ placement for visibility. The regions/agents model
 The `[agent.*]` vocabulary is a CLOSED schema: every key answers one of six
 questions about an autonomous bus master, and a key that does not answer one
 of them does not get in. Chip target files are written once and shipped with
-the compiler -- verbosity there is fine; project target files should stay
-small (regions, reach claims, an `entry`).
+the compiler (in `lib/<part>/`; see [the target library](../lib/README.md)) --
+verbosity there is fine; project target files should stay small (regions, reach
+claims, an `entry`).
 
 | Question | Key | Level |
 |---|---|---|

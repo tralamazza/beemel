@@ -5,7 +5,7 @@
 // init path. See BRINGUP.md milestone 7.
 
 import stm32h723.scb;
-import cache;
+import cortex_m7.cache;
 import clocks;
 import eth_dma;
 import phy_lan8742;

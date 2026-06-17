@@ -1,0 +1,33 @@
+// ARMv8-M NVIC -- ARM-defined core peripheral (vendor SVDs omit the ARM core
+// block), shared across ARMv8-M cores. Curated from the ARMv8-M ARM (DDI0553B).
+//
+// The NVIC registers are ARRAYS, one 32-bit word per 32 interrupts: NVIC_ISERn
+// at 0xE000E100 + 4n, ICERn at +0x180, ISPRn at +0x200, ICPRn at +0x280, IABRn
+// at +0x300, ITNSn at +0x380; per-interrupt priorities are NVIC_IPRn at
+// 0xE000E400 + 4n. The number of banks is IMPLEMENTATION-DEFINED (one per 32
+// implemented IRQs). Bank 0 (IRQ 0..31) is provided here; a chip with more IRQs
+// adds banks 1.. following the same pattern. (Priorities are normally set by the
+// compiler from `@isr`, so NVIC_IPRn is not modelled.)
+//
+// Banked per core: each core enables interrupts in its OWN copy; the enable's
+// location decides which core takes the IRQ.
+peripheral NVIC at 0xE000E100 {
+    reg ISER0 offset 0x000 {
+        field SETENA: u32 bit[0..31]    // write 1 to enable IRQ n; reads the enabled state
+    }
+    reg ICER0 offset 0x080 {
+        field CLRENA: u32 bit[0..31]    // write 1 to disable IRQ n
+    }
+    reg ISPR0 offset 0x100 {
+        field SETPEND: u32 bit[0..31]   // write 1 to set IRQ n pending
+    }
+    reg ICPR0 offset 0x180 {
+        field CLRPEND: u32 bit[0..31]   // write 1 to clear IRQ n pending
+    }
+    reg IABR0 offset 0x200 {
+        field ACTIVE: u32 bit[0..31] readonly   // IRQ n active state
+    }
+    reg ITNS0 offset 0x280 {
+        field ITNS: u32 bit[0..31]      // IRQ n targets Non-secure state (security extension)
+    }
+}

@@ -60,7 +60,8 @@ fn main() @context(thread) {
 ```
 
 `svd.rcc` / `svd.gpioc` are generated from the vendor's CMSIS-SVD with
-[bml-svd](https://github.com/tralamazza/bml-svd).
+[bml-svd](https://github.com/tralamazza/bml-svd); ready-made chip definitions for
+several MCUs also ship in [lib/](lib), imported as e.g. `import nrf51.gpio;`.
 
 ## Status
 
@@ -79,7 +80,9 @@ fn main() @context(thread) {
   notes.
 - Cortex-M only (32-bit ARM Thumb). Other architectures are listed in
   [doc/future.md](doc/future.md).
-- No standard library and no package manager. Modules are files.
+- No language standard library and no package manager; modules are files. (A
+  library of reusable *chip* definitions — per-MCU physics targets and
+  peripherals — does ship in [lib/](lib).)
 - Not audited and not proven correct; the compiler can have bugs.
 
 ### Verification (optional)
@@ -106,6 +109,7 @@ The first build compiles IKOS from the submodule (a one-time C++ build via cmake
 | [bml](bml) | CLI: `bml check` / `build` / `verify` / `cflags` |
 | [bml-lsp](bml-lsp) | Language server |
 | [doc](doc) | Specification, tutorials, design notes |
+| [lib](lib) | Shipped chip library: per-MCU physics targets + peripherals, and shared Cortex-M core peripherals |
 | [bml/examples](bml/examples) | Per-board example projects |
 | `ikos` | Submodule: LLVM-18 IKOS fork, used by `bml verify` |
 
@@ -118,6 +122,7 @@ editor support).
 - [Tutorials](doc/tutorials)
 - [Language specification](doc/language.md)
 - [Regions and agents](doc/regions-agents.md) — memory model, DMA, multi-core
+- [Target library](lib/README.md) — shipped chip targets and peripherals, and how `bml` finds them
 - [Verification](doc/verify.md)
 - [C interop](doc/c-interop.md), [STM32/CMSIS workflow](doc/stm32-cmsis.md),
   [Design decisions](doc/design-decisions.md), [Hacking](doc/hacking.md),

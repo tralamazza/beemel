@@ -24,17 +24,20 @@ part number (no vendor directory); part numbers are already globally unique.
 
 ## Shared core peripherals
 
-ARM Cortex-M core peripherals (NVIC, SCB, ...) are defined by ARM, not the chip
-vendor, and most vendor SVDs omit them. They live in their own folder, shared
-across every part of that core:
+ARM core peripherals (NVIC, SCB, DWT, cache maintenance, ...) are defined by ARM,
+not the chip vendor, so vendor SVDs often omit them. They are grouped by the spec
+that defines them: by **architecture** when the peripheral is architectural
+(shared by every core of that architecture), by **core** only when it is
+implementation-specific:
 
     lib/
-      cortex_m33/
-        nvic.bml
-        scb.bml
+      armv7m/       dwt.bml             # DWT: all ARMv7-M cores (M3/M4/M7)
+      armv8m/       nvic.bml  scb.bml   # NVIC/SCB: ARMv8-M cores (used by the RP2350/M33)
+      cortex_m7/    cache.bml           # cache maintenance: only the M7 has a cache
 
-A chip whose SVD lacks the core block imports these alongside its own
-peripherals: `import cortex_m33.nvic;` then bare `NVIC.ISER = ...`.
+A chip imports the core peripherals it needs alongside its own:
+`import armv7m.dwt;` / `import cortex_m7.cache;` then bare access
+(`DWT.CYCCNT`, `CM7_CACHE.ICIALLU = 0`).
 
 ## Using a chip
 

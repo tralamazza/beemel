@@ -1,0 +1,90 @@
+// ARMv7-M DWT (Data Watchpoint and Trace) + the DEMCR enable it needs --
+// CPU-internal ARM-defined registers vendor SVDs do not model. Architectural to
+// ARMv7-M, so shared across Cortex-M3/M4/M7; the common firmware use is
+// cycle-accurate timing and the profiling counters. Curated from the ARMv7-M
+// Architecture Reference Manual (DDI0403E, C1.8). The comparator/watchpoint
+// registers (DWT_COMPn/MASKn/FUNCTIONn at 0x20+) are debugger-oriented, omitted.
+//
+// Software access needs the CoreSight lock at DWT.LAR (0xFB0) opened with the
+// key first, and CDBG.DEMCR.TRCENA gates the whole unit. Use `dwt_init` then
+// `dwt_cycles`.
+
+peripheral CDBG at 0xE000EDF0 {
+    // Debug Exception and Monitor Control Register (DEMCR, 0xE000EDFC).
+    reg DEMCR offset 0x0C {
+        field TRCENA: b1 bit[24]       // global enable for all DWT and ITM features
+        field MON_REQ: b1 bit[19]
+        field MON_STEP: b1 bit[18]
+        field MON_PEND: b1 bit[17]
+        field MON_EN: b1 bit[16]       // enable the DebugMonitor exception
+        field VC_HARDERR: b1 bit[10]   // vector-catch bits (halting-debug traps)
+        field VC_INTERR: b1 bit[9]
+        field VC_BUSERR: b1 bit[8]
+        field VC_STATERR: b1 bit[7]
+        field VC_CHKERR: b1 bit[6]
+        field VC_NOCPERR: b1 bit[5]
+        field VC_MMERR: b1 bit[4]
+        field VC_CORERESET: b1 bit[0]
+    }
+}
+
+peripheral DWT at 0xE0001000 {
+    reg CTRL offset 0x000 {
+        field NUMCOMP: u32 bit[28..31] readonly  // number of comparators implemented
+        field NOTRCPKT: b1 bit[27] readonly
+        field NOEXTTRIG: b1 bit[26] readonly
+        field NOCYCCNT: b1 bit[25] readonly      // RAZ if a cycle counter is present
+        field NOPRFCNT: b1 bit[24] readonly      // RAZ if profiling counters present
+        field CYCEVTENA: b1 bit[22]
+        field FOLDEVTENA: b1 bit[21]
+        field LSUEVTENA: b1 bit[20]
+        field SLEEPEVTENA: b1 bit[19]
+        field EXCEVTENA: b1 bit[18]
+        field CPIEVTENA: b1 bit[17]
+        field EXCTRCENA: b1 bit[16]              // enable exception-trace
+        field PCSAMPLENA: b1 bit[12]             // enable periodic PC sample packets
+        field SYNCTAP: u32 bit[10..11]
+        field CYCTAP: b1 bit[9]
+        field POSTINIT: u32 bit[5..8]
+        field POSTPRESET: u32 bit[1..4]
+        field CYCCNTENA: b1 bit[0]               // enable CYCCNT
+    }
+    reg CYCCNT offset 0x004 {
+        field VALUE: u32 bit[0..31]
+    }
+    // Profiling counters: 8-bit, increment one per qualifying cycle, wrap at 0xFF.
+    reg CPICNT offset 0x008 {
+        field COUNT: u32 bit[0..7]
+    }
+    reg EXCCNT offset 0x00C {
+        field COUNT: u32 bit[0..7]
+    }
+    reg SLEEPCNT offset 0x010 {
+        field COUNT: u32 bit[0..7]
+    }
+    reg LSUCNT offset 0x014 {
+        field COUNT: u32 bit[0..7]
+    }
+    reg FOLDCNT offset 0x018 {
+        field COUNT: u32 bit[0..7]
+    }
+    // Program Counter Sample Register: the most recent sampled PC (read-only).
+    reg PCSR offset 0x01C {
+        field EIASAMPLE: u32 bit[0..31] readonly
+    }
+    // CoreSight Lock Access: write the key 0xC5ACCE55 to unlock DWT writes.
+    reg LAR offset 0xFB0 {
+        field KEY: u32 bit[0..31] writeonly
+    }
+}
+
+export fn dwt_init() {
+    CDBG.DEMCR.TRCENA = true;
+    DWT.LAR = 0xC5ACCE55;
+    DWT.CYCCNT = 0;
+    DWT.CTRL.CYCCNTENA = true;
+}
+
+export fn dwt_cycles() -> u32 {
+    return DWT.CYCCNT.VALUE;
+}

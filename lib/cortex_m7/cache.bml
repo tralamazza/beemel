@@ -1,0 +1,50 @@
+// Cortex-M7 cache-maintenance registers -- CPU-internal CMSIS registers that
+// vendor SVDs do not model (ARM-defined, not device peripherals). Shared across
+// any Cortex-M7 part; use the chip's own `scb` for CCR.DC/CCR.IC and the
+// read-only cache-info registers (CLIDR/CTR/CCSIDR).
+//
+// All registers are write-only (reads return 0). Curated from the Cortex-M7
+// Generic User Guide (DUI0646): the by-address ops take an MVA in bits [31:5];
+// the by-set/way ops take WAY in [31:30] and SET in [13:5] (write
+// `(way<<30) | (set<<5)` per line). BPIALL (0x28) is not implemented on the
+// Cortex-M7 (RAZ/WI), so it is omitted.
+peripheral CM7_CACHE at 0xE000EF50 {
+    // Invalidate all I-cache to the Point of Unification (write data ignored).
+    reg ICIALLU offset 0x00 {
+    }
+    // Invalidate I-cache by address (to PoU).
+    reg ICIMVAU offset 0x08 {
+        field MVA: u32 bit[5..31] writeonly
+    }
+    // Invalidate D-cache by address (to Point of Coherency).
+    reg DCIMVAC offset 0x0C {
+        field MVA: u32 bit[5..31] writeonly
+    }
+    // Invalidate D-cache by set/way.
+    reg DCISW offset 0x10 {
+        field SET: u32 bit[5..13] writeonly
+        field WAY: u32 bit[30..31] writeonly
+    }
+    // Clean D-cache by address (to PoU).
+    reg DCCMVAU offset 0x14 {
+        field MVA: u32 bit[5..31] writeonly
+    }
+    // Clean D-cache by address (to PoC).
+    reg DCCMVAC offset 0x18 {
+        field MVA: u32 bit[5..31] writeonly
+    }
+    // Clean D-cache by set/way.
+    reg DCCSW offset 0x1C {
+        field SET: u32 bit[5..13] writeonly
+        field WAY: u32 bit[30..31] writeonly
+    }
+    // Clean and invalidate D-cache by address (to PoC).
+    reg DCCIMVAC offset 0x20 {
+        field MVA: u32 bit[5..31] writeonly
+    }
+    // Clean and invalidate D-cache by set/way.
+    reg DCCISW offset 0x24 {
+        field SET: u32 bit[5..13] writeonly
+        field WAY: u32 bit[30..31] writeonly
+    }
+}
