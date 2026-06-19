@@ -1,0 +1,16 @@
+# RP2350 DMA -> PIO bridge -- board/project target.
+include = rp2350/rp2350.target
+
+# 4 MB QSPI flash (board physics).
+[mem.flash]
+base = 0x10000000
+size = 4M
+
+# Project claim: the DMA streams a buffer out of the dedicated sram8 bank into a
+# PIO FIFO. reach is cross-checked against the chip's DMA bus windows at load.
+[agent.dma]
+reach = sram8, flash
+
+[region.dma_buf]
+mem = sram8
+agents = dma

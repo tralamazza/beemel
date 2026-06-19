@@ -3976,6 +3976,15 @@ impl IrEmitter {
                 reg
             }
             Expr::Index(base, index) => {
+                // Address-of an indexed array register: &P.REG[i] -> the MMIO
+                // pointer base+offset+stride*i (correct stride, unlike the
+                // generic GEP below which assumes element-size stride).
+                if let Some((reg_base, stride, idx_expr)) =
+                    self.indexed_array_reg(expr, symbols)
+                {
+                    let idx = self.emit_expr(idx_expr, symbols, "");
+                    return self.emit_reg_index_ptr(reg_base, stride, &idx);
+                }
                 let base_ptr = self.emit_lvalue_ptr(base, symbols);
                 let idx_reg = self.emit_expr(index, symbols, "");
                 let idx_ty = self.expr_type(index, symbols);

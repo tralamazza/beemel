@@ -1,0 +1,69 @@
+// RP2350 DMA -> PIO FIFO bridge (M5).
+//
+// DMA channel 0 streams an SRAM buffer into PIO0's TX FIFO, paced by the
+// PIO0_TX0 data request. This is the agent/region "DMA bridge": the SRAM buffer
+// is the region the DMA agent reads; the PIO FIFO is the fixed paced endpoint,
+// reached as `&PIO0.TXF[0]` -- the address of an indexed register, which the
+// register-array work makes expressible. The pacing DREQ is selected by the
+// channel's TREQ_SEL field.
+//
+// Compile + link only (no RP2350 on the bench; QEMU doesn't model PIO/DREQ).
+
+import rp2350.dma as dmac;   // `dma` collides with the @dma keyword; alias for its enums
+import rp2350.resets;
+import rp2350.pio;
+import rp2350.pio_sm;
+
+owns DMA;
+owns PIO0;
+owns gpio[0..0];            // the sink's OUT pin
+
+// A trivial PIO sink: OUT one bit per word to a pin. With autopull, the OSR is
+// refilled from the TX FIFO automatically, so the state machine consumes
+// whatever the DMA streams in.
+pio sink {
+.wrap_target
+    out pins, 1
+.wrap
+}
+
+var TX_BUF: [u32; 16] in dma_buf;
+
+fn dma_pio_start() {
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.DMA = false;
+
+    // Fill the source buffer (CPU writes before handing the address to the DMA).
+    var i: u32 = 0;
+    while i < 16 {
+        TX_BUF[i] = i;
+        i = i + 1;
+    }
+
+    // Bring up SM0 with the sink program; autopull feeds the OSR from the TX FIFO.
+    pio_sm.pio_load(PIO0, view(sink_PROGRAM));
+    PIO0.SM_PINCTRL[0].OUT_BASE = 0u32;
+    PIO0.SM_PINCTRL[0].OUT_COUNT = 1u32;
+    PIO0.SM_SHIFTCTRL[0].AUTOPULL = true;
+    pio_sm.pio_set_enabled(PIO0, 1u32);
+
+    // DMA channel 0: read the SRAM buffer, write the PIO TX FIFO (a fixed
+    // address), paced by PIO0_TX0 so the channel only advances when the FIFO has
+    // room. The two handoff registers carry the region buffer and the FIFO
+    // endpoint respectively.
+    DMA.CH0_READ_ADDR = &TX_BUF as u32;            // region buffer source
+    DMA.CH0_WRITE_ADDR = &PIO0.TXF[0] as u32;      // PIO TX FIFO endpoint (fixed)
+    DMA.CH0_TRANS_COUNT.COUNT = 16u32;
+    DMA.CH0_CTRL_TRIG.TREQ_SEL = dmac.CH0_CTRL_TRIG_TREQ_SEL@PIO0_TX0;   // paced by the FIFO
+    DMA.CH0_CTRL_TRIG.DATA_SIZE = dmac.CH0_CTRL_TRIG_DATA_SIZE@SIZE_WORD;
+    DMA.CH0_CTRL_TRIG.INCR_READ = true;            // walk the buffer
+    DMA.CH0_CTRL_TRIG.INCR_WRITE = false;          // the FIFO is one fixed address
+    DMA.CH0_CTRL_TRIG.EN = true;                   // trigger
+}
+
+fn main() @context(thread) {
+    dma_pio_start();
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

@@ -1,0 +1,14 @@
+// Address-of an indexed register: `&P.REG[i]` lowers to the MMIO pointer
+// base+offset+stride*i. This is the prerequisite for pointing a DMA channel at a
+// FIFO register (`DMA.CHx_WRITE_ADDR = &PIO0.TXF[sm] as u32`).
+peripheral_type FIFO {
+    reg TXF[4] offset 0x10 stride 0x4 { field TXF: u32 bit[0..31] writeonly }
+}
+peripheral FIFO0: FIFO at 0x40000000;
+
+var SINK: u32;
+
+export fn main() @context(thread) {
+    var i: u32 = 2;
+    SINK = &FIFO0.TXF[i] as u32;    // 0x40000010 + 4*i
+}

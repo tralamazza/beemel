@@ -442,6 +442,11 @@ fn test_reg_array_lowering() {
     );
 }
 
+// Address-of an indexed register `&P.REG[i]` lowers to the MMIO pointer
+// base+offset+stride*i (FIFO0 base 0x40000000 + TXF offset 0x10 = 1073741840).
+assert_pass!(test_reg_array_addr_ok, "reg_array_addr_ok.bml");
+assert_ir_contains!(test_reg_array_addr_lowering, "reg_array_addr_ok.bml", "1073741840");
+
 // Field access on an indexed array register `P.REG[i].FIELD` (the per-SM PIO
 // register shape). The RMW happens at the runtime address with the field shift.
 assert_pass!(test_reg_array_field_ok, "reg_array_field_ok.bml");

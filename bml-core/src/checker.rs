@@ -3891,6 +3891,20 @@ fn read_place_info(
             }
         }
         Expr::Index(base, index) => {
+            // Indexed array register as a place (`&P.REG[i]`): it is a mutable
+            // MMIO register at base+offset+stride*i, not a container element.
+            if let Expr::FieldAccess(p, reg) = base.as_ref()
+                && let Expr::Ident((pname, _)) = p.as_ref()
+                && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+            {
+                check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+                check_reg_index_bounds(index, r.array.unwrap().0, pname, &reg.0, diags);
+                return PlaceInfo {
+                    ty: Type::U32,
+                    mut_borrow_error: None,
+                    addr_borrow_error: None,
+                };
+            }
             let base_info = read_place_info(base, symbols, scope, fn_name, expected_ret, diags);
             check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             let ty = index_element_type(base_info.ty.clone(), base, diags);
@@ -4385,6 +4399,16 @@ fn read_place_type(
         }
         Expr::Group(inner) => read_place_type(inner, symbols, scope, fn_name, expected_ret, diags),
         Expr::Index(base, index) => {
+            // Indexed array register as a place (`&P.REG[i]`, `P.REG[i]`): it is
+            // a register, not an element of a container.
+            if let Expr::FieldAccess(p, reg) = base.as_ref()
+                && let Expr::Ident((pname, _)) = p.as_ref()
+                && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+            {
+                check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+                check_reg_index_bounds(index, r.array.unwrap().0, pname, &reg.0, diags);
+                return Type::U32;
+            }
             let base_ty = read_place_type(base, symbols, scope, fn_name, expected_ret, diags);
             check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             index_element_type(base_ty, base, diags)
