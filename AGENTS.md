@@ -5,8 +5,6 @@
 
 - Surface tradeoffs explicitly.
 - Never hide uncertainty or confusion.
-- Prefer simple, direct solutions over clever abstractions.
-- Avoid premature generalization and overengineering.
 - Be concrete. Use real examples and exact failure modes.
 - Verify behavior empirically whenever possible.
 
@@ -25,7 +23,6 @@
 
 - Be concise and direct.
 - Do not oversell solutions.
-- If confidence is low, say so clearly.
 - Stick to ASCII characters.
 
 
@@ -41,7 +38,7 @@ Apply the Inversion Thinking Framework:
 
 ## Workflow
 
-Before committing, always run:
+Before committing, (if applicable) always run:
 - Formatter
 - Linter
 - Tests
