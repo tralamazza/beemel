@@ -1,0 +1,65 @@
+// RP2350 PIO blink -- Milestone 2: the same program as pio_blink.bml, now
+// authored with the in-language `pio { }` block instead of hand-encoded words.
+//
+// The compiler assembles the block into `blink_PROGRAM: [u16; 6]` plus metadata
+// consts (`blink_WRAP_TARGET`, `blink_WRAP`, `blink_SIDESET_COUNT`,
+// `blink_SIDESET_OPT`, `blink_ORIGIN`). The instruction words must match the M1
+// golden vector exactly: e001 e03f 1f42 e000 e03f 1f45.
+
+import rp2350.resets;
+import rp2350.io_bank0;
+import rp2350.pads_bank0;
+import rp2350.pio;
+import rp2350.pio_sm;
+
+owns PIO0;
+
+const LED_PIN: u32 = 25;
+
+pio blink {
+.wrap_target
+    set pins, 1            ; LED on
+    set x, 31             ; load the busy-wait counter (max imm = 31)
+on:
+    jmp x--, on [31]      ; spin, max per-step delay
+    set pins, 0            ; LED off
+    set x, 31
+off:
+    jmp x--, off [31]
+.wrap
+}
+
+fn pio_blink_init() {
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.IO_BANK0 = false;
+    RESETS.RESET.PADS_BANK0 = false;
+    while !RESETS.RESET_DONE.PIO0 {}
+    while !RESETS.RESET_DONE.IO_BANK0 {}
+    while !RESETS.RESET_DONE.PADS_BANK0 {}
+
+    PADS_BANK0.GPIO25.ISO = false;
+    PADS_BANK0.GPIO25.OD = false;
+    PADS_BANK0.GPIO25.IE = false;
+    IO_BANK0.GPIO25_CTRL.FUNCSEL = 6u32;
+
+    // Configure state machine 0 entirely through the helper lib -- every call is
+    // monomorphized for PIO0 and indexes the SM_* register arrays by `sm`.
+    pio_sm.pio_sm_set_clkdiv(PIO0, 0, 65535, 0);          // slow: clk_sys / 65535
+    pio_sm.pio_sm_set_set_pins(PIO0, 0, LED_PIN, 1);      // SET drives GPIO25
+    pio_sm.pio_sm_set_wrap(PIO0, 0, blink_WRAP_TARGET, blink_WRAP);
+
+    // Load the assembled program with the generic helper -- one loop over the
+    // INSTR_MEM[i] register array.
+    pio_sm.pio_load(PIO0, view(blink_PROGRAM));
+
+    pio_sm.pio_sm_exec(PIO0, 0, 0xE081);   // set pindirs, 1 (pin -> output)
+    pio_sm.pio_sm_exec(PIO0, 0, 0x0000);   // jmp 0 (force PC to start)
+    pio_sm.pio_set_enabled(PIO0, 1u32);    // SM_ENABLE bit0 -> SM0
+}
+
+fn main() @context(thread) {
+    pio_blink_init();
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

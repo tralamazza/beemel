@@ -392,6 +392,109 @@ impl IrEmitter {
             .unwrap_or_else(|| name.to_string())
     }
 
+    /// For `P.REG` naming an array register, return `(reg_base_addr, stride)`
+    /// where `reg_base_addr = peripheral base + reg offset`. `P.REG[i]` then
+    /// addresses `reg_base_addr + stride*i`. `None` for a non-array register.
+    fn array_reg_addr(
+        &self,
+        periph: &str,
+        reg: &str,
+        symbols: &SymbolTable,
+    ) -> Option<(u64, u64)> {
+        let p = symbols.peripherals.get(&self.subst_periph(periph))?;
+        let r = p.regs.get(reg)?;
+        let (_len, stride) = r.array?;
+        Some((p.base_addr + r.offset, stride))
+    }
+
+    /// Emit the pointer for `P.REG[i]`: `reg_base + stride*i`, as `inttoptr`.
+    /// `idx` is the already-emitted index SSA value (i32). Returns the ptr SSA.
+    fn emit_reg_index_ptr(&mut self, reg_base: u64, stride: u64, idx: &str) -> String {
+        let pty = self.ptr_type();
+        let scaled = self.new_reg();
+        self.line(&format!("{scaled} = mul {pty} {idx}, {stride}"));
+        let addr = self.new_reg();
+        self.line(&format!("{addr} = add {pty} {scaled}, {reg_base}"));
+        let ptr = self.new_reg();
+        self.line(&format!("{ptr} = inttoptr {pty} {addr} to ptr"));
+        ptr
+    }
+
+    /// Read a register field at a runtime `ptr`: volatile load + mask + shift +
+    /// narrow. Used for `P.REG[i].FIELD` on an array register. Array registers
+    /// are not handoff/gate/bitband registers, so this is the plain field read
+    /// without the constant-address special cases.
+    fn emit_field_read_at_ptr(
+        &mut self,
+        ptr: &str,
+        bit_spec: &crate::ast::BitSpec,
+        ty: &Type,
+        dbg: &str,
+    ) -> String {
+        let val = self.new_reg();
+        self.line(&format!("{val} = load volatile i32, ptr {ptr}{dbg}"));
+        let (mask, shift) = crate::arch::arm::bit_mask_shift(bit_spec);
+        let masked = self.new_reg();
+        self.line(&format!("{masked} = and i32 {val}, {mask}"));
+        let result = self.new_reg();
+        if shift > 0 {
+            self.line(&format!("{result} = lshr i32 {masked}, {shift}"));
+        } else {
+            self.line(&format!("{result} = add i32 {masked}, 0"));
+        }
+        self.narrow_from_i32(&result, ty)
+    }
+
+    /// Read-modify-write a register field at a runtime `ptr`. The `P.REG[i].F = v`
+    /// counterpart of `emit_field_read_at_ptr`.
+    fn emit_field_rmw_at_ptr(
+        &mut self,
+        ptr: &str,
+        bit_spec: &crate::ast::BitSpec,
+        field_ty: &Type,
+        val_reg: &str,
+        val_ty: &Type,
+        dbg: &str,
+    ) -> String {
+        let (mask, shift) = crate::arch::arm::bit_mask_shift(bit_spec);
+        let inv_mask = !mask;
+        let old = self.new_reg();
+        self.line(&format!("{old} = load volatile i32, ptr {ptr}"));
+        let cleared = self.new_reg();
+        self.line(&format!("{cleared} = and i32 {old}, {inv_mask}"));
+        let widened = self.widen_to_i32(val_reg, val_ty, field_ty);
+        let shifted = self.new_reg();
+        if shift > 0 {
+            self.line(&format!("{shifted} = shl i32 {widened}, {shift}"));
+        } else {
+            self.line(&format!("{shifted} = add i32 {widened}, 0"));
+        }
+        let masked_val = self.new_reg();
+        self.line(&format!("{masked_val} = and i32 {shifted}, {mask}"));
+        let new_val = self.new_reg();
+        self.line(&format!("{new_val} = or i32 {cleared}, {masked_val}"));
+        self.line(&format!("store volatile i32 {new_val}, ptr {ptr}{dbg}"));
+        new_val
+    }
+
+    /// `(reg_base, stride, idx_expr)` if `base` is `P.REG[i]` naming an array
+    /// register (read side: `Expr::Index` of `Expr::FieldAccess`). The caller
+    /// emits the index and the ptr.
+    fn indexed_array_reg<'e>(
+        &self,
+        base: &'e Expr,
+        symbols: &SymbolTable,
+    ) -> Option<(u64, u64, &'e Expr)> {
+        if let Expr::Index(arr, idx) = base
+            && let Expr::FieldAccess(p, reg) = arr.as_ref()
+            && let Expr::Ident((pname, _)) = p.as_ref()
+            && let Some((reg_base, stride)) = self.array_reg_addr(pname, &reg.0, symbols)
+        {
+            return Some((reg_base, stride, idx));
+        }
+        None
+    }
+
     /// Lower a call to a `peripheral_type` driver: resolve each handle argument
     /// to its concrete instance (the active substitution for a pass-through,
     /// else the global instance name), queue the specialization, and emit a call
@@ -2771,6 +2874,26 @@ impl IrEmitter {
             }
 
             Expr::FieldAccess(base, field) => {
+                // Indexed array-register field read: `P.REG[i].FIELD` -> volatile
+                // load at base+offset+stride*i, then mask/shift the field out.
+                if let Some((reg_base, stride, idx_expr)) =
+                    self.indexed_array_reg(base, symbols)
+                    && let Expr::Index(arr, _) = base.as_ref()
+                    && let Expr::FieldAccess(p, reg) = arr.as_ref()
+                    && let Expr::Ident((pname, _)) = p.as_ref()
+                    && let Some(field_def) = symbols
+                        .peripherals
+                        .get(&self.subst_periph(pname))
+                        .and_then(|pp| pp.regs.get(&reg.0))
+                        .and_then(|rr| rr.fields.get(&field.0))
+                {
+                    let bit_spec = field_def.bit_spec.clone();
+                    let ty = field_def.ty.clone();
+                    let dbg = self.dbg_loc(expr.span());
+                    let idx = self.emit_expr(idx_expr, symbols, fn_name);
+                    let ptr = self.emit_reg_index_ptr(reg_base, stride, &idx);
+                    return self.emit_field_read_at_ptr(&ptr, &bit_spec, &ty, &dbg);
+                }
                 // Handle peripheral register access: GPIOA.ODR → volatile load
                 if let Expr::Ident((periph_name, _)) = base.as_ref()
                     && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
@@ -2868,8 +2991,20 @@ impl IrEmitter {
             }
 
             Expr::Index(base, index) => {
-                let base_ty = self.expr_type(base, symbols);
                 let dbg = self.dbg_loc(expr.span());
+                // Indexed register read: `P.REG[i]` -> volatile load i32 at
+                // `base + offset + stride*i` (stays on the MMIO path).
+                if let Expr::FieldAccess(p, reg) = base.as_ref()
+                    && let Expr::Ident((pname, _)) = p.as_ref()
+                    && let Some((reg_base, stride)) = self.array_reg_addr(pname, &reg.0, symbols)
+                {
+                    let idx = self.emit_expr(index, symbols, fn_name);
+                    let ptr = self.emit_reg_index_ptr(reg_base, stride, &idx);
+                    let out = self.new_reg();
+                    self.line(&format!("{out} = load volatile i32, ptr {ptr}{dbg}"));
+                    return out;
+                }
+                let base_ty = self.expr_type(base, symbols);
                 if let Type::LinearView(elem_ty, _) = &base_ty {
                     // Read a linear view: pull { ptr, len } out of the
                     // descriptor, assume the index is in range so the verifier
@@ -4022,6 +4157,26 @@ impl IrEmitter {
                 val_reg.to_string()
             }
             LValue::Field(base, field) => {
+                // Indexed array-register field write: `P.REG[i].FIELD = v` ->
+                // read-modify-write at base+offset+stride*i.
+                if let LValue::Index(arr, idx_expr) = base.as_ref()
+                    && let LValue::Field(p, reg) = arr.as_ref()
+                    && let LValue::Name((pname, _)) = p.as_ref()
+                    && let Some((reg_base, stride)) = self.array_reg_addr(pname, &reg.0, symbols)
+                    && let Some(field_def) = symbols
+                        .peripherals
+                        .get(&self.subst_periph(pname))
+                        .and_then(|pp| pp.regs.get(&reg.0))
+                        .and_then(|rr| rr.fields.get(&field.0))
+                {
+                    let bit_spec = field_def.bit_spec.clone();
+                    let field_ty = field_def.ty.clone();
+                    let idx = self.emit_expr(idx_expr, symbols, fn_name);
+                    let ptr = self.emit_reg_index_ptr(reg_base, stride, &idx);
+                    return self.emit_field_rmw_at_ptr(
+                        &ptr, &bit_spec, &field_ty, val_reg, val_ty, &dbg,
+                    );
+                }
                 // Peripheral register write: GPIOA.ODR = val
                 if let LValue::Name((periph_name, _)) = base.as_ref()
                     && let Some(p) = symbols.peripherals.get(&self.subst_periph(periph_name))
@@ -4263,6 +4418,20 @@ impl IrEmitter {
                 val_reg.to_string()
             }
             LValue::Index(base, index) => {
+                // Indexed register write: `P.REG[i] = v` -> volatile store i32 at
+                // `base + offset + stride*i`. The value is widened to the 32-bit
+                // register width (top bits ignored by hardware), exactly like the
+                // SDK's `instr_mem[i] = uint16` store.
+                if let LValue::Field(p, reg) = base.as_ref()
+                    && let LValue::Name((pname, _)) = p.as_ref()
+                    && let Some((reg_base, stride)) = self.array_reg_addr(pname, &reg.0, symbols)
+                {
+                    let idx = self.emit_expr(index, symbols, fn_name);
+                    let ptr = self.emit_reg_index_ptr(reg_base, stride, &idx);
+                    let v = self.coerce_int(val_reg.to_string(), val_ty, &Type::U32);
+                    self.line(&format!("store volatile i32 {v}, ptr {ptr}{dbg}"));
+                    return val_reg.to_string();
+                }
                 let Some((base_ptr, base_ty)) = self.lvalue_base_info(base, symbols, fn_name)
                 else {
                     return val_reg.to_string();

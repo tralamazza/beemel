@@ -1,0 +1,14 @@
+[package]
+name = "pio-encode"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+description = "RP2040/RP2350 PIO assembler: PIO source -> 16-bit instruction words + metadata."
+
+[lib]
+name = "pio_encode"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

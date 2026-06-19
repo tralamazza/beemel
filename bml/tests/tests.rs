@@ -416,6 +416,46 @@ fn test_peripheral_type_param_monomorphizes() {
     );
 }
 
+// Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
+assert_pass!(test_reg_array_ok, "reg_array_ok.bml");
+// Accessing the array register without an index (E337), a constant index past
+// the length (E338), and a missing `stride` (E116) are all rejected.
+assert_error!(test_reg_array_bare, "reg_array_bare_error.bml", "E337");
+assert_error!(test_reg_array_oob, "reg_array_oob_error.bml", "E338");
+assert_error!(
+    test_reg_array_stride_missing,
+    "reg_array_stride_missing_error.bml",
+    "E116"
+);
+// `P.MEM[i]` lowers to a volatile MMIO store at `base + offset + stride*i`:
+// FIFO0 base 0x40000000 + MEM offset 0x10 = 0x40000010 = 1073741840, stride 4.
+#[test]
+fn test_reg_array_lowering() {
+    let ir = bml_ir("reg_array_ok.bml");
+    assert!(
+        ir.contains("mul i32") && ir.contains("1073741840"),
+        "expected `base + stride*i` address math for the register array\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("store volatile i32"),
+        "register-array writes must stay on the volatile MMIO path\n--- IR ---\n{ir}"
+    );
+}
+
+// Field access on an indexed array register `P.REG[i].FIELD` (the per-SM PIO
+// register shape). The RMW happens at the runtime address with the field shift.
+assert_pass!(test_reg_array_field_ok, "reg_array_field_ok.bml");
+#[test]
+fn test_reg_array_field_lowering() {
+    let ir = bml_ir("reg_array_field_ok.bml");
+    // CLK0 base 0x50200000 + DIV offset 0xC8 = 0x502000C8 = 1344274632, stride
+    // 0x18 = 24; INT is bits[16..31] so the write shifts the value left by 16.
+    assert!(
+        ir.contains("mul i32") && ir.contains("1344274632") && ir.contains("shl i32"),
+        "expected indexed-field RMW with the field shift\n--- IR ---\n{ir}"
+    );
+}
+
 // Transitive monomorphization: `setup$USART1` calls `enable$USART1`.
 #[test]
 fn test_peripheral_type_param_transitive_ir() {

@@ -2470,6 +2470,41 @@ fn peripheral_reg_map<'a>(
     None
 }
 
+/// `P.REG` where REG is an *array* register (declared `reg REG[N] ... stride S`).
+/// Returns the register symbol so `P.REG[i]` can route to the indexed-register
+/// path. `None` if P isn't a peripheral/handle, REG isn't one of its registers,
+/// or REG is a scalar register.
+fn array_reg<'a>(
+    periph: &str,
+    reg: &str,
+    scope: &ScopeStack,
+    symbols: &'a SymbolTable,
+) -> Option<&'a crate::resolver::RegSymbol> {
+    let r = peripheral_reg_map(periph, scope, symbols)?.get(reg)?;
+    r.array.map(|_| r)
+}
+
+/// Compile-time bounds check for a *constant* register-array index. A runtime
+/// index is left to the surrounding loop guard / verifier (matching how the
+/// SDK's load loop and all other MMIO address math are trusted).
+fn check_reg_index_bounds(
+    index: &Expr,
+    len: u64,
+    periph: &str,
+    reg: &str,
+    diags: &mut DiagnosticBag,
+) {
+    if let Expr::IntLiteral(n, _, span) = index
+        && *n >= len
+    {
+        diags.error(
+            format!("register-array index {n} out of range for `{periph}.{reg}` (len {len})"),
+            "E338",
+            *span,
+        );
+    }
+}
+
 #[allow(clippy::only_used_in_recursion)]
 fn check_expr(
     expr: &Expr,
@@ -2901,7 +2936,17 @@ fn check_expr(
                     // GPIOA.REG (or `u.REG` for a peripheral_type param) -- register read
                     if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
                         if let Some(reg) = regs.get(&field.0) {
-                            if reg.access == crate::ast::Access::WriteOnly {
+                            if reg.array.is_some() {
+                                diags.error(
+                                    format!(
+                                        "register `{periph_name}.{0}` is a register array; \
+                                         index it: `{0}[i]`",
+                                        field.0
+                                    ),
+                                    "E337",
+                                    field.1,
+                                );
+                            } else if reg.access == crate::ast::Access::WriteOnly {
                                 diags.error(
                                     format!(
                                         "cannot read from writeonly register `{periph_name}.{}`",
@@ -2961,6 +3006,35 @@ fn check_expr(
                         }
                     }
                 }
+                // `P.REG[i].FIELD` -- field of an indexed array register.
+                Expr::Index(arr, idx) => {
+                    if let Expr::FieldAccess(p, reg) = arr.as_ref()
+                        && let Expr::Ident((pname, _)) = p.as_ref()
+                        && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+                    {
+                        check_expr(idx, symbols, scope, fn_name, expected_ret, diags);
+                        check_reg_index_bounds(idx, r.array.unwrap().0, pname, &reg.0, diags);
+                        if let Some(fs) = r.fields.get(&field.0) {
+                            if fs.access == crate::ast::Access::WriteOnly {
+                                diags.error(
+                                    format!(
+                                        "cannot read from writeonly field `{pname}.{}.{}`",
+                                        reg.0, field.0
+                                    ),
+                                    "E330",
+                                    field.1,
+                                );
+                            }
+                            return fs.ty.clone();
+                        }
+                        diags.error(
+                            format!("register `{}` has no field `{}`", reg.0, field.0),
+                            "E322",
+                            field.1,
+                        );
+                        return Type::U32;
+                    }
+                }
                 _ => {}
             }
 
@@ -3000,6 +3074,24 @@ fn check_expr(
         }
 
         Expr::Index(base, index) => {
+            // Indexed register read: `P.REG[i]` where REG is an array register
+            // (`reg REG[N] ... stride S`). Stays on the volatile MMIO path; the
+            // value is the register (u32), not an element of some container.
+            if let Expr::FieldAccess(p, reg) = base.as_ref()
+                && let Expr::Ident((pname, _)) = p.as_ref()
+                && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+            {
+                check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+                if r.access == crate::ast::Access::WriteOnly {
+                    diags.error(
+                        format!("cannot read from writeonly register `{pname}.{}`", reg.0),
+                        "E330",
+                        reg.1,
+                    );
+                }
+                check_reg_index_bounds(index, r.array.unwrap().0, pname, &reg.0, diags);
+                return Type::U32;
+            }
             // Indexing addresses a place through `base`; it borrows the
             // container, it does not move it. Read the base non-consuming so a
             // Move-typed view (`view mut`/`ring mut`/`bits mut`) can be indexed
@@ -3936,7 +4028,17 @@ fn check_lvalue(
                     // GPIOA.REG = val (or `u.REG` for a param) -- register write
                     if let Some(regs) = peripheral_reg_map(periph_name, scope, symbols) {
                         if let Some(reg) = regs.get(&field.0) {
-                            if reg.access == crate::ast::Access::ReadOnly {
+                            if reg.array.is_some() {
+                                diags.error(
+                                    format!(
+                                        "register `{periph_name}.{0}` is a register array; \
+                                         index it: `{0}[i] = ...`",
+                                        field.0
+                                    ),
+                                    "E337",
+                                    field.1,
+                                );
+                            } else if reg.access == crate::ast::Access::ReadOnly {
                                 diags.error(
                                     format!(
                                         "cannot write to readonly register `{periph_name}.{}`",
@@ -3996,7 +4098,38 @@ fn check_lvalue(
                         }
                     }
                 }
-                _ => {}
+                // `P.REG[i].FIELD = val` -- field of an indexed array register.
+                LValue::Index(arr, idx) => {
+                    if let LValue::Field(p, reg) = arr.as_ref()
+                        && let LValue::Name((pname, _)) = p.as_ref()
+                        && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+                    {
+                        check_expr(idx, symbols, scope, fn_name, expected_ret, diags);
+                        check_reg_index_bounds(idx, r.array.unwrap().0, pname, &reg.0, diags);
+                        if let Some(fs) = r.fields.get(&field.0) {
+                            if fs.access == crate::ast::Access::ReadOnly {
+                                diags.error(
+                                    format!(
+                                        "cannot write to readonly field `{pname}.{}.{}`",
+                                        reg.0, field.0
+                                    ),
+                                    "E331",
+                                    field.1,
+                                );
+                            }
+                            return fs.ty.clone();
+                        }
+                        diags.error(
+                            format!("register `{}` has no field `{}`", reg.0, field.0),
+                            "E322",
+                            field.1,
+                        );
+                        return Type::U32;
+                    }
+                }
+                // `(*p).field` and other non-peripheral bases fall through to the
+                // struct-field path below.
+                LValue::Deref(_) => {}
             }
 
             let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags, false);
@@ -4020,6 +4153,23 @@ fn check_lvalue(
             Type::U32
         }
         LValue::Index(base, index) => {
+            // Indexed register write: `P.REG[i] = v` where REG is an array
+            // register. Stays on the volatile MMIO path.
+            if let LValue::Field(p, reg) = base.as_ref()
+                && let LValue::Name((pname, _)) = p.as_ref()
+                && let Some(r) = array_reg(pname, &reg.0, scope, symbols)
+            {
+                check_expr(index, symbols, scope, fn_name, expected_ret, diags);
+                if r.access == crate::ast::Access::ReadOnly {
+                    diags.error(
+                        format!("cannot write to readonly register `{pname}.{}`", reg.0),
+                        "E331",
+                        reg.1,
+                    );
+                }
+                check_reg_index_bounds(index, r.array.unwrap().0, pname, &reg.0, diags);
+                return Type::U32;
+            }
             let base_ty = check_lvalue(base, symbols, scope, fn_name, expected_ret, diags, false);
             check_expr(index, symbols, scope, fn_name, expected_ret, diags);
             match base_ty {

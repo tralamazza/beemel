@@ -1,0 +1,70 @@
+// PIO state-machine helpers (RP2350).
+//
+// A thin, register-model layer over the PIO block (lib/rp2350/pio.bml). Drivers
+// take a `PIO` handle, monomorphized per instance (slice 2), so one body serves
+// PIO0/PIO1/PIO2; they stay on the volatile MMIO path -- no raw pointers, the
+// caller's `owns PIOx` exclusivity left intact.
+
+import rp2350.pio;
+
+// Load an assembled program into instruction memory starting at slot 0. Each
+// 16-bit instruction word is widened into its 32-bit INSTR_MEM register (the top
+// half is ignored by hardware) -- the bml analogue of the pico-SDK's
+// `instr_mem[i] = program->instructions[i]`. Fixed origin 0; relocatable loads
+// (JMP fix-up by a load offset) are a follow-up.
+export fn pio_load(p: PIO, prog: view u16) {
+    var i: u32 = 0;
+    while i < len(prog) {
+        p.INSTR_MEM[i] = prog[i] as u32;   // volatile store, base + 0x48 + 4*i
+        i = i + 1;
+    }
+}
+
+// Enable (or disable) state machines by mask: bit i selects SM i. Writing the
+// whole CTRL register avoids a read-modify-write over its write-only pulse
+// fields (SM_RESTART, CLKDIV_RESTART, ...).
+export fn pio_set_enabled(p: PIO, mask: u32) {
+    p.CTRL = mask;
+}
+
+// --- per-state-machine config (one body serves every SM and every PIO block:
+// `sm` indexes the SM_* register arrays, the PIO handle is monomorphized) ---
+
+// Clock divider: effective rate is sysclk / (int + frac/256).
+export fn pio_sm_set_clkdiv(p: PIO, sm: u32, int: u32, frac: u32) {
+    p.SM_CLKDIV[sm].INT = int;
+    p.SM_CLKDIV[sm].FRAC = frac;
+}
+
+// Map the SET pin group: `count` pins based at GPIO `base`.
+export fn pio_sm_set_set_pins(p: PIO, sm: u32, base: u32, count: u32) {
+    p.SM_PINCTRL[sm].SET_BASE = base;
+    p.SM_PINCTRL[sm].SET_COUNT = count;
+}
+
+// Wrap window: after executing address `top`, execution wraps to `bottom`.
+export fn pio_sm_set_wrap(p: PIO, sm: u32, bottom: u32, top: u32) {
+    p.SM_EXECCTRL[sm].WRAP_BOTTOM = bottom;
+    p.SM_EXECCTRL[sm].WRAP_TOP = top;
+}
+
+// Execute one instruction immediately on a (halted) state machine -- a write to
+// SMx_INSTR runs at once. Used to set pindirs / force the PC before enabling.
+export fn pio_sm_exec(p: PIO, sm: u32, instr: u32) {
+    p.SM_INSTR[sm] = instr;
+}
+
+// --- FIFOs. FSTAT carries one status bit per SM (bit `sm` of each 4-bit field),
+// the data words go through the TXF[sm] / RXF[sm] register arrays ---
+
+// Push a word to a state machine's TX FIFO, blocking until there is room.
+export fn pio_sm_put_blocking(p: PIO, sm: u32, v: u32) {
+    while ((p.FSTAT.TXFULL >> sm) & 1) != 0 {}
+    p.TXF[sm] = v;
+}
+
+// Pop a word from a state machine's RX FIFO, blocking until one is available.
+export fn pio_sm_get_blocking(p: PIO, sm: u32) -> u32 {
+    while ((p.FSTAT.RXEMPTY >> sm) & 1) != 0 {}
+    return p.RXF[sm];
+}

@@ -1,0 +1,10 @@
+// Accessing an array register without an index is rejected (E337): it must be
+// `MEM[i]`, not `MEM`.
+peripheral_type FIFO {
+    reg MEM[4] offset 0x10 stride 0x4 { field MEM: u32 bit[0..15] writeonly }
+}
+peripheral FIFO0: FIFO at 0x40000000;
+
+export fn main() @context(thread) {
+    FIFO0.MEM = 1u32;
+}

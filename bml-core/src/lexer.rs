@@ -64,6 +64,11 @@ pub enum TokenKind {
     ComptimeAssert,
     Asm,
     AsmBody(String),
+    Pio,
+    /// `pio NAME { ...raw body... }` captured whole: (program name, raw body).
+    /// Like `AsmBody`, the body is lexed verbatim -- PIO assembly is a foreign
+    /// ISA the bml lexer must not tokenize.
+    PioBody(String, String),
 
     // Literals
     IntLiteral(u64, IntSuffix),
@@ -709,6 +714,74 @@ impl<'a> Lexer<'a> {
                                 span: self.span(start, self.pos),
                             };
                         }
+                    } else if kind == TokenKind::Pio {
+                        // `pio NAME { ...body... }`: skip whitespace, read the
+                        // program name, then capture the raw body (newlines
+                        // preserved so the PIO assembler can report line numbers).
+                        let skip_ws = |src: &str, mut p: usize| {
+                            while let Some(c) = src[p..].chars().next() {
+                                if c.is_whitespace() {
+                                    p += c.len_utf8();
+                                } else {
+                                    break;
+                                }
+                            }
+                            p
+                        };
+                        let mut look = skip_ws(self.source, self.pos);
+                        let name_start = look;
+                        while let Some(c) = self.source[look..].chars().next() {
+                            if c.is_alphanumeric() || c == '_' {
+                                look += c.len_utf8();
+                            } else {
+                                break;
+                            }
+                        }
+                        let name = self.source[name_start..look].to_string();
+                        look = skip_ws(self.source, look);
+                        if !name.is_empty() && self.source[look..].starts_with('{') {
+                            self.pos = look + 1; // skip past {
+                            let body_start = self.pos;
+                            let mut depth: u32 = 1;
+                            while depth > 0 {
+                                match self.current() {
+                                    Some('{') => {
+                                        depth += 1;
+                                        self.advance();
+                                    }
+                                    Some('}') => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                        self.advance();
+                                    }
+                                    Some(_) => {
+                                        self.advance();
+                                    }
+                                    None => {
+                                        self.diags.error(
+                                            "unterminated pio block".to_string(),
+                                            "E006",
+                                            self.span(body_start, self.pos),
+                                        );
+                                        return Token {
+                                            kind: TokenKind::Eof,
+                                            span: self.span(start, self.pos),
+                                        };
+                                    }
+                                }
+                            }
+                            let body_end = self.pos;
+                            self.advance(); // consume closing }
+                            let body = self.source[body_start..body_end].to_string();
+                            return Token {
+                                kind: TokenKind::PioBody(name, body),
+                                span: self.span(start, self.pos),
+                            };
+                        }
+                        // Not the block form: fall through and let the parser
+                        // report a useful error from the bare `pio` keyword.
                     }
                     kind
                 }
@@ -797,6 +870,7 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("assert", TokenKind::Assert),
     ("comptime_assert", TokenKind::ComptimeAssert),
     ("asm", TokenKind::Asm),
+    ("pio", TokenKind::Pio),
     ("true", TokenKind::BoolLiteral(true)),
     ("false", TokenKind::BoolLiteral(false)),
 ];

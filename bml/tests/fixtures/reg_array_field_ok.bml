@@ -1,0 +1,21 @@
+// Field access on an indexed array register: `P.REG[i].FIELD`. The per-SM PIO
+// register groups have exactly this shape (SM_CLKDIV[sm].INT etc.) -- a register
+// array whose elements have bitfields, reached with a runtime index + a field.
+peripheral_type CLK {
+    reg DIV[4] offset 0xC8 stride 0x18 {
+        field INT: u32 bit[16..31]
+        field FRAC: u32 bit[8..15]
+    }
+}
+peripheral CLK0: CLK at 0x50200000;
+
+fn set_div(p: CLK, sm: u32, int: u32, frac: u32) {
+    p.DIV[sm].INT = int;    // RMW at base + 0xC8 + 0x18*sm
+    p.DIV[sm].FRAC = frac;
+}
+
+export fn main() @context(thread) {
+    set_div(CLK0, 0, 65535, 0);
+    var hi: u32 = CLK0.DIV[2].INT;   // indexed field read
+    CLK0.DIV[1].FRAC = hi;
+}

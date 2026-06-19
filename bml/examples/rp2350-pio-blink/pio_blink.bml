@@ -1,0 +1,115 @@
+// RP2350 PIO blink -- Milestone 1 proof-of-concept.
+//
+// Goal: validate that the existing PIO register block (lib/rp2350/pio.bml) is
+// usable end-to-end -- bring PIO0 out of reset, route a pad to it, load a
+// program into instruction memory, configure state machine 0, and let it drive
+// the pin autonomously. NO new compiler feature is exercised here; the PIO
+// program is HAND-ENCODED as raw 16-bit words.
+//
+// This is the de-risking step before the in-language `pio { }` block (M2). Each
+// instruction word below doubles as the golden reference the M2 encoder must
+// reproduce bit-for-bit.
+//
+// Verification status: compile + link only. QEMU does not model PIO and there is
+// no RP2350 board on the bench, so the LED toggle is not execution-tested yet
+// (tracked as a hardware-gated follow-up, per the exec-test rule).
+//
+// Wiring: GPIO25 is the Pico 2 (non-W) onboard LED. On the Pico 2 W the LED
+// hangs off the wireless chip, so on that board pick any free GPIO instead.
+
+import rp2350.resets;
+import rp2350.io_bank0;
+import rp2350.pads_bank0;
+import rp2350.pio;
+
+// Module-exclusive ownership of the PIO0 instance (E604 on a cross-module
+// conflict). This is the only "exclusivity" surface available pre-M4; the
+// per-state-machine pin ownership check is M4.
+owns PIO0;
+
+const LED_PIN: u32 = 25;   // GPIO25, SET pin base for SM0
+
+// Hand-encoded PIO program (origin 0). Layout:
+//
+//   .program blink
+//   .wrap_target
+//   0: set pins, 1          ; 0xe001  LED on
+//   1: set x, 31            ; 0xe03f  load the busy-wait counter (max imm = 31)
+//   2: jmp x--, 2  [31]     ; 0x1f42  spin, max per-step delay
+//   3: set pins, 0          ; 0xe000  LED off
+//   4: set x, 31            ; 0xe03f
+//   5: jmp x--, 5  [31]     ; 0x1f45
+//   .wrap                   ; WRAP_TOP = 5 -> WRAP_BOTTOM = 0
+//
+// Encoding (16-bit): [15:13] opcode | [12:8] delay/side-set | [7:0] operands.
+//   SET = 0b111 (0xE000); dest PINS=0b000, X=0b001, PINDIRS=0b100 in bits[7:5].
+//   JMP = 0b000; cond X-- = 0b010 in bits[7:5]; bits[4:0] = target address.
+const PROG0: u32 = 0xE001;   // set pins, 1
+const PROG1: u32 = 0xE03F;   // set x, 31
+const PROG2: u32 = 0x1F42;   // jmp x--, 2 [31]
+const PROG3: u32 = 0xE000;   // set pins, 0
+const PROG4: u32 = 0xE03F;   // set x, 31
+const PROG5: u32 = 0x1F45;   // jmp x--, 5 [31]
+
+const SET_PINDIRS_1: u32 = 0xE081;   // set pindirs, 1  (run once to make the pin an output)
+const JMP_ZERO: u32 = 0x0000;        // jmp 0           (force PC to program start)
+
+fn pio_blink_init() {
+    // Take PIO0 and both GPIO banks out of reset, then wait for the release
+    // acknowledge (RESET_DONE) before touching their registers.
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.IO_BANK0 = false;
+    RESETS.RESET.PADS_BANK0 = false;
+    while !RESETS.RESET_DONE.PIO0 {}
+    while !RESETS.RESET_DONE.IO_BANK0 {}
+    while !RESETS.RESET_DONE.PADS_BANK0 {}
+
+    // Pad for GPIO25: drop isolation, enable the output driver, disable input,
+    // and route the pad to PIO0 (FUNCSEL pio0_25 = 6).
+    PADS_BANK0.GPIO25.ISO = false;
+    PADS_BANK0.GPIO25.OD = false;
+    PADS_BANK0.GPIO25.IE = false;
+    IO_BANK0.GPIO25_CTRL.FUNCSEL = 6u32;
+
+    // --- configure SM0 while it is halted (SM_*[0] -- the per-SM registers are
+    // register arrays indexed by state machine) ---
+
+    // Slow the state machine right down so the toggle is visible: clk_sys/65535.
+    PIO0.SM_CLKDIV[0].INT = 65535u32;
+    PIO0.SM_CLKDIV[0].FRAC = 0u32;
+
+    // SET drives exactly one pin, based at GPIO25.
+    PIO0.SM_PINCTRL[0].SET_BASE = LED_PIN;
+    PIO0.SM_PINCTRL[0].SET_COUNT = 1u32;
+
+    // Wrap the 6-instruction program [0..5] back to the top.
+    PIO0.SM_EXECCTRL[0].WRAP_BOTTOM = 0u32;
+    PIO0.SM_EXECCTRL[0].WRAP_TOP = 5u32;
+
+    // Load the program. INSTR_MEM is a 32-entry register array (stride 4), so
+    // each slot is reached as INSTR_MEM[i] -- a volatile store to base+0x48+4*i.
+    PIO0.INSTR_MEM[0] = PROG0;
+    PIO0.INSTR_MEM[1] = PROG1;
+    PIO0.INSTR_MEM[2] = PROG2;
+    PIO0.INSTR_MEM[3] = PROG3;
+    PIO0.INSTR_MEM[4] = PROG4;
+    PIO0.INSTR_MEM[5] = PROG5;
+
+    // Make the pin an output from PIO's side: a write to SM_INSTR[0] executes
+    // immediately while the SM is disabled.
+    PIO0.SM_INSTR[0] = SET_PINDIRS_1;
+
+    // Force PC to the program start, then enable SM0. Writing the whole CTRL
+    // register (rather than the SM_ENABLE field) avoids a read-modify-write
+    // over the write-only pulse fields (SM_RESTART, CLKDIV_RESTART, ...).
+    PIO0.SM_INSTR[0] = JMP_ZERO;
+    PIO0.CTRL = 1u32;            // SM_ENABLE bit0 -> SM0
+}
+
+fn main() @context(thread) {
+    pio_blink_init();
+    // SM0 now drives GPIO25 on its own clock; the CPU has nothing left to do.
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

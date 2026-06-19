@@ -111,6 +111,11 @@ pub struct Parser<'a> {
     /// `parse_program` so they flow through the normal top-level enum pipeline
     /// (resolver/checker/codegen unchanged).
     synth_enums: Vec<EnumDef>,
+    /// Top-level consts synthesized from `pio NAME { .. }` blocks: the encoded
+    /// `NAME_PROGRAM: [u16; N]` array and its metadata (`NAME_WRAP`, etc.).
+    /// Drained into `Program.items` in `parse_program`, exactly like
+    /// `synth_enums`, so the block never reaches the checker or codegen.
+    synth_consts: Vec<ConstDef>,
 }
 
 /// Maximum nesting depth for expressions, types, and blocks combined. Chosen to
@@ -166,6 +171,7 @@ impl<'a> Parser<'a> {
             depth_error_emitted: false,
             wrap_spans: Vec::new(),
             synth_enums: Vec::new(),
+            synth_consts: Vec::new(),
         }
     }
 
@@ -211,6 +217,13 @@ impl<'a> Parser<'a> {
             std::mem::take(&mut self.synth_enums)
                 .into_iter()
                 .map(Item::EnumDef),
+        );
+        // Consts synthesized from `pio { }` blocks, appended as ordinary
+        // top-level items (same rationale as the enums above).
+        items.extend(
+            std::mem::take(&mut self.synth_consts)
+                .into_iter()
+                .map(Item::ConstDef),
         );
         Program {
             items,
@@ -340,6 +353,7 @@ impl<'a> Parser<'a> {
                 let (cond, span) = self.parse_paren_cond("comptime_assert")?;
                 Some(Item::ComptimeAssert(ComptimeAssert { cond, span }))
             }
+            TokenKind::PioBody(..) => self.parse_pio_block(exported),
             _ => {
                 self.diags.error(
                     format!("expected item, found `{:?}`", self.peek_kind()),
@@ -373,6 +387,87 @@ impl<'a> Parser<'a> {
             return Some(set_exported(item));
         }
         Some(item)
+    }
+
+    /// `pio NAME { ...PIO asm... }` -- assemble the body to instruction words
+    /// and desugar to top-level consts. Returns `NAME_PROGRAM: [u16; N]` as the
+    /// item; the metadata consts (`NAME_WRAP_TARGET`, `NAME_WRAP`,
+    /// `NAME_SIDESET_COUNT`, `NAME_SIDESET_OPT`, `NAME_ORIGIN`) are pushed onto
+    /// `synth_consts`. Everything flows through the ordinary const pipeline, so
+    /// nothing past the parser knows PIO exists (same discipline as inline
+    /// field enums and `peripheral_type`).
+    fn parse_pio_block(&mut self, exported: bool) -> Option<Item> {
+        let span = self.peek_span();
+        let (name, body) = match self.peek_kind() {
+            TokenKind::PioBody(n, b) => (n.clone(), b.clone()),
+            _ => return None,
+        };
+        self.advance();
+
+        let asm = match pio_encode::assemble(&name, &body) {
+            Ok(a) => a,
+            Err(errors) => {
+                for e in errors {
+                    self.diags.error(
+                        format!("in pio program `{name}`: {}", e.msg),
+                        "E114",
+                        span,
+                    );
+                }
+                return None;
+            }
+        };
+
+        let u16_ty = TypeExpr::Named(("u16".to_string(), span));
+        let u32_ty = || TypeExpr::Named(("u32".to_string(), span));
+
+        // Each synthesized const needs a DISTINCT name span: the import-merge
+        // dedups items by their definition span (`push_unique`/`item_def_span`,
+        // for diamond imports), so consts sharing the block span would collapse
+        // to one. Distinct 1-byte spans within the block keep all of them.
+        let name_span =
+            |k: usize| Span::new(span.file, span.start + k, span.start + k + 1);
+
+        // NAME_PROGRAM: [u16; N] = [w0, w1, ...] -- the instruction words.
+        let elems: Vec<Expr> = asm
+            .words
+            .iter()
+            .map(|&w| Expr::IntLiteral(u64::from(w), IntSuffix::U16, span))
+            .collect();
+        let n = elems.len() as u64;
+        let program = ConstDef {
+            // the `export` modifier (if any) is applied to this returned item by
+            // the caller via `set_exported`.
+            exported: false,
+            name: (format!("{name}_PROGRAM"), name_span(0)),
+            ty: TypeExpr::Array(
+                Box::new(u16_ty),
+                Box::new(Expr::IntLiteral(n, IntSuffix::None, span)),
+            ),
+            value: Expr::ArrayInit(elems, span),
+        };
+
+        // Metadata consts (u32, friction-free with the u32 register fields the
+        // loader writes). ORIGIN is 0xFFFF_FFFF when the program is relocatable
+        // (no `.origin`).
+        let origin = asm.origin.map_or(0xFFFF_FFFFu64, u64::from);
+        let meta: [(&str, u64); 5] = [
+            ("WRAP_TARGET", u64::from(asm.wrap_target)),
+            ("WRAP", u64::from(asm.wrap)),
+            ("SIDESET_COUNT", u64::from(asm.side_set_count)),
+            ("SIDESET_OPT", u64::from(asm.side_set_opt)),
+            ("ORIGIN", origin),
+        ];
+        for (k, (suffix, val)) in meta.into_iter().enumerate() {
+            self.synth_consts.push(ConstDef {
+                exported,
+                name: (format!("{name}_{suffix}"), name_span(k + 1)),
+                ty: u32_ty(),
+                value: Expr::IntLiteral(val, IntSuffix::None, span),
+            });
+        }
+
+        Some(Item::ConstDef(program))
     }
 
     /// Parse `( expr ) ;` for a keyword form whose keyword has been peeked but
@@ -1067,8 +1162,50 @@ impl<'a> Parser<'a> {
     fn parse_reg_def(&mut self) -> Option<RegDef> {
         self.expect(&TokenKind::Reg, "expected `reg`").ok()?;
         let name = self.parse_ident()?;
+
+        // Optional register-array length: `reg NAME[len] ...`. The matching
+        // `stride S` after the offset is then required (a register array with no
+        // stride is meaningless).
+        let array_len = if self.eat(&TokenKind::LBracket) {
+            let n = self.parse_int_literal()?;
+            self.expect(&TokenKind::RBracket, "expected `]`").ok()?;
+            Some(n)
+        } else {
+            None
+        };
+
         self.expect(&TokenKind::Offset, "expected `offset`").ok()?;
         let offset = self.parse_int_literal()?;
+
+        // Optional `stride S` (contextual keyword, like `view T stride K`).
+        let stride = if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "stride") {
+            self.advance();
+            Some(self.parse_int_literal()?)
+        } else {
+            None
+        };
+
+        let array = match (array_len, stride) {
+            (Some(len), Some(stride)) => Some(crate::ast::RegArray { len, stride }),
+            (Some(_), None) => {
+                self.diags.error(
+                    "register array `reg NAME[N]` needs a `stride S` after the offset",
+                    "E116",
+                    name.1,
+                );
+                None
+            }
+            (None, Some(_)) => {
+                self.diags.error(
+                    "`stride` is only valid on a register array `reg NAME[N]`",
+                    "E116",
+                    name.1,
+                );
+                None
+            }
+            (None, None) => None,
+        };
+
         self.expect(&TokenKind::LBrace, "expected `{`").ok()?;
 
         let mut fields = Vec::new();
@@ -1086,6 +1223,7 @@ impl<'a> Parser<'a> {
             name,
             offset,
             fields,
+            array,
         })
     }
 
@@ -2317,7 +2455,7 @@ pub(crate) fn expr_to_lvalue(expr: Expr) -> Option<LValue> {
 #[cfg(test)]
 mod tests {
     use super::Parser;
-    use crate::ast::{BinaryOp, Expr, UnaryOp};
+    use crate::ast::{BinaryOp, ConstDef, Expr, Item, UnaryOp};
     use crate::errors::DiagnosticBag;
     use crate::source::FileId;
 
@@ -2427,5 +2565,69 @@ mod tests {
             2,
             "one span per wrap operation (compound + binary)"
         );
+    }
+
+    // A `pio { }` block desugars to `NAME_PROGRAM: [u16; N]` plus metadata
+    // consts; the encoded words match the M1 hand-encoded blink exactly.
+    #[test]
+    fn pio_block_desugars_to_program_and_metadata() {
+        let mut diags = DiagnosticBag::new();
+        let src = "
+            pio blink {
+            .wrap_target
+                set pins, 1
+                set x, 31
+            on:
+                jmp x--, on [31]
+                set pins, 0
+                set x, 31
+            off:
+                jmp x--, off [31]
+            .wrap
+            }
+        ";
+        let program = Parser::new(src, FileId::new(), &mut diags).parse_program();
+        assert!(!diags.has_errors(), "unexpected parse errors");
+
+        let consts: std::collections::HashMap<String, &ConstDef> = program
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::ConstDef(c) => Some((c.name.0.clone(), c)),
+                _ => None,
+            })
+            .collect();
+
+        let program_const = consts.get("blink_PROGRAM").expect("blink_PROGRAM exists");
+        let Expr::ArrayInit(elems, _) = &program_const.value else {
+            panic!("blink_PROGRAM is not an array init");
+        };
+        let words: Vec<u64> = elems
+            .iter()
+            .map(|e| match e {
+                Expr::IntLiteral(v, _, _) => *v,
+                _ => panic!("non-literal program word"),
+            })
+            .collect();
+        assert_eq!(words, vec![0xE001, 0xE03F, 0x1F42, 0xE000, 0xE03F, 0x1F45]);
+
+        let meta = |name: &str| match &consts.get(name).expect("metadata const").value {
+            Expr::IntLiteral(v, _, _) => *v,
+            _ => panic!("metadata is not a literal"),
+        };
+        assert_eq!(meta("blink_WRAP_TARGET"), 0);
+        assert_eq!(meta("blink_WRAP"), 5);
+        assert_eq!(meta("blink_SIDESET_COUNT"), 0);
+        assert_eq!(meta("blink_ORIGIN"), 0xFFFF_FFFF); // relocatable
+    }
+
+    // A PIO assembly error inside the block surfaces as a bml diagnostic rather
+    // than silently producing a wrong program.
+    #[test]
+    fn pio_block_syntax_error_is_reported() {
+        let mut diags = DiagnosticBag::new();
+        let src = "pio bad { set pins, 99 }"; // SET value out of range 0..31
+        let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
+        assert!(diags.has_errors(), "an invalid pio program must report an error");
     }
 }

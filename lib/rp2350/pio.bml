@@ -82,37 +82,15 @@ peripheral_type PIO {
         field RX0: u32 bit[4..7] readonly
         field TX0: u32 bit[0..3] readonly
     }
-    // Direct write access to the TX FIFO for this state machine. Each write pushes one word to the FIFO. Attempting to write to a full FIFO has no effect on the FIFO state or contents, and sets the sticky FDEBUG_TXOVER error flag for this FIFO.
-    reg TXF0 offset 0x10 {
-        field TXF0: u32 bit[0..31] writeonly
+    // Direct write access to the TX FIFO, per state machine: TXF[sm]. Each write
+    // pushes one word; writing a full FIFO drops the data and sets FDEBUG_TXOVER.
+    reg TXF[4] offset 0x10 stride 0x4 {
+        field TXF: u32 bit[0..31] writeonly
     }
-    // Direct write access to the TX FIFO for this state machine. Each write pushes one word to the FIFO. Attempting to write to a full FIFO has no effect on the FIFO state or contents, and sets the sticky FDEBUG_TXOVER error flag for this FIFO.
-    reg TXF1 offset 0x14 {
-        field TXF1: u32 bit[0..31] writeonly
-    }
-    // Direct write access to the TX FIFO for this state machine. Each write pushes one word to the FIFO. Attempting to write to a full FIFO has no effect on the FIFO state or contents, and sets the sticky FDEBUG_TXOVER error flag for this FIFO.
-    reg TXF2 offset 0x18 {
-        field TXF2: u32 bit[0..31] writeonly
-    }
-    // Direct write access to the TX FIFO for this state machine. Each write pushes one word to the FIFO. Attempting to write to a full FIFO has no effect on the FIFO state or contents, and sets the sticky FDEBUG_TXOVER error flag for this FIFO.
-    reg TXF3 offset 0x1C {
-        field TXF3: u32 bit[0..31] writeonly
-    }
-    // Direct read access to the RX FIFO for this state machine. Each read pops one word from the FIFO. Attempting to read from an empty FIFO has no effect on the FIFO state, and sets the sticky FDEBUG_RXUNDER error flag for this FIFO. The data returned to the system on a read from an empty FIFO is undefined.
-    reg RXF0 offset 0x20 {
-        field RXF0: u32 bit[0..31] readonly
-    }
-    // Direct read access to the RX FIFO for this state machine. Each read pops one word from the FIFO. Attempting to read from an empty FIFO has no effect on the FIFO state, and sets the sticky FDEBUG_RXUNDER error flag for this FIFO. The data returned to the system on a read from an empty FIFO is undefined.
-    reg RXF1 offset 0x24 {
-        field RXF1: u32 bit[0..31] readonly
-    }
-    // Direct read access to the RX FIFO for this state machine. Each read pops one word from the FIFO. Attempting to read from an empty FIFO has no effect on the FIFO state, and sets the sticky FDEBUG_RXUNDER error flag for this FIFO. The data returned to the system on a read from an empty FIFO is undefined.
-    reg RXF2 offset 0x28 {
-        field RXF2: u32 bit[0..31] readonly
-    }
-    // Direct read access to the RX FIFO for this state machine. Each read pops one word from the FIFO. Attempting to read from an empty FIFO has no effect on the FIFO state, and sets the sticky FDEBUG_RXUNDER error flag for this FIFO. The data returned to the system on a read from an empty FIFO is undefined.
-    reg RXF3 offset 0x2C {
-        field RXF3: u32 bit[0..31] readonly
+    // Direct read access to the RX FIFO, per state machine: RXF[sm]. Each read
+    // pops one word; reading an empty FIFO sets FDEBUG_RXUNDER and returns junk.
+    reg RXF[4] offset 0x20 stride 0x4 {
+        field RXF: u32 bit[0..31] readonly
     }
     // State machine IRQ flags register. Write 1 to clear. There are eight state machine IRQ flags, which can be set, cleared, and waited on by the state machines. There's no fixed association between flags and state machines -- any state machine can use any flag.
     reg IRQ offset 0x30 {
@@ -141,337 +119,59 @@ peripheral_type PIO {
         field SM_COUNT: u32 bit[8..11] readonly  // The number of state machines this PIO instance is equipped with.
         field FIFO_DEPTH: u32 bit[0..5] readonly  // The depth of the state machine TX/RX FIFOs, measured in words. 
     }
-    // Write-only access to instruction memory location 0
-    reg INSTR_MEM0 offset 0x48 {
-        field INSTR_MEM0: u32 bit[0..15] writeonly
+    // Write-only access to instruction memory (32 slots x 16 bits), shared by
+    // all four state machines. Reach a slot as INSTR_MEM[i]; the host widens
+    // each 16-bit instruction into the 32-bit register (top half ignored).
+    reg INSTR_MEM[32] offset 0x48 stride 0x4 {
+        field INSTR_MEM: u32 bit[0..15] writeonly
     }
-    // Write-only access to instruction memory location 1
-    reg INSTR_MEM1 offset 0x4C {
-        field INSTR_MEM1: u32 bit[0..15] writeonly
+    // Per-state-machine register groups. The four SMs' registers interleave at
+    // stride 0x18 (SM0 at 0xC8, SM1 0xE0, SM2 0xF8, SM3 0x110), so each one is a
+    // register array indexed by state machine: SM_CLKDIV[sm], SM_PINCTRL[sm], ...
+    reg SM_CLKDIV[4] offset 0xC8 stride 0x18 {
+        field INT: u32 bit[16..31]   // freq = sysclk / (INT + FRAC/256)
+        field FRAC: u32 bit[8..15]
     }
-    // Write-only access to instruction memory location 2
-    reg INSTR_MEM2 offset 0x50 {
-        field INSTR_MEM2: u32 bit[0..15] writeonly
+    reg SM_EXECCTRL[4] offset 0xCC stride 0x18 {
+        field EXEC_STALLED: b1 bit[31] readonly
+        field SIDE_EN: b1 bit[30]
+        field SIDE_PINDIR: b1 bit[29]
+        field JMP_PIN: u32 bit[24..28]
+        field OUT_EN_SEL: u32 bit[19..23]
+        field INLINE_OUT_EN: b1 bit[18]
+        field OUT_STICKY: b1 bit[17]
+        field WRAP_TOP: u32 bit[12..16]
+        field WRAP_BOTTOM: u32 bit[7..11]
+        field STATUS_SEL: SM0_EXECCTRL_STATUS_SEL bit[5..6]
+        field STATUS_N: SM0_EXECCTRL_STATUS_N bit[0..4]
     }
-    // Write-only access to instruction memory location 3
-    reg INSTR_MEM3 offset 0x54 {
-        field INSTR_MEM3: u32 bit[0..15] writeonly
+    reg SM_SHIFTCTRL[4] offset 0xD0 stride 0x18 {
+        field FJOIN_RX: b1 bit[31]
+        field FJOIN_TX: b1 bit[30]
+        field PULL_THRESH: u32 bit[25..29]
+        field PUSH_THRESH: u32 bit[20..24]
+        field OUT_SHIFTDIR: b1 bit[19]
+        field IN_SHIFTDIR: b1 bit[18]
+        field AUTOPULL: b1 bit[17]
+        field AUTOPUSH: b1 bit[16]
+        field FJOIN_RX_PUT: b1 bit[15]
+        field FJOIN_RX_GET: b1 bit[14]
+        field IN_COUNT: u32 bit[0..4]
     }
-    // Write-only access to instruction memory location 4
-    reg INSTR_MEM4 offset 0x58 {
-        field INSTR_MEM4: u32 bit[0..15] writeonly
+    reg SM_ADDR[4] offset 0xD4 stride 0x18 {
+        field ADDR: u32 bit[0..4] readonly   // current PC
     }
-    // Write-only access to instruction memory location 5
-    reg INSTR_MEM5 offset 0x5C {
-        field INSTR_MEM5: u32 bit[0..15] writeonly
+    reg SM_INSTR[4] offset 0xD8 stride 0x18 {
+        field INSTR: u32 bit[0..15]          // write = execute immediately
     }
-    // Write-only access to instruction memory location 6
-    reg INSTR_MEM6 offset 0x60 {
-        field INSTR_MEM6: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 7
-    reg INSTR_MEM7 offset 0x64 {
-        field INSTR_MEM7: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 8
-    reg INSTR_MEM8 offset 0x68 {
-        field INSTR_MEM8: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 9
-    reg INSTR_MEM9 offset 0x6C {
-        field INSTR_MEM9: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 10
-    reg INSTR_MEM10 offset 0x70 {
-        field INSTR_MEM10: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 11
-    reg INSTR_MEM11 offset 0x74 {
-        field INSTR_MEM11: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 12
-    reg INSTR_MEM12 offset 0x78 {
-        field INSTR_MEM12: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 13
-    reg INSTR_MEM13 offset 0x7C {
-        field INSTR_MEM13: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 14
-    reg INSTR_MEM14 offset 0x80 {
-        field INSTR_MEM14: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 15
-    reg INSTR_MEM15 offset 0x84 {
-        field INSTR_MEM15: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 16
-    reg INSTR_MEM16 offset 0x88 {
-        field INSTR_MEM16: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 17
-    reg INSTR_MEM17 offset 0x8C {
-        field INSTR_MEM17: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 18
-    reg INSTR_MEM18 offset 0x90 {
-        field INSTR_MEM18: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 19
-    reg INSTR_MEM19 offset 0x94 {
-        field INSTR_MEM19: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 20
-    reg INSTR_MEM20 offset 0x98 {
-        field INSTR_MEM20: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 21
-    reg INSTR_MEM21 offset 0x9C {
-        field INSTR_MEM21: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 22
-    reg INSTR_MEM22 offset 0xA0 {
-        field INSTR_MEM22: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 23
-    reg INSTR_MEM23 offset 0xA4 {
-        field INSTR_MEM23: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 24
-    reg INSTR_MEM24 offset 0xA8 {
-        field INSTR_MEM24: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 25
-    reg INSTR_MEM25 offset 0xAC {
-        field INSTR_MEM25: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 26
-    reg INSTR_MEM26 offset 0xB0 {
-        field INSTR_MEM26: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 27
-    reg INSTR_MEM27 offset 0xB4 {
-        field INSTR_MEM27: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 28
-    reg INSTR_MEM28 offset 0xB8 {
-        field INSTR_MEM28: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 29
-    reg INSTR_MEM29 offset 0xBC {
-        field INSTR_MEM29: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 30
-    reg INSTR_MEM30 offset 0xC0 {
-        field INSTR_MEM30: u32 bit[0..15] writeonly
-    }
-    // Write-only access to instruction memory location 31
-    reg INSTR_MEM31 offset 0xC4 {
-        field INSTR_MEM31: u32 bit[0..15] writeonly
-    }
-    // Clock divisor register for state machine 0 
-    reg SM0_CLKDIV offset 0xC8 {
-        field INT: u32 bit[16..31]  // Effective frequency is sysclk/(int + frac/256). 
-        field FRAC: u32 bit[8..15]  // Fractional part of clock divisor
-    }
-    // Execution/behavioural settings for state machine 0
-    reg SM0_EXECCTRL offset 0xCC {
-        field EXEC_STALLED: b1 bit[31] readonly  // If 1, an instruction written to SMx_INSTR is stalled, and latched by the state machine. Will clear to 0 once this instruction completes.
-        field SIDE_EN: b1 bit[30]  // If 1, the MSB of the Delay/Side-set instruction field is used as side-set enable, rather than a side-set data bit. This allows instructions to perform side-set optionally, rather than on every instruction, but the maximum possible side-set width is reduced from 5 to 4. Note that the value of PINCTRL_SIDESET_COUNT is inclusive of this enable bit.
-        field SIDE_PINDIR: b1 bit[29]  // If 1, side-set data is asserted to pin directions, instead of pin values
-        field JMP_PIN: u32 bit[24..28]  // The GPIO number to use as condition for JMP PIN. Unaffected by input mapping.
-        field OUT_EN_SEL: u32 bit[19..23]  // Which data bit to use for inline OUT enable
-        field INLINE_OUT_EN: b1 bit[18]  // If 1, use a bit of OUT data as an auxiliary write enable 
-        field OUT_STICKY: b1 bit[17]  // Continuously assert the most recent OUT/SET to the pins
-        field WRAP_TOP: u32 bit[12..16]  // After reaching this address, execution is wrapped to wrap_bottom. 
-        field WRAP_BOTTOM: u32 bit[7..11]  // After reaching wrap_top, execution is wrapped to this address.
-        field STATUS_SEL: SM0_EXECCTRL_STATUS_SEL bit[5..6]  // Comparison used for the MOV x, STATUS instruction.
-        field STATUS_N: SM0_EXECCTRL_STATUS_N bit[0..4]  // Comparison level or IRQ index for the MOV x, STATUS instruction.
-    }
-    // Control behaviour of the input/output shift registers for state machine 0
-    reg SM0_SHIFTCTRL offset 0xD0 {
-        field FJOIN_RX: b1 bit[31]  // When 1, RX FIFO steals the TX FIFO's storage, and becomes twice as deep. 
-        field FJOIN_TX: b1 bit[30]  // When 1, TX FIFO steals the RX FIFO's storage, and becomes twice as deep. 
-        field PULL_THRESH: u32 bit[25..29]  // Number of bits shifted out of OSR before autopull, or conditional pull (PULL IFEMPTY), will take place. 
-        field PUSH_THRESH: u32 bit[20..24]  // Number of bits shifted into ISR before autopush, or conditional push (PUSH IFFULL), will take place. 
-        field OUT_SHIFTDIR: b1 bit[19]  // 1 = shift out of output shift register to right. 0 = to left.
-        field IN_SHIFTDIR: b1 bit[18]  // 1 = shift input shift register to right (data enters from left). 0 = to left.
-        field AUTOPULL: b1 bit[17]  // Pull automatically when the output shift register is emptied, i.e. on or following an OUT instruction which causes the output shift counter to reach or exceed PULL_THRESH.
-        field AUTOPUSH: b1 bit[16]  // Push automatically when the input shift register is filled, i.e. on an IN instruction which causes the input shift counter to reach or exceed PUSH_THRESH.
-        field FJOIN_RX_PUT: b1 bit[15]  // If 1, disable this state machine's RX FIFO, make its storage available for random write access by the state machine (using the `put` instruction) and, unless FJOIN_RX_GET is also set, random read access by the processor (through the RXFx_PUTGETy registers).
-        field FJOIN_RX_GET: b1 bit[14]  // If 1, disable this state machine's RX FIFO, make its storage available for random read access by the state machine (using the `get` instruction) and, unless FJOIN_RX_PUT is also set, random write access by the processor (through the RXFx_PUTGETy registers).
-        field IN_COUNT: u32 bit[0..4]  // Set the number of pins which are not masked to 0 when read by an IN PINS, WAIT PIN or MOV x, PINS instruction.
-    }
-    // Current instruction address of state machine 0
-    reg SM0_ADDR offset 0xD4 {
-        field SM0_ADDR: u32 bit[0..4] readonly
-    }
-    // Read to see the instruction currently addressed by state machine 0's program counter 
-    reg SM0_INSTR offset 0xD8 {
-        field SM0_INSTR: u32 bit[0..15]
-    }
-    // State machine pin control
-    reg SM0_PINCTRL offset 0xDC {
-        field SIDESET_COUNT: u32 bit[29..31]  // The number of MSBs of the Delay/Side-set instruction field which are used for side-set. Inclusive of the enable bit, if present. Minimum of 0 (all delay bits, no side-set) and maximum of 5 (all side-set, no delay).
-        field SET_COUNT: u32 bit[26..28]  // The number of pins asserted by a SET. In the range 0 to 5 inclusive.
-        field OUT_COUNT: u32 bit[20..25]  // The number of pins asserted by an OUT PINS, OUT PINDIRS or MOV PINS instruction. In the range 0 to 32 inclusive.
-        field IN_BASE: u32 bit[15..19]  // The pin which is mapped to the least-significant bit of a state machine's IN data bus. Higher-numbered pins are mapped to consecutively more-significant data bits, with a modulo of 32 applied to pin number.
-        field SIDESET_BASE: u32 bit[10..14]  // The lowest-numbered pin that will be affected by a side-set operation. The MSBs of an instruction's side-set/delay field (up to 5, determined by SIDESET_COUNT) are used for side-set data, with the remaining LSBs used for delay. The least-significant bit of the side-set portion is the bit written to this pin, with more-significant bits written to higher-numbered pins.
-        field SET_BASE: u32 bit[5..9]  // The lowest-numbered pin that will be affected by a SET PINS or SET PINDIRS instruction. The data written to this pin is the least-significant bit of the SET data.
-        field OUT_BASE: u32 bit[0..4]  // The lowest-numbered pin that will be affected by an OUT PINS, OUT PINDIRS or MOV PINS instruction. The data written to this pin will always be the least-significant bit of the OUT or MOV data.
-    }
-    // Clock divisor register for state machine 1 
-    reg SM1_CLKDIV offset 0xE0 {
-        field INT: u32 bit[16..31]  // Effective frequency is sysclk/(int + frac/256). 
-        field FRAC: u32 bit[8..15]  // Fractional part of clock divisor
-    }
-    // Execution/behavioural settings for state machine 1
-    reg SM1_EXECCTRL offset 0xE4 {
-        field EXEC_STALLED: b1 bit[31] readonly  // If 1, an instruction written to SMx_INSTR is stalled, and latched by the state machine. Will clear to 0 once this instruction completes.
-        field SIDE_EN: b1 bit[30]  // If 1, the MSB of the Delay/Side-set instruction field is used as side-set enable, rather than a side-set data bit. This allows instructions to perform side-set optionally, rather than on every instruction, but the maximum possible side-set width is reduced from 5 to 4. Note that the value of PINCTRL_SIDESET_COUNT is inclusive of this enable bit.
-        field SIDE_PINDIR: b1 bit[29]  // If 1, side-set data is asserted to pin directions, instead of pin values
-        field JMP_PIN: u32 bit[24..28]  // The GPIO number to use as condition for JMP PIN. Unaffected by input mapping.
-        field OUT_EN_SEL: u32 bit[19..23]  // Which data bit to use for inline OUT enable
-        field INLINE_OUT_EN: b1 bit[18]  // If 1, use a bit of OUT data as an auxiliary write enable 
-        field OUT_STICKY: b1 bit[17]  // Continuously assert the most recent OUT/SET to the pins
-        field WRAP_TOP: u32 bit[12..16]  // After reaching this address, execution is wrapped to wrap_bottom. 
-        field WRAP_BOTTOM: u32 bit[7..11]  // After reaching wrap_top, execution is wrapped to this address.
-        field STATUS_SEL: SM0_EXECCTRL_STATUS_SEL bit[5..6]  // Comparison used for the MOV x, STATUS instruction.
-        field STATUS_N: SM0_EXECCTRL_STATUS_N bit[0..4]  // Comparison level or IRQ index for the MOV x, STATUS instruction.
-    }
-    // Control behaviour of the input/output shift registers for state machine 1
-    reg SM1_SHIFTCTRL offset 0xE8 {
-        field FJOIN_RX: b1 bit[31]  // When 1, RX FIFO steals the TX FIFO's storage, and becomes twice as deep. 
-        field FJOIN_TX: b1 bit[30]  // When 1, TX FIFO steals the RX FIFO's storage, and becomes twice as deep. 
-        field PULL_THRESH: u32 bit[25..29]  // Number of bits shifted out of OSR before autopull, or conditional pull (PULL IFEMPTY), will take place. 
-        field PUSH_THRESH: u32 bit[20..24]  // Number of bits shifted into ISR before autopush, or conditional push (PUSH IFFULL), will take place. 
-        field OUT_SHIFTDIR: b1 bit[19]  // 1 = shift out of output shift register to right. 0 = to left.
-        field IN_SHIFTDIR: b1 bit[18]  // 1 = shift input shift register to right (data enters from left). 0 = to left.
-        field AUTOPULL: b1 bit[17]  // Pull automatically when the output shift register is emptied, i.e. on or following an OUT instruction which causes the output shift counter to reach or exceed PULL_THRESH.
-        field AUTOPUSH: b1 bit[16]  // Push automatically when the input shift register is filled, i.e. on an IN instruction which causes the input shift counter to reach or exceed PUSH_THRESH.
-        field FJOIN_RX_PUT: b1 bit[15]  // If 1, disable this state machine's RX FIFO, make its storage available for random write access by the state machine (using the `put` instruction) and, unless FJOIN_RX_GET is also set, random read access by the processor (through the RXFx_PUTGETy registers).
-        field FJOIN_RX_GET: b1 bit[14]  // If 1, disable this state machine's RX FIFO, make its storage available for random read access by the state machine (using the `get` instruction) and, unless FJOIN_RX_PUT is also set, random write access by the processor (through the RXFx_PUTGETy registers).
-        field IN_COUNT: u32 bit[0..4]  // Set the number of pins which are not masked to 0 when read by an IN PINS, WAIT PIN or MOV x, PINS instruction.
-    }
-    // Current instruction address of state machine 1
-    reg SM1_ADDR offset 0xEC {
-        field SM1_ADDR: u32 bit[0..4] readonly
-    }
-    // Read to see the instruction currently addressed by state machine 1's program counter 
-    reg SM1_INSTR offset 0xF0 {
-        field SM1_INSTR: u32 bit[0..15]
-    }
-    // State machine pin control
-    reg SM1_PINCTRL offset 0xF4 {
-        field SIDESET_COUNT: u32 bit[29..31]  // The number of MSBs of the Delay/Side-set instruction field which are used for side-set. Inclusive of the enable bit, if present. Minimum of 0 (all delay bits, no side-set) and maximum of 5 (all side-set, no delay).
-        field SET_COUNT: u32 bit[26..28]  // The number of pins asserted by a SET. In the range 0 to 5 inclusive.
-        field OUT_COUNT: u32 bit[20..25]  // The number of pins asserted by an OUT PINS, OUT PINDIRS or MOV PINS instruction. In the range 0 to 32 inclusive.
-        field IN_BASE: u32 bit[15..19]  // The pin which is mapped to the least-significant bit of a state machine's IN data bus. Higher-numbered pins are mapped to consecutively more-significant data bits, with a modulo of 32 applied to pin number.
-        field SIDESET_BASE: u32 bit[10..14]  // The lowest-numbered pin that will be affected by a side-set operation. The MSBs of an instruction's side-set/delay field (up to 5, determined by SIDESET_COUNT) are used for side-set data, with the remaining LSBs used for delay. The least-significant bit of the side-set portion is the bit written to this pin, with more-significant bits written to higher-numbered pins.
-        field SET_BASE: u32 bit[5..9]  // The lowest-numbered pin that will be affected by a SET PINS or SET PINDIRS instruction. The data written to this pin is the least-significant bit of the SET data.
-        field OUT_BASE: u32 bit[0..4]  // The lowest-numbered pin that will be affected by an OUT PINS, OUT PINDIRS or MOV PINS instruction. The data written to this pin will always be the least-significant bit of the OUT or MOV data.
-    }
-    // Clock divisor register for state machine 2 
-    reg SM2_CLKDIV offset 0xF8 {
-        field INT: u32 bit[16..31]  // Effective frequency is sysclk/(int + frac/256). 
-        field FRAC: u32 bit[8..15]  // Fractional part of clock divisor
-    }
-    // Execution/behavioural settings for state machine 2
-    reg SM2_EXECCTRL offset 0xFC {
-        field EXEC_STALLED: b1 bit[31] readonly  // If 1, an instruction written to SMx_INSTR is stalled, and latched by the state machine. Will clear to 0 once this instruction completes.
-        field SIDE_EN: b1 bit[30]  // If 1, the MSB of the Delay/Side-set instruction field is used as side-set enable, rather than a side-set data bit. This allows instructions to perform side-set optionally, rather than on every instruction, but the maximum possible side-set width is reduced from 5 to 4. Note that the value of PINCTRL_SIDESET_COUNT is inclusive of this enable bit.
-        field SIDE_PINDIR: b1 bit[29]  // If 1, side-set data is asserted to pin directions, instead of pin values
-        field JMP_PIN: u32 bit[24..28]  // The GPIO number to use as condition for JMP PIN. Unaffected by input mapping.
-        field OUT_EN_SEL: u32 bit[19..23]  // Which data bit to use for inline OUT enable
-        field INLINE_OUT_EN: b1 bit[18]  // If 1, use a bit of OUT data as an auxiliary write enable 
-        field OUT_STICKY: b1 bit[17]  // Continuously assert the most recent OUT/SET to the pins
-        field WRAP_TOP: u32 bit[12..16]  // After reaching this address, execution is wrapped to wrap_bottom. 
-        field WRAP_BOTTOM: u32 bit[7..11]  // After reaching wrap_top, execution is wrapped to this address.
-        field STATUS_SEL: SM0_EXECCTRL_STATUS_SEL bit[5..6]  // Comparison used for the MOV x, STATUS instruction.
-        field STATUS_N: SM0_EXECCTRL_STATUS_N bit[0..4]  // Comparison level or IRQ index for the MOV x, STATUS instruction.
-    }
-    // Control behaviour of the input/output shift registers for state machine 2
-    reg SM2_SHIFTCTRL offset 0x100 {
-        field FJOIN_RX: b1 bit[31]  // When 1, RX FIFO steals the TX FIFO's storage, and becomes twice as deep. 
-        field FJOIN_TX: b1 bit[30]  // When 1, TX FIFO steals the RX FIFO's storage, and becomes twice as deep. 
-        field PULL_THRESH: u32 bit[25..29]  // Number of bits shifted out of OSR before autopull, or conditional pull (PULL IFEMPTY), will take place. 
-        field PUSH_THRESH: u32 bit[20..24]  // Number of bits shifted into ISR before autopush, or conditional push (PUSH IFFULL), will take place. 
-        field OUT_SHIFTDIR: b1 bit[19]  // 1 = shift out of output shift register to right. 0 = to left.
-        field IN_SHIFTDIR: b1 bit[18]  // 1 = shift input shift register to right (data enters from left). 0 = to left.
-        field AUTOPULL: b1 bit[17]  // Pull automatically when the output shift register is emptied, i.e. on or following an OUT instruction which causes the output shift counter to reach or exceed PULL_THRESH.
-        field AUTOPUSH: b1 bit[16]  // Push automatically when the input shift register is filled, i.e. on an IN instruction which causes the input shift counter to reach or exceed PUSH_THRESH.
-        field FJOIN_RX_PUT: b1 bit[15]  // If 1, disable this state machine's RX FIFO, make its storage available for random write access by the state machine (using the `put` instruction) and, unless FJOIN_RX_GET is also set, random read access by the processor (through the RXFx_PUTGETy registers).
-        field FJOIN_RX_GET: b1 bit[14]  // If 1, disable this state machine's RX FIFO, make its storage available for random read access by the state machine (using the `get` instruction) and, unless FJOIN_RX_PUT is also set, random write access by the processor (through the RXFx_PUTGETy registers).
-        field IN_COUNT: u32 bit[0..4]  // Set the number of pins which are not masked to 0 when read by an IN PINS, WAIT PIN or MOV x, PINS instruction.
-    }
-    // Current instruction address of state machine 2
-    reg SM2_ADDR offset 0x104 {
-        field SM2_ADDR: u32 bit[0..4] readonly
-    }
-    // Read to see the instruction currently addressed by state machine 2's program counter 
-    reg SM2_INSTR offset 0x108 {
-        field SM2_INSTR: u32 bit[0..15]
-    }
-    // State machine pin control
-    reg SM2_PINCTRL offset 0x10C {
-        field SIDESET_COUNT: u32 bit[29..31]  // The number of MSBs of the Delay/Side-set instruction field which are used for side-set. Inclusive of the enable bit, if present. Minimum of 0 (all delay bits, no side-set) and maximum of 5 (all side-set, no delay).
-        field SET_COUNT: u32 bit[26..28]  // The number of pins asserted by a SET. In the range 0 to 5 inclusive.
-        field OUT_COUNT: u32 bit[20..25]  // The number of pins asserted by an OUT PINS, OUT PINDIRS or MOV PINS instruction. In the range 0 to 32 inclusive.
-        field IN_BASE: u32 bit[15..19]  // The pin which is mapped to the least-significant bit of a state machine's IN data bus. Higher-numbered pins are mapped to consecutively more-significant data bits, with a modulo of 32 applied to pin number.
-        field SIDESET_BASE: u32 bit[10..14]  // The lowest-numbered pin that will be affected by a side-set operation. The MSBs of an instruction's side-set/delay field (up to 5, determined by SIDESET_COUNT) are used for side-set data, with the remaining LSBs used for delay. The least-significant bit of the side-set portion is the bit written to this pin, with more-significant bits written to higher-numbered pins.
-        field SET_BASE: u32 bit[5..9]  // The lowest-numbered pin that will be affected by a SET PINS or SET PINDIRS instruction. The data written to this pin is the least-significant bit of the SET data.
-        field OUT_BASE: u32 bit[0..4]  // The lowest-numbered pin that will be affected by an OUT PINS, OUT PINDIRS or MOV PINS instruction. The data written to this pin will always be the least-significant bit of the OUT or MOV data.
-    }
-    // Clock divisor register for state machine 3 
-    reg SM3_CLKDIV offset 0x110 {
-        field INT: u32 bit[16..31]  // Effective frequency is sysclk/(int + frac/256). 
-        field FRAC: u32 bit[8..15]  // Fractional part of clock divisor
-    }
-    // Execution/behavioural settings for state machine 3
-    reg SM3_EXECCTRL offset 0x114 {
-        field EXEC_STALLED: b1 bit[31] readonly  // If 1, an instruction written to SMx_INSTR is stalled, and latched by the state machine. Will clear to 0 once this instruction completes.
-        field SIDE_EN: b1 bit[30]  // If 1, the MSB of the Delay/Side-set instruction field is used as side-set enable, rather than a side-set data bit. This allows instructions to perform side-set optionally, rather than on every instruction, but the maximum possible side-set width is reduced from 5 to 4. Note that the value of PINCTRL_SIDESET_COUNT is inclusive of this enable bit.
-        field SIDE_PINDIR: b1 bit[29]  // If 1, side-set data is asserted to pin directions, instead of pin values
-        field JMP_PIN: u32 bit[24..28]  // The GPIO number to use as condition for JMP PIN. Unaffected by input mapping.
-        field OUT_EN_SEL: u32 bit[19..23]  // Which data bit to use for inline OUT enable
-        field INLINE_OUT_EN: b1 bit[18]  // If 1, use a bit of OUT data as an auxiliary write enable 
-        field OUT_STICKY: b1 bit[17]  // Continuously assert the most recent OUT/SET to the pins
-        field WRAP_TOP: u32 bit[12..16]  // After reaching this address, execution is wrapped to wrap_bottom. 
-        field WRAP_BOTTOM: u32 bit[7..11]  // After reaching wrap_top, execution is wrapped to this address.
-        field STATUS_SEL: SM0_EXECCTRL_STATUS_SEL bit[5..6]  // Comparison used for the MOV x, STATUS instruction.
-        field STATUS_N: SM0_EXECCTRL_STATUS_N bit[0..4]  // Comparison level or IRQ index for the MOV x, STATUS instruction.
-    }
-    // Control behaviour of the input/output shift registers for state machine 3
-    reg SM3_SHIFTCTRL offset 0x118 {
-        field FJOIN_RX: b1 bit[31]  // When 1, RX FIFO steals the TX FIFO's storage, and becomes twice as deep. 
-        field FJOIN_TX: b1 bit[30]  // When 1, TX FIFO steals the RX FIFO's storage, and becomes twice as deep. 
-        field PULL_THRESH: u32 bit[25..29]  // Number of bits shifted out of OSR before autopull, or conditional pull (PULL IFEMPTY), will take place. 
-        field PUSH_THRESH: u32 bit[20..24]  // Number of bits shifted into ISR before autopush, or conditional push (PUSH IFFULL), will take place. 
-        field OUT_SHIFTDIR: b1 bit[19]  // 1 = shift out of output shift register to right. 0 = to left.
-        field IN_SHIFTDIR: b1 bit[18]  // 1 = shift input shift register to right (data enters from left). 0 = to left.
-        field AUTOPULL: b1 bit[17]  // Pull automatically when the output shift register is emptied, i.e. on or following an OUT instruction which causes the output shift counter to reach or exceed PULL_THRESH.
-        field AUTOPUSH: b1 bit[16]  // Push automatically when the input shift register is filled, i.e. on an IN instruction which causes the input shift counter to reach or exceed PUSH_THRESH.
-        field FJOIN_RX_PUT: b1 bit[15]  // If 1, disable this state machine's RX FIFO, make its storage available for random write access by the state machine (using the `put` instruction) and, unless FJOIN_RX_GET is also set, random read access by the processor (through the RXFx_PUTGETy registers).
-        field FJOIN_RX_GET: b1 bit[14]  // If 1, disable this state machine's RX FIFO, make its storage available for random read access by the state machine (using the `get` instruction) and, unless FJOIN_RX_PUT is also set, random write access by the processor (through the RXFx_PUTGETy registers).
-        field IN_COUNT: u32 bit[0..4]  // Set the number of pins which are not masked to 0 when read by an IN PINS, WAIT PIN or MOV x, PINS instruction.
-    }
-    // Current instruction address of state machine 3
-    reg SM3_ADDR offset 0x11C {
-        field SM3_ADDR: u32 bit[0..4] readonly
-    }
-    // Read to see the instruction currently addressed by state machine 3's program counter 
-    reg SM3_INSTR offset 0x120 {
-        field SM3_INSTR: u32 bit[0..15]
-    }
-    // State machine pin control
-    reg SM3_PINCTRL offset 0x124 {
-        field SIDESET_COUNT: u32 bit[29..31]  // The number of MSBs of the Delay/Side-set instruction field which are used for side-set. Inclusive of the enable bit, if present. Minimum of 0 (all delay bits, no side-set) and maximum of 5 (all side-set, no delay).
-        field SET_COUNT: u32 bit[26..28]  // The number of pins asserted by a SET. In the range 0 to 5 inclusive.
-        field OUT_COUNT: u32 bit[20..25]  // The number of pins asserted by an OUT PINS, OUT PINDIRS or MOV PINS instruction. In the range 0 to 32 inclusive.
-        field IN_BASE: u32 bit[15..19]  // The pin which is mapped to the least-significant bit of a state machine's IN data bus. Higher-numbered pins are mapped to consecutively more-significant data bits, with a modulo of 32 applied to pin number.
-        field SIDESET_BASE: u32 bit[10..14]  // The lowest-numbered pin that will be affected by a side-set operation. The MSBs of an instruction's side-set/delay field (up to 5, determined by SIDESET_COUNT) are used for side-set data, with the remaining LSBs used for delay. The least-significant bit of the side-set portion is the bit written to this pin, with more-significant bits written to higher-numbered pins.
-        field SET_BASE: u32 bit[5..9]  // The lowest-numbered pin that will be affected by a SET PINS or SET PINDIRS instruction. The data written to this pin is the least-significant bit of the SET data.
-        field OUT_BASE: u32 bit[0..4]  // The lowest-numbered pin that will be affected by an OUT PINS, OUT PINDIRS or MOV PINS instruction. The data written to this pin will always be the least-significant bit of the OUT or MOV data.
+    reg SM_PINCTRL[4] offset 0xDC stride 0x18 {
+        field SIDESET_COUNT: u32 bit[29..31]
+        field SET_COUNT: u32 bit[26..28]
+        field OUT_COUNT: u32 bit[20..25]
+        field IN_BASE: u32 bit[15..19]
+        field SIDESET_BASE: u32 bit[10..14]
+        field SET_BASE: u32 bit[5..9]
+        field OUT_BASE: u32 bit[0..4]
     }
     // Direct read/write access to entry 0 of SM0's RX FIFO, if SHIFTCTRL_FJOIN_RX_PUT xor SHIFTCTRL_FJOIN_RX_GET is set.
     reg RXF0_PUTGET0 offset 0x128 {

@@ -120,6 +120,9 @@ pub struct RegSymbol {
     pub offset: u64,
     pub access: crate::ast::Access,
     pub fields: HashMap<String, FieldSymbol>,
+    /// `Some((len, stride))` for a register array (`reg NAME[len] ... stride S`):
+    /// reached as `P.NAME[i]` at `base + offset + stride*i`. `None` is scalar.
+    pub array: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +453,7 @@ impl Resolver {
                     offset: reg.offset,
                     access: reg_access,
                     fields,
+                    array: reg.array.as_ref().map(|a| (a.len, a.stride)),
                 },
             );
         }

@@ -1,0 +1,13 @@
+# RP2350 PIO blink -- board/project target.
+#
+# Chip physics come from the shipped lib/rp2350/rp2350.target (resolved via the
+# library search path on dev builds). The only thing this layer adds is the
+# board's external QSPI flash, since the chip itself has none. No regions and no
+# DMA reach: this example uses neither (the chip target's [agent.dma] is declared
+# but simply goes unused).
+include = rp2350/rp2350.target
+
+# 4 MB QSPI flash, memory-mapped through the XIP window.
+[mem.flash]
+base = 0x10000000
+size = 4M

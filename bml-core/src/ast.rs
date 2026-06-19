@@ -629,6 +629,16 @@ pub struct RegDef {
     pub name: Ident,
     pub offset: u64,
     pub fields: Vec<FieldDef>,
+    /// `Some` for a register array: `reg NAME[len] offset O stride S { .. }`.
+    /// The N registers live at `O, O+S, O+2S, ...` and are reached as
+    /// `P.NAME[i]` (volatile MMIO at `base + O + S*i`). `None` is a scalar reg.
+    pub array: Option<RegArray>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RegArray {
+    pub len: u64,
+    pub stride: u64,
 }
 
 #[derive(Debug, Clone)]

@@ -1,0 +1,23 @@
+// Register arrays (M6): `reg NAME[N] offset O stride S` is reached as `P.NAME[i]`
+// -- a volatile MMIO access at `base + O + S*i`, with a runtime or constant index.
+// Composes with the peripheral_type driver param (one body serves any instance).
+peripheral_type FIFO {
+    reg MEM[4] offset 0x10 stride 0x4 { field MEM: u32 bit[0..15] writeonly }
+    reg DATA[4] offset 0x40 stride 0x4 { field DATA: u32 bit[0..31] }
+}
+peripheral FIFO0: FIFO at 0x40000000;
+
+fn load(p: FIFO, n: u32) {
+    var i: u32 = 0;
+    while i < n {
+        p.MEM[i] = i;          // runtime-indexed register write
+        i = i + 1;
+    }
+}
+
+export fn main() @context(thread) {
+    load(FIFO0, 4);
+    FIFO0.MEM[3] = 0xABu32;     // constant index, in range
+    var x: u32 = FIFO0.DATA[2]; // indexed register read (rw register)
+    FIFO0.DATA[0] = x;
+}
