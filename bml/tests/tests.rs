@@ -447,6 +447,17 @@ fn test_reg_array_lowering() {
 assert_pass!(test_reg_array_addr_ok, "reg_array_addr_ok.bml");
 assert_ir_contains!(test_reg_array_addr_lowering, "reg_array_addr_ok.bml", "1073741840");
 
+// Regression (review #1/#2): a non-u32 register-array index and a sub-u32
+// indexed-field read must lower to valid IR. These only fail at llc, so the
+// fixture is BUILT (not just checked) -- a type-mismatched `mul i32`/`store i32`
+// would make llc reject it and the build fail.
+#[test]
+fn test_reg_array_index_types_build() {
+    let (ok, stderr) =
+        bml_build_with_target("reg_array_index_types_ok.bml", Some("reg_index_types.target"));
+    assert!(ok, "non-u32 index / sub-u32 indexed field must build; stderr:\n{stderr}");
+}
+
 // Field access on an indexed array register `P.REG[i].FIELD` (the per-SM PIO
 // register shape). The RMW happens at the runtime address with the field shift.
 assert_pass!(test_reg_array_field_ok, "reg_array_field_ok.bml");

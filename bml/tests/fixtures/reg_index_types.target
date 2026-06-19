@@ -1,0 +1,11 @@
+# Minimal target for register-array index-type regression fixtures.
+arch = armv7em
+cpu = cortex-m7
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x20000000
+size = 128K

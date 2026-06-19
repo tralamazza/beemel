@@ -179,7 +179,7 @@ pub struct Channel {
     /// `dreq = P.R.F = VARIANT`: the transfer-request (DREQ/TREQ) field and the
     /// value that pairs the channel with its endpoint. A channel streaming to a
     /// PIO FIFO must select the matching DREQ or it over/underruns; the region
-    /// pass checks the program's write against it (E652).
+    /// pass checks the program's write against it (E651).
     pub dreq: Option<DreqSpec>,
 }
 

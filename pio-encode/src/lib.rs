@@ -37,8 +37,9 @@ pub struct Assembled {
     pub wrap_target: u8,
     /// Wrap source address (`.wrap`); defaults to the last instruction.
     pub wrap: u8,
-    /// Total side-set bits declared (`.side_set N`), including the optional
-    /// enable bit when `opt`. 0 when no side-set is used.
+    /// Value for `PINCTRL.SIDESET_COUNT`: the `.side_set N` data-bit count plus
+    /// one for the enable bit when `opt` (the register field is inclusive of the
+    /// enable bit). 0 when no side-set is used.
     pub side_set_count: u8,
     /// `.side_set N opt`: the MSB of the side-set field is an enable bit.
     pub side_set_opt: bool,
@@ -75,20 +76,24 @@ pub fn assemble(name: &str, src: &str) -> Result<Assembled, Vec<AsmError>> {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct SideSet {
-    count: u8, // total bits incl. the opt-enable bit
+    /// Number of side-set DATA bits, exactly as written in `.side_set N`
+    /// (matching pioasm: `opt` adds a separate enable bit on top, it is NOT one
+    /// of these N).
+    count: u8,
     opt: bool,
     pindirs: bool,
 }
 
 impl SideSet {
-    /// Bits of the [12:8] field available for `[delay]` after side-set.
-    fn delay_bits(self) -> u8 {
-        5 - self.count
+    /// Total bits of the [12:8] field consumed by side-set: the data bits plus
+    /// the optional enable bit. This is the value programmed into
+    /// `PINCTRL.SIDESET_COUNT` ("inclusive of the enable bit, if present").
+    fn total_bits(self) -> u8 {
+        self.count + u8::from(self.opt)
     }
-    /// Side-set data bits the user may actually specify (`count` minus the
-    /// optional enable bit).
-    fn data_bits(self) -> u8 {
-        if self.opt { self.count - 1 } else { self.count }
+    /// Bits of the [12:8] field left for `[delay]` after side-set.
+    fn delay_bits(self) -> u8 {
+        5 - self.total_bits()
     }
 }
 
@@ -169,7 +174,7 @@ impl Assembler {
             origin: self.origin,
             wrap_target: self.wrap_target.unwrap_or(0),
             wrap: self.wrap.unwrap_or(last),
-            side_set_count: self.side_set.count,
+            side_set_count: self.side_set.total_bits(),
             side_set_opt: self.side_set.opt,
             side_set_pindirs: self.side_set.pindirs,
             defines: self.public_defines,
@@ -204,7 +209,14 @@ impl Assembler {
             }
 
             if let Some(stripped) = text.strip_prefix('.') {
-                self.directive(stripped, instrs.len(), line);
+                // `.word EXPR` is a raw instruction word, not a config directive:
+                // it occupies an instruction slot and is encoded in pass 2. Every
+                // other `.`-line is a directive.
+                if stripped.split_whitespace().next() == Some("word") {
+                    instrs.push(InstrLine { text, line });
+                } else {
+                    self.directive(stripped, instrs.len(), line);
+                }
                 continue;
             }
 
@@ -230,14 +242,23 @@ impl Assembler {
                     self.wrap = Some((instr_index - 1) as u8);
                 }
             }
-            "origin" => match toks.get(1).map(|t| self.eval(t, line)) {
-                Some(Ok(v)) if (0..32).contains(&v) => self.origin = Some(v as u8),
-                Some(Ok(v)) => self.err(line, format!("`.origin {v}` out of range 0..31")),
-                Some(Err(e)) => self.err(line, e),
-                None => self.err(line, "`.origin` needs an address"),
-            },
+            "origin" => {
+                // Eval the whole remainder, so a spaced expression
+                // (`.origin 8 + 8`) is not silently truncated to its first token.
+                let rest = body.strip_prefix("origin").unwrap_or("").trim();
+                if rest.is_empty() {
+                    self.err(line, "`.origin` needs an address");
+                } else {
+                    match self.eval(rest, line) {
+                        Ok(v) if (0..32).contains(&v) => self.origin = Some(v as u8),
+                        Ok(v) => self.err(line, format!("`.origin {v}` out of range 0..31")),
+                        Err(e) => self.err(line, e),
+                    }
+                }
+            }
             "define" => self.dir_define(body, line),
-            "word" => self.err(line, "`.word` is recorded as an instruction; place it on its own"),
+            // `.word` is handled in pass1 as an instruction line, so it never
+            // reaches here.
             "lang_opt" | "pio_version" | "clock_div" | "fifo" => {
                 // Tooling/host hints with no bearing on instruction encoding.
             }
@@ -269,6 +290,23 @@ impl Assembler {
                 "pindirs" => pindirs = true,
                 other => self.err(line, format!("unexpected `.side_set` qualifier `{other}`")),
             }
+        }
+        // `count` is data bits; `opt` adds one enable bit. The total must fit the
+        // 5-bit [12:8] field, and `opt` needs at least one data bit to be useful.
+        if opt && count == 0 {
+            self.err(line, "`.side_set 0 opt` has no data bits; drop `opt` or raise the count");
+            return;
+        }
+        if count + u8::from(opt) > 5 {
+            self.err(
+                line,
+                format!(
+                    "`.side_set {count}{}` needs {} bits but the side-set/delay field holds 5",
+                    if opt { " opt" } else { "" },
+                    count + u8::from(opt)
+                ),
+            );
+            return;
         }
         self.side_set = SideSet { count, opt, pindirs };
     }
@@ -309,7 +347,13 @@ impl Assembler {
         // to nothing; pioasm treats it as a raw word).
         if let Some(rest) = text.strip_prefix(".word") {
             let v = self.eval(rest.trim(), 0)?;
-            return u16::try_from(v & 0xFFFF).map_err(|_| "`.word` value does not fit 16 bits".into());
+            // Accept any value representable in 16 bits, signed or unsigned
+            // (-1 == 0xFFFF), but reject anything that genuinely does not fit
+            // rather than silently masking it.
+            if !(-0x8000..=0xFFFF).contains(&v) {
+                return Err(format!("`.word` value {v} does not fit 16 bits"));
+            }
+            return Ok((v & 0xFFFF) as u16);
         }
 
         // Split modifiers (`side <v>` and `[delay]`) off the operand text.
@@ -350,24 +394,31 @@ impl Assembler {
             return Err(format!("delay {delay} out of range 0..{delay_max}"));
         }
 
-        let side_field: i64 = match (side, ss.count) {
-            (Some(_), 0) => return Err("`side` used but no `.side_set` declared".into()),
-            (None, 0) => 0,
-            (Some(v), _) => {
-                let data_max = (1i64 << ss.data_bits()) - 1;
+        // No side-set declared at all: `side` is an error, delay uses all 5 bits.
+        if ss.total_bits() == 0 {
+            if side.is_some() {
+                return Err("`side` used but no `.side_set` declared".into());
+            }
+            return Ok(((delay & 0x1F) as u16) << 8);
+        }
+
+        let side_field: i64 = match side {
+            Some(v) => {
+                let data_max = (1i64 << ss.count) - 1;
                 if v < 0 || v > data_max {
                     return Err(format!("side-set value {v} out of range 0..{data_max}"));
                 }
                 if ss.opt {
-                    // enable bit is the MSB of the side-set portion
-                    (1i64 << (ss.count - 1)) | v
+                    // The enable bit sits just above the `count` data bits (the
+                    // MSB of the side-set portion).
+                    (1i64 << ss.count) | v
                 } else {
                     v
                 }
             }
-            (None, _) => {
+            None => {
                 if ss.opt {
-                    0 // optional side-set omitted: enable bit clear
+                    0 // optional side-set omitted: enable bit clear, no data
                 } else {
                     return Err("`.side_set` is not optional; every instruction needs `side`".into());
                 }
@@ -875,17 +926,30 @@ fn binding_power(tok: &ETok) -> Option<(u8, u8)> {
 }
 
 fn apply(op: &ETok, a: i64, b: i64) -> Result<i64, String> {
+    // All arithmetic is checked: a malformed expression in user PIO source
+    // (`1 << 70`, `i64::MAX + 1`) must surface as an AsmError, never panic the
+    // host compiler.
+    let overflow = || "integer overflow in expression".to_string();
     Ok(match op {
-        ETok::Op('+') => a + b,
-        ETok::Op('-') => a - b,
-        ETok::Op('*') => a * b,
+        ETok::Op('+') => a.checked_add(b).ok_or_else(overflow)?,
+        ETok::Op('-') => a.checked_sub(b).ok_or_else(overflow)?,
+        ETok::Op('*') => a.checked_mul(b).ok_or_else(overflow)?,
         ETok::Op('/') => a.checked_div(b).ok_or("division by zero")?,
         ETok::Op('%') => a.checked_rem(b).ok_or("modulo by zero")?,
         ETok::Op('&') => a & b,
         ETok::Op('|') => a | b,
         ETok::Op('^') => a ^ b,
-        ETok::Shl => a << b,
-        ETok::Shr => a >> b,
+        // `checked_shl`/`checked_shr` guard the SHIFT AMOUNT (>= 64); they do not
+        // guard value overflow, but a wrapped shift result is acceptable (bit
+        // ops), whereas a >= 64 shift is the panic to avoid.
+        ETok::Shl => u32::try_from(b)
+            .ok()
+            .and_then(|s| a.checked_shl(s))
+            .ok_or("invalid left-shift amount")?,
+        ETok::Shr => u32::try_from(b)
+            .ok()
+            .and_then(|s| a.checked_shr(s))
+            .ok_or("invalid right-shift amount")?,
         _ => return Err("bad operator".into()),
     })
 }
@@ -1008,5 +1072,46 @@ mod tests {
         let src = "nop\n".repeat(33);
         let err = assemble("big", &src).unwrap_err();
         assert!(err.iter().any(|e| e.msg.contains("instruction memory holds 32")));
+    }
+
+    // Overflowing arithmetic in an expression returns an AsmError, never panics.
+    #[test]
+    fn expr_overflow_is_an_error_not_a_panic() {
+        assert!(assemble("t", "nop [1 << 70]").is_err());
+        assert!(assemble("t", ".define A (9223372036854775807 + 1)\n nop [A]").is_err());
+        assert!(assemble("t", "nop [1 >> 0]").is_ok()); // sane shift still works
+    }
+
+    // Optional side-set follows pioasm: `.side_set N opt` is N DATA bits plus a
+    // separate enable bit (max N reduced 5->4); SIDESET_COUNT = N + 1.
+    #[test]
+    fn side_set_opt_matches_pioasm() {
+        // .side_set 1 opt; nop side 1 -> enable bit (12) + 1 data bit (11) set.
+        let a = assemble("s", ".side_set 1 opt\n nop side 1").unwrap();
+        assert_eq!(a.words[0], 0xA042 | 0x1000 | 0x0800);
+        assert_eq!(a.side_set_count, 2); // 1 data + 1 enable
+        // optional side-set omitted -> enable clear, plain nop.
+        let b = assemble("s", ".side_set 1 opt\n nop").unwrap();
+        assert_eq!(b.words[0], 0xA042);
+        // `.side_set 5 opt` needs 6 bits -> rejected; `.side_set 0 opt` -> rejected.
+        assert!(assemble("s", ".side_set 5 opt\n nop side 0").is_err());
+        assert!(assemble("s", ".side_set 0 opt\n nop").is_err());
+        // non-opt `.side_set 5` (all side-set, no delay) is fine.
+        assert!(assemble("s", ".side_set 5\n nop side 31").is_ok());
+    }
+
+    // `.word EXPR` emits a raw 16-bit instruction word (now reachable), and an
+    // out-of-range value is rejected rather than silently masked.
+    #[test]
+    fn word_directive_emits_and_range_checks() {
+        assert_eq!(assemble("w", ".word 0xC000").unwrap().words, vec![0xC000]);
+        assert_eq!(assemble("w", ".word -1").unwrap().words, vec![0xFFFF]);
+        assert!(assemble("w", ".word 0x12345").is_err());
+    }
+
+    // `.origin` evaluates a full (spaced) expression, not just its first token.
+    #[test]
+    fn origin_accepts_expression() {
+        assert_eq!(assemble("o", ".origin 8 + 8\n nop").unwrap().origin, Some(16));
     }
 }

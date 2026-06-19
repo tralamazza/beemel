@@ -2494,7 +2494,17 @@ fn check_reg_index_bounds(
     reg: &str,
     diags: &mut DiagnosticBag,
 ) {
-    if let Expr::IntLiteral(n, _, span) = index
+    // Peer through value-preserving parens so `P.REG[(9)]` is caught too. `Cast`
+    // and `Unary` are NOT unwrapped: a cast can truncate (`300 as u8` == 44) and
+    // negation changes the value, so the inner literal would not be the real
+    // index. Named-const and computed indices are trusted like runtime indices
+    // (the checker has no const values threaded here) -- only literal indices
+    // get the static bound.
+    let inner = match index {
+        Expr::Group(e) => e.as_ref(),
+        other => other,
+    };
+    if let Expr::IntLiteral(n, _, span) = inner
         && *n >= len
     {
         diags.error(

@@ -1,0 +1,19 @@
+// Regression: a non-u32 index (u8) must be coerced before the stride multiply
+// (else `mul i32` on an i8 SSA -> invalid IR), and a sub-u32 indexed field read
+// must carry the field's real type (else expr_type=U32 vs an i16 value -> invalid
+// IR). Both only surface through llc, so this fixture is built, not just checked.
+peripheral_type FOO {
+    reg MEM[4] offset 0x10 stride 0x4 { field MEM: u32 bit[0..15] writeonly }
+    reg R[4] offset 0x40 stride 0x4 { field HALF: u16 bit[0..15] }
+}
+peripheral FOO0: FOO at 0x40000000;
+var SINK: u32;
+fn take(v: u16) -> u32 { return v as u32; }
+export fn main() @context(thread) {
+    var i: u8 = 2u8;
+    FOO0.MEM[i] = 7u32;                  // u8 index -> must coerce
+    var j: u32 = 1;
+    SINK = take(FOO0.R[j].HALF);         // u16 indexed field as call arg
+    var k = FOO0.R[j].HALF;              // u16 indexed field, unannotated init
+    SINK = SINK + (k as u32);
+}
