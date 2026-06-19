@@ -2039,6 +2039,11 @@ impl<'a> Parser<'a> {
                             if !self.eat(&TokenKind::Comma) {
                                 break;
                             }
+                            // Tolerate a trailing comma (`T { a: 1, b: 2, }`),
+                            // matching `parse_struct_def`'s field list.
+                            if self.check(&TokenKind::RBrace) {
+                                break;
+                            }
                         }
                     }
                     let end_span = self.peek_span();
@@ -2661,5 +2666,27 @@ mod tests {
         let src = "pio bad { set pins, 99 }"; // SET value out of range 0..31
         let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
         assert!(diags.has_errors(), "an invalid pio program must report an error");
+    }
+
+    // A struct LITERAL may carry a trailing comma (`T { a: 1, b: 2, }`), matching
+    // the struct DECLARATION field list. Previously this errored on the `}`.
+    #[test]
+    fn struct_literal_allows_trailing_comma() {
+        let mut diags = DiagnosticBag::new();
+        let src = "struct T { a: u32, b: u32 }\n\
+                   fn f() -> T { return T { a: 1, b: 2, }; }";
+        let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
+        assert!(!diags.has_errors(), "trailing comma in a struct literal must parse");
+    }
+
+    // The tolerance is exactly one trailing comma: a doubled comma (an empty
+    // field slot) is still an error.
+    #[test]
+    fn struct_literal_rejects_double_comma() {
+        let mut diags = DiagnosticBag::new();
+        let src = "struct T { a: u32, b: u32 }\n\
+                   fn f() -> T { return T { a: 1, , b: 2 }; }";
+        let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
+        assert!(diags.has_errors(), "a doubled comma must still be rejected");
     }
 }
