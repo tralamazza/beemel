@@ -1,0 +1,91 @@
+// RP2350 DMA -> PIO FIFO bridge -- hardware-observable variant of dma_pio.bml.
+//
+// Same bridge (DMA streams an SRAM buffer into PIO0's TX FIFO, paced by the
+// PIO0_TX0 DREQ), but set up to RUN and be measured: full GPIO0 bring-up, a slow
+// state-machine clock, and a buffer of alternating all-ones / all-zeros words so
+// the pin shows a clean square wave (32 high bits, 32 low) whose existence proves
+// the DMA is feeding the FIFO word-by-word. One-shot over a large buffer (~45 s
+// of output) -- long enough to capture without timing games; no re-arm/ring.
+
+import rp2350.dma as dmac;
+import rp2350.resets;
+import rp2350.io_bank0;
+import rp2350.pads_bank0;
+import rp2350.pio;
+import rp2350.pio_sm;
+
+owns DMA;
+owns PIO0;
+owns gpio[0..0];
+
+// Sink: shift one OSR bit per instruction to the pin; autopull refills the OSR
+// from the TX FIFO every 32 bits, so the SM consumes whatever the DMA streams.
+pio sink {
+.wrap_target
+    out pins, 1
+.wrap
+}
+
+const OUT_PIN: u32 = 0;        // GPIO0 = physical pin 1 (see pio_blink note)
+const NWORDS: u32 = 256;
+var TX_BUF: [u32; 256] in dma_buf;
+
+fn dma_pio_start() {
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.DMA = false;
+    RESETS.RESET.IO_BANK0 = false;
+    RESETS.RESET.PADS_BANK0 = false;
+    while !RESETS.RESET_DONE.PIO0 {}
+    while !RESETS.RESET_DONE.IO_BANK0 {}
+    while !RESETS.RESET_DONE.PADS_BANK0 {}
+
+    // Alternating all-ones / all-zeros words -> 32 high bits then 32 low per pair.
+    var i: u32 = 0;
+    while i < NWORDS {
+        if (i & 1u32) == 0u32 {
+            TX_BUF[i] = 0xFFFFFFFFu32;
+        } else {
+            TX_BUF[i] = 0x00000000u32;
+        }
+        i = i + 1;
+    }
+
+    // Route GPIO0 to PIO0 and enable its pad output.
+    PADS_BANK0.GPIO0.ISO = false;
+    PADS_BANK0.GPIO0.OD = false;
+    PADS_BANK0.GPIO0.IE = false;
+    IO_BANK0.GPIO0_CTRL.FUNCSEL = 6u32;   // 6 = pio0_0
+
+    // Configure SM0: OUT drives GPIO0; SET also maps GPIO0 (for the pindirs
+    // exec); shift right with autopull at the 32-bit threshold; slow clock.
+    pio_sm.pio_load(PIO0, view(sink_PROGRAM));
+    var c = pio_sm.pio_default_sm_config();
+    // Wrap the single `out` instruction onto itself (sink_WRAP_TARGET=sink_WRAP=0).
+    // Without this the default wrap (0..31) runs the SM off the program into
+    // uninitialized instruction memory, and it stops draining the FIFO.
+    pio_sm.sm_config_set_wrap(&mut c, sink_WRAP_TARGET, sink_WRAP);
+    pio_sm.sm_config_set_out_pins(&mut c, OUT_PIN, 1);
+    pio_sm.sm_config_set_set_pins(&mut c, OUT_PIN, 1);
+    pio_sm.sm_config_set_out_shift(&mut c, true, true, 32);   // right, autopull, thresh 32
+    pio_sm.sm_config_set_clkdiv(&mut c, 65535, 0);            // slow -> ~3 Hz square
+    pio_sm.pio_sm_init(PIO0, 0, c);
+    pio_sm.pio_sm_exec(PIO0, 0, 0xE081);   // set pindirs, 1 -> GPIO0 output
+    pio_sm.pio_set_enabled(PIO0, 1u32);
+
+    // DMA channel 0: buffer -> PIO0.TXF[0] (fixed endpoint), paced by PIO0_TX0.
+    DMA.CH0_READ_ADDR = &TX_BUF as u32;
+    DMA.CH0_WRITE_ADDR = &PIO0.TXF[0] as u32;
+    DMA.CH0_TRANS_COUNT.COUNT = NWORDS;
+    DMA.CH0_CTRL_TRIG.TREQ_SEL = dmac.CH0_CTRL_TRIG_TREQ_SEL@PIO0_TX0;
+    DMA.CH0_CTRL_TRIG.DATA_SIZE = dmac.CH0_CTRL_TRIG_DATA_SIZE@SIZE_WORD;
+    DMA.CH0_CTRL_TRIG.INCR_READ = true;
+    DMA.CH0_CTRL_TRIG.INCR_WRITE = false;
+    DMA.CH0_CTRL_TRIG.EN = true;
+}
+
+fn main() @context(thread) {
+    dma_pio_start();
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

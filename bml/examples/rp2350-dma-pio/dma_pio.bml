@@ -7,7 +7,10 @@
 // register-array work makes expressible. The pacing DREQ is selected by the
 // channel's TREQ_SEL field.
 //
-// Compile + link only (no RP2350 on the bench; QEMU doesn't model PIO/DREQ).
+// This file is the minimal, expressible reference (compile-checked). For a
+// runnable, hardware-validated variant with full GPIO bring-up and an observable
+// pattern, see dma_pio_hw.bml (measured on a Pico 2 W: 2.763 Hz square on GPIO0,
+// = clk_sys/65535/64, one pin half-period per 32-bit DMA word).
 
 import rp2350.dma as dmac;   // `dma` collides with the @dma keyword; alias for its enums
 import rp2350.resets;
