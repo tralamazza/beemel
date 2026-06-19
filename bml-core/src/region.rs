@@ -43,7 +43,7 @@ use crate::ast::{
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, AgentKind, Channel, PortBy, Region, Target};
+use crate::target::{Agent, AgentKind, Channel, DreqSpec, PortBy, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -155,6 +155,7 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
     }
     check_ownership_exclusivity(program, symbols, diags);
     check_handoff_writes(program, symbols, target, diags);
+    check_dreq(program, symbols, target, diags);
     check_reclaim_guards(program, symbols, target, diags);
     check_core_sharing(program, symbols, target, diags);
 }
@@ -738,6 +739,71 @@ fn check_ownership_exclusivity(
                     );
                 }
                 break;
+            }
+        }
+    }
+}
+
+/// Resolve `PERIPH.REG.FIELD`'s enum variant `variant` to its discriminant, via
+/// the field's enum type in the peripheral table. `None` if any part is unknown
+/// or the field is not enum-typed.
+fn field_enum_value(
+    symbols: &SymbolTable,
+    periph: &str,
+    reg: &str,
+    field: &str,
+    variant: &str,
+) -> Option<u64> {
+    let f = symbols.peripherals.get(periph)?.regs.get(reg)?.fields.get(field)?;
+    if let crate::types::Type::Enum(_, _, variants) = &f.ty {
+        let disc = variants.iter().find(|(n, _)| n == variant)?.1;
+        return u64::try_from(disc).ok();
+    }
+    None
+}
+
+/// E651: the DMA->FIFO bridge. A channel declares the DREQ that pairs it with its
+/// endpoint (`dreq = P.R.F = VARIANT`); a program that writes a DIFFERENT value to
+/// that transfer-request field would pace the channel with the wrong request and
+/// over/underrun the FIFO. A channel with no `dreq` is unchecked.
+fn check_dreq(program: &Program, symbols: &SymbolTable, target: &Target, diags: &mut DiagnosticBag) {
+    let dreqs: Vec<&DreqSpec> = target
+        .agents
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .filter_map(|c| c.dreq.as_ref())
+        .collect();
+    if dreqs.is_empty() {
+        return;
+    }
+
+    let mut writes = Vec::new();
+    collect_peripheral_writes(program, symbols, &mut writes);
+
+    for d in dreqs {
+        let Some(expected) = field_enum_value(symbols, &d.periph, &d.reg, &d.field, &d.variant)
+        else {
+            // Unresolvable target declaration (bad path / not enum-typed): skip
+            // rather than mis-report against a program site.
+            continue;
+        };
+        for w in &writes {
+            if w.periph == d.periph
+                && w.reg == d.reg
+                && w.field.as_deref() == Some(d.field.as_str())
+                && let Some(v) = w.rhs_literal
+                && v != expected
+            {
+                diags.error(
+                    format!(
+                        "`{}.{}.{}` is set to a value that does not match the channel's declared \
+                         DREQ `{}`; the DMA would be paced by the wrong request and over/underrun \
+                         the FIFO endpoint.",
+                        d.periph, d.reg, d.field, d.variant
+                    ),
+                    "E651",
+                    w.span,
+                );
             }
         }
     }

@@ -3105,6 +3105,21 @@ fn test_handoff_write_with_ownership_ok() {
     );
 }
 
+// DMA->FIFO bridge DREQ check (M5): a channel declares the transfer request that
+// pairs it with its endpoint (`dreq = P.R.F = VARIANT`); selecting a different
+// DREQ would over/underrun the FIFO (E651). Matching is clean.
+#[test]
+fn test_dreq_match_ok() {
+    let (ok, stderr) = bml_build_with_target("dreq_ok.bml", Some("dreq.target"));
+    assert!(ok, "matching DREQ should build; stderr:\n{stderr}");
+}
+#[test]
+fn test_dreq_mismatch() {
+    let (ok, stderr) = bml_build_with_target("dreq_mismatch_error.bml", Some("dreq.target"));
+    assert!(!ok, "mismatched DREQ should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E651"), "expected E651; stderr:\n{stderr}");
+}
+
 // The rule applies only to handoff registers: writing an ordinary register of
 // the same peripheral without owning anything is fine.
 #[test]

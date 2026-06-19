@@ -14,3 +14,8 @@ reach = sram8, flash
 [region.dma_buf]
 mem = sram8
 agents = dma
+
+# Channel 0 is paired with the PIO0 TX0 FIFO: the program must select the PIO0_TX0
+# transfer request, or the DMA over/underruns the FIFO (E651).
+[agent.dma.ch0]
+dreq = DMA.CH0_CTRL_TRIG.TREQ_SEL = PIO0_TX0

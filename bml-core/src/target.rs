@@ -176,6 +176,21 @@ pub struct Channel {
     pub handoffs: Vec<Handoff>,
     pub completes_by: Vec<String>,
     pub extent: Option<ExtentSpec>,
+    /// `dreq = P.R.F = VARIANT`: the transfer-request (DREQ/TREQ) field and the
+    /// value that pairs the channel with its endpoint. A channel streaming to a
+    /// PIO FIFO must select the matching DREQ or it over/underruns; the region
+    /// pass checks the program's write against it (E652).
+    pub dreq: Option<DreqSpec>,
+}
+
+/// A `dreq = PERIPH.REG.FIELD = VARIANT` declaration: the channel's
+/// transfer-request field and its required pairing value.
+#[derive(Debug, Clone)]
+pub struct DreqSpec {
+    pub periph: String,
+    pub reg: String,
+    pub field: String,
+    pub variant: String,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -1424,6 +1439,7 @@ fn parse_channel_kv(ch: &mut Channel, key: &str, val: &str, line_num: usize) -> 
     match key {
         "handoff" => ch.handoffs.push(parse_handoff(val, line_num)?),
         "completes_by" => ch.completes_by = parse_list(val),
+        "dreq" => ch.dreq = Some(parse_dreq(val, line_num)?),
         "extent" => {
             // A bare integer is the fixed-block form; anything else is the
             // count-register form.
@@ -1519,6 +1535,35 @@ fn parse_extent(val: &str, line_num: usize) -> Result<ExtentBy, String> {
 /// The full byte address is written to the register verbatim; `align` is its
 /// optional minimum alignment; `port_by` names the software port-select field
 /// and the window tag its set state routes through.
+/// `dreq = PERIPH.REG.FIELD = VARIANT` -- the channel's transfer-request field
+/// and its required pairing value.
+fn parse_dreq(val: &str, line_num: usize) -> Result<DreqSpec, String> {
+    let (path, variant) = val.split_once('=').ok_or_else(|| {
+        format!(
+            "line {}: dreq must be `PERIPH.REG.FIELD = VARIANT`",
+            line_num + 1
+        )
+    })?;
+    let parts: Vec<&str> = path.trim().split('.').collect();
+    let [periph, reg, field] = parts.as_slice() else {
+        return Err(format!(
+            "line {}: dreq field must be `PERIPH.REG.FIELD`, got `{}`",
+            line_num + 1,
+            path.trim()
+        ));
+    };
+    let variant = variant.trim();
+    if variant.is_empty() {
+        return Err(format!("line {}: dreq needs a VARIANT value", line_num + 1));
+    }
+    Ok(DreqSpec {
+        periph: (*periph).to_string(),
+        reg: (*reg).to_string(),
+        field: (*field).to_string(),
+        variant: variant.to_string(),
+    })
+}
+
 fn parse_handoff(val: &str, line_num: usize) -> Result<Handoff, String> {
     let mut tokens = val.split_whitespace();
     let register = tokens

@@ -1,0 +1,11 @@
+// The program selects the DREQ the channel selects the WRONG DREQ (TX1) -> E651 -- builds cleanly.
+export enum TREQ_SEL: u8 { TX0 = 0, TX1 = 1 }
+peripheral MyDma at 0x50000000 {
+    reg ADDR offset 0x0 { field ADDR: u32 bit[0..31] }
+    reg CTRL offset 0x4 { field TREQ: TREQ_SEL bit[0..5] }
+}
+owns MyDma;
+export fn main() @context(thread) {
+    MyDma.CTRL.TREQ = TREQ_SEL@TX1;
+    loop {}
+}
