@@ -1,0 +1,74 @@
+// RP2350 PIO relocation demo.
+//
+// The same blink program as pio_blink_dsl.bml, but loaded at instruction-memory
+// slot 10 instead of 0. PIO addresses are absolute, so this only works if the
+// loader relocates the JMP targets (jmp x--, on/off) and the SM is configured
+// with the offset baked into wrap + initial PC. If relocation were broken, the
+// JMPs would target the now-empty slots 2/5 and the SM would wander (exactly the
+// failure mode the dma_pio bring-up hit with a missing wrap).
+//
+// Loaded at slot 10 the program occupies slots 10..15:
+//   10 set pins,1   11 set x,31   12 jmp x--,on[31]   13 set pins,0
+//   14 set x,31     15 jmp x--,off[31]
+// so the on/off labels (relative 2/5) relocate to absolute 12/15, and wrap
+// becomes 10..15. The pin should blink identically to the slot-0 version.
+
+import rp2350.resets;
+import rp2350.io_bank0;
+import rp2350.pads_bank0;
+import rp2350.pio;
+import rp2350.pio_sm;
+
+owns PIO0;
+owns gpio[0..0];
+
+const OUT_PIN: u32 = 0;
+const RELOC_SLOT: u32 = 10;
+
+pio blink {
+.wrap_target
+    set pins, 1
+    set x, 31
+on:
+    jmp x--, on [31]
+    set pins, 0
+    set x, 31
+off:
+    jmp x--, off [31]
+.wrap
+}
+
+fn pio_reloc_init() {
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.IO_BANK0 = false;
+    RESETS.RESET.PADS_BANK0 = false;
+    while !RESETS.RESET_DONE.PIO0 {}
+    while !RESETS.RESET_DONE.IO_BANK0 {}
+    while !RESETS.RESET_DONE.PADS_BANK0 {}
+
+    PADS_BANK0.GPIO0.ISO = false;
+    PADS_BANK0.GPIO0.OD = false;
+    PADS_BANK0.GPIO0.IE = false;
+    IO_BANK0.GPIO0_CTRL.FUNCSEL = 6u32;
+
+    // Relocating load: write the program to slots 10.. with JMP fix-up.
+    pio_sm.pio_load_at(PIO0, view(blink_PROGRAM), RELOC_SLOT);
+
+    var c = pio_sm.pio_default_sm_config();
+    // Wrap and initial PC both carry the load offset.
+    pio_sm.sm_config_set_wrap(&mut c, RELOC_SLOT + blink_WRAP_TARGET, RELOC_SLOT + blink_WRAP);
+    pio_sm.sm_config_set_origin(&mut c, RELOC_SLOT);
+    pio_sm.sm_config_set_set_pins(&mut c, OUT_PIN, 1);
+    pio_sm.sm_config_set_clkdiv(&mut c, 20000, 0);
+    pio_sm.pio_sm_init(PIO0, 0, c);
+
+    pio_sm.pio_sm_exec(PIO0, 0, 0xE081);   // set pindirs, 1 (pin -> output)
+    pio_sm.pio_set_enabled(PIO0, 1u32);
+}
+
+fn main() @context(thread) {
+    pio_reloc_init();
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

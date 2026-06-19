@@ -7,17 +7,32 @@
 
 import rp2350.pio;
 
-// Load an assembled program into instruction memory starting at slot 0. Each
-// 16-bit instruction word is widened into its 32-bit INSTR_MEM register (the top
-// half is ignored by hardware) -- the bml analogue of the pico-SDK's
-// `instr_mem[i] = program->instructions[i]`. Fixed origin 0; relocatable loads
-// (JMP fix-up by a load offset) are a follow-up.
-export fn pio_load(p: PIO, prog: view u16) {
+// Load an assembled program into instruction memory at `offset` (slot index),
+// relocating it. PIO instruction addresses are ABSOLUTE, so a JMP loaded at a
+// non-zero offset must have its 5-bit target adjusted by the offset; everything
+// else is position-independent. A JMP is opcode 000 (top 3 bits zero), so adding
+// `offset` to the whole 16-bit word adjusts only the target field -- target +
+// offset < 32 by construction (the program fits in the 32-slot memory), so the
+// add never carries out of bits[4:0]. This mirrors the pico-SDK loader's
+// `instr_mem[i] = is_jmp(instr) ? instr + offset : instr`.
+//
+// After loading, configure the SM's wrap as `offset + NAME_WRAP_*` and its
+// origin (initial PC) as `offset` -- see sm_config_set_origin / pio_sm_init.
+export fn pio_load_at(p: PIO, prog: view u16, slot: u32) {
     var i: u32 = 0;
     while i < len(prog) {
-        p.INSTR_MEM[i] = prog[i] as u32;   // volatile store, base + 0x48 + 4*i
+        var w: u32 = prog[i] as u32;
+        if (w >> 13u32) == 0u32 {   // JMP -> relocate the target by the load slot
+            w = w + slot;
+        }
+        p.INSTR_MEM[slot + i] = w;   // volatile store, base + 0x48 + 4*(slot+i)
         i = i + 1;
     }
+}
+
+// Load a program at slot 0 (the common case; no relocation needed).
+export fn pio_load(p: PIO, prog: view u16) {
+    pio_load_at(p, prog, 0u32);
 }
 
 // Enable (or disable) state machines by mask: bit i selects SM i. Writing the
@@ -92,6 +107,7 @@ struct PioSmConfig {
     out_base: u32, out_count: u32,            // SM_PINCTRL.OUT_*
     sideset_base: u32, sideset_count: u32,    // SM_PINCTRL.SIDESET_*
     in_base: u32,                             // SM_PINCTRL.IN_BASE
+    origin: u32,                              // load offset -> initial PC (jmp origin)
 }
 
 // The reset-equivalent baseline: divide by 1, wrap the whole instruction memory,
@@ -108,6 +124,7 @@ export fn pio_default_sm_config() -> PioSmConfig {
         out_base: 0, out_count: 0,
         sideset_base: 0, sideset_count: 0,
         in_base: 0,
+        origin: 0,
     };
 }
 
@@ -119,6 +136,13 @@ export fn sm_config_set_wrap(c: *mut PioSmConfig, bottom: u32, top: u32) {
 export fn sm_config_set_clkdiv(c: *mut PioSmConfig, int: u32, frac: u32) {
     (*c).clkdiv_int = int;
     (*c).clkdiv_frac = frac;
+}
+// Load offset of the program: pio_sm_init forces the initial PC here (a program
+// loaded at a non-zero slot via pio_load_at would otherwise start at PC 0). Set
+// the wrap separately with the same offset baked in: sm_config_set_wrap(c,
+// offset + NAME_WRAP_TARGET, offset + NAME_WRAP).
+export fn sm_config_set_origin(c: *mut PioSmConfig, slot: u32) {
+    (*c).origin = slot;
 }
 export fn sm_config_set_set_pins(c: *mut PioSmConfig, base: u32, count: u32) {
     (*c).set_base = base;
@@ -173,5 +197,7 @@ export fn pio_sm_init(p: PIO, sm: u32, c: PioSmConfig) {
     p.SM_PINCTRL[sm].SIDESET_COUNT = c.sideset_count;
     p.SM_PINCTRL[sm].IN_BASE = c.in_base;
     p.CTRL.SM_RESTART = 1u32 << sm;   // clear internal SM state
-    p.SM_INSTR[sm] = 0x0000u32;       // jmp 0 -- initial PC (fixed origin)
+    // Initial PC = `jmp origin`. The jmp opcode is 0 and the address is the low
+    // 5 bits, so for origin < 32 the instruction word is just `origin`.
+    p.SM_INSTR[sm] = c.origin;
 }
