@@ -3026,6 +3026,25 @@ fn test_owns_conflict_peripheral_vs_register() {
     );
 }
 
+// GPIO pin exclusivity (M4): `owns gpio[lo..hi]`. Two modules driving disjoint
+// pin ranges build cleanly; overlapping ranges are the pin-level analogue of
+// E604 (E650).
+#[test]
+fn test_pin_exclusive_disjoint_ok() {
+    let (ok, stderr) = bml_build_default("pin_exclusive_ok.bml");
+    assert!(ok, "disjoint pin ranges should build; stderr:\n{stderr}");
+}
+#[test]
+fn test_pin_overlap_conflict() {
+    let (ok, stderr) = bml_build_default("pin_overlap_error.bml");
+    assert!(!ok, "overlapping pin ranges should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E650"), "expected E650; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("gpio[16..18]"),
+        "should name the overlapping range; stderr:\n{stderr}"
+    );
+}
+
 // Owning a peripheral the program does not define is rejected (E603).
 #[test]
 fn test_owns_unknown_peripheral() {

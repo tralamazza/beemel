@@ -609,23 +609,36 @@ fn known_regions(target: &Target) -> String {
 enum Claim {
     Peripheral(String),
     Register(String, String),
+    /// `owns gpio[lo..hi]` -- an inclusive GPIO-pin range.
+    Pins(u64, u64),
 }
 
 impl Claim {
-    /// Whether two claims cover any common register.
+    /// Whether two claims cover any common resource (register or pin). Register
+    /// and pin claims never overlap each other -- different resource kinds.
     fn overlaps(&self, other: &Claim) -> bool {
         match (self, other) {
             (Claim::Peripheral(a), Claim::Peripheral(b)) => a == b,
             (Claim::Peripheral(p), Claim::Register(rp, _))
             | (Claim::Register(rp, _), Claim::Peripheral(p)) => p == rp,
             (Claim::Register(p1, r1), Claim::Register(p2, r2)) => p1 == p2 && r1 == r2,
+            // Two inclusive ranges intersect iff each starts at or before the
+            // other ends.
+            (Claim::Pins(lo1, hi1), Claim::Pins(lo2, hi2)) => lo1 <= hi2 && lo2 <= hi1,
+            _ => false,
         }
+    }
+
+    /// `true` for a GPIO-pin claim (drives the E650-vs-E604 error split).
+    fn is_pins(&self) -> bool {
+        matches!(self, Claim::Pins(_, _))
     }
 
     fn display(&self) -> String {
         match self {
             Claim::Peripheral(p) => p.clone(),
             Claim::Register(p, r) => format!("{p}.{r}"),
+            Claim::Pins(lo, hi) => format!("gpio[{lo}..{hi}]"),
         }
     }
 }
@@ -637,7 +650,14 @@ fn resolve_owns_path(
     symbols: &SymbolTable,
     diags: &mut DiagnosticBag,
 ) -> Option<Claim> {
-    let pname = &path.peripheral.0;
+    let (peripheral, register) = match &path.target {
+        crate::ast::OwnsTarget::Gpio { lo, hi } => return Some(Claim::Pins(*lo, *hi)),
+        crate::ast::OwnsTarget::Reg {
+            peripheral,
+            register,
+        } => (peripheral, register),
+    };
+    let pname = &peripheral.0;
     let Some(periph) = symbols.peripherals.get(pname) else {
         diags.error(
             format!("`owns {pname}`: no peripheral named `{pname}`"),
@@ -646,7 +666,7 @@ fn resolve_owns_path(
         );
         return None;
     };
-    match &path.register {
+    match register {
         None => Some(Claim::Peripheral(pname.clone())),
         Some((rname, _)) => {
             if periph.regs.contains_key(rname) {
@@ -692,15 +712,31 @@ fn check_ownership_exclusivity(
     for (i, (claim_i, span_i)) in claims.iter().enumerate() {
         for (claim_j, span_j) in claims.iter().take(i) {
             if span_i.file != span_j.file && claim_i.overlaps(claim_j) {
-                diags.error(
-                    format!(
-                        "`{}` is owned by two modules; ownership must be exclusive (it is a \
-                         claim about other modules). One module must own it.",
-                        claim_i.display()
-                    ),
-                    "E604",
-                    *span_i,
-                );
+                if claim_i.is_pins() {
+                    // E650: GPIO pins driven by two modules. Two state machines
+                    // (in different modules) configured for overlapping pins
+                    // contend on the pad -- the pin-level analogue of E604.
+                    diags.error(
+                        format!(
+                            "`{}` is driven by two modules; a GPIO pin must be driven by one \
+                             (overlaps `{}`). Give each module a disjoint pin range.",
+                            claim_i.display(),
+                            claim_j.display()
+                        ),
+                        "E650",
+                        *span_i,
+                    );
+                } else {
+                    diags.error(
+                        format!(
+                            "`{}` is owned by two modules; ownership must be exclusive (it is a \
+                             claim about other modules). One module must own it.",
+                            claim_i.display()
+                        ),
+                        "E604",
+                        *span_i,
+                    );
+                }
                 break;
             }
         }
@@ -710,13 +746,20 @@ fn check_ownership_exclusivity(
 /// Like `resolve_owns_path` but emits nothing -- used by the exclusivity pass,
 /// where unresolved paths were already reported in the main walk.
 fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Claim> {
-    let periph = symbols.peripherals.get(&path.peripheral.0)?;
-    match &path.register {
-        None => Some(Claim::Peripheral(path.peripheral.0.clone())),
+    let (peripheral, register) = match &path.target {
+        crate::ast::OwnsTarget::Gpio { lo, hi } => return Some(Claim::Pins(*lo, *hi)),
+        crate::ast::OwnsTarget::Reg {
+            peripheral,
+            register,
+        } => (peripheral, register),
+    };
+    let periph = symbols.peripherals.get(&peripheral.0)?;
+    match register {
+        None => Some(Claim::Peripheral(peripheral.0.clone())),
         Some((rname, _)) => periph
             .regs
             .contains_key(rname)
-            .then(|| Claim::Register(path.peripheral.0.clone(), rname.clone())),
+            .then(|| Claim::Register(peripheral.0.clone(), rname.clone())),
     }
 }
 
@@ -819,7 +862,9 @@ fn check_handoff_writes(
                     Some(Claim::Register(p, r)) => {
                         reg_owners.entry((p, r)).or_default().insert(path.span.file);
                     }
-                    None => {}
+                    // Pin claims don't gate handoff registers (E605); they only
+                    // feed the cross-module pin-exclusivity check (E650).
+                    Some(Claim::Pins(_, _)) | None => {}
                 }
             }
         }

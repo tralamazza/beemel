@@ -1,0 +1,4 @@
+// Two modules own disjoint GPIO ranges -- allowed.
+import pin_exclusive_b;
+owns gpio[16..18];
+export fn main() @context(thread) { pin_exclusive_b.b_keep(); loop {} }

@@ -1,0 +1,3 @@
+// Companion module: claims a pin range that OVERLAPS the importer.
+owns gpio[17..20];
+export fn b_keep() @context(thread) {}

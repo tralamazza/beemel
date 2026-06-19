@@ -1,0 +1,4 @@
+// Two modules drive overlapping GPIOs (16..18 vs 17..20) -> E650.
+import pin_overlap_b;
+owns gpio[16..18];
+export fn main() @context(thread) { pin_overlap_b.b_keep(); loop {} }

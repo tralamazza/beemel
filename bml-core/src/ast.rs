@@ -48,16 +48,27 @@ pub struct OwnsStmt {
     pub paths: Vec<OwnsPath>,
 }
 
-/// One ownership claim: a whole peripheral (`register` is `None`) or a single
-/// register (`register` is `Some`). Field-level ownership is not yet supported.
-/// `span` covers the path and carries the source `FileId`, which is how the
-/// region pass attributes the claim to a module (two files owning the same
-/// register is the cross-module conflict).
+/// One ownership claim. `span` carries the source `FileId`, which is how the
+/// region pass attributes the claim to a module (two files claiming the same
+/// resource is the cross-module conflict).
 #[derive(Debug, Clone)]
 pub struct OwnsPath {
-    pub peripheral: Ident,
-    pub register: Option<Ident>,
+    pub target: OwnsTarget,
     pub span: Span,
+}
+
+/// What an `owns` path claims.
+#[derive(Debug, Clone)]
+pub enum OwnsTarget {
+    /// `owns P` (whole peripheral) or `owns P.R` (one register). Field-level
+    /// ownership is not yet supported (rejected in the parser).
+    Reg {
+        peripheral: Ident,
+        register: Option<Ident>,
+    },
+    /// `owns gpio[lo..hi]` -- an exclusive GPIO-pin claim over the inclusive
+    /// range `lo..=hi` (e.g. a PIO state machine's SET / side-set pins).
+    Gpio { lo: u64, hi: u64 },
 }
 
 #[derive(Debug, Clone)]

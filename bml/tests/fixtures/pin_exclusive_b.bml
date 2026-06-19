@@ -1,0 +1,3 @@
+// Companion module: claims a DISJOINT pin range -> no conflict.
+owns gpio[20..23];
+export fn b_keep() @context(thread) {}

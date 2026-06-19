@@ -176,12 +176,20 @@ impl Renamer {
             // peripheral, qualified by this module's prefix.
             Item::Owns(o) => {
                 for path in &mut o.paths {
-                    if self.is_import(&path.peripheral.0) {
-                        if let Some(reg) = path.register.take() {
-                            path.peripheral.0 = format!("{}.{}", path.peripheral.0, reg.0);
+                    // Only register claims carry names to qualify; `gpio[..]` is
+                    // a bare pin range.
+                    if let crate::ast::OwnsTarget::Reg {
+                        peripheral,
+                        register,
+                    } = &mut path.target
+                    {
+                        if self.is_import(&peripheral.0) {
+                            if let Some(reg) = register.take() {
+                                peripheral.0 = format!("{}.{}", peripheral.0, reg.0);
+                            }
+                        } else {
+                            self.rename_in_place(&mut peripheral.0);
                         }
-                    } else {
-                        self.rename_in_place(&mut path.peripheral.0);
                     }
                 }
             }

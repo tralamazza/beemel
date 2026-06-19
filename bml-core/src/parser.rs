@@ -1356,14 +1356,44 @@ impl<'a> Parser<'a> {
         Some(ImportStmt { module, alias })
     }
 
-    /// `owns P, P.R, ...;` -- a module's exclusive register-ownership claims.
-    /// Each path is a peripheral name, optionally `.register`. Field-level
-    /// paths (`P.R.F`) are rejected: field-granularity ownership is not yet
-    /// supported (see doc/regions-agents.md).
+    /// `owns P, P.R, gpio[a..b], ...;` -- a module's exclusive claims. Each path
+    /// is a peripheral (optionally `.register`), or `gpio[lo..hi]` for an
+    /// exclusive GPIO-pin range. Field-level register paths (`P.R.F`) are
+    /// rejected (see doc/regions-agents.md).
     fn parse_owns(&mut self) -> Option<OwnsStmt> {
         self.advance(); // owns
         let mut paths = Vec::new();
         loop {
+            // `gpio[lo..hi]` -- a GPIO-pin claim (`gpio` is a contextual keyword).
+            if matches!(self.peek_kind(), TokenKind::Ident(s) if s == "gpio") {
+                let start = self.peek_span();
+                self.advance(); // gpio
+                self.expect(&TokenKind::LBracket, "expected `[` after `gpio`")
+                    .ok()?;
+                let lo = self.parse_int_literal()?;
+                self.expect(&TokenKind::DotDot, "expected `..` in `gpio[lo..hi]`")
+                    .ok()?;
+                let hi = self.parse_int_literal()?;
+                let end = self.peek_span();
+                self.expect(&TokenKind::RBracket, "expected `]`").ok()?;
+                if lo > hi {
+                    self.diags.error(
+                        format!("invalid gpio range `[{lo}..{hi}]` (low must be <= high)"),
+                        "E116",
+                        start.merge(end),
+                    );
+                    return None;
+                }
+                paths.push(OwnsPath {
+                    target: crate::ast::OwnsTarget::Gpio { lo, hi },
+                    span: start.merge(end),
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
             let peripheral = self.parse_ident()?;
             let mut span = peripheral.1;
             let register = if self.eat(&TokenKind::Dot) {
@@ -1389,8 +1419,10 @@ impl<'a> Parser<'a> {
                 None
             };
             paths.push(OwnsPath {
-                peripheral,
-                register,
+                target: crate::ast::OwnsTarget::Reg {
+                    peripheral,
+                    register,
+                },
                 span,
             });
             if !self.eat(&TokenKind::Comma) {

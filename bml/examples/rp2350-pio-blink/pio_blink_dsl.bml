@@ -13,6 +13,7 @@ import rp2350.pio;
 import rp2350.pio_sm;
 
 owns PIO0;
+owns gpio[25..25];   // SM0's SET pin -- exclusive; another module driving GPIO25 is E650
 
 const LED_PIN: u32 = 25;
 
