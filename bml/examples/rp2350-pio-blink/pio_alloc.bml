@@ -1,0 +1,94 @@
+// RP2350 PIO free-slot allocator demo.
+//
+// Two independent programs share PIO0's single 32-slot instruction memory, each
+// placed automatically by pio_add_program (the bml analogue of the pico-SDK's
+// pio_add_program): a 6-instruction blink and a 2-instruction square wave. The
+// allocator returns slot 0 for the first and slot 6 for the second; the second
+// only runs because it is relocated to its assigned slot. Both run concurrently
+// on different state machines and pins, at different rates:
+//   SM0 = blink  -> GPIO0, ~0.28 Hz
+//   SM1 = square -> GPIO1, ~9 Hz
+
+import rp2350.resets;
+import rp2350.io_bank0;
+import rp2350.pads_bank0;
+import rp2350.pio;
+import rp2350.pio_sm;
+
+owns PIO0;
+owns gpio[0..1];
+
+// Per-block slot bookkeeping owned by this module (bit i = slot i occupied).
+var PIO0_USED: u32 = 0;
+
+pio blinkp {
+.wrap_target
+    set pins, 1
+    set x, 31
+on:
+    jmp x--, on [31]
+    set pins, 0
+    set x, 31
+off:
+    jmp x--, off [31]
+.wrap
+}
+
+pio wavep {
+.wrap_target
+    set pins, 1 [31]
+    set pins, 0 [31]
+.wrap
+}
+
+// Configure + start one SM running a program already loaded at `slot`, driving a
+// single SET pin at `pin`, divided by `div`.
+fn run_sm(sm: u32, slot: u32, wrap_target: u32, wrap: u32, pin: u32, div: u32) {
+    var c = pio_sm.pio_default_sm_config();
+    pio_sm.sm_config_set_wrap(&mut c, slot + wrap_target, slot + wrap);
+    pio_sm.sm_config_set_origin(&mut c, slot);
+    pio_sm.sm_config_set_set_pins(&mut c, pin, 1);
+    pio_sm.sm_config_set_clkdiv(&mut c, div, 0);
+    pio_sm.pio_sm_init(PIO0, sm, c);
+    pio_sm.pio_sm_exec(PIO0, sm, 0xE081);   // set pindirs, 1 -> pin is an output
+}
+
+// Route GPIO0 and GPIO1 to PIO0 (FUNCSEL pio0_N = 6) and enable their pads.
+fn gpio_to_pio0() {
+    PADS_BANK0.GPIO0.ISO = false;
+    PADS_BANK0.GPIO0.OD = false;
+    PADS_BANK0.GPIO0.IE = false;
+    PADS_BANK0.GPIO1.ISO = false;
+    PADS_BANK0.GPIO1.OD = false;
+    PADS_BANK0.GPIO1.IE = false;
+    IO_BANK0.GPIO0_CTRL.FUNCSEL = 6u32;
+    IO_BANK0.GPIO1_CTRL.FUNCSEL = 6u32;
+}
+
+fn pio_alloc_init() {
+    RESETS.RESET.PIO0 = false;
+    RESETS.RESET.IO_BANK0 = false;
+    RESETS.RESET.PADS_BANK0 = false;
+    while !RESETS.RESET_DONE.PIO0 {}
+    while !RESETS.RESET_DONE.IO_BANK0 {}
+    while !RESETS.RESET_DONE.PADS_BANK0 {}
+
+    gpio_to_pio0();
+
+    // Allocate + load both programs into the shared instruction memory.
+    var slot_a: u32 = pio_sm.pio_add_program(PIO0, &mut PIO0_USED, view(blinkp_PROGRAM), blinkp_ORIGIN);
+    var slot_b: u32 = pio_sm.pio_add_program(PIO0, &mut PIO0_USED, view(wavep_PROGRAM), wavep_ORIGIN);
+
+    // SM0 runs the blink at GPIO0; SM1 runs the square wave at GPIO1.
+    run_sm(0u32, slot_a, blinkp_WRAP_TARGET, blinkp_WRAP, 0u32, 20000u32);
+    run_sm(1u32, slot_b, wavep_WRAP_TARGET, wavep_WRAP, 1u32, 20000u32);
+
+    pio_sm.pio_set_enabled(PIO0, 3u32);   // enable SM0 and SM1
+}
+
+fn main() @context(thread) {
+    pio_alloc_init();
+    loop {
+        asm { wfi } : : : "memory";
+    }
+}

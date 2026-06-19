@@ -35,6 +35,63 @@ export fn pio_load(p: PIO, prog: view u16) {
     pio_load_at(p, prog, 0u32);
 }
 
+// --- free-slot allocator (the bml analogue of the pico-SDK pio_add_program) ---
+//
+// Instruction memory (32 slots) is shared by a block's four state machines, so
+// loading several programs into one block needs slot bookkeeping. `used` is a
+// 32-bit mask owned by the CALLER -- one `var PIOx_USED: u32 = 0;` per PIO block
+// (the monomorphized handle is not a runtime key, so the mask is passed in). bit
+// i set = slot i occupied.
+
+// Build the `len`-bit occupancy mask for a program (avoids the undefined
+// `1 << 32` when a program fills the whole memory).
+fn slot_bits(len: u32) -> u32 {
+    if len >= 32u32 {
+        return 0xFFFFFFFFu32;
+    }
+    return (1u32 << len) - 1u32;
+}
+
+// Find a home for `prog`, load it there (relocated), mark the slots used, and
+// return the slot. `origin` is the program's NAME_ORIGIN: 0xFFFFFFFF means
+// relocatable (search for the lowest free run); any other value pins it to that
+// slot. Returns 32 -- an invalid slot -- if there is no room; the caller checks.
+export fn pio_add_program(p: PIO, used: *mut u32, prog: view u16, origin: u32) -> u32 {
+    var n: u32 = len(prog);
+    var occ: u32 = slot_bits(n);
+
+    if origin != 0xFFFFFFFFu32 {
+        // Fixed-origin program: only its declared slot is acceptable.
+        if origin + n > 32u32 {
+            return 32u32;
+        }
+        var fixed: u32 = occ << origin;
+        if ((*used) & fixed) != 0u32 {
+            return 32u32;
+        }
+        pio_load_at(p, prog, origin);
+        (*used) = (*used) | fixed;
+        return origin;
+    }
+
+    var slot: u32 = 0u32;
+    while (slot + n) <= 32u32 {
+        var mask: u32 = occ << slot;
+        if ((*used) & mask) == 0u32 {   // run is free
+            pio_load_at(p, prog, slot);
+            (*used) = (*used) | mask;
+            return slot;
+        }
+        slot = slot + 1u32;
+    }
+    return 32u32;   // no free run
+}
+
+// Release the slots a program occupied (mark them free in `used`).
+export fn pio_remove_program(used: *mut u32, slot: u32, prog_len: u32) {
+    (*used) = (*used) & ~(slot_bits(prog_len) << slot);
+}
+
 // Enable (or disable) state machines by mask: bit i selects SM i. Writing the
 // whole CTRL register avoids a read-modify-write over its write-only pulse
 // fields (SM_RESTART, CLKDIV_RESTART, ...).
