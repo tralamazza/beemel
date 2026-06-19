@@ -68,3 +68,110 @@ export fn pio_sm_get_blocking(p: PIO, sm: u32) -> u32 {
     while ((p.FSTAT.RXEMPTY >> sm) & 1) != 0 {}
     return p.RXF[sm];
 }
+
+// --- config-struct layer (the bml analogue of the pico-SDK pio_sm_config) ------
+//
+// Assemble a state machine's settings in RAM, then apply them once with
+// pio_sm_init. Start from pio_default_sm_config() and override only what matters
+// via the sm_config_set_* setters (or by writing fields directly). Unlike the
+// SDK's pio_sm_config -- which bit-packs four raw register words because C has no
+// register-field model -- this holds the UNPACKED settings and pio_sm_init writes
+// them through the named register fields, so there are no hand-rolled masks.
+//
+// All fields are u32 for uniform 4-byte alignment (a mix of b1 fields would force
+// fragile tail padding). Boolean settings are stored 0/1; pio_sm_init writes them
+// to the b1 register fields via `!= 0`.
+struct PioSmConfig {
+    clkdiv_int: u32, clkdiv_frac: u32,        // SM_CLKDIV.INT / .FRAC
+    wrap_bottom: u32, wrap_top: u32,          // SM_EXECCTRL.WRAP_BOTTOM / _TOP
+    side_en: u32, side_pindir: u32,           // SM_EXECCTRL.SIDE_EN / _PINDIR
+    out_shiftdir: u32, in_shiftdir: u32,      // SM_SHIFTCTRL.*_SHIFTDIR (1 = right)
+    autopull: u32, autopush: u32,             // SM_SHIFTCTRL.AUTOPULL / AUTOPUSH
+    pull_thresh: u32, push_thresh: u32,       // SM_SHIFTCTRL.*_THRESH (0 = 32)
+    set_base: u32, set_count: u32,            // SM_PINCTRL.SET_*
+    out_base: u32, out_count: u32,            // SM_PINCTRL.OUT_*
+    sideset_base: u32, sideset_count: u32,    // SM_PINCTRL.SIDESET_*
+    in_base: u32,                             // SM_PINCTRL.IN_BASE
+}
+
+// The reset-equivalent baseline: divide by 1, wrap the whole instruction memory,
+// shift right (the SDK default), no autopush/pull, no pins mapped.
+export fn pio_default_sm_config() -> PioSmConfig {
+    return PioSmConfig {
+        clkdiv_int: 1, clkdiv_frac: 0,
+        wrap_bottom: 0, wrap_top: 31,
+        side_en: 0, side_pindir: 0,
+        out_shiftdir: 1, in_shiftdir: 1,
+        autopull: 0, autopush: 0,
+        pull_thresh: 0, push_thresh: 0,
+        set_base: 0, set_count: 0,
+        out_base: 0, out_count: 0,
+        sideset_base: 0, sideset_count: 0,
+        in_base: 0
+    };
+}
+
+// Composable setters: mutate the config in place (the `&mut config` pattern).
+export fn sm_config_set_wrap(c: *mut PioSmConfig, bottom: u32, top: u32) {
+    (*c).wrap_bottom = bottom;
+    (*c).wrap_top = top;
+}
+export fn sm_config_set_clkdiv(c: *mut PioSmConfig, int: u32, frac: u32) {
+    (*c).clkdiv_int = int;
+    (*c).clkdiv_frac = frac;
+}
+export fn sm_config_set_set_pins(c: *mut PioSmConfig, base: u32, count: u32) {
+    (*c).set_base = base;
+    (*c).set_count = count;
+}
+export fn sm_config_set_out_pins(c: *mut PioSmConfig, base: u32, count: u32) {
+    (*c).out_base = base;
+    (*c).out_count = count;
+}
+export fn sm_config_set_sideset_pins(c: *mut PioSmConfig, base: u32, count: u32) {
+    (*c).sideset_base = base;
+    (*c).sideset_count = count;
+}
+// Output shift register: `right` = shift right, `auto` = autopull, `thresh` =
+// the pull threshold in bits (use 32 for "full", stored as 0 in hardware).
+export fn sm_config_set_out_shift(c: *mut PioSmConfig, right: b1, auto: b1, thresh: u32) {
+    (*c).out_shiftdir = right as u32;
+    (*c).autopull = auto as u32;
+    (*c).pull_thresh = thresh & 31u32;
+}
+// Input shift register: `right` = shift right, `auto` = autopush, `thresh` = the
+// push threshold in bits.
+export fn sm_config_set_in_shift(c: *mut PioSmConfig, right: b1, auto: b1, thresh: u32) {
+    (*c).in_shiftdir = right as u32;
+    (*c).autopush = auto as u32;
+    (*c).push_thresh = thresh & 31u32;
+}
+
+// Apply the config to a (disabled) state machine: write every shadow through its
+// named register field, clear internal SM state, and force the PC to slot 0. The
+// caller loads the program first and enables the SM afterwards
+// (pio_set_enabled). At init time the SM is halted, so the per-field
+// read-modify-writes are free.
+export fn pio_sm_init(p: PIO, sm: u32, c: PioSmConfig) {
+    p.SM_CLKDIV[sm].INT = c.clkdiv_int;
+    p.SM_CLKDIV[sm].FRAC = c.clkdiv_frac;
+    p.SM_EXECCTRL[sm].WRAP_BOTTOM = c.wrap_bottom;
+    p.SM_EXECCTRL[sm].WRAP_TOP = c.wrap_top;
+    p.SM_EXECCTRL[sm].SIDE_EN = c.side_en != 0;
+    p.SM_EXECCTRL[sm].SIDE_PINDIR = c.side_pindir != 0;
+    p.SM_SHIFTCTRL[sm].OUT_SHIFTDIR = c.out_shiftdir != 0;
+    p.SM_SHIFTCTRL[sm].IN_SHIFTDIR = c.in_shiftdir != 0;
+    p.SM_SHIFTCTRL[sm].AUTOPULL = c.autopull != 0;
+    p.SM_SHIFTCTRL[sm].AUTOPUSH = c.autopush != 0;
+    p.SM_SHIFTCTRL[sm].PULL_THRESH = c.pull_thresh;
+    p.SM_SHIFTCTRL[sm].PUSH_THRESH = c.push_thresh;
+    p.SM_PINCTRL[sm].SET_BASE = c.set_base;
+    p.SM_PINCTRL[sm].SET_COUNT = c.set_count;
+    p.SM_PINCTRL[sm].OUT_BASE = c.out_base;
+    p.SM_PINCTRL[sm].OUT_COUNT = c.out_count;
+    p.SM_PINCTRL[sm].SIDESET_BASE = c.sideset_base;
+    p.SM_PINCTRL[sm].SIDESET_COUNT = c.sideset_count;
+    p.SM_PINCTRL[sm].IN_BASE = c.in_base;
+    p.CTRL.SM_RESTART = 1u32 << sm;   // clear internal SM state
+    p.SM_INSTR[sm] = 0x0000u32;       // jmp 0 -- initial PC (fixed origin)
+}

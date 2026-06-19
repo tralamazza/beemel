@@ -43,18 +43,19 @@ fn pio_blink_init() {
     PADS_BANK0.GPIO25.IE = false;
     IO_BANK0.GPIO25_CTRL.FUNCSEL = 6u32;
 
-    // Configure state machine 0 entirely through the helper lib -- every call is
-    // monomorphized for PIO0 and indexes the SM_* register arrays by `sm`.
-    pio_sm.pio_sm_set_clkdiv(PIO0, 0, 65535, 0);          // slow: clk_sys / 65535
-    pio_sm.pio_sm_set_set_pins(PIO0, 0, LED_PIN, 1);      // SET drives GPIO25
-    pio_sm.pio_sm_set_wrap(PIO0, 0, blink_WRAP_TARGET, blink_WRAP);
-
-    // Load the assembled program with the generic helper -- one loop over the
-    // INSTR_MEM[i] register array.
+    // Load the assembled program (generic loop over the INSTR_MEM[i] array).
     pio_sm.pio_load(PIO0, view(blink_PROGRAM));
 
+    // Configure state machine 0 via the SDK-style config layer: start from the
+    // default, override only what matters, apply once. WRAP_TOP/WRAP_BOTTOM never
+    // appear -- they live inside sm_config_set_wrap.
+    var c = pio_sm.pio_default_sm_config();
+    pio_sm.sm_config_set_wrap(&mut c, blink_WRAP_TARGET, blink_WRAP);
+    pio_sm.sm_config_set_set_pins(&mut c, LED_PIN, 1);   // SET drives GPIO25
+    pio_sm.sm_config_set_clkdiv(&mut c, 65535, 0);       // slow: clk_sys / 65535
+    pio_sm.pio_sm_init(PIO0, 0, c);
+
     pio_sm.pio_sm_exec(PIO0, 0, 0xE081);   // set pindirs, 1 (pin -> output)
-    pio_sm.pio_sm_exec(PIO0, 0, 0x0000);   // jmp 0 (force PC to start)
     pio_sm.pio_set_enabled(PIO0, 1u32);    // SM_ENABLE bit0 -> SM0
 }
 
