@@ -410,7 +410,7 @@ impl<'a> Parser<'a> {
                 for e in errors {
                     self.diags.error(
                         format!("in pio program `{name}`: {}", e.msg),
-                        "E114",
+                        "E117",
                         span,
                     );
                 }

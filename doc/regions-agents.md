@@ -193,6 +193,17 @@ agents stay flat):
   with no count register (nRF ECB walks exactly 48 bytes): the obligation
   moves to the delivery -- a buffer handed to the channel must be >= N
   bytes (E619).
+- `dreq = P.R.F = VARIANT` -- the DMA->FIFO bridge, pacing half. A channel
+  streaming to a peripheral FIFO (a PIO TX FIFO) must select the matching
+  transfer request, or it over/underruns; the region pass checks the program's
+  write to that field against the declared variant (E651).
+- `endpoint = HANDOFF_P.HANDOFF_R = EP_P.EP_R[i]` -- the DMA->FIFO bridge,
+  address half. Declares the fixed peripheral register the channel's address
+  handoff must be pointed at; the program must deliver `&EP_P.EP_R[i]` to that
+  handoff, else E652 (a wrong-FIFO typo streams to the wrong place). Pairs with
+  `dreq`. Here the handoff delivers a *peripheral-register* address (a paced
+  endpoint), not a region buffer -- the FIFO is not memory the agent reaches, so
+  the reach check (E608) does not apply; `endpoint` is its analogue.
 
 Other sections: `[interrupts]` (label -> IRQ number), `[startup]` (MMIO
 RMW-OR writes in the reset handler before .data/.bss -- the CMSIS
@@ -232,6 +243,12 @@ A region names a mem block and lists the agents that share it.
   for exactly the registers that matter. The *drives* relation (module M
   drives agent A iff M owns one of A's handoff registers) is derived, never
   declared.
+- **`owns gpio[lo..hi]`** -- the same exclusivity primitive over an inclusive
+  GPIO-pin range rather than a register. Two modules claiming overlapping pins is
+  E650, the pin-level analogue of E604 (attributed across modules by source
+  file). Its use is PIO: a block's four state machines share one pin space, so a
+  module declares the pins its state machine drives. Pins are *declared*, not
+  inferred (the per-SM `PINCTRL` writes go through runtime helper arguments).
 - **`in <region>`** -- placement as a checked claim. The generated linker
   script places the symbol; membership becomes a fact for handoff checking.
   Region memory is NOBITS: not zeroed, not loaded, so initializers are
@@ -399,6 +416,9 @@ Empirical IKOS facts the encodings are built on (measured, not assumed):
 | E618 | extent unit cross-check (`when P.R.F = V` not established at arming) |
 | E619 | fixed-block extent: delivered buffer smaller than the block |
 | E620 | agent pointer escapes the deriving function (volatile lowering would be lost) |
+| E650 | `owns gpio[..]`: a GPIO pin range driven by two modules (pin-level analogue of E604) |
+| E651 | DMA->FIFO `dreq`: the program selects a transfer request other than the channel's declared one |
+| E652 | DMA->FIFO `endpoint`: the address handoff is pointed at a register other than the declared endpoint |
 
 (E606 and E613 were retired: the encoding axis no longer exists; `@shared
 in R` now composes.)

@@ -1006,6 +1006,15 @@ peripheral GPIOA at 0x40020000 {
   read-write. The same `E330` / `E331` errors apply to whole-register reads and writes.
 - `&PERIPH` yields `*PeriphType` for use in pointer contexts
 - `&periph.reg` yields a pointer to the register (via `inttoptr`)
+- **Register arrays.** `reg NAME[N] offset O stride S { ... }` declares N registers at
+  `O, O+S, ..., O+(N-1)*S`, reached as `PERIPH.NAME[i]` -- a volatile MMIO access at
+  `base + O + S*i` with a runtime or constant `i`. Fields compose (`PERIPH.NAME[i].FIELD`,
+  a runtime-address read-modify-write) and `&PERIPH.NAME[i]` is the element's address.
+  This models hardware that is genuinely an indexed bank -- e.g. a PIO block's 32-slot
+  instruction memory `reg INSTR_MEM[32] offset 0x48 stride 0x4` or its per-state-machine
+  groups `reg SM_CLKDIV[4] offset 0xC8 stride 0x18`. Accessing the array without an index
+  (`PERIPH.NAME`) is `E337`; a constant index `>= N` is `E338`; `reg NAME[N]` without a
+  `stride` is `E116`. `bml-svd` emits this form for SVD `<dim>` registers.
 - CMSIS-SVD XML import available via the standalone [`bml-svd`](https://github.com/tralamazza/bml-svd) tool
 - STM `cmsis-device-fX` device repos can be imported into `.target` files with
   [`bml-cmsis`](./stm32-cmsis.md)
@@ -1054,6 +1063,32 @@ See [peripheral-types.md](./peripheral-types.md).
   instance (the generic body is not emitted), so the addresses stay compile-time
   constants. Ownership is the caller's: a driver's `u.REG` access is not
   region-checked; the caller `owns` the concrete instance.
+
+### Inline PIO programs (`pio NAME { ... }`)
+
+The `pio NAME { ... }` block assembles RP2040/RP2350 PIO assembly -- a separate 16-bit
+instruction set -- at compile time. Its body is the foreign PIO ISA, captured verbatim
+like an `asm { }` body, and the block desugars to ordinary top-level consts (it never
+reaches codegen, like an inline field enum or a `peripheral_type`): a
+`const NAME_PROGRAM: [u16; N]` of assembled instruction words plus metadata
+(`NAME_WRAP_TARGET`, `NAME_WRAP`, `NAME_SIDESET_COUNT`, `NAME_SIDESET_OPT`, `NAME_ORIGIN`).
+Assembly errors are reported against the block as `E117`.
+
+```
+pio blink {
+.wrap_target
+    set pins, 1 [31]
+    set pins, 0 [31]
+.wrap
+}
+// => const blink_PROGRAM: [u16; 2] = [0xFF01u16, 0xFF00u16];
+//    const blink_WRAP_TARGET: u32 = 0; const blink_WRAP: u32 = 1; ...
+```
+
+Load the words into a PIO block's `INSTR_MEM[i]` register array and configure the state
+machine from the metadata (wrap/side-set/origin). The `lib/rp2350/pio_sm.bml` helpers
+(`pio_load`, `pio_add_program`, `PioSmConfig`, ...) do this; see the
+`bml/examples/rp2350-pio-blink` examples.
 
 ## 10. Target files
 
@@ -1450,6 +1485,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E112  | (removed -- `var`/`const` may now be declared inside a function body) |
 | E113  | Nesting too deep (expression, type, or block) |
 | E114  | Register-field bit index or range out of range (must be 0..32) |
+| E116  | Register array (`reg NAME[N]`) needs a `stride S` after the offset (or `stride` used on a non-array register) |
+| E117  | Inline `pio { }` block: PIO assembly error (bad mnemonic/operand, program > 32 instructions, side-set out of range, ...) |
 | E200  | Duplicate name |
 | E201  | `@exclusive` references unknown function |
 | E300  | Type mismatch in var declaration |
@@ -1489,6 +1526,8 @@ from context and is compatible with any `*T` or `*mut T`.
 | E334  | Cannot write through a readonly view (`view`/`ring`/`bits`); only reads are allowed |
 | E335  | `view` over an agent-shared array outside its claim/handoff window |
 | E336  | Wrapping operator (`+%`/`-%`/`*%`) requires integer operands |
+| E337  | Register array accessed without an index (`PERIPH.NAME` -- use `NAME[i]`) |
+| E338  | Constant register-array index out of range (`>= N`) |
 | E400  | (removed -- use-after-move is reported as E304; the borrow pass tracks no moves) |
 | E401  | `@exclusive` access from wrong function |
 | E402  | `@shared` ceiling violation |
