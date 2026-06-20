@@ -15,7 +15,10 @@ reach = sram8, flash
 mem = sram8
 agents = dma
 
-# Channel 0 is paired with the PIO0 TX0 FIFO: the program must select the PIO0_TX0
-# transfer request, or the DMA over/underruns the FIFO (E651).
+# Channel 0 is paired with the PIO0 TX0 FIFO. Both halves of the pairing are
+# checked against the program: the transfer request (or the DMA over/underruns
+# the FIFO, E651) and the endpoint address the write handoff is pointed at (or
+# the DMA streams to the wrong place, E652).
 [agent.dma.ch0]
 dreq = DMA.CH0_CTRL_TRIG.TREQ_SEL = PIO0_TX0
+endpoint = DMA.CH0_WRITE_ADDR = PIO0.TXF[0]

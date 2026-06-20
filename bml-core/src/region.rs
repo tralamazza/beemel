@@ -43,7 +43,7 @@ use crate::ast::{
 use crate::errors::DiagnosticBag;
 use crate::resolver::SymbolTable;
 use crate::source::{FileId, Span};
-use crate::target::{Agent, AgentKind, Channel, DreqSpec, PortBy, Region, Target};
+use crate::target::{Agent, AgentKind, Channel, DreqSpec, EndpointSpec, PortBy, Region, Target};
 use crate::types::Type;
 use std::collections::{HashMap, HashSet};
 
@@ -156,6 +156,7 @@ pub fn check(program: &Program, symbols: &SymbolTable, target: &Target, diags: &
     check_ownership_exclusivity(program, symbols, diags);
     check_handoff_writes(program, symbols, target, diags);
     check_dreq(program, symbols, target, diags);
+    check_endpoint(program, symbols, target, diags);
     check_reclaim_guards(program, symbols, target, diags);
     check_core_sharing(program, symbols, target, diags);
 }
@@ -809,6 +810,73 @@ fn check_dreq(program: &Program, symbols: &SymbolTable, target: &Target, diags: 
     }
 }
 
+/// E652: the address half of the DMA->FIFO bridge. A channel declares the
+/// peripheral register its address handoff must be pointed at
+/// (`endpoint = HANDOFF = P.R[i]`); a program that delivers `&OTHER` to that
+/// handoff would stream to the wrong place. Pairs with the DREQ check (E651).
+fn check_endpoint(
+    program: &Program,
+    symbols: &SymbolTable,
+    target: &Target,
+    diags: &mut DiagnosticBag,
+) {
+    let eps: Vec<&EndpointSpec> = target
+        .agents
+        .iter()
+        .flat_map(|a| a.channels.iter())
+        .filter_map(|c| c.endpoint.as_ref())
+        .collect();
+    if eps.is_empty() {
+        return;
+    }
+
+    let mut writes = Vec::new();
+    collect_peripheral_writes(program, symbols, &mut writes);
+
+    for ep in eps {
+        // Skip an unresolvable endpoint declaration (bad peripheral/register).
+        let resolves = symbols
+            .peripherals
+            .get(&ep.ep_periph)
+            .is_some_and(|p| p.regs.contains_key(&ep.ep_reg));
+        if !resolves {
+            continue;
+        }
+        for w in &writes {
+            if w.periph == ep.handoff_periph
+                && w.reg == ep.handoff_reg
+                && w.field.is_none()
+                && let Some((rp, rr, ri)) = &w.rhs_endpoint
+                && (*rp != ep.ep_periph || *rr != ep.ep_reg || *ri != ep.ep_index)
+            {
+                diags.error(
+                    format!(
+                        "`{}.{}` is handed `&{}.{}{}`, but the channel's declared endpoint is \
+                         `{}.{}{}`; the DMA would stream to the wrong peripheral address.",
+                        ep.handoff_periph,
+                        ep.handoff_reg,
+                        rp,
+                        rr,
+                        fmt_ep_index(*ri),
+                        ep.ep_periph,
+                        ep.ep_reg,
+                        fmt_ep_index(ep.ep_index),
+                    ),
+                    "E652",
+                    w.span,
+                );
+            }
+        }
+    }
+}
+
+fn fmt_ep_index(i: Option<u64>) -> String {
+    match i {
+        Some(n) => format!("[{n}]"),
+        None => String::new(),
+    }
+}
+
 /// Like `resolve_owns_path` but emits nothing -- used by the exclusivity pass,
 /// where unresolved paths were already reported in the main walk.
 fn resolve_owns_path_quiet(path: &OwnsPath, symbols: &SymbolTable) -> Option<Claim> {
@@ -851,6 +919,10 @@ struct PeriphWrite {
     /// The unit cross-check (E618) compares it against the declared value;
     /// a non-literal RHS is "unknown" and neither satisfies nor violates.
     rhs_literal: Option<u64>,
+    /// The peripheral register whose address the RHS delivers, when the RHS is
+    /// `&P.R as u32` or `&P.R[i] as u32` -- `(periph, reg, index)`. Drives the
+    /// FIFO-endpoint check (E652).
+    rhs_endpoint: Option<(String, String, Option<u64>)>,
 }
 
 /// Handoff write checks, acting at peripheral-register write sites off a single
@@ -2588,6 +2660,7 @@ fn record_write(
     let rhs_static = rhs.and_then(addr_of_static).map(str::to_string);
     let rhs_disabling = rhs.is_some_and(is_disabling);
     let rhs_literal = rhs.and_then(|e| literal_value(e).or_else(|| enum_discriminant(e, symbols)));
+    let rhs_endpoint = rhs.and_then(addr_of_endpoint);
     if let LValue::Field(base, field) = lv {
         match base.as_ref() {
             // P.R = ...  (field is the register name)
@@ -2600,6 +2673,7 @@ fn record_write(
                     rhs_static: rhs_static.clone(),
                     rhs_disabling,
                     rhs_literal,
+                    rhs_endpoint: rhs_endpoint.clone(),
                 });
             }
             // P.R.F = ...  (reg is the register, field is the field)
@@ -2615,6 +2689,7 @@ fn record_write(
                         rhs_static: rhs_static.clone(),
                         rhs_disabling,
                         rhs_literal,
+                        rhs_endpoint: rhs_endpoint.clone(),
                     });
                 }
             }
@@ -2689,6 +2764,32 @@ fn addr_of_static(e: &Expr) -> Option<&str> {
             // whole descriptor block to the agent.
             Expr::Index(base, _) => match base.as_ref() {
                 Expr::Ident((name, _)) => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The peripheral register a `&P.R as u32` / `&P.R[i] as u32` RHS addresses,
+/// returned as `(periph, reg, index)`. Drives the FIFO-endpoint check (E652).
+/// `None` for any RHS that is not the address of a peripheral register.
+fn addr_of_endpoint(e: &Expr) -> Option<(String, String, Option<u64>)> {
+    match e {
+        Expr::Group(inner) | Expr::Cast(inner, _) => addr_of_endpoint(inner),
+        Expr::Unary(UnaryOp::AddrOf | UnaryOp::AddrOfMut, inner) => match inner.as_ref() {
+            // &P.R
+            Expr::FieldAccess(p, r) => match p.as_ref() {
+                Expr::Ident((pn, _)) => Some((pn.clone(), r.0.clone(), None)),
+                _ => None,
+            },
+            // &P.R[i]  (constant index)
+            Expr::Index(base, idx) => match (base.as_ref(), idx.as_ref()) {
+                (Expr::FieldAccess(p, r), Expr::IntLiteral(n, _, _)) => match p.as_ref() {
+                    Expr::Ident((pn, _)) => Some((pn.clone(), r.0.clone(), Some(*n))),
+                    _ => None,
+                },
                 _ => None,
             },
             _ => None,

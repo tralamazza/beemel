@@ -1,0 +1,12 @@
+// The program points the write handoff at the WRONG endpoint (TXF[2]) -> E652.
+peripheral_type FIFO_T { reg TXF[4] offset 0x10 stride 0x4 { field TXF: u32 bit[0..31] writeonly } }
+peripheral FIFO: FIFO_T at 0x50200000;
+peripheral MyDma at 0x50000000 {
+    reg WADDR offset 0x0 { field WADDR: u32 bit[0..31] }
+}
+owns MyDma;
+owns FIFO;
+export fn main() @context(thread) {
+    MyDma.WADDR = &FIFO.TXF[2] as u32;
+    loop {}
+}

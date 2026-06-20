@@ -1,0 +1,19 @@
+# DMA agent whose channel 0 must point its write handoff at FIFO.TXF[0] (E652).
+arch = armv7em
+cpu = cortex-m7
+
+[mem.flash]
+base = 0x08000000
+size = 1M
+
+[mem.sram]
+base = 0x20000000
+size = 128K
+
+[agent.mydma]
+kind = dma
+reach = sram
+handoff = MyDma.WADDR
+
+[agent.mydma.ch0]
+endpoint = MyDma.WADDR = FIFO.TXF[0]

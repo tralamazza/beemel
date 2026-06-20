@@ -181,6 +181,12 @@ pub struct Channel {
     /// PIO FIFO must select the matching DREQ or it over/underruns; the region
     /// pass checks the program's write against it (E651).
     pub dreq: Option<DreqSpec>,
+    /// `endpoint = HANDOFF_P.HANDOFF_R = EP_P.EP_R[i]`: the fixed peripheral
+    /// register (e.g. a PIO TX FIFO) that the channel's address handoff must be
+    /// pointed at. The region pass checks the program delivers `&EP_P.EP_R[i]`
+    /// to that handoff (E652) -- the address half of the DMA->FIFO bridge, paired
+    /// with `dreq` (the pacing half).
+    pub endpoint: Option<EndpointSpec>,
 }
 
 /// A `dreq = PERIPH.REG.FIELD = VARIANT` declaration: the channel's
@@ -191,6 +197,18 @@ pub struct DreqSpec {
     pub reg: String,
     pub field: String,
     pub variant: String,
+}
+
+/// An `endpoint = HANDOFF_P.HANDOFF_R = EP_P.EP_R[i]` declaration: the handoff
+/// register that delivers an address, and the peripheral register whose address
+/// it must deliver. `ep_index` is `Some` for an indexed endpoint (`TXF[0]`).
+#[derive(Debug, Clone)]
+pub struct EndpointSpec {
+    pub handoff_periph: String,
+    pub handoff_reg: String,
+    pub ep_periph: String,
+    pub ep_reg: String,
+    pub ep_index: Option<u64>,
 }
 
 /// A bus-matrix window: an address range `[start, end)` that an agent's bus
@@ -1440,6 +1458,7 @@ fn parse_channel_kv(ch: &mut Channel, key: &str, val: &str, line_num: usize) -> 
         "handoff" => ch.handoffs.push(parse_handoff(val, line_num)?),
         "completes_by" => ch.completes_by = parse_list(val),
         "dreq" => ch.dreq = Some(parse_dreq(val, line_num)?),
+        "endpoint" => ch.endpoint = Some(parse_endpoint(val, line_num)?),
         "extent" => {
             // A bare integer is the fixed-block form; anything else is the
             // count-register form.
@@ -1454,7 +1473,8 @@ fn parse_channel_kv(ch: &mut Channel, key: &str, val: &str, line_num: usize) -> 
         }
         _ => {
             return Err(format!(
-                "line {}: unknown channel key `{key}` (channels take handoff, completes_by,                  extent; reach/bus/enabled_by belong on the agent)",
+                "line {}: unknown channel key `{key}` (channels take handoff, completes_by, dreq, \
+                 endpoint, extent; reach/bus/enabled_by belong on the agent)",
                 line_num + 1
             ));
         }
@@ -1561,6 +1581,42 @@ fn parse_dreq(val: &str, line_num: usize) -> Result<DreqSpec, String> {
         reg: (*reg).to_string(),
         field: (*field).to_string(),
         variant: variant.to_string(),
+    })
+}
+
+/// `endpoint = HANDOFF_P.HANDOFF_R = EP_P.EP_R[i]`.
+fn parse_endpoint(val: &str, line_num: usize) -> Result<EndpointSpec, String> {
+    let bad = || {
+        format!(
+            "line {}: endpoint must be `HANDOFF_PERIPH.HANDOFF_REG = ENDPOINT_PERIPH.ENDPOINT_REG[i]`",
+            line_num + 1
+        )
+    };
+    let (handoff, ep) = val.split_once('=').ok_or_else(bad)?;
+    let [hp, hr] = handoff.trim().split('.').collect::<Vec<_>>()[..] else {
+        return Err(bad());
+    };
+    // Endpoint side: `PERIPH.REG` or `PERIPH.REG[i]`.
+    let ep = ep.trim();
+    let (ep_body, ep_index) = match ep.split_once('[') {
+        Some((body, idx)) => {
+            let idx = idx.strip_suffix(']').ok_or_else(bad)?.trim();
+            let n: u64 = idx.parse().map_err(|_| {
+                format!("line {}: endpoint index `{idx}` is not a number", line_num + 1)
+            })?;
+            (body.trim(), Some(n))
+        }
+        None => (ep, None),
+    };
+    let [ep_p, ep_r] = ep_body.split('.').collect::<Vec<_>>()[..] else {
+        return Err(bad());
+    };
+    Ok(EndpointSpec {
+        handoff_periph: hp.to_string(),
+        handoff_reg: hr.to_string(),
+        ep_periph: ep_p.to_string(),
+        ep_reg: ep_r.to_string(),
+        ep_index,
     })
 }
 

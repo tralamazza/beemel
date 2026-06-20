@@ -3131,6 +3131,21 @@ fn test_dreq_mismatch() {
     assert!(stderr.contains("E651"), "expected E651; stderr:\n{stderr}");
 }
 
+// DMA->FIFO endpoint check (E652): a channel declares the peripheral register
+// its write handoff must be pointed at (`endpoint = HANDOFF = P.R[i]`); pointing
+// it at a different register is rejected. Matching builds clean.
+#[test]
+fn test_endpoint_match_ok() {
+    let (ok, stderr) = bml_build_with_target("endpoint_ok.bml", Some("endpoint.target"));
+    assert!(ok, "matching endpoint should build; stderr:\n{stderr}");
+}
+#[test]
+fn test_endpoint_mismatch() {
+    let (ok, stderr) = bml_build_with_target("endpoint_mismatch_error.bml", Some("endpoint.target"));
+    assert!(!ok, "wrong endpoint should fail; stderr:\n{stderr}");
+    assert!(stderr.contains("E652"), "expected E652; stderr:\n{stderr}");
+}
+
 // The rule applies only to handoff registers: writing an ordinary register of
 // the same peripheral without owning anything is fine.
 #[test]
