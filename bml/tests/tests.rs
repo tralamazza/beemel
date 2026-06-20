@@ -445,7 +445,11 @@ fn test_reg_array_lowering() {
 // Address-of an indexed register `&P.REG[i]` lowers to the MMIO pointer
 // base+offset+stride*i (FIFO0 base 0x40000000 + TXF offset 0x10 = 1073741840).
 assert_pass!(test_reg_array_addr_ok, "reg_array_addr_ok.bml");
-assert_ir_contains!(test_reg_array_addr_lowering, "reg_array_addr_ok.bml", "1073741840");
+assert_ir_contains!(
+    test_reg_array_addr_lowering,
+    "reg_array_addr_ok.bml",
+    "1073741840"
+);
 
 // Regression (review #1/#2): a non-u32 register-array index and a sub-u32
 // indexed-field read must lower to valid IR. These only fail at llc, so the
@@ -453,9 +457,14 @@ assert_ir_contains!(test_reg_array_addr_lowering, "reg_array_addr_ok.bml", "1073
 // would make llc reject it and the build fail.
 #[test]
 fn test_reg_array_index_types_build() {
-    let (ok, stderr) =
-        bml_build_with_target("reg_array_index_types_ok.bml", Some("reg_index_types.target"));
-    assert!(ok, "non-u32 index / sub-u32 indexed field must build; stderr:\n{stderr}");
+    let (ok, stderr) = bml_build_with_target(
+        "reg_array_index_types_ok.bml",
+        Some("reg_index_types.target"),
+    );
+    assert!(
+        ok,
+        "non-u32 index / sub-u32 indexed field must build; stderr:\n{stderr}"
+    );
 }
 
 // Field access on an indexed array register `P.REG[i].FIELD` (the per-SM PIO
@@ -728,6 +737,18 @@ fn test_ring_debug_type() {
     );
 }
 #[test]
+fn test_fn_ptr_debug_type() {
+    let ir = bml_ir_debug("fn_ptr_debug.bml");
+    // A fn-pointer lowers to `ptr`, so its DWARF type must be a pointer type
+    // over a subroutine type -- an integer DIBasicType here makes the LLVM
+    // verifier / IKOS reject the module. This fixture has no data pointers, so
+    // the only DW_TAG_pointer_type present is the function pointer.
+    assert!(
+        ir.contains("tag: DW_TAG_pointer_type, baseType:") && ir.contains("DISubroutineType"),
+        "expected fn-pointer DIDerivedType(DW_TAG_pointer_type) over a DISubroutineType\n--- IR ---\n{ir}\n---"
+    );
+}
+#[test]
 fn test_ring_ir_lowering() {
     let ir = bml_ir("ring_read.bml");
     // 4-field descriptor; capacity 8 is a power of two, so the physical index
@@ -857,6 +878,77 @@ assert_pass!(test_pointer_casts, "pointer_casts.bml");
 assert_pass!(test_pointer_void, "pointer_void.bml");
 assert_pass!(test_extern_ptr, "extern_ptr.bml");
 assert_pass!(test_extern_abi_repr_c_ptr, "extern_abi_repr_c_ptr.bml");
+// AAPCS narrow-int extension at the extern (C ABI) boundary: declares and
+// calls carry zeroext/signext on sub-word ints; full-width stays bare.
+// Return attribute precedes the type; parameter/argument attribute follows it.
+assert_ir_contains!(
+    test_extern_ext_ret,
+    "extern_abi_ext.bml",
+    "declare zeroext i8 @getchar()"
+);
+assert_ir_contains!(
+    test_extern_ext_param_u8,
+    "extern_abi_ext.bml",
+    "declare void @putchar(i8 zeroext)"
+);
+assert_ir_contains!(
+    test_extern_ext_param_i8,
+    "extern_abi_ext.bml",
+    "declare void @put_signed(i8 signext)"
+);
+assert_ir_contains!(
+    test_extern_ext_param_u16,
+    "extern_abi_ext.bml",
+    "declare void @put_wide(i16 zeroext)"
+);
+// The load-bearing case: a dynamic narrow arg gets the caller-side attr.
+assert_ir_contains!(
+    test_extern_ext_call_arg,
+    "extern_abi_ext.bml",
+    "@putchar(i8 zeroext %"
+);
+assert_ir_contains!(
+    test_extern_ext_call_ret,
+    "extern_abi_ext.bml",
+    "call zeroext i8 @getchar()"
+);
+// Full-width args never get an extension attribute.
+assert_ir_not_contains!(
+    test_extern_ext_word_bare,
+    "extern_abi_ext.bml",
+    "i32 zeroext"
+);
+// Uniform AAPCS extension: applied to internal signatures and calls, indirect
+// calls, and enums lowering to a narrow integer -- not just the extern boundary.
+// An internal define and its call site must agree.
+assert_ir_contains!(
+    test_narrow_internal_def,
+    "narrow_abi_uniform.bml",
+    "define zeroext i8 @scale(i8 zeroext %x)"
+);
+assert_ir_contains!(
+    test_narrow_internal_call,
+    "narrow_abi_uniform.bml",
+    "call zeroext i8 @scale(i8 zeroext "
+);
+assert_ir_contains!(
+    test_narrow_indirect_def,
+    "narrow_abi_uniform.bml",
+    "define zeroext i8 @apply(ptr %f, i8 zeroext %v)"
+);
+// An indirect call (callee is a register `%`, not `@`) carries the attr too.
+assert_ir_contains!(
+    test_narrow_indirect_call,
+    "narrow_abi_uniform.bml",
+    "call zeroext i8 %"
+);
+// An enum with a u8 repr lowers to i8 and must be extended (the hole a flat
+// surface-type match would miss).
+assert_ir_contains!(
+    test_narrow_enum_extern,
+    "narrow_abi_uniform.bml",
+    "declare void @set_mode(i8 zeroext)"
+);
 assert_error!(test_extern_abi_b1, "extern_abi_b1_error.bml", "E356");
 assert_error!(test_extern_abi_view, "extern_abi_view_error.bml", "E356");
 assert_error!(
@@ -3141,7 +3233,8 @@ fn test_endpoint_match_ok() {
 }
 #[test]
 fn test_endpoint_mismatch() {
-    let (ok, stderr) = bml_build_with_target("endpoint_mismatch_error.bml", Some("endpoint.target"));
+    let (ok, stderr) =
+        bml_build_with_target("endpoint_mismatch_error.bml", Some("endpoint.target"));
     assert!(!ok, "wrong endpoint should fail; stderr:\n{stderr}");
     assert!(stderr.contains("E652"), "expected E652; stderr:\n{stderr}");
 }

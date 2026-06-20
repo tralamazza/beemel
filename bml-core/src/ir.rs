@@ -552,26 +552,26 @@ impl IrEmitter {
             }
             let reg = self.emit_expr(arg, symbols, fn_name);
             let ty = self.expr_type(arg, symbols);
+            // Match the monomorphized callee's `define`, which applies the same
+            // AAPCS narrow-int extension (see abi_ext).
             if let Some(pty) = param_tys.get(i) {
                 let reg = self.coerce_int(reg, &ty, pty);
-                arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+                arg_parts.push(format!("{}{} {reg}", llvm_type(pty), abi_param_suffix(pty)));
             } else {
                 arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
             }
         }
         let arg_str = arg_parts.join(", ");
-        let ret_ty = symbols
-            .functions
-            .get(callee)
-            .and_then(|s| s.ret.as_ref())
-            .map_or_else(|| "void".to_string(), llvm_type);
+        let ret = symbols.functions.get(callee).and_then(|s| s.ret.as_ref());
+        let ret_ty = ret.map_or_else(|| "void".to_string(), llvm_type);
+        let ret_prefix = ret.map_or_else(String::new, abi_ret_prefix);
         if ret_ty == "void" {
             self.line(&format!("call void @{mangled}({arg_str}){dbg_sfx}"));
             String::new()
         } else {
             let reg = self.new_reg();
             self.line(&format!(
-                "{reg} = call {ret_ty} @{mangled}({arg_str}){dbg_sfx}"
+                "{reg} = call {ret_prefix}{ret_ty} @{mangled}({arg_str}){dbg_sfx}"
             ));
             reg
         }
@@ -1018,28 +1018,30 @@ impl IrEmitter {
         let mut any = false;
         for item in &program.items {
             if let ast::Item::ExternFnDef(f) = item {
-                let ret_ty = match &f.ret {
-                    Some(ty) => llvm_type(&crate::types::resolve_type_expr(
-                        ty,
-                        &symbols.structs,
-                        &symbols.enums,
-                    )),
-                    None => "void".to_string(),
+                // AAPCS narrow-int extension: prefix sub-word params/return
+                // with zeroext/signext (see abi_ext).
+                let (ret_prefix, ret_ty) = match &f.ret {
+                    Some(ty) => {
+                        let r =
+                            crate::types::resolve_type_expr(ty, &symbols.structs, &symbols.enums);
+                        (abi_ret_prefix(&r), llvm_type(&r))
+                    }
+                    None => (String::new(), "void".to_string()),
                 };
                 let param_strs: Vec<String> = f
                     .params
                     .iter()
                     .map(|p| {
-                        llvm_type(&crate::types::resolve_type_expr(
+                        let r = crate::types::resolve_type_expr(
                             &p.ty,
                             &symbols.structs,
                             &symbols.enums,
-                        ))
+                        );
+                        format!("{}{}", llvm_type(&r), abi_param_suffix(&r))
                     })
                     .collect();
                 self.line(&format!(
-                    "declare {} @{}({})",
-                    ret_ty,
+                    "declare {ret_prefix}{ret_ty} @{}({})",
                     f.name.0,
                     param_strs.join(", ")
                 ));
@@ -1365,17 +1367,27 @@ impl IrEmitter {
         self.current_ctx = fn_sym.map_or(Context::Thread, |s| s.context);
 
         let ret_ty = fn_ret_llvm_type(fn_def, symbols);
+        // AAPCS narrow-int extension, applied to every signature (see abi_ext).
+        let ret_prefix = match &fn_def.ret {
+            Some(ty) => abi_ret_prefix(&crate::types::resolve_type_expr(
+                ty,
+                &symbols.structs,
+                &symbols.enums,
+            )),
+            None => String::new(),
+        };
         let param_strs: Vec<String> = fn_def
             .params
             .iter()
             .filter(|p| !is_handle_param(p, symbols))
             .map(|p| {
-                let pty = llvm_type(&crate::types::resolve_type_expr(
-                    &p.ty,
-                    &symbols.structs,
-                    &symbols.enums,
-                ));
-                format!("{pty} %{}", p.name.0)
+                let pty = crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
+                format!(
+                    "{}{} %{}",
+                    llvm_type(&pty),
+                    abi_param_suffix(&pty),
+                    p.name.0
+                )
             })
             .collect();
 
@@ -1443,7 +1455,7 @@ impl IrEmitter {
             .map(|s| format!(" section \"{s}\""))
             .unwrap_or_default();
         self.line(&format!(
-            "define {ret_ty} @{}({}) #{}{section_attr} {}{{",
+            "define {ret_prefix}{ret_ty} @{}({}) #{}{section_attr} {}{{",
             emit_name,
             param_strs.join(", "),
             attr_num,
@@ -2807,29 +2819,32 @@ impl IrEmitter {
                             &dbg_sfx,
                         );
                     }
-                    let param_tys: Option<Vec<Type>> = symbols
-                        .functions
-                        .get(&direct_name)
-                        .map(|s| s.params.iter().map(|(_, t)| t.clone()).collect());
+                    let fn_sym = symbols.functions.get(&direct_name);
+                    let param_tys: Option<Vec<Type>> =
+                        fn_sym.map(|s| s.params.iter().map(|(_, t)| t.clone()).collect());
                     let mut arg_parts = Vec::new();
                     for (i, arg) in args.iter().enumerate() {
                         let reg = self.emit_expr(arg, symbols, fn_name);
                         let ty = self.expr_type(arg, symbols);
                         // Pass each argument at its parameter's width so an i32
-                        // literal lands correctly in a narrower parameter slot.
+                        // literal lands correctly in a narrower parameter slot,
+                        // with the AAPCS narrow-int extension (see abi_ext).
                         if let Some(pty) = param_tys.as_ref().and_then(|p| p.get(i)) {
                             let reg = self.coerce_int(reg, &ty, pty);
-                            arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+                            arg_parts.push(format!(
+                                "{}{} {reg}",
+                                llvm_type(pty),
+                                abi_param_suffix(pty)
+                            ));
                         } else {
                             arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
                         }
                     }
                     let arg_str = arg_parts.join(", ");
-                    let fn_sym = symbols.functions.get(&direct_name);
 
-                    let ret_ty = fn_sym
-                        .and_then(|s| s.ret.as_ref())
-                        .map_or_else(|| "void".to_string(), llvm_type);
+                    let ret = fn_sym.and_then(|s| s.ret.as_ref());
+                    let ret_ty = ret.map_or_else(|| "void".to_string(), llvm_type);
+                    let ret_prefix = ret.map_or_else(String::new, abi_ret_prefix);
 
                     if ret_ty == "void" {
                         self.line(&format!("call void @{direct_name}({arg_str}){dbg_sfx}"));
@@ -2841,7 +2856,7 @@ impl IrEmitter {
                     } else {
                         let reg = self.new_reg();
                         self.line(&format!(
-                            "{reg} = call {ret_ty} @{direct_name}({arg_str}){dbg_sfx}"
+                            "{reg} = call {ret_prefix}{ret_ty} @{direct_name}({arg_str}){dbg_sfx}"
                         ));
                         reg
                     }
@@ -2859,18 +2874,25 @@ impl IrEmitter {
                     for (i, arg) in args.iter().enumerate() {
                         let reg = self.emit_expr(arg, symbols, fn_name);
                         let ty = self.expr_type(arg, symbols);
+                        // Same AAPCS extension as the direct path. The pointee's
+                        // own `define` applies the identical type-driven rule, so
+                        // call site and callee agree whether it is bml or C.
                         if let Some(pty) = param_tys.as_ref().and_then(|p| p.get(i)) {
                             let reg = self.coerce_int(reg, &ty, pty);
-                            arg_parts.push(format!("{} {reg}", llvm_type(pty)));
+                            arg_parts.push(format!(
+                                "{}{} {reg}",
+                                llvm_type(pty),
+                                abi_param_suffix(pty)
+                            ));
                         } else {
                             arg_parts.push(format!("{} {reg}", llvm_type(&ty)));
                         }
                     }
                     let arg_str = arg_parts.join(", ");
 
-                    let ret_ty = match &callee_ty {
-                        Type::Fn(_, ret) => llvm_type(ret),
-                        _ => "void".to_string(),
+                    let (ret_prefix, ret_ty) = match &callee_ty {
+                        Type::Fn(_, ret) => (abi_ret_prefix(ret), llvm_type(ret)),
+                        _ => (String::new(), "void".to_string()),
                     };
 
                     if ret_ty == "void" {
@@ -2879,7 +2901,7 @@ impl IrEmitter {
                     } else {
                         let reg = self.new_reg();
                         self.line(&format!(
-                            "{reg} = call {ret_ty} {callee_reg}({arg_str}){dbg_sfx}"
+                            "{reg} = call {ret_prefix}{ret_ty} {callee_reg}({arg_str}){dbg_sfx}"
                         ));
                         reg
                     }
@@ -5201,6 +5223,44 @@ impl IrEmitter {
                 self.type_dbg_id.insert(key, id);
                 return id;
             }
+            Type::Fn(params, ret) => {
+                // A function pointer lowers to `ptr`; its debug type must be a
+                // pointer type, NOT the integer fallback below. An integer
+                // DIBasicType on a non-integer `ptr` value makes the LLVM
+                // verifier (and IKOS, under `bml verify`) reject the module --
+                // the same hazard the view arms above avoid for aggregates.
+                let ret_str = if matches!(**ret, Type::Void) {
+                    "null".to_string()
+                } else {
+                    format!("!{}", self.dbg_type(ret))
+                };
+                let param_strs: Vec<String> = params
+                    .iter()
+                    .map(|p| format!("!{}", self.dbg_type(p)))
+                    .collect();
+                let types = std::iter::once(ret_str)
+                    .chain(param_strs)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sub_id = self.new_dbg_id();
+                writeln!(
+                    self.debug_metadata,
+                    "!{sub_id} = !DISubroutineType(types: !{{{types}}})"
+                )
+                .unwrap();
+                let id = self.new_dbg_id();
+                writeln!(
+                    self.debug_metadata,
+                    "!{id} = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !{sub_id}, size: 32)"
+                )
+                .unwrap();
+                self.type_dbg_id.insert(key, id);
+                return id;
+            }
+            // The remaining types all lower to a 32-bit integer (`Addr`, and the
+            // post-resolver-unreachable `PeripheralHandle`/`Unresolved`/`Error`),
+            // so an i32 DIBasicType matches. Types that lower to `ptr` must NOT
+            // reach here -- they need a pointer DIType (see the `Fn`/`Ptr` arms).
             _ => ("i32", 32, 5),
         };
         writeln!(
@@ -5588,6 +5648,14 @@ impl IrEmitter {
                 {
                     return fn_sym.ret.clone().unwrap_or(Type::Void);
                 }
+                // Indirect call: the result type is the function pointer's
+                // return type. Without this an indirect call to a narrow-
+                // returning pointer is mistyped as u32, and consuming the i8/i16
+                // result coerces it as i32 (`trunc i32 %r to i8`), which llc
+                // rejects. Independent of the AAPCS extension work; surfaced by it.
+                if let Type::Fn(_, ret) = self.expr_type(func_expr, symbols) {
+                    return *ret;
+                }
                 Type::U32
             }
         }
@@ -5671,6 +5739,73 @@ fn scalar_repr(ty: &Type) -> Type {
         Type::Enum(_, inner, _) => (**inner).clone(),
         Type::B8 => Type::U8,
         other => other.clone(),
+    }
+}
+
+/// AAPCS treatment of sub-word integers: the *caller* zero/sign-extends an
+/// argument to a full 32-bit register, and the *callee* extends a sub-word
+/// return. LLVM encodes that with the `zeroext`/`signext` parameter/return
+/// attributes. This is a property of beemel's calling convention (AAPCS), NOT
+/// of "extern-ness": beemel emits one convention for all Cortex-M code, so the
+/// attribute is applied uniformly to every function signature and call site
+/// (`emit_function`, the extern `declare`s, and the direct/indirect/handle call
+/// sites). Gating on a boundary fails for function pointers -- at an indirect
+/// call or a `define` you cannot tell whether the other end is C or beemel.
+/// Applying it everywhere makes beemel's ABI == AAPCS, so every crossing (incl.
+/// GCC/clang HALs like CMSIS or libopencm3, and bml callbacks invoked from C)
+/// is correct; internal calls just carry a redundant, optimizer-elided mask.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AbiExt {
+    None,
+    Zero,
+    Sign,
+}
+
+impl AbiExt {
+    fn token(self) -> &'static str {
+        match self {
+            AbiExt::None => "",
+            AbiExt::Zero => "zeroext",
+            AbiExt::Sign => "signext",
+        }
+    }
+}
+
+/// The extension for a value of this type, derived from the LOWERED integer
+/// (width + signedness) by recursing through enums and storage wrappers exactly
+/// as `llvm_type` does -- so it can never disagree with the emitted type. A flat
+/// match on surface variants would silently miss `repr u8` enums and wrapped
+/// types. `b1`/`i1` is intentionally `None`: it cannot cross the C ABI (E356),
+/// so there is no foreign expectation to meet, and internal i1 calls are
+/// self-consistent without it.
+fn abi_ext(ty: &Type) -> AbiExt {
+    match ty {
+        Type::I8 | Type::I16 => AbiExt::Sign,
+        Type::U8 | Type::U16 | Type::B8 => AbiExt::Zero,
+        Type::Enum(_, inner, _)
+        | Type::Exclusive(inner)
+        | Type::Shared(inner, _)
+        | Type::Mmio(inner)
+        | Type::AgentShared(inner) => abi_ext(inner),
+        _ => AbiExt::None,
+    }
+}
+
+/// Return-position prefix, which precedes the type (`zeroext i8 @f()`):
+/// `"zeroext "` / `"signext "` (trailing space) or `""`.
+fn abi_ret_prefix(ty: &Type) -> String {
+    match abi_ext(ty) {
+        AbiExt::None => String::new(),
+        e => format!("{} ", e.token()),
+    }
+}
+
+/// Parameter/argument-position suffix, which follows the type (`@f(i8 zeroext)`):
+/// `" zeroext"` / `" signext"` (leading space) or `""`.
+fn abi_param_suffix(ty: &Type) -> String {
+    match abi_ext(ty) {
+        AbiExt::None => String::new(),
+        e => format!(" {}", e.token()),
     }
 }
 

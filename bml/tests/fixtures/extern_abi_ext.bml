@@ -1,0 +1,21 @@
+// AAPCS narrow-int extension at the C ABI boundary. extern fn declares and
+// calls to them must carry zeroext/signext on sub-word integer params/returns,
+// so beemel-compiled callers interop with GCC/clang HALs (CMSIS, libopencm3)
+// that trust the caller's extension and don't re-mask narrow arguments.
+//
+// The load-bearing case is a *dynamic* narrow argument (a non-constant value):
+// without the attribute LLVM emits a bare register move (garbage upper bits)
+// instead of uxtb/uxth.
+extern fn getchar() -> u8;        // narrow return  -> zeroext
+extern fn putchar(c: u8);         // unsigned narrow arg -> zeroext
+extern fn put_signed(c: i8);      // signed narrow arg   -> signext
+extern fn put_wide(x: u16);       // 16-bit narrow arg   -> zeroext
+extern fn put_word(x: u32);       // full-width arg      -> no attr
+
+fn main() @context(thread) {
+    var x: u8 = getchar();   // return consumed: `call zeroext i8 @getchar`
+    putchar(x);              // DYNAMIC u8 arg: `@putchar(zeroext i8 %...)`
+    put_signed(-1i8);
+    put_wide(258u16);
+    put_word(7u32);          // u32 stays attr-free
+}

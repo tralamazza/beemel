@@ -1,0 +1,24 @@
+// AAPCS narrow-int extension is a property of beemel's calling convention, not
+// of extern-ness, so zeroext/signext is applied UNIFORMLY: on internal function
+// signatures and calls, on an indirect call through a function pointer (the
+// pointee's own define applies the identical rule, so both ends agree), and on
+// an enum that lowers to a narrow integer (the case a flat surface-type match
+// would miss).
+enum Mode: u8 { Idle = 0, Run = 1 }
+
+extern fn set_mode(m: Mode);          // enum -> i8 at the ABI, must be zeroext
+extern fn get_byte() -> u8;
+
+fn scale(x: u8) -> u8 { return x; }   // internal: narrow param + return
+
+fn apply(f: fn(u8) -> u8, v: u8) -> u8 {
+    return f(v);                      // indirect call: narrow arg + return
+}
+
+fn main() @context(thread) {
+    var b: u8 = get_byte();
+    var s: u8 = scale(b);             // direct internal call (matches define)
+    var t: u8 = apply(&scale, s);     // indirect call through a fn pointer
+    set_mode(Mode@Run);
+    var _ = t;
+}

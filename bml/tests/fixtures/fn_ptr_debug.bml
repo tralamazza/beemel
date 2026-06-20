@@ -1,0 +1,16 @@
+// Dedicated fixture for the function-pointer debug-info test (separate .ll so
+// it does not race other debug tests). A fn-pointer lowers to `ptr`, so its
+// DWARF type must be a pointer type over a subroutine type -- NOT an integer
+// DIBasicType, which makes the LLVM verifier (and IKOS, under `bml verify`)
+// reject the module. There are no data pointers here, so the only
+// DW_TAG_pointer_type in the emitted debug info is the function pointer.
+fn target(x: u8) -> u8 { return x; }
+
+fn dispatch(f: fn(u8) -> u8, v: u8) -> u8 {
+    return f(v);
+}
+
+fn main() @context(thread) {
+    var r: u8 = dispatch(&target, 7u8);
+    var _ = r;
+}

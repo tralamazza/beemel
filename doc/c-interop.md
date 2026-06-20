@@ -72,12 +72,36 @@ ARM Cortex-M uses the AAPCS calling convention:
 - Additional arguments on the stack
 - Return value in r0 (or r0:r1 for 64-bit types)
 - Stack is 8-byte aligned at function entry
-- `i8`/`i16` are sign/zero-extended to 32 bits in registers
-- LLVM already handles this for the `thumbv7em-none-eabi` target triple
+- Sub-word integers (`i8`/`i16`/`u8`/`u16`/`b8`) are passed in 32-bit
+  registers; the **caller** must zero/sign-extend the argument and the
+  **callee** extends the return -- AAPCS makes neither side re-mask
 
-bml-generated LLVM IR is already C ABI compatible. The `extern fn`
-declaration just emits LLVM `declare` instead of `define`, and the
-caller emits `call` as normal.
+This is a property of beemel's calling convention (AAPCS), not of
+"extern-ness", so bml emits the `signext`/`zeroext` parameter and return
+attributes **uniformly** -- on every function signature (`define` and
+`extern` `declare`) and every call site (direct, indirect through a
+function pointer, and monomorphized `peripheral_type` drivers). LLVM then
+lowers the caller-side extension (`uxtb`/`uxth`/`sxtb`/`sxth`). Gating on
+the boundary fails for function pointers: at an indirect call -- or at a
+`define` that C may call -- you cannot tell whether the other end is C or
+bml. Applying it everywhere makes bml's ABI identical to AAPCS, so every
+crossing agrees.
+
+This matters most for a *dynamic* (non-constant) narrow argument: without
+the attribute a value with dirty upper bits would reach a GCC/clang HAL
+(CMSIS, libopencm3) that trusts the caller and does not re-mask -- e.g. a
+stray high bit in a `u16` pin mask corrupting `GPIO->BSRR`. Constants are
+materialized fully extended regardless, so the hazard is dynamic args only.
+
+Rules: unsigned narrows and `b8` get `zeroext`; signed (`i8`/`i16`) get
+`signext`; the attribute is derived from the *lowered* integer, so a
+`repr u8` enum gets `zeroext` too; `i32`/`u32` and wider stay bare; `b1`
+(rejected at the boundary by E356) is never extended. Internal bml-to-bml
+calls also carry the attribute -- harmless and self-consistent, just an
+occasional redundant mask the optimizer elides.
+
+The `extern fn` declaration emits LLVM `declare` instead of `define`,
+and the caller emits `call` as normal.
 
 ## (Future) `c.bml` -- standard C prelude
 
