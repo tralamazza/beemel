@@ -89,6 +89,12 @@ pub struct IrEmitter {
     /// the sequence in their prologue (banked per-core NVIC -- a secondary
     /// core never runs the reset handler).
     pub(crate) isr_priorities: Vec<(u16, u8)>,
+    /// `(slot, priority)` for configurable system-exception `@isr`s
+    /// (SVC/PendSV/SysTick and the v7-M faults). Their priority lives in the SCB
+    /// SHPR registers, not the NVIC IPR, so it is programmed separately
+    /// (`emit_shpr_stores`) -- in the reset handler and every core entry, since
+    /// the SCB is banked per core like the NVIC.
+    pub(crate) shpr_priorities: Vec<(usize, u8)>,
     /// Nesting depth of `claim` blocks at the current emission point. Inside
     /// a claim (depth > 0) the per-access `@shared` critical sections are
     /// suppressed -- the claim's own cpsid/cpsie pair covers them, and an
@@ -624,6 +630,7 @@ impl IrEmitter {
             claim_depth: 0,
             claimed_statics: Vec::new(),
             isr_priorities: Vec::new(),
+            shpr_priorities: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -687,6 +694,7 @@ impl IrEmitter {
             claim_depth: 0,
             claimed_statics: Vec::new(),
             isr_priorities: Vec::new(),
+            shpr_priorities: Vec::new(),
             cross_core_locks: std::collections::HashMap::new(),
             spinlock_base: 0,
             mpu_flavor: crate::arch::MpuFlavor::Pmsa7,
@@ -1517,15 +1525,18 @@ impl IrEmitter {
         // Pre-emit allocas for all local variables in the entry block
         self.emit_entry_allocas(fn_def, symbols);
 
-        // Declared core entries ground the banked NVIC IPRs in their
-        // prologue -- this core never ran the reset handler (see
-        // arm::emit_ipr_stores).
+        // Declared core entries ground the banked NVIC IPRs and SCB SHPRs in
+        // their prologue -- this core never ran the reset handler (see
+        // arm::emit_ipr_stores). Both are programmed unconditionally on the
+        // emitter (even under a user reset handler), so this still fires.
         if !self.verify_mode
             && symbols.entry_fns.contains(&fn_def.name.0)
-            && !self.isr_priorities.is_empty()
+            && !(self.isr_priorities.is_empty() && self.shpr_priorities.is_empty())
         {
             let prios = self.isr_priorities.clone();
             crate::arch::arm::emit_ipr_stores(self, &prios);
+            let shpr = self.shpr_priorities.clone();
+            crate::arch::arm::emit_shpr_stores(self, &shpr);
         }
 
         // Emit body. Handle parameters are dropped (no runtime value), so they

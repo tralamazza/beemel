@@ -1,0 +1,10 @@
+// ARMv6-M: the SHPR registers are word-access-only (a byte store is
+// unpredictable on the M0), so the reset handler composes the byte lanes and
+// stores the whole word -- the SCB counterpart of the IPR word path.
+// @isr("PendSV", priority=2): PendSV is SHPR3 byte 2 (0xE000ED22), value
+// 2 << (8 - 2) = 128, so the word at 0xE000ED20 is 128 << 16 = 8388608.
+fn pendsv_h() @isr("PendSV", priority = 2) {
+}
+
+fn main() @context(thread) {
+}

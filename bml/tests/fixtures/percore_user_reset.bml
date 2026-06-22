@@ -1,0 +1,35 @@
+// S3 decoupling: a user-defined reset_handler replaces the generated startup
+// (so its IPR/SHPR stores are not emitted on the boot path), but a declared
+// core entry (side_main, core1) still re-programs the banked NVIC in its
+// prologue -- the priority sets are grounded on the emitter unconditionally,
+// not only when the reset handler is generated. Built with percore_isr.target.
+peripheral NVIC at 0xE000E100 {
+    reg ISER offset 0x000 {
+        field BITS: u32 bit[0..31]
+    }
+}
+
+var X: u32 @shared;
+var ENTRY_KICK: u32;
+
+fn reset_handler() @context(thread) {
+    var z: u32 = 0;
+}
+
+fn tick() @isr("TICKER", priority = 2) {
+    var x: u32 = X;
+    X = x + 1;
+}
+
+fn side_main() @context(thread) {
+    loop {
+        asm { } : : : "memory";
+    }
+}
+
+fn main() @context(thread) {
+    ENTRY_KICK = &side_main as u32;
+    NVIC.ISER = 1 << 5;
+    var x: u32 = X;
+    X = x + 1;
+}

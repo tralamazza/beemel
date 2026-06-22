@@ -183,6 +183,47 @@ pub fn emit_ipr_stores(e: &mut IrEmitter, isr_priorities: &[(u16, u8)]) {
     }
 }
 
+/// Program the SCB System Handler Priority Registers (SHPR1/2/3) of every
+/// configurable system-exception `@isr` from its declared priority -- the SCB
+/// counterpart of `emit_ipr_stores`. System exceptions keep their priority in
+/// SHPR, not the NVIC IPR: the priority byte of handler `N` (4..=15) is at
+/// `0xE000ED18 + (N - 4)` (SHPR1 = MemManage/BusFault/UsageFault, SHPR2 = SVC,
+/// SHPR3 = DebugMon/PendSV/SysTick). Emitted in the reset handler AND every
+/// declared core entry's prologue: the SCB is banked per core, like the NVIC.
+pub fn emit_shpr_stores(e: &mut IrEmitter, shpr_priorities: &[(usize, u8)]) {
+    if shpr_priorities.is_empty() {
+        return;
+    }
+    let ptr_ty = e.arch.ptr_type();
+    let shift = 8 - u32::from(e.priority_bits);
+    if matches!(e.arch, crate::arch::Arch::Armv6m) {
+        // ARMv6-M: SHPR2/SHPR3 are word-access-only (a byte store is
+        // unpredictable). At reset every SHPR is zero and this is the only
+        // writer, so compose the byte lanes of each touched word and store it
+        // whole -- exact, no read-modify-write. (v6-M has no SHPR1: there are
+        // no configurable fault handlers, so only slots 11/14/15 appear here.)
+        let mut words: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        for (slot, priority) in shpr_priorities {
+            let byte = 0xE000_ED18u32 + (*slot as u32 - 4);
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            *words.entry(byte & !3).or_insert(0) |= val << ((byte & 3) * 8);
+        }
+        for (word, val) in words {
+            e.line(&format!(
+                "store volatile i32 {val}, ptr inttoptr ({ptr_ty} {word} to ptr)"
+            ));
+        }
+    } else {
+        for (slot, priority) in shpr_priorities {
+            let addr = 0xE000_ED18u32 + (*slot as u32 - 4);
+            let val = (u32::from(*priority) << shift) & 0xFF;
+            e.line(&format!(
+                "store volatile i8 {val}, ptr inttoptr ({ptr_ty} {addr} to ptr)"
+            ));
+        }
+    }
+}
+
 pub fn emit_module_attributes(e: &mut IrEmitter) {
     // `no-builtins`: bml output is freestanding -- without it the optimizer
     // recognizes zero/copy loops and emits __aeabi_memclr/__aeabi_memcpy
@@ -249,8 +290,12 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
 
     // `(irq, priority)` for every `@isr` that lands in an NVIC slot, collected
     // while the table is assembled below; the generated reset handler programs
-    // the IPR bytes from it (system-exception slots use SHPR, not modeled yet).
+    // the IPR bytes from it. Configurable system exceptions (SVC/PendSV/SysTick
+    // and the v7-M faults) keep their priority in the SCB SHPR registers, not
+    // the NVIC IPR, so they are collected separately and programmed by
+    // `emit_shpr_stores`.
     let mut isr_priorities: Vec<(u16, u8)> = Vec::new();
+    let mut shpr_priorities: Vec<(usize, u8)> = Vec::new();
 
     let default_handler_name = if symbols.functions.contains_key("Default_Handler") {
         "Default_Handler"
@@ -278,8 +323,11 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
 
     // The generated reset handler is emitted AFTER the table entries are
     // assembled (it needs the collected `@isr` priorities); only its name is
-    // needed here. With a user-written reset handler nothing is generated, so
-    // the priorities stay unprogrammed -- same limitation as startup_init/MPU.
+    // needed here. With a user-written reset handler the generated startup is
+    // not emitted, so its IPR/SHPR/MPU/ECC/startup_init sequence is skipped on
+    // the boot path -- the user owns startup then. (Declared core entries still
+    // re-program the banked NVIC/SCB priorities in their prologue; that is
+    // grounded on the emitter unconditionally below.)
     let generate_reset = user_reset.is_none();
     let reset_fn = user_reset.unwrap_or_else(|| "reset_handler".to_string());
 
@@ -288,7 +336,12 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     entries[1] = format!("@{reset_fn}");
 
     for &(label, slot) in system_exceptions {
-        entries[slot] = if let Some((fn_name, _)) = labeled.get(label) {
+        entries[slot] = if let Some((fn_name, priority)) = labeled.get(label) {
+            // Slots 4..=15 are SHPR-configurable; NMI (2) and HardFault (3)
+            // have fixed negative priorities and ignore the annotation.
+            if slot >= 4 {
+                shpr_priorities.push((slot, *priority));
+            }
             format!("@{fn_name}")
         } else if symbols.functions.contains_key(label) {
             format!("@{label}")
@@ -307,6 +360,16 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     entries.resize(total, format!("@{default_handler_name}"));
 
     for (label, slot) in target_interrupts {
+        // A system-exception name (SVC/PendSV/SysTick/...) is not an NVIC line:
+        // it was already placed by the system-exception loop above and its
+        // priority goes to SHPR, not the IPR. Listing it in `[interrupts]`
+        // (e.g. `SysTick = 15`) must not also program a peripheral IPR.
+        if system_exceptions
+            .iter()
+            .any(|(name, _)| *name == label.as_str())
+        {
+            continue;
+        }
         let index = irq_start + *slot as usize;
         if index >= entries.len() {
             entries.resize(index + 1, format!("@{default_handler_name}"));
@@ -340,9 +403,16 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         unlabeled_idx += 1;
     }
 
+    // Ground the priority sets on the emitter unconditionally -- not only when
+    // we generate the reset handler. A user reset handler replaces the
+    // generated startup (so its IPR/SHPR stores are skipped there), but a
+    // declared core entry still re-programs the banked NVIC/SCB from these in
+    // its prologue; gating them on `generate_reset` left a secondary core's
+    // priorities at the reset default whenever a user reset handler existed.
+    e.isr_priorities.clone_from(&isr_priorities);
+    e.shpr_priorities.clone_from(&shpr_priorities);
     if generate_reset {
-        e.isr_priorities.clone_from(&isr_priorities);
-        emit_startup_routine(e, symbols, &isr_priorities);
+        emit_startup_routine(e, symbols, &isr_priorities, &shpr_priorities);
     }
 
     e.line(&format!(
@@ -367,6 +437,7 @@ pub fn emit_startup_routine(
     e: &mut IrEmitter,
     symbols: &SymbolTable,
     isr_priorities: &[(u16, u8)],
+    shpr_priorities: &[(usize, u8)],
 ) {
     e.counter = 0;
     let has_main = symbols.functions.contains_key("main");
@@ -478,6 +549,11 @@ pub fn emit_startup_routine(
     // initialized -- priority is static configuration, enable is runtime
     // policy.
     emit_ipr_stores(e, isr_priorities);
+    // System-exception priorities (SVC/PendSV/SysTick and the v7-M faults) live
+    // in the SCB SHPR registers, not the NVIC IPR -- grounded for the same
+    // reason: the ceiling model reasons over them, so they cannot stay at the
+    // reset default (0 = highest urgency).
+    emit_shpr_stores(e, shpr_priorities);
 
     // ECC RAM scrub: word-zero every non-flash mem block BEFORE the .data
     // copy (which then overwrites its part). ECC RAM powers up with random

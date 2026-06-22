@@ -1731,6 +1731,38 @@ assert_ir_contains_target!(
     "store volatile i32 32832, ptr inttoptr (i32 3758154752 to ptr)"
 );
 
+// System-exception priority goes to the SCB SHPR, not the NVIC IPR.
+// @isr("SysTick", priority=1) -> SHPR3 SysTick byte at 0xE000ED23 = 3758157091,
+// value 1 << (8-4) = 16. (vector_system.target also lists SysTick in
+// [interrupts]; that must NOT additionally program a peripheral IPR.)
+assert_ir_contains_target!(
+    test_shpr_systick_programmed,
+    "vector_system.bml",
+    "vector_system.target",
+    "store volatile i8 16, ptr inttoptr (i32 3758157091 to ptr)"
+);
+
+// A system-exception label listed in [interrupts] is not an NVIC line: it is
+// skipped in the IRQ loop, so no peripheral IPR is programmed for it. IRQ 15's
+// IPR byte would be 0xE000E400 + 15 = 3758154767.
+#[test]
+fn test_shpr_systick_no_nvic_ipr() {
+    let ir = bml_ir_with_target("vector_system.bml", Some("vector_system.target"));
+    assert!(
+        !ir.contains("i32 3758154767 to ptr"),
+        "system exception SysTick must not program a peripheral IPR\n--- IR ---\n{ir}\n---"
+    );
+}
+
+// ARMv6-M SHPR is word-access-only: the lanes are composed and the word stored.
+// @isr("PendSV", priority=2) -> word at 0xE000ED20 = 3758157088, 128 << 16.
+assert_ir_contains_target!(
+    test_shpr_v6m_word_composed,
+    "shpr_v6m.bml",
+    "isr_v6m.target",
+    "store volatile i32 8388608, ptr inttoptr (i32 3758157088 to ptr)"
+);
+
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
 // accessor contexts, and the lowering matches the hand-declared equivalent.
 #[test]
@@ -4254,6 +4286,29 @@ fn test_percore_entry_prologue_iprs() {
     assert!(
         entry_body.contains("store volatile i8 32, ptr inttoptr (i32 3758154757 to ptr)"),
         "expected the IRQ5 IPR store in the entry prologue:\n{entry_body}"
+    );
+}
+
+// S3 decoupling: a user reset_handler skips the generated startup, but a
+// declared core entry must STILL ground the banked NVIC in its prologue --
+// the priority sets are populated on the emitter unconditionally, not only
+// when the reset handler is generated.
+#[test]
+fn test_percore_entry_prologue_iprs_user_reset() {
+    let ir = bml_ir_with_target("percore_user_reset.bml", Some("percore_isr.target"));
+    let entry_body = ir
+        .split("define void @side_main")
+        .nth(1)
+        .expect("side_main in IR");
+    let entry_body = &entry_body[..entry_body.find("\n}").unwrap_or(entry_body.len())];
+    assert!(
+        entry_body.contains("store volatile i8 32, ptr inttoptr (i32 3758154757 to ptr)"),
+        "entry prologue must ground IRQ5 IPR even under a user reset:\n{entry_body}"
+    );
+    // The user reset handler is used directly: no auto-generated startup.
+    assert!(
+        !ir.contains("@_sidata = external"),
+        "user reset handler must replace the generated startup\n--- IR ---\n{ir}\n---"
     );
 }
 
