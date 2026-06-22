@@ -1454,8 +1454,24 @@ impl IrEmitter {
             .as_ref()
             .map(|s| format!(" section \"{s}\""))
             .unwrap_or_default();
+        // A monomorphized specialization (`name_override` -> `fn$INST`) is reached
+        // ONLY by a direct in-module `call @fn$INST`: E309 forbids taking the
+        // address of a handle-param function, so no `ptr @fn$INST` exists and the
+        // specialization is never named by ENTRY, the vector table, entry_fns, an
+        // escape to C, or a kept @section. `internal` linkage therefore lets
+        // globaldce (at -O2/-Os/-Oz) strip it once it is inlined away or otherwise
+        // uncalled -- the only case where stripping is correct. Exclude generics
+        // carrying @isr/@section: those attributes propagate to the specialization
+        // (it would then need a vector slot / a KEEP'd section). Every other
+        // function keeps external linkage (entry points and address escapes are a
+        // later, analysis-gated subset).
+        let linkage = if name_override.is_some() && !is_isr && fn_def.section.is_none() {
+            "internal "
+        } else {
+            ""
+        };
         self.line(&format!(
-            "define {ret_prefix}{ret_ty} @{}({}) #{}{section_attr} {}{{",
+            "define {linkage}{ret_prefix}{ret_ty} @{}({}) #{}{section_attr} {}{{",
             emit_name,
             param_strs.join(", "),
             attr_num,

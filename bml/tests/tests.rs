@@ -396,8 +396,8 @@ fn test_peripheral_type_param_monomorphizes() {
     let ir = bml_ir("peripheral_type_param_ok.bml");
     for spec in ["@usart_init$USART1(", "@usart_init$USART2("] {
         assert!(
-            ir.contains(&format!("define void {spec}")),
-            "expected a specialization `{spec}`\n--- IR ---\n{ir}"
+            ir.contains(&format!("define internal void {spec}")),
+            "expected an internal-linkage specialization `{spec}`\n--- IR ---\n{ir}"
         );
     }
     assert!(
@@ -486,8 +486,9 @@ fn test_reg_array_field_lowering() {
 fn test_peripheral_type_param_transitive_ir() {
     let ir = bml_ir("peripheral_type_param_transitive_ok.bml");
     assert!(
-        ir.contains("define void @setup$USART1(") && ir.contains("define void @enable$USART1("),
-        "both specializations should be emitted\n--- IR ---\n{ir}"
+        ir.contains("define internal void @setup$USART1(")
+            && ir.contains("define internal void @enable$USART1("),
+        "both specializations should be emitted (with internal linkage)\n--- IR ---\n{ir}"
     );
     assert!(
         ir.contains("call void @enable$USART1("),
@@ -746,6 +747,23 @@ fn test_fn_ptr_debug_type() {
     assert!(
         ir.contains("tag: DW_TAG_pointer_type, baseType:") && ir.contains("DISubroutineType"),
         "expected fn-pointer DIDerivedType(DW_TAG_pointer_type) over a DISubroutineType\n--- IR ---\n{ir}\n---"
+    );
+}
+#[test]
+fn test_internal_linkage_specialization() {
+    let ir = bml_ir("internal_linkage.bml");
+    // Monomorphized specializations are `internal` (E309 => no address escape =>
+    // globaldce can strip them once inlined away).
+    assert!(
+        ir.contains("define internal void @uart_putc$UART0")
+            && ir.contains("define internal void @uart_putc$UART1"),
+        "expected specializations to have internal linkage\n--- IR ---\n{ir}\n---"
+    );
+    // Entry points and ordinary functions keep external linkage.
+    assert!(
+        !ir.contains("define internal void @main")
+            && !ir.contains("define internal void @reset_handler"),
+        "main / reset_handler must NOT be internal\n--- IR ---\n{ir}\n---"
     );
 }
 #[test]

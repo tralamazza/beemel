@@ -1,0 +1,18 @@
+// Monomorphized peripheral_type specializations get `internal` linkage so the
+// optimizer (globaldce at -O2/-Os/-Oz) can strip them once they are inlined away
+// or otherwise uncalled. This is zero-risk: E309 forbids taking the address of a
+// handle-param function, so a `fn$INST` is reached only by a direct in-module
+// call. Entry points and ordinary (non-specialized) functions keep external
+// linkage.
+peripheral_type Uart {
+    reg DR offset 0x00 { field DATA: u32 bit[0..7] }
+}
+peripheral UART0: Uart at 0x40034000;
+peripheral UART1: Uart at 0x40038000;
+
+fn uart_putc(u: Uart, c: u8) { u.DR.DATA = c as u32; }
+
+fn main() @context(thread) {
+    uart_putc(UART0, 0x41u8);
+    uart_putc(UART1, 0x42u8);
+}
