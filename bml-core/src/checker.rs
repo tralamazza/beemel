@@ -3718,6 +3718,16 @@ enum AddrBorrowError {
         field_name: String,
         span: crate::source::Span,
     },
+    /// Taking the address of a `@shared` static (or a field/element of one)
+    /// outside a `claim` window. Access through the resulting `*T` carries no
+    /// static name, so it receives no ceiling critical section -- the exact
+    /// hazard E405 rejects for views. Set at the root static in
+    /// `read_place_info` and propagated through field/index; inside a `claim`
+    /// the static reads as its inner (non-`@shared`) type, so it is not set.
+    Shared {
+        name: String,
+        span: crate::source::Span,
+    },
 }
 
 impl AddrBorrowError {
@@ -3748,6 +3758,19 @@ impl AddrBorrowError {
                         "cannot take address of field `{struct_name}.{field_name}`: it is stored in a non-native byte order for this target, so the bytes are swapped relative to a plain `*T` read through the pointer. Read or write the field directly, or take a byte view over the struct for raw bytes."
                     ),
                     "E360",
+                    *span,
+                );
+            }
+            AddrBorrowError::Shared { name, span } => {
+                diags.error(
+                    format!(
+                        "cannot take the address of `@shared` `{name}`: access through the \
+                         resulting pointer carries no static name, so it gets none of the \
+                         ceiling critical-section that direct access does -- it would be an \
+                         unprotected race. Access `{name}` directly, or take its address \
+                         inside a `claim {name} {{ ... }}` window."
+                    ),
+                    "E405",
                     *span,
                 );
             }
@@ -3838,11 +3861,24 @@ fn read_place_info(
             }
 
             let ty = check_expr(expr, symbols, scope, fn_name, expected_ret, diags);
+            // A `@shared` static reads as `Type::Shared(..)` here; inside a
+            // `claim` window `with_claimed` has stripped that wrapper, so the
+            // address-of is allowed there (the window's mask covers it). The
+            // error propagates through `FieldAccess`/`Index` so `&S.f`/`&S[i]`
+            // are caught too.
+            let addr_borrow_error = symbols
+                .statics
+                .get(name)
+                .filter(|s| matches!(s.ty, Type::Shared(..)))
+                .map(|_| AddrBorrowError::Shared {
+                    name: name.clone(),
+                    span: *span,
+                });
             PlaceInfo {
                 ty,
                 mut_borrow_error: (!symbols.statics.contains_key(name))
                     .then_some(MutBorrowError::NotMutablePlace(*span)),
-                addr_borrow_error: None,
+                addr_borrow_error,
             }
         }
         Expr::Group(inner) => read_place_info(inner, symbols, scope, fn_name, expected_ret, diags),

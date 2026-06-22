@@ -1,0 +1,12 @@
+// Inside a `claim` window the static is owned under one mask, so taking its
+// address is allowed: the window's mask covers the access, and E616 keeps the
+// resulting pointer from escaping. `with_claimed` strips the @shared wrapper
+// for the body, so the address-of (E405 outside) is permitted here.
+var COUNTER: u32 @shared = 0;
+
+fn bump() @context(thread) {
+    claim COUNTER {
+        var p: *mut u32 = &mut COUNTER;
+        *p = *p + 1;
+    }
+}

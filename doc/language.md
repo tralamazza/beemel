@@ -626,10 +626,15 @@ of one byte.
 and kept out of the view's type. A view over a `@shared` global is **rejected**
 (E405): the `@shared` ceiling protocol is enforced by a critical section emitted
 around *direct* static access, and a view's access (through the descriptor
-pointer) would not receive it, so it would be a silent unprotected race. Direct
-access to a scalar `@shared` global gets the critical section automatically;
-bounds-checked indexed access to a `@shared` *array* is not available yet (a
-protected-view-access mechanism is future work).
+pointer) would not receive it, so it would be a silent unprotected race. Taking
+the raw address of a `@shared` global (`&S` / `&mut S`, or of a field/element
+`&S.f` / `&S[i]`) is rejected for the same reason and under the same code:
+access through the resulting `*T` carries no static name, so it gets none of the
+ceiling mask. Both are permitted inside a `claim S { ... }` window, where the
+single mask covers every access and `claim`'s escape rules (E616) keep the
+pointer from leaving. Direct access to a scalar `@shared` global gets the
+critical section automatically; bounds-checked indexed access to a `@shared`
+*array* is not available yet (a protected-view-access mechanism is future work).
 
 **`reclaim(arr)` over agent-shared memory.** An array placed in a region a
 DMA/external agent touches is `AgentShared`: its rvalue index-read is blocked
@@ -1533,7 +1538,7 @@ from context and is compatible with any `*T` or `*mut T`.
 | E402  | `@shared` ceiling violation |
 | E403  | Context-incompatible function call (ISR→thread or thread→ISR) |
 | E404  | Access to thread-only global from ISR |
-| E405  | Cannot build a view over `@shared` memory (view access bypasses the ceiling critical-section) |
+| E405  | Cannot build a view over, or take the address of, `@shared` memory outside a `claim` (indirect access bypasses the ceiling critical-section) |
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E500  | Circular import |
 | E501  | Module not found |

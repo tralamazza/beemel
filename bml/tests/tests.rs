@@ -578,6 +578,11 @@ assert_pass!(test_view_over_dma, "view_over_dma.bml");
 // But a view over @shared is rejected (E405): view access would bypass the
 // ceiling critical-section that protects direct @shared access.
 assert_error!(test_view_over_shared, "view_over_shared.bml", "E405");
+// Same hazard, same code via raw address-of: `&`/`&mut` of a @shared static
+// (or a field/element of one) outside a `claim` is E405 -- the aliased pointer
+// would write past the ceiling mask. Inside a `claim` window it is allowed.
+assert_error!(test_addr_of_shared, "addr_of_shared.bml", "E405");
+assert_pass!(test_addr_of_shared_in_claim, "addr_of_shared_in_claim.bml");
 // Mutable linear views (contiguous): write through index, coerce to readonly,
 // and the move gate (a mutable view is Move, so reuse after a call is E304).
 assert_pass!(test_view_mut_write, "view_mut_write.bml");

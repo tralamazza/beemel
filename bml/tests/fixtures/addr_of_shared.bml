@@ -1,0 +1,11 @@
+// Taking the address of a @shared static outside a `claim` is rejected (E405).
+// Access through the resulting `*T` carries no static name, so it gets none of
+// the ceiling critical-section that direct @shared access does -- the same
+// hazard E405 already rejects for views. Without this, an ISR writing through
+// the aliased pointer races a thread/ISR access the compiler proved stable.
+var COUNTER: u32 @shared = 0;
+
+fn main() @context(thread) {
+    var p: *mut u32 = &mut COUNTER;
+    *p = 1;
+}
