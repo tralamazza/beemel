@@ -1936,6 +1936,30 @@ fn test_vector_default_handler() {
     );
 }
 
+// `[interrupts]` is the chip's COMPLETE name->slot dictionary; the vector table
+// footprint follows USAGE, not the declared map. interrupts_sparse.target
+// declares lines up to SPI4 (slot 84) but the program handles only TIM2 (slot
+// 28), so the table is sized to 16 + 28 + 1 = 45 entries -- NOT 16 + 84 + 1 =
+// 101. An unhandled declared line costs nothing (no slot, no table growth).
+#[test]
+fn test_vector_table_sized_by_usage() {
+    let ir = bml_ir_with_target("interrupts_sparse.bml", Some("interrupts_sparse.target"));
+    assert!(
+        ir.contains("@vector_table = global [45 x ptr]"),
+        "table must be sized to the handled slot (TIM2=28 -> 45)\n--- IR ---\n{ir}\n---"
+    );
+    assert!(
+        !ir.contains("[101 x ptr]"),
+        "unhandled declared lines (SPI4=84) must not enlarge the table\n--- IR ---\n{ir}\n---"
+    );
+    // TIM2 is the highest handled slot, so it is the final table entry (no
+    // trailing comma); match without one.
+    assert!(
+        ir.contains("ptr @tim2"),
+        "the one handled line must still be wired\n--- IR ---\n{ir}\n---"
+    );
+}
+
 // Startup routine tests
 #[test]
 fn test_startup_basic() {

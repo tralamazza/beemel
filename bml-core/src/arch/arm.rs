@@ -441,10 +441,29 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         entries[slot] = "null".to_string();
     }
 
-    let max_irq = target_interrupts.values().max().copied().unwrap_or(0) as usize;
+    // Size the NVIC IRQ region by the highest slot that actually receives a
+    // handler -- NOT by the highest slot merely DECLARED in `[interrupts]`.
+    // `[interrupts]` is the chip's COMPLETE name->slot dictionary (physics): a
+    // line with no matching `@isr` / handler function stays `default_handler`
+    // and must cost nothing, so an unhandled (typically trailing) entry neither
+    // places a table slot nor extends the table. A system-exception name listed
+    // in `[interrupts]` (e.g. `SysTick = 15`) is not an NVIC line and never
+    // sizes this region -- it was placed in slots 0..16 above.
+    let is_system_exc = |label: &str| system_exceptions.iter().any(|(name, _)| *name == label);
+    let handled_irq = |label: &str| {
+        !is_system_exc(label)
+            && (labeled.contains_key(label)
+                || symbols.functions.contains_key(label)
+                || symbols.functions.contains_key(&format!("{label}_IRQHandler")))
+    };
+    let max_irq = target_interrupts
+        .iter()
+        .filter(|(label, _)| handled_irq(label))
+        .map(|(_, slot)| *slot as usize)
+        .max()
+        .unwrap_or(0);
     let irq_start = 16;
-    let irq_count = max_irq + 1;
-    let total = irq_start + irq_count;
+    let total = irq_start + max_irq + 1;
     entries.resize(total, format!("@{default_handler_name}"));
 
     for (label, slot) in target_interrupts {
@@ -452,27 +471,27 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         // it was already placed by the system-exception loop above and its
         // priority goes to SHPR, not the IPR. Listing it in `[interrupts]`
         // (e.g. `SysTick = 15`) must not also program a peripheral IPR.
-        if system_exceptions
-            .iter()
-            .any(|(name, _)| *name == label.as_str())
-        {
+        if is_system_exc(label) {
             continue;
         }
+        // Resolve a handler for this NVIC line, if any. A declared-but-unhandled
+        // line stays `default_handler`: skip it -- it neither places an entry
+        // nor extends the table (`max_irq` already excluded it).
+        let handler = if let Some((fn_name, priority)) = labeled.get(label) {
+            isr_priorities.push((*slot, *priority));
+            format!("@{fn_name}")
+        } else if symbols.functions.contains_key(label) {
+            format!("@{label}")
+        } else if symbols.functions.contains_key(&format!("{label}_IRQHandler")) {
+            format!("@{label}_IRQHandler")
+        } else {
+            continue;
+        };
         let index = irq_start + *slot as usize;
         if index >= entries.len() {
             entries.resize(index + 1, format!("@{default_handler_name}"));
         }
-        if let Some((fn_name, priority)) = labeled.get(label) {
-            entries[index] = format!("@{fn_name}");
-            isr_priorities.push((*slot, *priority));
-        } else if symbols.functions.contains_key(label) {
-            entries[index] = format!("@{label}");
-        } else if symbols
-            .functions
-            .contains_key(&format!("{label}_IRQHandler"))
-        {
-            entries[index] = format!("@{label}_IRQHandler");
-        }
+        entries[index] = handler;
     }
 
     let mut unlabeled_idx = irq_start;

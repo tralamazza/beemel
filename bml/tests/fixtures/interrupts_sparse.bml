@@ -1,0 +1,9 @@
+// Handles only TIM2 (NVIC slot 28). The target declares lines up to SPI4
+// (slot 84); those unhandled lines must not enlarge the vector table.
+fn tim2() @isr("TIM2", priority = 2) {
+    var x: u32 = 0;
+}
+
+fn main() @context(thread) {
+    var y: u32 = 0;
+}
