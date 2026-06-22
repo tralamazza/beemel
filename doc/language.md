@@ -209,6 +209,42 @@ protocol's interrupt masking only covers one core. Declared core entries
 re-program the banked NVIC priorities in their prologue (the reset handler
 only runs on core0).
 
+### Priority grounding
+
+The compiler *grounds* every `@isr` priority in hardware rather than trusting a
+hand-written register to match: the generated `reset_handler` programs the NVIC
+IPR for external IRQs and the SCB SHPR for the configurable system exceptions
+(`SVC`/`PendSV`/`SysTick` and the v7-M faults), and declared core entries repeat
+the sequence in their prologue. The ceiling protocol's `BASEPRI` masks are
+computed from these numbers, so they must reach the hardware. *Enabling* an
+interrupt stays application code: writing the NVIC ISER is runtime policy, while
+the priority is static configuration.
+
+A misconfiguration here fails loudly: a priority that does not fit the target's
+`priority_bits` is E406; two handlers on one label is E407; a labeled `@isr`
+that matches no system exception or `[interrupts]` entry is E409.
+
+### User-written reset handlers own startup
+
+A function named `reset_handler`, or one annotated `@isr("Reset")`, replaces the
+generated startup entirely -- the compiler then emits *none* of its pre-`main`
+sequence: the priority grounding above, the MPU non-cacheable regions, the ECC
+RAM scrub, the `[startup]` MMIO init, and the `.data`/`.bss` init. You own all of
+it. In particular, program the `@isr` priorities and any MPU regions yourself --
+in the reset handler, or in `main()` before you enable the interrupts (write the
+ISER) -- otherwise the ceiling masks reason over priorities the hardware never
+received. (Declared core entries still re-program the banked NVIC/SCB in their
+prologue, so a *secondary* core stays grounded regardless.)
+
+Reach for a custom reset handler only when building the C-runtime *substrate*
+needs sequenced code that the `[startup]` OR-masks cannot express -- chiefly
+external-memory init when `.data`/`.bss`/stack live in that memory, or a
+bootloader handoff. `main()` runs on the stack with `.data`/`.bss` already
+initialized, so anything that substrate depends on must precede it; but
+everything that runs *after* the substrate exists (clock/PLL setup, FPU enable,
+`VTOR`, a vendor `SystemInit()` that does not touch C globals) can and should go
+in `main()` instead -- see [stm32-cmsis.md](./stm32-cmsis.md).
+
 ### Context levels
 
 In ARM Cortex-M, lower priority number = higher actual priority.

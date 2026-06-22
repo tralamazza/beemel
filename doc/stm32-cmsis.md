@@ -200,6 +200,18 @@ globals, so the order does not matter. If you have a custom `SystemInit` that do
 touch C globals, define your own `Reset_Handler` in bml — `bml`'s emitter detects this
 and skips its default (see `bml-core/src/arch/arm.rs`).
 
+**Grounding caveat.** Skipping the default means skipping *all* of bml's pre-`main`
+sequence — the `@isr` priority programming (NVIC IPR / SCB SHPR), MPU
+non-cacheable regions, ECC scrub, `[startup]` init, and `.data`/`.bss` setup. You
+own startup then. If you also use `@isr` priorities or MPU regions, program them
+yourself (in the reset handler, or in `main()` before enabling interrupts), or
+the ceiling protocol's `BASEPRI` masks reason over priorities the hardware never
+received. This is why most projects keep bml's reset handler and call
+`SystemInit()` from `main()` instead — see the "User-written reset handlers" note
+in [language.md](./language.md). Prefer a custom reset only for substrate that
+must exist before `main()` (external memory holding `.data`/stack, a bootloader
+handoff).
+
 ### Step 3 — link
 
 Pass the C object on the same `ld.lld` line as your bml output. Adapting the
