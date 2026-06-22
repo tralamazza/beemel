@@ -1,0 +1,12 @@
+// Internal linkage now extends to ordinary functions whose symbol is never
+// named from outside the module (globaldce keeps the live ones via in-module
+// references; it strips the dead ones). The out-of-module-by-name surfaces stay
+// external: exported functions, @isr handlers, and the entry/boot functions.
+fn helper(x: u32) -> u32 { return x + 1u32; }            // ordinary -> internal
+export fn public_api(x: u32) -> u32 { return x + 2u32; } // exported -> external
+fn isr_h() @isr(priority = 2) { }                        // @isr    -> external
+
+fn main() @context(thread) {                             // entry   -> external
+    var a: u32 = helper(5u32) + public_api(3u32);
+    var _ = a;
+}

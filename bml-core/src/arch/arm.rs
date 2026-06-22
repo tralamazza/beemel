@@ -397,12 +397,16 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         e.line("");
     }
 
+    // A user reset handler is either an `@isr("Reset")` (reset is exception
+    // vector 1, uniform with the other system exceptions) or a plain function
+    // named `reset_handler` -- the symbol bml otherwise generates and that
+    // `ENTRY(reset_handler)` targets. (The CMSIS `Reset_Handler` spelling is not
+    // recognized; bml has no CMSIS-name interop goal here.)
     let user_reset = labeled.get("Reset").map(|s| s.0.to_string()).or_else(|| {
-        ["reset_handler", "Reset_Handler"]
-            .iter()
-            .find(|n| symbols.functions.contains_key(**n))
-            .copied()
-            .map(String::from)
+        symbols
+            .functions
+            .contains_key("reset_handler")
+            .then(|| "reset_handler".to_string())
     });
 
     // The generated reset handler is emitted AFTER the table entries are

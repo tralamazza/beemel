@@ -197,8 +197,10 @@ and `.bss` zero. bml runs `.data` / `.bss` first and then `main`. For every vend
 `SystemInit` shipped by STM (F0 / F1 / F3 / F4 / F7 / L0 / L4 / G0 / G4 / H7), the
 function only touches MMIO (RCC, SCB, FPU CP10/CP11) and never reads or writes C
 globals, so the order does not matter. If you have a custom `SystemInit` that does
-touch C globals, define your own `Reset_Handler` in bml — `bml`'s emitter detects this
-and skips its default (see `bml-core/src/arch/arm.rs`).
+touch C globals, define your own reset handler in bml — either a function named
+`reset_handler` or one annotated `@isr("Reset")` — and `bml`'s emitter detects it
+and skips its default (see `bml-core/src/arch/arm.rs`). (The CMSIS `Reset_Handler`
+spelling is not recognized.)
 
 **Grounding caveat.** Skipping the default means skipping *all* of bml's pre-`main`
 sequence — the `@isr` priority programming (NVIC IPR / SCB SHPR), MPU

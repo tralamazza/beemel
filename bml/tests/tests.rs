@@ -764,11 +764,29 @@ fn test_internal_linkage_specialization() {
             && ir.contains("define internal void @uart_putc$UART1"),
         "expected specializations to have internal linkage\n--- IR ---\n{ir}\n---"
     );
-    // Entry points and ordinary functions keep external linkage.
+    // Entry / boot functions keep external linkage.
     assert!(
         !ir.contains("define internal void @main")
             && !ir.contains("define internal void @reset_handler"),
         "main / reset_handler must NOT be internal\n--- IR ---\n{ir}\n---"
+    );
+}
+#[test]
+fn test_internal_linkage_ordinary() {
+    let ir = bml_ir("internal_linkage_broad.bml");
+    // An ordinary function (named from outside nowhere) is internal.
+    assert!(
+        ir.contains("define internal i32 @helper("),
+        "ordinary helper should be internal\n--- IR ---\n{ir}\n---"
+    );
+    // Out-of-module-by-name surfaces stay external: exported, @isr, entry.
+    assert!(
+        ir.contains("define i32 @public_api(") && !ir.contains("define internal i32 @public_api("),
+        "exported fn must stay external\n--- IR ---\n{ir}\n---"
+    );
+    assert!(
+        !ir.contains("define internal void @isr_h") && !ir.contains("define internal void @main"),
+        "@isr handler and main must stay external\n--- IR ---\n{ir}\n---"
     );
 }
 #[test]
@@ -947,7 +965,7 @@ assert_ir_not_contains!(
 assert_ir_contains!(
     test_narrow_internal_def,
     "narrow_abi_uniform.bml",
-    "define zeroext i8 @scale(i8 zeroext %x)"
+    "define internal zeroext i8 @scale(i8 zeroext %x)"
 );
 assert_ir_contains!(
     test_narrow_internal_call,
@@ -957,7 +975,7 @@ assert_ir_contains!(
 assert_ir_contains!(
     test_narrow_indirect_def,
     "narrow_abi_uniform.bml",
-    "define zeroext i8 @apply(ptr %f, i8 zeroext %v)"
+    "define internal zeroext i8 @apply(ptr %f, i8 zeroext %v)"
 );
 // An indirect call (callee is a register `%`, not `@`) carries the attr too.
 assert_ir_contains!(
@@ -1087,7 +1105,7 @@ assert_ir_contains!(
 assert_ir_contains!(
     test_import_alias_symbol_collision,
     "import_alias_symbol_collision.bml",
-    "define i32 @L__hello()"
+    "define internal i32 @L__hello()"
 );
 assert_pass!(test_import_transitive, "import_transitive.bml");
 // Regression: transitive call through a private dependency must reach IR

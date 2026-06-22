@@ -1462,22 +1462,57 @@ impl IrEmitter {
             .as_ref()
             .map(|s| format!(" section \"{s}\""))
             .unwrap_or_default();
-        // A monomorphized specialization (`name_override` -> `fn$INST`) is reached
-        // ONLY by a direct in-module `call @fn$INST`: E309 forbids taking the
-        // address of a handle-param function, so no `ptr @fn$INST` exists and the
-        // specialization is never named by ENTRY, the vector table, entry_fns, an
-        // escape to C, or a kept @section. `internal` linkage therefore lets
-        // globaldce (at -O2/-Os/-Oz) strip it once it is inlined away or otherwise
-        // uncalled -- the only case where stripping is correct. Exclude generics
-        // carrying @isr/@section: those attributes propagate to the specialization
-        // (it would then need a vector slot / a KEEP'd section). Every other
-        // function keeps external linkage (entry points and address escapes are a
-        // later, analysis-gated subset).
-        let linkage = if name_override.is_some() && !is_isr && fn_def.section.is_none() {
-            "internal "
+        // `internal` linkage lets globaldce (at -O2/-Os/-Oz) strip a function once
+        // it is inlined away or otherwise uncalled. It is SAFE whenever no
+        // reference can NAME the function from OUTSIDE this module's analyzable
+        // graph: globaldce's own reachability keeps EVERY in-module reference alive
+        // -- a direct call, a `&fn` / fn-pointer table, a value escaped to extern
+        // C, the KEEP'd @vector_table, AND a second core's `entry` whose address
+        // the launcher takes for the SIO-FIFO handshake (see region.rs). So a user
+        // `Default_Handler`, a WIRED @isr, and a launched core entry are all kept
+        // by globaldce regardless of linkage. The functions that nonetheless force
+        // external linkage:
+        //   - @isr / @naked / @section (attr_external): a wired @isr is kept by the
+        //     vector table, but @isr is excluded conservatively (an UNWIRED handler
+        //     has no in-module reference and would be silently stripped); @naked /
+        //     @section need an external trampoline / placement surface. These
+        //     propagate from a generic to its specialization, gating both.
+        //   - `reset_handler`: named by `ENTRY(reset_handler)` in the linker script
+        //     -- the one by-name reference globaldce cannot see. A reset written as
+        //     @isr("Reset") is caught by is_isr; a plain-named `reset_handler` (the
+        //     bml convention) is is_isr=false and needs this name.
+        //   - an `export`ed fn: the declared public surface a separately-linked C
+        //     TU may reference by name.
+        //   - a core ENTRY POINT (`is_core_entry`): core0's `main` plus any
+        //     secondary-core `entry` from the target `[agent] entry=`. globaldce
+        //     would keep both anyway (reset's in-module `call @main`; the launcher's
+        //     in-module `&entry`), but a core entry is a real entry point we keep
+        //     external on purpose -- a stable, un-inlined symbol for debuggers/maps.
+        //     `main` is NOT folded into `entry_fns` itself: that set carries
+        //     launched-secondary semantics (NVIC IPR grounding at ir.rs ~1548, E408)
+        //     that are wrong for `main`, which runs AFTER the reset handler.
+        // A monomorphized specialization (`name_override`) needs only the attribute
+        // gate: E309 forbids taking the address of a handle-param fn, and its
+        // mangled `fn$INST` symbol is never an export/entry/handler/asm name.
+        // KNOWN LIMITATION: a function referenced ONLY by name from an inline-asm
+        // string (`asm { bl helper }`) is invisible to globaldce; if internalized
+        // it is stripped and the asm relocation fails to LINK -- a loud error, not
+        // a silent miscompile. Mark such a function `export` to keep it external.
+        let attr_external = is_isr || is_naked || fn_def.section.is_some();
+        let name = fn_def.name.0.as_str();
+        // Core entry points (core0's `main` + secondary-core `entry=` from the
+        // target). Kept external; see the `entry_fns` note above for why `main`
+        // is a separate clause rather than a member of the set.
+        let is_core_entry = name == "main" || symbols.entry_fns.contains(name);
+        let internal = if name_override.is_some() {
+            !attr_external
         } else {
-            ""
+            !attr_external
+                && !fn_def.exported
+                && !is_core_entry
+                && name != "reset_handler"
         };
+        let linkage = if internal { "internal " } else { "" };
         self.line(&format!(
             "define {linkage}{ret_prefix}{ret_ty} @{}({}) #{}{section_attr} {}{{",
             emit_name,
