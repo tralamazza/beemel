@@ -1,8 +1,114 @@
 use std::collections::HashMap;
 
 use crate::ast::{self, BitSpec, Program};
+use crate::errors::DiagnosticBag;
 use crate::ir::IrEmitter;
 use crate::resolver::SymbolTable;
+use crate::target::Target;
+
+/// The named system-exception vectors `(label, slot)` for `arch`. Slots 0-1
+/// (initial SP, reset) and the architecture's reserved slots are handled
+/// separately by the vector-table assembler. Shared with `validate_interrupts`
+/// so both agree on which `@isr` labels name a system exception (and so route
+/// to SHPR, not the NVIC IPR).
+#[must_use]
+pub fn system_exceptions(arch: crate::arch::Arch) -> &'static [(&'static str, usize)] {
+    if matches!(arch, crate::arch::Arch::Armv6m) {
+        // ARMv6-M (Cortex-M0/M0+): only NMI, HardFault, SVC, PendSV, SysTick;
+        // slots 4-10, 12-13 are reserved.
+        &[
+            ("NMI", 2),
+            ("HardFault", 3),
+            ("SVC", 11),
+            ("PendSV", 14),
+            ("SysTick", 15),
+        ]
+    } else {
+        &[
+            ("NMI", 2),
+            ("HardFault", 3),
+            ("MemManage", 4),
+            ("BusFault", 5),
+            ("UsageFault", 6),
+            ("SVC", 11),
+            ("DebugMon", 12),
+            ("PendSV", 14),
+            ("SysTick", 15),
+        ]
+    }
+}
+
+/// Fail loudly on `@isr`/vector-table misconfiguration that would otherwise be
+/// a silent miscompile -- the priorities feed the ceiling model, and a dropped
+/// or mis-slotted handler means the wrong code (or `Default_Handler`) runs:
+/// - E406: an `@isr` priority that does not fit the target's `priority_bits`
+///   (the IPR/SHPR/BASEPRI encoding would truncate it to a different urgency).
+/// - E407: two `@isr` handlers sharing one label (they would claim the same
+///   vector slot; one is silently dropped, the kept one is non-deterministic).
+/// - E409: a labeled `@isr` whose label is neither a system exception nor an
+///   `[interrupts]` entry, so the handler is never wired into the table. Only
+///   enforced once the target declares any `[interrupts]`; without the table
+///   mechanism in use there is nothing to match against.
+pub fn validate_interrupts(program: &Program, target: &Target, diags: &mut DiagnosticBag) {
+    let sys = system_exceptions(target.to_arch());
+    // Valid priority values are 0..(1 << priority_bits); priority_bits is
+    // range-checked at target load, so the shift cannot overflow here.
+    let max_prio: u16 = 1 << u16::from(target.priority_bits);
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in &program.items {
+        let (name, isr) = match item {
+            ast::Item::FnDef(f) => (&f.name, &f.isr),
+            ast::Item::ExternFnDef(f) => (&f.name, &f.isr),
+            _ => continue,
+        };
+        let Some(isr) = isr else { continue };
+        let span = name.1;
+        if u16::from(isr.priority) >= max_prio {
+            diags.error(
+                format!(
+                    "`@isr` priority {} does not fit the target's priority_bits = {} \
+                     (valid range 0..={}); it would be truncated to a different urgency than \
+                     written",
+                    isr.priority,
+                    target.priority_bits,
+                    max_prio - 1
+                ),
+                "E406",
+                span,
+            );
+        }
+        if let Some(label) = &isr.label {
+            if !seen.insert(label.as_str()) {
+                diags.error(
+                    format!(
+                        "duplicate `@isr` label \"{label}\": two handlers claim the same vector \
+                         slot, so one would be silently dropped from the table"
+                    ),
+                    "E407",
+                    span,
+                );
+            }
+            // `Reset` is the reset vector (handled specially); a system
+            // exception routes by name; otherwise the label must name an
+            // `[interrupts]` NVIC line. Skip when no `[interrupts]` is declared
+            // (the table mechanism is not in use -- e.g. a codegen-only test).
+            let matched = label == "Reset"
+                || sys.iter().any(|(n, _)| n == label)
+                || target.interrupts.contains_key(label);
+            if !matched && !target.interrupts.is_empty() {
+                diags.error(
+                    format!(
+                        "`@isr` label \"{label}\" matches no system exception or `[interrupts]` \
+                         entry in the target, so the handler would never be placed in the vector \
+                         table (a typo, or a missing `[interrupts]` line)"
+                    ),
+                    "E409",
+                    span,
+                );
+            }
+        }
+    }
+}
 
 #[must_use]
 pub fn bit_mask_shift(bits: &BitSpec) -> (u32, u32) {
@@ -241,29 +347,7 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
     target_interrupts: &HashMap<String, u16, S>,
 ) {
     let is_armv6m = matches!(e.arch, crate::arch::Arch::Armv6m);
-    let system_exceptions: &[(&str, usize)] = if is_armv6m {
-        // ARMv6-M (Cortex-M0/M0+): only NMI, HardFault, SVCall, PendSV, SysTick
-        // Slots 4-10, 12-13 are reserved
-        &[
-            ("NMI", 2),
-            ("HardFault", 3),
-            ("SVC", 11),
-            ("PendSV", 14),
-            ("SysTick", 15),
-        ]
-    } else {
-        &[
-            ("NMI", 2),
-            ("HardFault", 3),
-            ("MemManage", 4),
-            ("BusFault", 5),
-            ("UsageFault", 6),
-            ("SVC", 11),
-            ("DebugMon", 12),
-            ("PendSV", 14),
-            ("SysTick", 15),
-        ]
-    };
+    let system_exceptions = system_exceptions(e.arch);
     let reserved_slots: &[usize] = if is_armv6m {
         &[4, 5, 6, 7, 8, 9, 10, 12, 13]
     } else {

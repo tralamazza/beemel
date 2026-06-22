@@ -1,0 +1,10 @@
+// E407: two `@isr` handlers claiming the same labeled vector slot. Only one
+// can occupy the slot, so the other would be silently dropped from the table.
+fn a() @isr("TIM2", priority = 1) {
+}
+
+fn b() @isr("TIM2", priority = 2) {
+}
+
+fn main() @context(thread) {
+}

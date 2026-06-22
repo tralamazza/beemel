@@ -1,0 +1,8 @@
+// E409: a labeled `@isr` whose label is neither a system exception nor an
+// `[interrupts]` entry in the target -- the handler would never be placed in
+// the vector table (a typo, or a forgotten `[interrupts]` line).
+fn orphan() @isr("NO_SUCH_IRQ", priority = 1) {
+}
+
+fn main() @context(thread) {
+}

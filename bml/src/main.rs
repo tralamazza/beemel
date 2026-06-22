@@ -635,6 +635,7 @@ fn build_file(
     // (regions and agents are declared there), so they run in build/verify, not
     // in the targetless `bml check`.
     region::check(&program, &symbols, target, &mut diags);
+    bml_core::arch::arm::validate_interrupts(&program, target, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);
@@ -913,6 +914,7 @@ fn verify_file(
     // (regions and agents are declared there), so they run in build/verify, not
     // in the targetless `bml check`.
     region::check(&program, &symbols, target, &mut diags);
+    bml_core::arch::arm::validate_interrupts(&program, target, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
         process::exit(1);

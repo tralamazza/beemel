@@ -676,9 +676,21 @@ impl Target {
                 }
                 "cpu" => target.cpu = Some(val.to_string()),
                 "priority_bits" => {
-                    target.priority_bits = val.parse::<u8>().map_err(|_| {
+                    let bits = val.parse::<u8>().map_err(|_| {
                         format!("line {}: invalid priority_bits: {val}", line_num + 1)
                     })?;
+                    // Used as `8 - priority_bits` (the IPR/SHPR/BASEPRI shift) and
+                    // `1 << priority_bits` (the valid-priority range), so it must
+                    // be 1..=8: >8 underflows the shift, 0 leaves no priority bits
+                    // (every `@isr` priority would be unrepresentable). Real
+                    // Cortex-M parts implement 2..=8.
+                    if !(1..=8).contains(&bits) {
+                        return Err(format!(
+                            "line {}: priority_bits must be 1..=8, got {bits}",
+                            line_num + 1
+                        ));
+                    }
+                    target.priority_bits = bits;
                 }
                 "has_fpu" => target.has_fpu = parse_bool(val, key, line_num)?,
                 "has_bitband" => {
@@ -732,6 +744,24 @@ impl Target {
                 );
             }
             self.has_bitband = false;
+        }
+        // Two `[interrupts]` labels on the same slot is a config error: each
+        // NVIC line is one vector slot, and the vector-table assembler would
+        // place both (last-writer-wins, non-deterministic) and program the IPR
+        // byte twice. Catch it here, deterministically, with both labels named.
+        let mut by_slot: std::collections::BTreeMap<u16, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for (label, slot) in &self.interrupts {
+            by_slot.entry(*slot).or_default().push(label.as_str());
+        }
+        if let Some((slot, labels)) = by_slot.iter().find(|(_, ls)| ls.len() > 1) {
+            let mut labels = labels.clone();
+            labels.sort_unstable();
+            return Err(format!(
+                "[interrupts]: slot {slot} is claimed by multiple labels ({}); \
+                 each NVIC line maps to exactly one vector slot",
+                labels.join(", ")
+            ));
         }
         self.validate_regions()
     }
@@ -1779,6 +1809,30 @@ mod tests {
     fn parse_errors_on_unknown_arch() {
         let err = Target::parse("arch = armv9m\n").unwrap_err();
         assert!(err.contains("armv9m"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_errors_on_priority_bits_out_of_range() {
+        // >8 underflows the `8 - priority_bits` shift; 0 leaves no priority
+        // bits. Both must fail loudly at load (R1).
+        let err = Target::parse("arch = armv7em\npriority_bits = 9\n").unwrap_err();
+        assert!(err.contains("priority_bits"), "got: {err}");
+        let err = Target::parse("arch = armv7em\npriority_bits = 0\n").unwrap_err();
+        assert!(err.contains("priority_bits"), "got: {err}");
+        // In-range still parses.
+        assert_eq!(t("arch = armv7em\npriority_bits = 3\n").priority_bits, 3);
+    }
+
+    #[test]
+    fn parse_errors_on_duplicate_interrupt_slot() {
+        // Two [interrupts] labels on one NVIC slot (R3b): a config error that
+        // would otherwise place both handlers and program the IPR twice.
+        let err = Target::parse(
+            "arch = armv7em\n[interrupts]\nTIM2 = 28\nTIM3 = 28\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("slot 28"), "got: {err}");
+        assert!(err.contains("TIM2") && err.contains("TIM3"), "got: {err}");
     }
 
     #[test]

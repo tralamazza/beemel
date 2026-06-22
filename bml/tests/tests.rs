@@ -1763,6 +1763,38 @@ assert_ir_contains_target!(
     "store volatile i32 8388608, ptr inttoptr (i32 3758157088 to ptr)"
 );
 
+// Fail-loudly hardening of @isr/vector-table misconfiguration (validate_interrupts).
+// E406: a priority that doesn't fit priority_bits would be truncated.
+#[test]
+fn test_isr_priority_overflow_rejected() {
+    let (ok, stderr) =
+        bml_build_with_target("isr_priority_overflow.bml", Some("vector_labeled.target"));
+    assert!(!ok, "priority exceeding priority_bits must be rejected\n{stderr}");
+    assert!(stderr.contains("error[E406]"), "expected E406:\n{stderr}");
+}
+// E407: two @isr handlers on the same label -- one would be silently dropped.
+#[test]
+fn test_isr_duplicate_label_rejected() {
+    let (ok, stderr) = bml_build_with_target("isr_dup_label.bml", Some("vector_labeled.target"));
+    assert!(!ok, "duplicate @isr label must be rejected\n{stderr}");
+    assert!(stderr.contains("error[E407]"), "expected E407:\n{stderr}");
+}
+// E409: a labeled @isr matching no system exception or [interrupts] entry --
+// the handler would never be wired into the table.
+#[test]
+fn test_isr_unmatched_label_rejected() {
+    let (ok, stderr) = bml_build_with_target("isr_unmatched_label.bml", Some("vector_labeled.target"));
+    assert!(!ok, "unmatched @isr label must be rejected\n{stderr}");
+    assert!(stderr.contains("error[E409]"), "expected E409:\n{stderr}");
+}
+// E409 gate: without a [interrupts] section the table mechanism is not in use,
+// so a labeled @isr is not enforced (codegen-only fixtures keep building).
+#[test]
+fn test_isr_unmatched_label_no_interrupts_ok() {
+    let (ok, stderr) = bml_build_with_target("isr_unmatched_label.bml", None);
+    assert!(ok, "without [interrupts], an unmatched label must not error\n{stderr}");
+}
+
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the
 // accessor contexts, and the lowering matches the hand-declared equivalent.
 #[test]

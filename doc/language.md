@@ -1539,7 +1539,10 @@ from context and is compatible with any `*T` or `*mut T`.
 | E403  | Context-incompatible function call (ISR→thread or thread→ISR) |
 | E404  | Access to thread-only global from ISR |
 | E405  | Cannot build a view over, or take the address of, `@shared` memory outside a `claim` (indirect access bypasses the ceiling critical-section) |
+| E406  | `@isr` priority does not fit the target's `priority_bits` (it would be truncated to a different urgency) |
+| E407  | Duplicate `@isr` label -- two handlers claim the same vector slot |
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
+| E409  | `@isr` label matches no system exception or `[interrupts]` entry, so the handler is never placed in the vector table |
 | E500  | Circular import |
 | E501  | Module not found |
 | E503  | Qualified access (`m.x` / `alias.x`) to an item the module did not `export` |

@@ -1,0 +1,8 @@
+// E406: an `@isr` priority that does not fit the target's priority_bits
+// (vector_labeled.target has 4 bits -> max 15) would be truncated by the
+// IPR/BASEPRI encoding to a different urgency than written. Fail loudly.
+fn over() @isr("TIM2", priority = 20) {
+}
+
+fn main() @context(thread) {
+}
