@@ -1,0 +1,16 @@
+// `comptime if`: the condition is const-folded and only the taken branch is
+// emitted. With N == 3 true, the `then` branch (111) is emitted and the `else`
+// branch (222) is dropped from codegen. See doc/comptime.md.
+const N: u32 = 3;
+
+fn pick() -> u32 {
+    comptime if N == 3 {
+        return 111;
+    } else {
+        return 222;
+    }
+}
+
+export fn main() @context(thread) {
+    var r: u32 = pick();
+}

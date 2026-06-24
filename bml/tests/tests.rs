@@ -445,6 +445,54 @@ assert_error!(
     "E410"
 );
 
+// `comptime if` (rung 2, doc/comptime.md): the condition folds at compile time
+// and only the taken branch is emitted (here N == 3, so 111 is kept and 222 is
+// dropped from codegen). A non-constant condition is rejected (E411).
+#[test]
+fn test_comptime_if_folds() {
+    let ir = bml_ir("comptime_if_ok.bml");
+    assert!(
+        ir.contains("111"),
+        "the taken branch must be emitted\n--- IR ---\n{ir}"
+    );
+    assert!(
+        !ir.contains("222"),
+        "the untaken branch must NOT be emitted\n--- IR ---\n{ir}"
+    );
+}
+assert_error!(
+    test_comptime_if_runtime,
+    "comptime_if_runtime_error.bml",
+    "E411"
+);
+
+// `comptime match` (rung 2, doc/comptime.md): the scrutinee folds at compile
+// time and only the selected arm is emitted -- both the expression form (yields
+// 422) and the statement form (assigns 522). A runtime scrutinee is rejected.
+#[test]
+fn test_comptime_match_folds() {
+    let ir = bml_ir("comptime_match_ok.bml");
+    assert!(
+        ir.contains("422") && !ir.contains("411") && !ir.contains("433"),
+        "comptime match expression must emit only the selected arm\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("522") && !ir.contains("511") && !ir.contains("533"),
+        "comptime match statement must emit only the selected arm\n--- IR ---\n{ir}"
+    );
+}
+assert_error!(
+    test_comptime_match_runtime,
+    "comptime_match_runtime_error.bml",
+    "E411"
+);
+// A structurally-const but non-evaluable `comptime if` condition (div-by-zero)
+// must not panic the compiler -- it falls through to runtime lowering.
+assert_pass!(
+    test_comptime_if_nonconst_falls_through,
+    "comptime_if_nonconst.bml"
+);
+
 // Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
 assert_pass!(test_reg_array_ok, "reg_array_ok.bml");
 // Accessing the array register without an index (E337), a constant index past

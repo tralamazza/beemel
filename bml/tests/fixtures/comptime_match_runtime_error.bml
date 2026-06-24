@@ -1,0 +1,12 @@
+// A `comptime match` scrutinee must be a compile-time constant; a runtime value
+// (the parameter `x`) is rejected (E411).
+fn classify(x: u32) -> u32 {
+    return comptime match x {
+        0 { 1 }
+        _ { 2 }
+    };
+}
+
+export fn main() @context(thread) {
+    var r: u32 = classify(5);
+}

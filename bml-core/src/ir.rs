@@ -371,6 +371,20 @@ impl Binding {
     }
 }
 
+/// Select the match arm whose pattern matches a comptime-known integer scrutinee,
+/// for folding a `comptime match`. (Enum/variant scrutinees are not yet
+/// comptime-folded; the checker (E411) rejects them.)
+fn comptime_match_arm(scrut: i128, arms: &[ast::MatchArm]) -> Option<&ast::MatchArm> {
+    arms.iter().find(|arm| {
+        arm.patterns.iter().any(|p| match p {
+            ast::MatchPattern::Int(v, _) => *v == scrut,
+            ast::MatchPattern::Range(lo, hi, _) => *lo <= scrut && scrut <= *hi,
+            ast::MatchPattern::Wildcard(_) => true,
+            ast::MatchPattern::Variant(..) => false,
+        })
+    })
+}
+
 /// Whether a parameter names a `peripheral_type` (a handle parameter).
 fn is_handle_param(param: &ast::Param, symbols: &SymbolTable) -> bool {
     matches!(&param.ty, ast::TypeExpr::Named((n, _)) if symbols.peripheral_types.contains_key(n))
@@ -2111,6 +2125,41 @@ impl IrEmitter {
             }
 
             Stmt::If(if_stmt) => {
+                // `comptime if`: fold to the taken branch when the condition is
+                // const-evaluable; the other branch is not emitted. A structurally
+                // const but non-evaluable condition (e.g. div-by-zero) falls through
+                // to the runtime lowering -- identical to a plain `if` on that
+                // expression. A clean E411-at-check for that edge arrives with the
+                // Slice 2 eval plumbing (see doc/comptime.md).
+                if if_stmt.comptime {
+                    let folded = {
+                        let env = IrConstEnv {
+                            symbols,
+                            consts: &self.const_vals,
+                        };
+                        consteval::eval_bool(&if_stmt.cond, &env)
+                    };
+                    if let Some(taken) = folded {
+                        if taken {
+                            return self.emit_block(
+                                &if_stmt.then_block,
+                                symbols,
+                                fn_name,
+                                break_label,
+                                continue_label,
+                            );
+                        } else if let Some(else_branch) = &if_stmt.else_branch {
+                            return self.emit_stmt(
+                                else_branch,
+                                symbols,
+                                fn_name,
+                                break_label,
+                                continue_label,
+                            );
+                        }
+                        return (None, false);
+                    }
+                }
                 let then_lbl = self.new_label("then");
                 let else_lbl = self.new_label("else");
                 let end_lbl = self.new_label("endif");
@@ -2403,6 +2452,30 @@ impl IrEmitter {
             }
 
             Stmt::Match(match_stmt) => {
+                // `comptime match`: select the arm at compile time and emit only
+                // its body when the scrutinee is const-evaluable. A non-evaluable
+                // scrutinee falls through to the runtime match lowering (see the
+                // `comptime if` note above; doc/comptime.md).
+                if match_stmt.comptime {
+                    let folded = {
+                        let env = IrConstEnv {
+                            symbols,
+                            consts: &self.const_vals,
+                        };
+                        consteval::eval_int(&match_stmt.scrutinee, &env)
+                    };
+                    if let Some(scrut) = folded
+                        && let Some(arm) = comptime_match_arm(scrut, &match_stmt.arms)
+                    {
+                        return self.emit_block(
+                            &arm.body,
+                            symbols,
+                            fn_name,
+                            break_label,
+                            continue_label,
+                        );
+                    }
+                }
                 let Some(MatchDispatch {
                     end_lbl,
                     arm_labels,
@@ -3719,6 +3792,38 @@ impl IrEmitter {
                 }
             }
             Expr::Match(match_expr) => {
+                // `comptime match` expression: emit only the selected arm and
+                // yield its value when the scrutinee is const-evaluable. A
+                // non-evaluable scrutinee falls through to the runtime match
+                // lowering (see the `comptime if` note; doc/comptime.md).
+                if match_expr.comptime {
+                    let folded = {
+                        let env = IrConstEnv {
+                            symbols,
+                            consts: &self.const_vals,
+                        };
+                        consteval::eval_int(&match_expr.scrutinee, &env)
+                    };
+                    if let Some(scrut) = folded
+                        && let Some(arm) = comptime_match_arm(scrut, &match_expr.arms)
+                    {
+                        // Emit the arm body's statements, then its trailing value
+                        // expression (mirrors the `Expr::Block` value path).
+                        let (_, term) = self.emit_block(&arm.body, symbols, fn_name, None, None);
+                        if term {
+                            return default_value_literal(&self.expr_type(expr, symbols));
+                        }
+                        return if let Some(ref trailing) = arm.body.trailing {
+                            self.emit_expr(trailing, symbols, fn_name)
+                        } else {
+                            let reg = self.new_reg();
+                            self.line(&format!(
+                                "{reg} = add i32 0, 0  ; comptime match (no value)"
+                            ));
+                            reg
+                        };
+                    }
+                }
                 let Some(MatchDispatch {
                     end_lbl,
                     arm_labels,

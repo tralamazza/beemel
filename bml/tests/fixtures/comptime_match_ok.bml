@@ -1,0 +1,22 @@
+// `comptime match`, both forms. With MODE == 2 only the second arm of each is
+// emitted: the expression yields 422 and the statement assigns 522; the 411/433
+// and 511/533 arms are dropped from codegen. See doc/comptime.md.
+const MODE: u32 = 2;
+
+fn pick() -> u32 {
+    return comptime match MODE {
+        1 { 411 }
+        2 { 422 }
+        _ { 433 }
+    };
+}
+
+export fn main() @context(thread) {
+    var x: u32 = 0;
+    comptime match MODE {
+        1 { x = 511; }
+        2 { x = 522; }
+        _ { x = 533; }
+    }
+    var r: u32 = pick();
+}

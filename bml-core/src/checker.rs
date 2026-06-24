@@ -1305,6 +1305,13 @@ fn check_block(
                 if cond_ty != Type::B1 {
                     diags.error("if condition must be b1", "E302", if_stmt.cond.span());
                 }
+                if if_stmt.comptime && !is_comptime_shaped(&if_stmt.cond, symbols) {
+                    diags.error(
+                        "`comptime if` condition must be a compile-time constant (literals, `const`s, and pure operators)",
+                        "E411",
+                        if_stmt.cond.span(),
+                    );
+                }
                 // Analyze each branch from the same pre-branch move-state, then
                 // union: a local moved on either path is moved afterward.
                 let before = scope.snapshot();
@@ -1575,6 +1582,13 @@ fn check_block(
                     expected_ret,
                     diags,
                 );
+                if match_stmt.comptime && !is_comptime_shaped(&match_stmt.scrutinee, symbols) {
+                    diags.error(
+                        "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
+                        "E411",
+                        match_stmt.scrutinee.span(),
+                    );
+                }
                 check_match_coverage(&scrutinee_ty, &match_stmt.arms, match_stmt.span, diags);
 
                 // Each arm runs from the same pre-match move-state; the
@@ -2358,6 +2372,20 @@ fn is_comptime_const_arg(arg: &Expr, symbols: &SymbolTable) -> bool {
     match arg {
         Expr::IntLiteral(..) => true,
         Expr::Ident((name, _)) => symbols.consts.contains_key(name),
+        _ => false,
+    }
+}
+
+/// Structural test that `expr` will const-fold: literals, named `const`s, and
+/// pure operators over such operands. Validates a `comptime if` condition up
+/// front (E411) so codegen can always fold it. (Comptime params are not yet
+/// accepted here -- that arrives with the param-driven slice; see doc/comptime.md.)
+fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable) -> bool {
+    match expr {
+        Expr::IntLiteral(..) | Expr::BoolLiteral(..) => true,
+        Expr::Ident((name, _)) => symbols.consts.contains_key(name),
+        Expr::Group(inner) | Expr::Unary(_, inner) => is_comptime_shaped(inner, symbols),
+        Expr::Binary(l, _, r) => is_comptime_shaped(l, symbols) && is_comptime_shaped(r, symbols),
         _ => false,
     }
 }
@@ -3482,6 +3510,13 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
+            if match_expr.comptime && !is_comptime_shaped(&match_expr.scrutinee, symbols) {
+                diags.error(
+                    "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
+                    "E411",
+                    match_expr.scrutinee.span(),
+                );
+            }
             check_match_coverage(&scrutinee_ty, &match_expr.arms, match_expr.span, diags);
 
             let mut arm_type: Option<Type> = None;

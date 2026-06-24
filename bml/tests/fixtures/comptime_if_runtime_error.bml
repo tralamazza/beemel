@@ -1,0 +1,12 @@
+// A `comptime if` condition must be a compile-time constant. A runtime value
+// (here the parameter `x`) is rejected (E411).
+fn pick(x: u32) -> u32 {
+    comptime if x == 3 {
+        return 1;
+    }
+    return 2;
+}
+
+export fn main() @context(thread) {
+    var r: u32 = pick(5);
+}

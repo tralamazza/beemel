@@ -237,6 +237,9 @@ pub struct IfStmt {
     pub cond: Expr,
     pub then_block: Block,
     pub else_branch: Option<Box<Stmt>>,
+    /// `comptime if`: the condition is const-evaluated and only the taken branch
+    /// is emitted (the untaken branch is still type-checked). See doc/comptime.md.
+    pub comptime: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -780,6 +783,9 @@ pub struct MatchStmt {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// `comptime match`: the scrutinee is const-evaluated and only the selected
+    /// arm is emitted (other arms are still type-checked). See doc/comptime.md.
+    pub comptime: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -793,6 +799,9 @@ pub struct MatchExpr {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
     pub span: Span,
+    /// `comptime match`: the scrutinee is const-evaluated and only the selected
+    /// arm is emitted (other arms are still type-checked). See doc/comptime.md.
+    pub comptime: bool,
 }
 
 #[derive(Debug, Clone)]

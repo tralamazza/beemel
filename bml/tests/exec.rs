@@ -454,6 +454,14 @@ assert_exec!(exec_match_expr, "match_expr.bml");
 // value; scaled(4)->12, scaled(10)->30 prove the value is substituted, not passed
 assert_exec!(exec_comptime_param, "comptime_param.bml");
 
+// ─── comptime if (rung 2, doc/comptime.md): folds an else-if chain; with
+// MODE == 2 only the second arm is emitted, so pick() returns 20
+assert_exec!(exec_comptime_if, "comptime_if.bml");
+
+// ─── comptime match (rung 2, doc/comptime.md): folds a range arm; SEL == 3
+// matches 1..5, so classify() returns 20
+assert_exec!(exec_comptime_match, "comptime_match.bml");
+
 // ─── if- and block-expressions yield values (language.md §11) ────────────────
 assert_exec!(exec_if_block_expr, "if_block_expr.bml");
 

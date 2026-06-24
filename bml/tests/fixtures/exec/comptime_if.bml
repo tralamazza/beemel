@@ -1,0 +1,20 @@
+// `comptime if` (incl. an else-if chain) folds at compile time: with MODE == 2,
+// only the second arm is emitted, so pick() returns 20 at runtime.
+import harness.semihost;
+
+const MODE: u32 = 2;
+
+fn pick() -> u32 {
+    comptime if MODE == 1 {
+        return 10;
+    } else if MODE == 2 {
+        return 20;
+    } else {
+        return 30;
+    }
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(pick(), 20);
+    semihost.done();
+}

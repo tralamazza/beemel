@@ -1,12 +1,13 @@
 # comptime
 
-Status: Phases 1-2 DONE on the working tree. Phase 1 (binding-keyed engine
-refactor) is a verified no-op. Phase 2 (comptime value params) adds the
-`comptime` keyword + per-value monomorphization + E410, validated by an IR test,
-an E410 error test, and a QEMU exec test (615 integration + 53 exec + 83 core
-unit, all green; clippy clean). Phases 3-4 PLANNED. Scope = the minimal
-orthogonal core (rungs 1-3, value-level); `comptime T: type` (rung 4) and
-`inline for` are DEFERRED -- see "Deferred".
+Status: Phases 1-2 COMMITTED; Phase 3 Slice 1 on the working tree. Phase 1
+(binding-keyed engine refactor) is a verified no-op; Phase 2 adds `comptime`
+value params (monomorphization + E410); Phase 3 Slice 1 adds `comptime if` and
+`comptime match` over module consts (conditional compilation + E411). 619
+integration + 55 exec + 83 core unit green; clippy + fmt clean. Phase 3 Slice 2
+(param-driven folding +
+unroll) and Phase 4 PLANNED. Scope = the minimal orthogonal core (rungs 1-3,
+value-level); `comptime T: type` (rung 4) and `inline for` are DEFERRED.
 
 ## Problem
 
@@ -131,19 +132,60 @@ each with the value materialized, the param dropped from the ABI):
 
 ### Phase 3 -- comptime control flow (rung 2)
 
-- `comptime if` / `match` folding has TWO sites, by what drives the condition:
-  - module-const-driven: fold in the existing `constfold.rs` pass (which knows
-    `consts: HashMap<String,i128>`); mirror the stride-fold precedent at
-    `constfold.rs:326-333`. Today `Stmt::Match`/`Expr::Match`/`Expr::If` only fold
-    sub-expressions, never select a branch (`constfold.rs:263-316`).
-  - comptime-param-driven: fold at SUBSTITUTION time, inside the Phase 1/2
-    specialization step, where the `Binding` is live. The pre-monomorphization
-    `constfold` pass cannot see a param's binding, so this fold belongs to the
-    engine, not `constfold.rs`. (Plan correction.)
-- Unrolling: NO new loop construct. `fn f(comptime i: u32){ if i<N {..; f(i+1)} }`
-  monomorphizes `f$0..f$N`; the comptime `if` folds the base case; inlining
-  flattens. Needs an instantiation cap (mirror the parser's E113 depth guard) so
-  runaway recursion fails loudly rather than instantiating forever.
+#### Slice 1 -- `comptime if` / `comptime match` over module consts -- DONE
+
+Conditional compilation: `comptime if N == 3 { .. } else { .. }` and
+`comptime match SEL { 1 {..} 2..5 {..} _ {..} }` fold at compile time and emit
+only the taken branch / selected arm.
+- `ast.rs`: `IfStmt.comptime`, `MatchStmt.comptime`, `MatchExpr.comptime`.
+- `parser.rs`: a `comptime` STATEMENT prefix parses `comptime if` (propagating to
+  the else-if chain) or `comptime match`; a `comptime` EXPRESSION prefix parses
+  `comptime match` (match is idiomatically an expression, `return match ..`).
+  Anything else after `comptime` is a parse error.
+- `checker.rs` (E411): the condition / match scrutinee must be comptime-shaped --
+  a structural test (`is_comptime_shaped`): literals, named `const`s, and pure
+  operators. Vals-free (no threading of the const map into the body walk), so it
+  stays conservative; comptime PARAMS are not yet accepted here, and ENUM
+  scrutinees (`Enum@Variant`, not comptime-shaped) are rejected -- both are slice 2.
+- `ir.rs`: folded at the emit sites (`Stmt::If`, `Stmt::Match`, `Expr::Match`), NOT
+  in `constfold.rs`. `eval_bool`/`eval_int` over the cached `const_vals`
+  (`IrConstEnv`) selects the branch/arm via `comptime_match_arm` (Int eq / Range
+  contains / Wildcard); the rest is never emitted. The expression-match fold emits
+  the arm's stmts then its trailing value (mirrors `Expr::Block`). (Plan
+  refinement: the IR already holds the const env, so folding there is localised and
+  avoids teaching `constfold` branch selection.)
+- KNOWN LIMITATIONS: (a) only codegen drops the untaken branch/arms -- other AST
+  walkers (region, ceiling, verify) still analyze ALL of them, so they must
+  type-check and obey ownership; "untaken branch is invisible" is a later change.
+  (b) `comptime match` is int-scrutinee only for now; enum scrutinees are slice 2
+  (needs `Expr::EnumVariant` const-eval). (c) E411 is STRUCTURAL, so a
+  structurally-const but non-evaluable condition (div-by-zero, overflow) is NOT
+  caught -- the IR folds only when `eval` succeeds and otherwise FALLS THROUGH to
+  the runtime lowering (identical to a plain `if`/`match`), so the compiler never
+  panics. A clean E411 for that edge needs eval-at-check (the `vals` map threaded
+  into the body walk) and lands with Slice 2.
+- Tests: `comptime_if_ok.bml` / `comptime_match_ok.bml` (IR: only the selected
+  branch/arm emitted, both match forms), `comptime_{if,match}_runtime_error.bml`
+  (E411), `exec/comptime_if.bml` + `exec/comptime_match.bml` (QEMU: else-if chain
+  and a range arm fold).
+
+#### Slice 2 -- comptime-param-driven folding + unroll -- PLANNED
+
+Headline: unrolling via comptime-param recursion,
+`fn f(comptime i: u32){ comptime if i<N {..; f(i+1)} }` -> `f$0..f$N`, the comptime
+`if` folding the base case so it terminates. PREREQUISITES discovered while
+building Phase 2:
+- A `comptime` value param's value must be available to const-eval DURING
+  specialization. Provide a `consteval::Env` whose `const_int` also reads the
+  active `handle_subst` `ConstInt` bindings (keyed on the current `self.current_fn_name`).
+  This is the keystone -- it lets both `comptime if (i<N)` and the arg `f(i+1)` fold.
+- The checker must accept comptime-param expressions: `is_comptime_const_arg` /
+  `is_comptime_shaped` need to know the ENCLOSING fn's comptime params (the Phase 2
+  MVP only accepts literal / named const). That means threading the current fn's
+  comptime-param set into the body walk -- the plumbing Phase 2 deliberately avoided.
+- An instantiation cap (mirror the parser's E113 depth guard) so runaway recursion
+  fails loudly rather than instantiating forever.
+- `match` folding on a comptime-known scrutinee, same engine.
 
 ### Phase 4 -- comptime functions (rung 3)
 

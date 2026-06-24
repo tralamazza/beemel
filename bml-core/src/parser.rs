@@ -1574,12 +1574,27 @@ impl<'a> Parser<'a> {
         match self.peek_kind() {
             TokenKind::Var => self.parse_var_decl(true).map(Stmt::VarDecl),
             TokenKind::Const => self.parse_var_decl(false).map(Stmt::VarDecl),
-            TokenKind::If => self.parse_if_stmt().map(Stmt::If),
+            TokenKind::If => self.parse_if_stmt(false).map(Stmt::If),
+            TokenKind::Comptime => {
+                self.advance(); // `comptime`
+                if self.check(&TokenKind::If) {
+                    self.parse_if_stmt(true).map(Stmt::If)
+                } else if self.check(&TokenKind::Match) {
+                    self.parse_match_stmt(true).map(Stmt::Match)
+                } else {
+                    self.expect(
+                        &TokenKind::If,
+                        "expected `if` or `match` after `comptime` (statement)",
+                    )
+                    .ok()?;
+                    None
+                }
+            }
             TokenKind::Loop => self.parse_loop_stmt().map(Stmt::Loop),
             TokenKind::While => self.parse_while_stmt().map(Stmt::While),
             TokenKind::Claim => self.parse_claim_stmt().map(Stmt::Claim),
             TokenKind::For => self.parse_for_stmt().map(|f| Stmt::For(Box::new(f))),
-            TokenKind::Match => self.parse_match_stmt().map(Stmt::Match),
+            TokenKind::Match => self.parse_match_stmt(false).map(Stmt::Match),
             TokenKind::AsmBody(text) => {
                 let span = self.peek_span();
                 let asm_text = text.clone();
@@ -1690,13 +1705,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_if_stmt(&mut self) -> Option<IfStmt> {
+    fn parse_if_stmt(&mut self, comptime: bool) -> Option<IfStmt> {
         self.advance(); // if
         let cond = self.parse_expr_no_struct()?;
         let then_block = self.parse_block()?;
         let else_branch = if self.eat(&TokenKind::Else) {
             if self.check(&TokenKind::If) {
-                Some(Box::new(Stmt::If(self.parse_if_stmt()?)))
+                Some(Box::new(Stmt::If(self.parse_if_stmt(comptime)?)))
             } else {
                 Some(Box::new(Stmt::Block(self.parse_block()?)))
             }
@@ -1707,6 +1722,7 @@ impl<'a> Parser<'a> {
             cond,
             then_block,
             else_branch,
+            comptime,
         })
     }
 
@@ -1743,7 +1759,7 @@ impl<'a> Parser<'a> {
         Some((scrutinee, arms, end))
     }
 
-    fn parse_match_stmt(&mut self) -> Option<MatchStmt> {
+    fn parse_match_stmt(&mut self, comptime: bool) -> Option<MatchStmt> {
         let start = self.peek_span();
         self.advance(); // match
         let (scrutinee, arms, end) = self.parse_match_arms()?;
@@ -1751,15 +1767,17 @@ impl<'a> Parser<'a> {
             scrutinee,
             arms,
             span: start.merge(end),
+            comptime,
         })
     }
 
-    fn parse_match_expr(&mut self, start_span: Span) -> Option<Expr> {
+    fn parse_match_expr(&mut self, start_span: Span, comptime: bool) -> Option<Expr> {
         let (scrutinee, arms, end) = self.parse_match_arms()?;
         Some(Expr::Match(Box::new(MatchExpr {
             scrutinee,
             arms,
             span: start_span.merge(end),
+            comptime,
         })))
     }
 
@@ -2244,10 +2262,25 @@ impl<'a> Parser<'a> {
                     span,
                 })
             }
+            TokenKind::Comptime => {
+                let span = self.peek_span();
+                self.advance(); // `comptime`
+                if self.check(&TokenKind::Match) {
+                    self.advance(); // match
+                    self.parse_match_expr(span, true)
+                } else {
+                    self.expect(
+                        &TokenKind::Match,
+                        "expected `match` after `comptime` in expression position",
+                    )
+                    .ok()?;
+                    None
+                }
+            }
             TokenKind::Match => {
                 let span = self.peek_span();
                 self.advance(); // match
-                let expr = self.parse_match_expr(span)?;
+                let expr = self.parse_match_expr(span, false)?;
                 Some(expr)
             }
             TokenKind::LParen => {

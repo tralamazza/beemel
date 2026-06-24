@@ -1,0 +1,14 @@
+// Regression: a structurally-const but NON-evaluable `comptime if` condition
+// (here a div-by-zero) must not panic the compiler. It falls through to the
+// runtime lowering -- identical to a plain `if` on the same expression. A clean
+// E411 for this edge is a Slice 2 follow-up. See doc/comptime.md.
+fn pick() -> u32 {
+    comptime if 5 / 0 == 1 {
+        return 1;
+    }
+    return 2;
+}
+
+export fn main() @context(thread) {
+    var r: u32 = pick();
+}

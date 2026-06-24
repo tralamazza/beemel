@@ -1,0 +1,18 @@
+// `comptime match` (expression, with a range arm) folds at compile time: SEL==3
+// matches the inclusive range 1..5, so classify() returns 20 at runtime.
+import harness.semihost;
+
+const SEL: u32 = 3;
+
+fn classify() -> u32 {
+    return comptime match SEL {
+        0 { 10 }
+        1..5 { 20 }
+        _ { 30 }
+    };
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(classify(), 20);
+    semihost.done();
+}
