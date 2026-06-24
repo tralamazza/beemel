@@ -88,6 +88,20 @@ const LUT: [u32; 4] = [10u32, 20u32, 30u32, 40u32];
 const COLUMNS: u32 = len(LUT);
 ```
 
+A repeat-init literal `[value; count]` is shorthand for an array of `count`
+copies of `value`. The count must be a compile-time constant (a literal or a
+`const`) and the value must be side-effect-free (no function call), so the
+expansion is unambiguous; otherwise it is `E348`. It is the idiomatic way to make
+a zeroed buffer to fill in a loop:
+
+```bml
+const ZEROS: [u8; 256] = [0u8; 256];
+
+fn main() @context(thread) {
+    var scratch: [u32; 16] = [0u32; 16]; // zeroed runtime buffer
+}
+```
+
 A module `const` or `var` initializer may also name another `const`, including
 aggregate and float consts; it is inlined to that const's value:
 
@@ -1191,6 +1205,8 @@ comptime_assert = "comptime_assert" "(" expr ")" ";"
 
 fn_def        = "fn" ident "(" [params] ")" ["->" type]
                 [ fn_annotation ] block
+                ;; a parameter may be prefixed `comptime` (e.g. `comptime n: u32`);
+                ;; the function is then monomorphized per argument value
 
 extern_fn_def = "extern" "fn" ident "(" [params] ")" ["->" type]
                 [ fn_annotation ] ";"
@@ -1242,7 +1258,7 @@ stmt          = var_decl | assign | expr_stmt | if_stmt | loop_stmt
 assume_stmt   = "assume" "(" expr ")" ";"
 assert_stmt   = "assert" "(" expr ")" ";"
 
-match_stmt    = "match" expr "{"
+match_stmt    = [ "comptime" ] "match" expr "{"
                 { match_arm }
                 "}"
 match_arm     = match_pattern {"|" match_pattern} block
@@ -1258,7 +1274,7 @@ match_pattern = ident "@" ident         (* enum variant *)
               ;; the same value in two arms is E319. (A value covered by an
               ;; earlier range is allowed -- first match wins -- not flagged.)
 
-match_expr    = "match" expr "{"
+match_expr    = [ "comptime" ] "match" expr "{"
                  { match_arm_expr }
                  "}"
 match_arm_expr= match_pattern {"|" match_pattern} block
@@ -1268,7 +1284,7 @@ block_expr    = block
               ;; block used as an expression; must have a trailing expression
               ;; (last item without semicolon)
 
-if_expr       = "if" expr block "else" (block_expr | if_expr)
+if_expr       = [ "comptime" ] "if" expr block "else" (block_expr | if_expr)
               ;; if/else as expression; else branch required;
               ;; both branches must have trailing expressions
 
@@ -1288,7 +1304,7 @@ compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
 lvalue        = ident | lvalue "." ident | lvalue "[" expr "]"
               | "*" expr               (* deref write target *)
 
-if_stmt       = "if" expr block ["else" (block | if_stmt)]
+if_stmt       = [ "comptime" ] "if" expr block ["else" (block | if_stmt)]
 
 loop_stmt     = "loop" block
 
@@ -1313,6 +1329,7 @@ asm_clobbers  = [ string { "," string } ]
 for_stmt      = "for" ident ":" type "in" expr ("upto" | "downto") expr ["step" expr] block
 
 array_init    = "[" [expr {"," expr}] "]"
+              | "[" expr ";" expr "]"   (* repeat-init: `count` copies of `value` *)
 
 type          = ident                   (* named type: u32, i8, ... *)
               | "*" type               (* const pointer (default) *)
@@ -1441,6 +1458,46 @@ operators, comparisons, and `&&` / `||` / `!`. A condition that is false is
 `E342`; one that is not a compile-time-constant boolean (e.g. references a
 runtime `var` or evaluates to an integer) is `E343`. Unlike `assert`, which
 is a verifier obligation, `comptime_assert` is checked by `bml build` itself.
+
+### `comptime` values and functions
+
+`comptime` evaluates VALUES at compile time. It is a value-monomorphization
+mechanism (Zig-style), not C++-template type generics. The full specification is
+[comptime.md](./comptime.md); the user-facing surface is:
+
+- **comptime value parameter** -- `fn f(comptime n: u32, ...)`. The function is
+  monomorphized once per distinct argument value; the parameter is dropped from
+  the runtime ABI and materialized as a constant inside each specialization. A
+  runtime argument to a `comptime` parameter is `E410`; `export`/`@isr` on such a
+  function is `E412` (it has no concrete ABI); a runaway specialization (a
+  `comptime` recursion with no base case) is capped at `E413`.
+
+- **comptime control flow** -- `comptime if cond { ... }` and `comptime match`
+  fold at compile time: only the selected branch/arm is emitted. The condition or
+  scrutinee must be a compile-time constant (it may depend on a `comptime`
+  parameter); a non-constant or non-evaluable one is `E411`.
+
+- **comptime functions** -- an ordinary function called in a `const` initializer
+  is executed at compile time and its result folded to a literal, so derived
+  constants and whole tables (CRC, sine, gamma) are computed in-language instead
+  of by a build script. The function may use locals, loops, recursion, and build
+  and return an array; combined with repeat-init that is the table-builder shape:
+
+  ```bml
+  fn squares() -> [u32; 8] {
+      var t: [u32; 8] = [0u32; 8];
+      for i: u32 in 0 upto 8 {
+          t[i] = i * i;
+      }
+      return t;
+  }
+
+  const SQ: [u32; 8] = squares(); // folded to a constant array in flash
+  ```
+
+  A call that the interpreter cannot reduce (it uses `asm`, a runtime feature, an
+  out-of-bounds index, or exceeds the step/recursion budget) is left as a call, so
+  the const is reported as not compile-time (`E343`).
 
 ### `assume` / `assert` semantics
 
@@ -1579,6 +1636,11 @@ from context and is compatible with any `*T` or `*mut T`.
 | E407  | Duplicate `@isr` label -- two handlers claim the same vector slot |
 | E408  | Cannot take address of `@context(thread)` or `@isr` function -- only functions without @restriction can be used as function pointers |
 | E409  | `@isr` label matches no system exception or `[interrupts]` entry, so the handler is never placed in the vector table |
+| E410  | Runtime argument to a `comptime` parameter, or a `comptime` argument that does not evaluate to a constant / does not fit the parameter type |
+| E411  | `comptime if` condition or `comptime match` scrutinee is not a compile-time constant (non-evaluable, division by zero, or overflow during specialization) |
+| E412  | `export` or `@isr` on a function with `comptime` parameters -- it has no concrete ABI (monomorphization-only) |
+| E413  | `comptime` specialization limit exceeded -- a `comptime` recursion is likely missing a base case |
+| E414  | Array length must be a compile-time constant; a `comptime` parameter cannot size an array |
 | E500  | Circular import |
 | E501  | Module not found |
 | E503  | Qualified access (`m.x` / `alias.x`) to an item the module did not `export` |
@@ -1588,11 +1650,12 @@ from context and is compatible with any `*T` or `*mut T`.
 | E340  | `assume` condition must be b1 |
 | E341  | `assert` condition must be b1 |
 | E342  | `comptime_assert` condition is false |
-| E343  | `comptime_assert` condition is not a compile-time-constant `b1` expression |
+| E343  | A compile-time-constant expression is required but not provided -- a `comptime_assert` condition that is not a constant `b1`, or a `const` initializer that is not a compile-time constant (including a `comptime` function call the interpreter cannot reduce) |
 | E344  | Match pattern value/range out of range for the scrutinee type, or an empty range (`lo > hi`) |
 | E345  | `len` is a reserved builtin and cannot be defined as a function |
 | E346  | Cast to `b1` requires a `b1` source; compare instead (e.g. `x != 0`) |
 | E347  | Variable shadowing -- a parameter/`var`/`const`/for-loop variable reuses a name already visible in an enclosing scope, including a module-level `var`/`const`/`fn`/`peripheral` |
+| E348  | Repeat-init `[value; count]` requires a compile-time-constant count (0..=65536) and a side-effect-free value |
 | E359  | `@be`/`@le` field endianness requires a multi-byte integer type (u16/u32/u64/i16/i32/i64) |
 | E360  | Cannot take the address of a field stored in a non-native byte order (target-dependent) |
 

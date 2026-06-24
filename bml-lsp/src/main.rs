@@ -2051,6 +2051,16 @@ fn expr_to_string(expr: &ast::Expr) -> String {
         ast::Expr::Cast(inner, ty) => format!("{} as {}", expr_to_string(inner), ty),
         ast::Expr::FieldAccess(base, (name, _)) => format!("{}.{}", expr_to_string(base), name),
         ast::Expr::Group(inner) => format!("({})", expr_to_string(inner)),
+        ast::Expr::Index(base, idx) => {
+            format!("{}[{}]", expr_to_string(base), expr_to_string(idx))
+        }
+        ast::Expr::ArrayInit(elems, _) => {
+            let parts: Vec<String> = elems.iter().map(expr_to_string).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        ast::Expr::ArrayRepeat(value, count, _) => {
+            format!("[{}; {}]", expr_to_string(value), expr_to_string(count))
+        }
         _ => "...".to_string(),
     }
 }
