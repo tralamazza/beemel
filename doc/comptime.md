@@ -12,9 +12,10 @@ instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
 patterns by discriminant). Phase 4 slice 1 adds a scalar comptime interpreter
 that executes an ordinary function called in a `const` initializer and folds the
 result to a literal (`const FACT5 = factorial(5)`); a post-commit adversarial
-review hardened it (signed-result fold, recursion-depth cap, LSP parity). 634
-integration + 58 exec + 83 core green; clippy + fmt clean. Phase 4 slice 2
-(array/table results) is the next step. Scope = the minimal orthogonal core
+review hardened it (signed-result fold, recursion-depth cap, LSP parity). Phase 4
+slice 2a adds the `[value; count]` repeat-init array literal (the prerequisite for
+loop-built tables). 637 integration + 59 exec + 84 core green; clippy + fmt clean.
+Phase 4 slice 2b (comptime functions returning arrays) is the next step. Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -260,9 +261,32 @@ Unrolling via comptime-param recursion:
   in `@main`); the repurposed `const_nonconst_init_error.bml` (E343 still fires
   for a non-evaluable initializer).
 
-#### Slice 2 -- array/table results -- PLANNED
+#### Slice 2a -- repeat-init array literal `[value; count]` -- DONE
 
-- Extend the interpreter to produce ARRAYS, so a function can compute a table.
+- A prerequisite for loop-built tables: bml requires every `var` to have an
+  initializer and had no way to spell a large zeroed array (`var t: [u32; 256];`
+  is rejected). `[value; count]` fills that gap and is useful at runtime too.
+- New AST node `Expr::ArrayRepeat(value, count)`. `constfold` desugars it to an
+  `ArrayInit` of `count` copies once `count` folds to a constant in `0..=65536`
+  AND `value` is side-effect-free (`is_duplicable`: literals / names / `sizeof` /
+  pure arithmetic -- never a `Call`/`Index`/`FieldAccess`), so `[f(); N]` is never
+  silently turned into N calls. A residual `ArrayRepeat` (non-const count,
+  oversized, or side-effecting value) is rejected by the checker with E348, so
+  codegen never sees one.
+- The new variant is handled at every exhaustive `Expr` walker (qualify, checker,
+  ir, region, borrow, stack, ceiling, verify, lsp); the comptime interpreter's
+  catch-all already maps it to `None`.
+- Tests: `array_repeat_ok.bml` (literal / named-const count / const-expr value all
+  fold to constant arrays), `array_repeat_call_error.bml` +
+  `array_repeat_runtime_count_error.bml` (E348), `exec/array_repeat.bml` (QEMU:
+  const repeat-init, a `[0; 8]` loop-filled table, and runtime-value broadcast all
+  round-trip), plus a constfold unit test for the desugar/residual split.
+
+#### Slice 2b -- comptime functions returning arrays -- PLANNED
+
+- Extend the comptime interpreter (`comptime.rs`) to ARRAY values, so a function
+  can build and return a table (`const CRC = build_crc();`). Repeat-init (2a) gives
+  the function a zeroed array to fill in a loop.
 - Win: compile-time tables (CRC, sine, gamma) computed in-language into flash,
   replacing build scripts / macros.
 

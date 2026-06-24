@@ -558,6 +558,18 @@ fn collect_expr_writes(
                 );
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            for e in [value, count] {
+                collect_expr_writes(
+                    e,
+                    shared_statics,
+                    fn_names,
+                    fn_pointer_targets,
+                    out,
+                    callees,
+                );
+            }
+        }
         Expr::StructInit { fields, .. } => {
             for (_, expr) in fields {
                 collect_expr_writes(

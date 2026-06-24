@@ -311,6 +311,37 @@ macro_rules! assert_ir_not_contains {
 assert_pass!(test_uart, "uart.bml");
 assert_pass!(test_floats, "floats.bml");
 assert_pass!(test_for_loop, "for_loop.bml");
+
+// Repeat-init `[value; count]` desugars (in constfold) to an array literal of
+// `count` copies once the count is a constant and the value is side-effect-free.
+#[test]
+fn test_array_repeat_folds() {
+    let ir = bml_ir("array_repeat_ok.bml");
+    assert!(
+        ir.contains("@A = constant [4 x i8] [i8 7, i8 7, i8 7, i8 7]"),
+        "literal-count repeat-init must fold to a constant array\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("@B = constant [3 x i16] [i16 0, i16 0, i16 0]"),
+        "named-const-count repeat-init must fold\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("@C = constant [2 x i32] [i32 2, i32 2]"),
+        "const-expression value must fold per copy\n--- IR ---\n{ir}"
+    );
+}
+// A side-effecting value (a call) is rejected -- N copies would be N calls.
+assert_error!(
+    test_array_repeat_call,
+    "array_repeat_call_error.bml",
+    "E348"
+);
+// A non-constant count is rejected -- the count fixes the array size.
+assert_error!(
+    test_array_repeat_runtime_count,
+    "array_repeat_runtime_count_error.bml",
+    "E348"
+);
 assert_pass!(test_const_aggregate_len, "const_aggregate_len.bml");
 assert_error!(test_len_bad_arg, "len_bad_arg_error.bml", "E326");
 assert_error!(test_len_redefine, "len_redefine_error.bml", "E345");

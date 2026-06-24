@@ -235,6 +235,7 @@ fn expr_has_calls(expr: &ast::Expr) -> bool {
         ast::Expr::Group(inner) => expr_has_calls(inner),
         ast::Expr::Cast(inner, _) => expr_has_calls(inner),
         ast::Expr::ArrayInit(elems, _) => elems.iter().any(expr_has_calls),
+        ast::Expr::ArrayRepeat(value, count, _) => expr_has_calls(value) || expr_has_calls(count),
         ast::Expr::StructInit { fields, .. } => fields.iter().any(|(_, e)| expr_has_calls(e)),
         ast::Expr::Block(block_expr) => block_has_calls(&block_expr.block),
         ast::Expr::Match(match_expr) => {
@@ -3820,6 +3821,11 @@ impl IrEmitter {
                 ));
                 agg2
             }
+            // Valid `[v; N]` is desugared to an ArrayInit by constfold; a residual
+            // ArrayRepeat is rejected by the checker (E348), so codegen never sees one.
+            Expr::ArrayRepeat(..) => {
+                unreachable!("ArrayRepeat must be desugared by constfold or rejected (E348)")
+            }
             Expr::ArrayInit(elems, _) => {
                 let elem_ty = elems
                     .first()
@@ -5959,6 +5965,10 @@ impl IrEmitter {
                     .first()
                     .map_or(Type::U32, |e| self.expr_type(e, symbols));
                 Type::Array(Box::new(elem_ty), elems.len())
+            }
+            // Desugared to ArrayInit by constfold, or rejected by the checker (E348).
+            Expr::ArrayRepeat(value, _, _) => {
+                Type::Array(Box::new(self.expr_type(value, symbols)), 0)
             }
             Expr::Group(inner) => self.expr_type(inner, symbols),
             Expr::StructInit { name, .. } => {

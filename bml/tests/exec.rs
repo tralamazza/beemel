@@ -283,6 +283,10 @@ assert_exec!(exec_for_loops, "for_loops.bml");
 // ─── pointer arithmetic (language.md §5) ─────────────────────────────────────
 assert_exec!(exec_pointers, "pointers.bml");
 
+// Repeat-init `[value; count]`: const, `[0; N]` loop-filled, and runtime-value
+// broadcast all round-trip their in-memory values.
+assert_exec!(exec_array_repeat, "array_repeat.bml");
+
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
 

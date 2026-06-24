@@ -2232,6 +2232,10 @@ fn gscan_expr(expr: &Expr, flags_of: &HashMap<String, Vec<String>>, scan: &mut G
                 gscan_expr(e, flags_of, scan);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            gscan_expr(value, flags_of, scan);
+            gscan_expr(count, flags_of, scan);
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 gscan_expr(e, flags_of, scan);
@@ -2453,6 +2457,10 @@ fn cm_expr(
                 cm_expr(e, tracked, windows, mentions);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            cm_expr(value, tracked, windows, mentions);
+            cm_expr(count, tracked, windows, mentions);
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 cm_expr(e, tracked, windows, mentions);
@@ -2637,6 +2645,10 @@ fn walk_expr(expr: &Expr, symbols: &SymbolTable, out: &mut Vec<PeriphWrite>) {
             for e in elems {
                 walk_expr(e, symbols, out);
             }
+        }
+        Expr::ArrayRepeat(value, count, _) => {
+            walk_expr(value, symbols, out);
+            walk_expr(count, symbols, out);
         }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
@@ -3107,6 +3119,10 @@ fn apl_expr(e: &ast::Expr, symbols: &SymbolTable, set: &mut TaintSet<String>) {
             for el in elems {
                 apl_expr(el, symbols, set);
             }
+        }
+        ast::Expr::ArrayRepeat(value, count, _) => {
+            apl_expr(value, symbols, set);
+            apl_expr(count, symbols, set);
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, v) in fields {

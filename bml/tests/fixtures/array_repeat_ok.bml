@@ -1,0 +1,13 @@
+// Repeat-init `[value; count]` desugars to an array literal of `count` copies.
+// A literal count, a named-const count, and a const-expression value all fold to
+// a constant array global.
+const A: [u8; 4] = [7u8; 4];
+const N: u32 = 3;
+const B: [u16; N] = [0u16; N];
+const C: [u32; 2] = [1u32 + 1u32; 2];
+
+export fn main() @context(thread) {
+    var x: u8 = A[0];
+    var y: u16 = B[2];
+    var z: u32 = C[1];
+}

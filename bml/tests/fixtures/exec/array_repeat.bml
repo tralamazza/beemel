@@ -1,0 +1,32 @@
+// Repeat-init array literal `[value; count]`: a const repeat-init, a `[0; N]`
+// zeroed local filled by a loop (the table-builder pattern), and a runtime-value
+// broadcast all round-trip the values that land in memory.
+import harness.semihost;
+
+const TBL: [u8; 4] = [7u8; 4];
+
+fn main() @context(thread) {
+    // const repeat-init, read back by index
+    semihost.expect_u32(TBL[0] as u32, 7);
+    semihost.expect_u32(TBL[3] as u32, 7);
+
+    // `[0; N]` zeroed local, then filled in a loop: t[i] = i*i
+    var t: [u32; 8] = [0u32; 8];
+    for i: u32 in 0 upto 8 {
+        t[i] = i * i;
+    }
+    semihost.expect_u32(t[0], 0);
+    semihost.expect_u32(t[5], 25);
+    semihost.expect_u32(t[7], 49);
+
+    // runtime-value broadcast: [v; 4] reads v four times
+    var v: u32 = 3;
+    var b: [u32; 4] = [v; 4];
+    var sum: u32 = 0;
+    for k: u32 in 0 upto 4 {
+        sum = sum + b[k];
+    }
+    semihost.expect_u32(sum, 12);
+
+    semihost.done();
+}

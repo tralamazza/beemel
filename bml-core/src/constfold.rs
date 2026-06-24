@@ -16,6 +16,31 @@ use std::collections::HashMap;
 use crate::ast::{Block, Expr, IntSuffix, Item, Program, Stmt, TypeExpr};
 use crate::consteval::{self, Env};
 
+/// Upper bound on a repeat-init count we expand inline, to bound AST growth. A
+/// larger (or non-constant) count is left as an `ArrayRepeat` for the checker to
+/// reject (E348) rather than ballooning the program.
+const MAX_ARRAY_REPEAT: i128 = 65536;
+
+/// Whether `expr` is safe to duplicate when expanding `[expr; N]` -- i.e. it has
+/// no side effects, so N copies behave like a single evaluation. Conservative:
+/// only literals, names, enum variants, `sizeof`, and pure arithmetic over those.
+/// Anything that could read state or call code (`Call`, `Index`, `FieldAccess`,
+/// ...) is rejected, so `[f(); N]` is never silently turned into N calls.
+fn is_duplicable(expr: &Expr) -> bool {
+    match expr {
+        Expr::IntLiteral(..)
+        | Expr::FloatLiteral(..)
+        | Expr::BoolLiteral(..)
+        | Expr::NullLiteral(_)
+        | Expr::Ident(_)
+        | Expr::EnumVariant { .. }
+        | Expr::SizeOf(..) => true,
+        Expr::Group(inner) | Expr::Unary(_, inner) | Expr::Cast(inner, _) => is_duplicable(inner),
+        Expr::Binary(l, _, r) => is_duplicable(l) && is_duplicable(r),
+        _ => false,
+    }
+}
+
 /// Rewrite const-valued array lengths in `program` into integer literals.
 pub fn fold_array_lengths(program: &mut Program) {
     let consts = const_int_values(&program.items);
@@ -297,6 +322,26 @@ fn fold_expr(expr: &mut Expr, consts: &HashMap<String, i128>, array_lens: &HashM
                 fold_expr(e, consts, array_lens);
             }
         }
+        Expr::ArrayRepeat(value, count, span) => {
+            fold_expr(value, consts, array_lens);
+            fold_expr(count, consts, array_lens);
+            // Desugar `[v; N]` to `[v, v, ..., v]` once N folds to an in-range
+            // constant and `v` is safe to duplicate. A non-constant / oversized
+            // count or a side-effecting value is left as an `ArrayRepeat` for the
+            // checker to reject (E348) -- never silently mis-expanded.
+            let replacement = if is_duplicable(value)
+                && let Some(n) = fold_const_int(count, consts, array_lens)
+                && (0..=MAX_ARRAY_REPEAT).contains(&n)
+                && let Ok(n) = usize::try_from(n)
+            {
+                Some(Expr::ArrayInit(vec![(**value).clone(); n], *span))
+            } else {
+                None
+            };
+            if let Some(r) = replacement {
+                *expr = r;
+            }
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 fold_expr(e, consts, array_lens);
@@ -429,5 +474,41 @@ mod tests {
         let mut program = parse("fn f() @context(thread) { var a: [u8; 3] = [0u8, 0u8, 0u8]; }");
         fold_array_lengths(&mut program);
         assert_eq!(var_array_lens(&program), vec![Some(3)]);
+    }
+
+    /// Collect the initializer expression of every `var` in the first fn.
+    fn var_inits(program: &Program) -> Vec<Expr> {
+        let mut inits = Vec::new();
+        for item in &program.items {
+            if let Item::FnDef(f) = item {
+                for stmt in &f.body.stmts {
+                    if let Stmt::VarDecl(vd) = stmt {
+                        inits.push(vd.init.clone());
+                    }
+                }
+            }
+        }
+        inits
+    }
+
+    #[test]
+    fn repeat_init_desugars_only_for_const_count_and_safe_value() {
+        let mut program = parse(concat!(
+            "const N: u32 = 3;\n",
+            "fn f() @context(thread) {\n",
+            "    var a: [u8; 3] = [7u8; N];\n", // const count, literal value -> desugars
+            "    var b: [u8; 3] = [0u8; unknown];\n", // unknown count -> left as ArrayRepeat
+            "}\n",
+        ));
+        fold_array_lengths(&mut program);
+        let inits = var_inits(&program);
+        match &inits[0] {
+            Expr::ArrayInit(elems, _) => assert_eq!(elems.len(), 3, "N=3 copies expected"),
+            other => panic!("expected desugared ArrayInit, got {other:?}"),
+        }
+        assert!(
+            matches!(inits[1], Expr::ArrayRepeat(..)),
+            "a non-constant count must be left as ArrayRepeat for the checker to reject"
+        );
     }
 }

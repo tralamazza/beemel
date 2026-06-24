@@ -1,0 +1,7 @@
+// A repeat-init count must be a compile-time constant (it fixes the array size).
+// A runtime value as the count is rejected (E348).
+export fn main() @context(thread) {
+    var n: u32 = 4u32;
+    var a: [u8; 4] = [0u8; n];
+    var x: u8 = a[0];
+}

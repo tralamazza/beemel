@@ -390,6 +390,10 @@ fn pcf_expr<'p>(
                 pcf_expr(e, fn_names, taken, indirect);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            pcf_expr(value, fn_names, taken, indirect);
+            pcf_expr(count, fn_names, taken, indirect);
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 pcf_expr(e, fn_names, taken, indirect);
@@ -633,6 +637,10 @@ fn scan_expr<'p>(expr: &'p Expr, shared: &HashSet<&str>, out: &mut HashSet<&'p s
             for e in elems {
                 scan_expr(e, shared, out);
             }
+        }
+        Expr::ArrayRepeat(value, count, _) => {
+            scan_expr(value, shared, out);
+            scan_expr(count, shared, out);
         }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {

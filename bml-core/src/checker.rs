@@ -396,6 +396,10 @@ fn shadow_expr(expr: &Expr, scopes: &mut ShadowScopes, diags: &mut DiagnosticBag
                 shadow_expr(e, scopes, diags);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            shadow_expr(value, scopes, diags);
+            shadow_expr(count, scopes, diags);
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 shadow_expr(e, scopes, diags);
@@ -1981,6 +1985,10 @@ fn claim_restrict_expr(expr: &Expr, claim_span: &crate::source::Span, diags: &mu
                 claim_restrict_expr(e, claim_span, diags);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            claim_restrict_expr(value, claim_span, diags);
+            claim_restrict_expr(count, claim_span, diags);
+        }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
                 claim_restrict_expr(e, claim_span, diags);
@@ -2216,6 +2224,10 @@ fn esc_expr(expr: &Expr, name: &str, esc: &mut EscapeState, diags: &mut Diagnost
             for e in elems {
                 esc_expr(e, name, esc, diags);
             }
+        }
+        Expr::ArrayRepeat(value, count, _) => {
+            esc_expr(value, name, esc, diags);
+            esc_expr(count, name, esc, diags);
         }
         Expr::StructInit { fields, .. } => {
             for (_, e) in fields {
@@ -3350,6 +3362,22 @@ fn check_expr(
                 }
             }
             Type::Array(Box::new(elem_ty), elems.len())
+        }
+        Expr::ArrayRepeat(value, count, span) => {
+            // A repeat-init reaching the checker was NOT desugared by constfold:
+            // its count is not a compile-time constant (or is out of range) or its
+            // value has side effects (so duplicating it would change behavior).
+            // The valid form is rewritten to an ArrayInit before this point.
+            diags.error(
+                "array repeat-init `[value; count]` requires a constant count \
+                 (0..=65536) and a side-effect-free value"
+                    .to_string(),
+                "E348",
+                *span,
+            );
+            check_expr(value, symbols, scope, fn_name, expected_ret, diags);
+            check_expr(count, symbols, scope, fn_name, expected_ret, diags);
+            Type::Unresolved("array-repeat".into())
         }
         Expr::Cast(inner, ty_expr) => {
             let source_ty = check_expr(inner, symbols, scope, fn_name, expected_ret, diags);
@@ -4978,6 +5006,14 @@ fn ape_expr(
                     ape_err(diags, el.span(), "an array literal element");
                 }
                 ape_expr(el, ape, symbols, diags, fn_returns);
+            }
+        }
+        ast::Expr::ArrayRepeat(value, count, _) => {
+            for e in [value, count] {
+                if ape(e) {
+                    ape_err(diags, e.span(), "an array repeat-init element");
+                }
+                ape_expr(e, ape, symbols, diags, fn_returns);
             }
         }
         ast::Expr::StructInit { fields, .. } => {

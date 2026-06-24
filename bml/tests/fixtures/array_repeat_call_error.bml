@@ -1,0 +1,11 @@
+// A repeat-init value with a side effect (a function call) is rejected (E348):
+// duplicating it would call the function `count` times instead of once.
+fn f() -> u8 {
+    return 1u8;
+}
+
+const BAD: [u8; 4] = [f(); 4];
+
+export fn main() @context(thread) {
+    var x: u8 = BAD[0];
+}

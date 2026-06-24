@@ -1214,6 +1214,9 @@ fn find_ident_in_expr(expr: &ast::Expr, offset: usize) -> Option<ast::Ident> {
             find_ident_in_expr(base, offset).or_else(|| find_ident_in_expr(index, offset))
         }
         ast::Expr::ArrayInit(elems, _) => elems.iter().find_map(|e| find_ident_in_expr(e, offset)),
+        ast::Expr::ArrayRepeat(value, count, _) => {
+            find_ident_in_expr(value, offset).or_else(|| find_ident_in_expr(count, offset))
+        }
         ast::Expr::StructInit { name, fields, .. } => span_contains(&name.1, offset)
             .then_some(name.clone())
             .or_else(|| {
@@ -1938,6 +1941,7 @@ fn expr_end(expr: &ast::Expr) -> usize {
         ast::Expr::FieldAccess(base, (_, span)) => expr_end(base).max(span.end),
         ast::Expr::Index(base, index) => expr_end(base).max(expr_end(index)),
         ast::Expr::ArrayInit(_, span)
+        | ast::Expr::ArrayRepeat(_, _, span)
         | ast::Expr::StructInit { span, .. }
         | ast::Expr::EnumVariant { span, .. } => span.end,
         ast::Expr::Block(block) => block.span.end,
@@ -2142,6 +2146,9 @@ fn find_call_in_expr(expr: &ast::Expr, offset: usize) -> Option<ast::Expr> {
             find_call_in_expr(base, offset).or_else(|| find_call_in_expr(index, offset))
         }
         ast::Expr::ArrayInit(elems, _) => elems.iter().find_map(|e| find_call_in_expr(e, offset)),
+        ast::Expr::ArrayRepeat(value, count, _) => {
+            find_call_in_expr(value, offset).or_else(|| find_call_in_expr(count, offset))
+        }
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
             .find_map(|(_, e)| find_call_in_expr(e, offset)),

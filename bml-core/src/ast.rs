@@ -395,6 +395,10 @@ pub enum Expr {
         span: Span,
     },
     ArrayInit(Vec<Expr>, Span),
+    /// Repeat-init array literal `[value; count]`. Desugared to [`Expr::ArrayInit`]
+    /// of `count` copies by `constfold` once `count` folds to a constant; a
+    /// non-constant count or a side-effecting value is rejected by the checker.
+    ArrayRepeat(Box<Expr>, Box<Expr>, Span),
     StructInit {
         name: Ident,
         fields: Vec<(Ident, Expr)>,
@@ -428,6 +432,7 @@ impl Expr {
             Expr::BitNew { span, .. } => *span,
             Expr::EnumVariant { span, .. } => *span,
             Expr::ArrayInit(_, s) => *s,
+            Expr::ArrayRepeat(_, _, s) => *s,
             Expr::StructInit { span, .. } => *span,
             Expr::Match(m) => m.span,
             Expr::Block(b) => b.span,

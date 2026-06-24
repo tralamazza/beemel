@@ -299,6 +299,10 @@ fn check_expr(
                 check_expr(elem, current_fn, current_ctx, symbols, diags);
             }
         }
+        Expr::ArrayRepeat(value, count, _) => {
+            check_expr(value, current_fn, current_ctx, symbols, diags);
+            check_expr(count, current_fn, current_ctx, symbols, diags);
+        }
 
         Expr::StructInit { fields, .. } => {
             for (_, value) in fields {

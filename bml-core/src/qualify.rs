@@ -377,6 +377,10 @@ impl Renamer {
                     self.rewrite_expr(e);
                 }
             }
+            Expr::ArrayRepeat(value, count, _) => {
+                self.rewrite_expr(value);
+                self.rewrite_expr(count);
+            }
             Expr::StructInit { name, fields, .. } => {
                 self.rename_in_place(&mut name.0);
                 self.check_dotted(&name.0, name.1);

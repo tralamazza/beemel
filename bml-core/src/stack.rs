@@ -530,6 +530,12 @@ fn expr_contribution(
                 has_indirect: contribution.has_indirect,
             }
         }
+        // Valid `[v; N]` is desugared to an ArrayInit before this pass; a residual
+        // ArrayRepeat is an error the checker has already reported (E348). Account
+        // for the subexpressions so any callees they reference are still counted.
+        Expr::ArrayRepeat(value, count, _) => Contribution::empty()
+            .merge(expr_contribution(value, symbols, defined_fns))
+            .merge(expr_contribution(count, symbols, defined_fns)),
 
         Expr::If(if_expr) => {
             let cond_contrib = expr_contribution(&if_expr.cond, symbols, defined_fns);

@@ -2325,17 +2325,24 @@ impl<'a> Parser<'a> {
             TokenKind::LBracket => {
                 let span = self.peek_span();
                 self.advance();
-                let mut elems = Vec::new();
-                if !self.check(&TokenKind::RBracket) {
-                    loop {
-                        elems.push(self.parse_expr()?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
+                let result = if self.check(&TokenKind::RBracket) {
+                    Expr::ArrayInit(Vec::new(), span)
+                } else {
+                    let first = self.parse_expr()?;
+                    if self.eat(&TokenKind::Semicolon) {
+                        // Repeat-init `[value; count]`.
+                        let count = self.parse_expr()?;
+                        Expr::ArrayRepeat(Box::new(first), Box::new(count), span)
+                    } else {
+                        let mut elems = vec![first];
+                        while self.eat(&TokenKind::Comma) {
+                            elems.push(self.parse_expr()?);
                         }
+                        Expr::ArrayInit(elems, span)
                     }
-                }
+                };
                 self.expect(&TokenKind::RBracket, "expected `]`").ok()?;
-                Some(Expr::ArrayInit(elems, span))
+                Some(result)
             }
             TokenKind::IntLiteral(n, suffix) => {
                 let v = *n;
