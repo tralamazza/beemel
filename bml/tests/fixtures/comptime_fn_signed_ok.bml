@@ -1,0 +1,19 @@
+// Phase 4 regression: a comptime function returning a NEGATIVE value must fold
+// into a signed const correctly. The result is emitted as `-(magnitude)` (the
+// shape a user writes), not the u64 two's-complement bit pattern -- a bare giant
+// literal would default to u32 and fail to coerce to the signed const (E300).
+fn neg() -> i32 {
+    return 0i32 - 5i32;
+}
+
+fn small() -> i16 {
+    return 0i16 - 200i16;
+}
+
+const X: i32 = neg();
+const Y: i16 = small();
+
+export fn main() @context(thread) {
+    var a: i32 = X;
+    var b: i16 = Y;
+}

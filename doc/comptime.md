@@ -11,9 +11,10 @@ adds eval-at-check (clean E411 for non-evaluable conditions/args) + an
 instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
 patterns by discriminant). Phase 4 slice 1 adds a scalar comptime interpreter
 that executes an ordinary function called in a `const` initializer and folds the
-result to a literal (`const FACT5 = factorial(5)`). 632 integration + 58 exec + 83
-core green; clippy + fmt clean. Phase 4 slice 2 (array/table results) is the next
-step. Scope = the minimal orthogonal core
+result to a literal (`const FACT5 = factorial(5)`); a post-commit adversarial
+review hardened it (signed-result fold, recursion-depth cap, LSP parity). 634
+integration + 58 exec + 83 core green; clippy + fmt clean. Phase 4 slice 2
+(array/table results) is the next step. Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -241,6 +242,19 @@ Unrolling via comptime-param recursion:
   executes VarDecl/Assign/CompoundAssign/If/While/Loop/For/Return/Break/Continue/
   Block and folds calls recursively; a `STEP_LIMIT` bounds runaway loops/recursion
   to `None` (the const stays a call -> E343) rather than hanging the compiler.
+- Post-commit adversarial review found three real defects, all fixed +
+  regression-tested:
+  - NEGATIVE result folded as `n as u64` became a giant literal that defaults to
+    u32 and false-rejects a signed const (E300). Fix: emit `-(magnitude)` (the
+    `Unary(Neg, IntLiteral)` shape a user writes) for `n < 0`. Test:
+    `comptime_fn_signed_ok.bml`.
+  - DEEP recursion stays under `STEP_LIMIT`'s count but overflows the compiler's
+    native (Rust) stack -> abort. Fix: a `RECURSION_LIMIT` (256) on interpreter
+    call depth; past it the interpreter bails to `None` -> clean E343. Test:
+    `comptime_fn_deep_recursion_error.bml`.
+  - The LSP check flow did NOT run `fold_const_calls`, so the editor flagged a
+    false E343 on a const the CLI compiles. Fix: call it before `Checker::check`
+    in `bml-lsp` too (parity with the three driver flows).
 - Tests: `comptime_fn_const_ok.bml` (IR: `@FACT5 = constant i32 120` from an
   iterative `while`, `@FIB10 = constant i32 55` from recursion, no residual call
   in `@main`); the repurposed `const_nonconst_init_error.bml` (E343 still fires

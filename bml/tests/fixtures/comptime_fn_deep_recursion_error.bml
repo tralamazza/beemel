@@ -1,0 +1,17 @@
+// Phase 4 regression: a comptime function that recurses deeper than the
+// interpreter's RECURSION_LIMIT must fail cleanly. The interpreter bails (returns
+// no value), the const stays an unfolded call, and the checker reports E343 --
+// it must NOT overflow the compiler's native stack. `deep` recurses linearly to
+// its argument's depth, well under the STEP_LIMIT count but past the depth cap.
+fn deep(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    return deep(n - 1);
+}
+
+const X: u32 = deep(1000);
+
+export fn main() @context(thread) {
+    var a: u32 = X;
+}

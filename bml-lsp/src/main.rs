@@ -797,6 +797,10 @@ fn analyze_file(
                     .collect();
                 region::apply_derived_move(&program, target, &mut symbols);
             }
+            // Fold `const X = f(...)` comptime calls to literals before checking,
+            // mirroring the compiler (main.rs); otherwise the editor reports a
+            // false E343 on a const the CLI compiles fine.
+            bml_core::comptime::fold_const_calls(&mut program, &symbols);
             local_types = Checker::check(&program, &symbols, &mut diags);
             if !diags.has_errors() {
                 BorrowChecker::check(&program, &symbols, &mut diags);

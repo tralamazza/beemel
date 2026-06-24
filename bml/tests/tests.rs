@@ -607,6 +607,32 @@ fn test_comptime_fn_const_folds() {
     );
 }
 
+// Phase 4 regression: a NEGATIVE comptime result folds into a signed const as
+// `-(magnitude)`, not the u64 two's-complement bit pattern (which would default
+// to u32 and false-reject with E300).
+#[test]
+fn test_comptime_fn_signed_folds() {
+    let ir = bml_ir("comptime_fn_signed_ok.bml");
+    assert!(
+        ir.contains("@X = constant i32 -5"),
+        "negative i32 comptime result must fold to -5\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("@Y = constant i16 -200"),
+        "negative i16 comptime result must fold to -200\n--- IR ---\n{ir}"
+    );
+}
+
+// Phase 4 regression: a comptime function recursing past the interpreter's depth
+// cap fails cleanly (E343, the const stays unfolded) instead of overflowing the
+// compiler's native stack. E343 is a check-time error (the fold runs before the
+// checker), so `bml check` surfaces it.
+assert_error!(
+    test_comptime_fn_deep_recursion,
+    "comptime_fn_deep_recursion_error.bml",
+    "E343"
+);
+
 // --- comptime soundness regression tests (review findings A-G) ---
 // D: comptime args accept all const-foldable forms (sizeof / cast / const arith / len).
 assert_pass!(

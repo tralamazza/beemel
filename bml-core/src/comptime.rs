@@ -23,6 +23,14 @@ use std::collections::HashMap;
 /// recurses past this is rejected (the const stays unresolved) rather than hanging.
 const STEP_LIMIT: u64 = 10_000_000;
 
+/// Max comptime call-stack depth. Bounds NATIVE (Rust) recursion so a deeply
+/// recursive comptime function fails cleanly (the const stays unresolved -> E343)
+/// instead of overflowing the compiler's own stack. `STEP_LIMIT` bounds total
+/// work but not depth: a linear-but-deep recursion stays well under it while
+/// still blowing the native stack. Generous vs. real comptime use (factorial /
+/// fib recurse only as deep as their argument).
+const RECURSION_LIMIT: u32 = 256;
+
 enum Flow {
     Normal,
     Break,
@@ -35,6 +43,7 @@ struct Interp<'a> {
     consts: &'a HashMap<String, ConstVal>,
     symbols: &'a SymbolTable,
     steps: u64,
+    depth: u32,
 }
 
 /// Evaluate a `const` initializer that may call ordinary functions, to a scalar
@@ -53,6 +62,7 @@ pub fn eval_const(
         consts,
         symbols,
         steps: 0,
+        depth: 0,
     };
     interp.eval(expr, &HashMap::new())
 }
@@ -108,6 +118,19 @@ pub fn fold_const_calls(program: &mut Program, symbols: &SymbolTable) {
         {
             let span = c.value.span();
             c.value = match *v {
+                // A negative value must be emitted as `-(magnitude)` -- the shape a
+                // user writes -- not the u64 two's-complement bit pattern. A bare
+                // giant literal defaults to u32 and fails to coerce to a signed
+                // const (a false E300); the unary-neg form is typed by the const's
+                // declared type, exactly like a hand-written `-5`.
+                ConstVal::Int(n) if n < 0 => Expr::Unary(
+                    ast::UnaryOp::Neg,
+                    Box::new(Expr::IntLiteral(
+                        n.unsigned_abs() as u64,
+                        IntSuffix::None,
+                        span,
+                    )),
+                ),
                 ConstVal::Int(n) => Expr::IntLiteral(n as u64, IntSuffix::None, span),
                 ConstVal::Bool(b) => Expr::BoolLiteral(b, span),
             };
@@ -137,8 +160,21 @@ impl Interp<'_> {
 
     /// Execute a function body with `args` bound to its parameters, returning the
     /// scalar result (`None` if not comptime-evaluable / returns no value).
+    /// Bounds native recursion depth so a deeply recursive comptime function
+    /// fails cleanly instead of overflowing the compiler's stack.
     fn call(&mut self, fn_def: &ast::FnDef, args: &[ConstVal]) -> Option<ConstVal> {
         self.tick()?;
+        self.depth += 1;
+        let result = if self.depth > RECURSION_LIMIT {
+            None
+        } else {
+            self.call_body(fn_def, args)
+        };
+        self.depth -= 1;
+        result
+    }
+
+    fn call_body(&mut self, fn_def: &ast::FnDef, args: &[ConstVal]) -> Option<ConstVal> {
         if fn_def.params.len() != args.len() {
             return None;
         }
