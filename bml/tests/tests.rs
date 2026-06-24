@@ -638,6 +638,24 @@ fn test_comptime_fn_const_folds() {
     );
 }
 
+// Phase 4 slice 2b: a comptime function that builds an array in a loop folds to a
+// constant array global (`squares()` -> [0,1,4,9,16,25,36,49]); no residual call.
+#[test]
+fn test_comptime_fn_table_folds() {
+    let ir = bml_ir("comptime_fn_table_ok.bml");
+    assert!(
+        ir.contains(
+            "@SQ = constant [8 x i32] [i32 0, i32 1, i32 4, i32 9, i32 16, i32 25, i32 36, i32 49]"
+        ),
+        "the comptime-built table must fold to a constant array\n--- IR ---\n{ir}"
+    );
+    let main = extract_fn_body(&ir, "@main");
+    assert!(
+        !main.contains("call") || !main.contains("@squares"),
+        "the folded const must not leave a residual call\n{main}"
+    );
+}
+
 // Phase 4 regression: a NEGATIVE comptime result folds into a signed const as
 // `-(magnitude)`, not the u64 two's-complement bit pattern (which would default
 // to u32 and false-reject with E300).

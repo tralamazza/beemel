@@ -1,0 +1,56 @@
+// Comptime functions that build and return arrays (Phase 4 slice 2b). The tables
+// are computed at compile time (loops, indexed read+write, compound assignment)
+// and fold to constant array globals; the runtime only reads them back.
+import harness.semihost;
+
+// indexed write: t[i] = i*i
+fn squares() -> [u32; 8] {
+    var t: [u32; 8] = [0u32; 8];
+    for i: u32 in 0 upto 8 {
+        t[i] = i * i;
+    }
+    return t;
+}
+
+// indexed READ (t[i], t[i-1]) and write: in-place prefix sums of [1,2,3,4]
+fn prefix_sums() -> [u32; 4] {
+    var t: [u32; 4] = [1u32, 2u32, 3u32, 4u32];
+    for i: u32 in 1 upto 4 {
+        t[i] = t[i] + t[i - 1];
+    }
+    return t;
+}
+
+// compound assignment accumulator + indexed write: triangular numbers
+fn triangular() -> [u32; 5] {
+    var t: [u32; 5] = [0u32; 5];
+    var acc: u32 = 0;
+    for i: u32 in 0 upto 5 {
+        acc += i;
+        t[i] = acc;
+    }
+    return t;
+}
+
+const SQ: [u32; 8] = squares();
+const PS: [u32; 4] = prefix_sums();
+const TR: [u32; 5] = triangular();
+
+fn main() @context(thread) {
+    semihost.expect_u32(SQ[0], 0);
+    semihost.expect_u32(SQ[7], 49);
+
+    semihost.expect_u32(PS[0], 1);
+    semihost.expect_u32(PS[3], 10); // 1+3+6+10 chain -> 10
+
+    semihost.expect_u32(TR[4], 10); // 0+1+2+3+4
+
+    // sum the whole squares table: 0+1+4+9+16+25+36+49 = 140
+    var sum: u32 = 0;
+    for k: u32 in 0 upto 8 {
+        sum = sum + SQ[k];
+    }
+    semihost.expect_u32(sum, 140);
+
+    semihost.done();
+}

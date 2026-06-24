@@ -287,6 +287,10 @@ assert_exec!(exec_pointers, "pointers.bml");
 // broadcast all round-trip their in-memory values.
 assert_exec!(exec_array_repeat, "array_repeat.bml");
 
+// Comptime functions that build and return arrays: tables computed at compile
+// time (loops, indexed read+write, compound assignment) fold to constant globals.
+assert_exec!(exec_comptime_table, "comptime_table.bml");
+
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
 

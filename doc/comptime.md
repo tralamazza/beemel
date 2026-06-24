@@ -14,8 +14,11 @@ that executes an ordinary function called in a `const` initializer and folds the
 result to a literal (`const FACT5 = factorial(5)`); a post-commit adversarial
 review hardened it (signed-result fold, recursion-depth cap, LSP parity). Phase 4
 slice 2a adds the `[value; count]` repeat-init array literal (the prerequisite for
-loop-built tables). 637 integration + 59 exec + 84 core green; clippy + fmt clean.
-Phase 4 slice 2b (comptime functions returning arrays) is the next step. Scope = the minimal orthogonal core
+loop-built tables) and slice 2b extends the comptime interpreter to ARRAY values
+so a function can build and return a table (`const CRC = build_crc();`). 638
+integration + 60 exec + 84 core green; clippy + fmt clean. Phase 4 is COMPLETE
+(comptime functions return scalars and arrays); the remaining backlog is the
+"Out of scope" list only. Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -282,13 +285,26 @@ Unrolling via comptime-param recursion:
   const repeat-init, a `[0; 8]` loop-filled table, and runtime-value broadcast all
   round-trip), plus a constfold unit test for the desugar/residual split.
 
-#### Slice 2b -- comptime functions returning arrays -- PLANNED
+#### Slice 2b -- comptime functions returning arrays -- DONE
 
-- Extend the comptime interpreter (`comptime.rs`) to ARRAY values, so a function
-  can build and return a table (`const CRC = build_crc();`). Repeat-init (2a) gives
-  the function a zeroed array to fill in a loop.
-- Win: compile-time tables (CRC, sine, gamma) computed in-language into flash,
-  replacing build scripts / macros.
+- The interpreter value is now `Val = Scalar(ConstVal) | Array(Vec<Val>)`, so a
+  function can build and return a table (`const CRC = build_crc();`). The fold
+  emits an `ArrayInit` of literals (`val_to_expr`). Repeat-init (2a) supplies the
+  zeroed array (`var t: [u32; N] = [0; N];`) the loop fills.
+- New interpreter support: `ArrayInit` and `Index` reads, indexed ASSIGNMENT
+  (`t[i] = ...`, via `flatten_index_path` -- indices evaluated read-only, then the
+  array walked mutably), compound assignment to a name or element, `len` of a
+  built/const array, and array function arguments. Scalars still go through
+  `consteval::binop`/`cast` at the leaves.
+- Failure stays clean: an out-of-bounds / negative index yields `None` -> the
+  const stays a call -> E343 (no panic, no miscompile); an array result assigned
+  to a scalar const is a checker type mismatch (E300).
+- Tests: `comptime_fn_table_ok.bml` (IR: `squares()` folds to
+  `[0,1,4,9,16,25,36,49]`), `exec/comptime_table.bml` (QEMU: indexed write,
+  indexed read+write prefix-sums, compound-assign triangular numbers, summed at
+  runtime).
+- Win delivered: compile-time tables (CRC, sine, gamma) computed in-language into
+  flash, replacing build scripts / macros.
 
 ## Verification
 

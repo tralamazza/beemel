@@ -1,0 +1,16 @@
+// Phase 4 slice 2b (comptime functions returning arrays): a function builds an
+// array in a loop (a `[0; N]` zeroed local, indexed writes) and returns it; the
+// const folds to a constant array global with no residual call.
+fn squares() -> [u32; 8] {
+    var t: [u32; 8] = [0u32; 8];
+    for i: u32 in 0 upto 8 {
+        t[i] = i * i;
+    }
+    return t;
+}
+
+const SQ: [u32; 8] = squares();
+
+export fn main() @context(thread) {
+    var a: u32 = SQ[5];
+}
