@@ -127,6 +127,19 @@ The headline: an ordinary function called in a `const` initializer is *run by th
 compiler*, and its result is folded into a literal. With repeat-init to seed an
 array, you can build a whole table in plain BML instead of a host script:
 
+**There is no `comptime fn` keyword.** What makes a function run at build time is
+*where you call it*, not a marker on its definition: call it in a `const`
+initializer and the compiler evaluates it; call it at run time and it is ordinary
+code. The same `crc_table` below works both ways. This is BML's "usage dictates
+declaration" principle -- the call site decides, so a function is never split into
+a comptime copy and a runtime copy.
+
+(The `const` initializer is the one place a function is evaluated this way.
+Sizing an array directly with a call -- `[u8; sz()]` -- is *not* supported: array
+sizes are resolved in an earlier pass than function evaluation, so a length must
+be an integer literal or a `const` of literal/`const` arithmetic, `E414`
+otherwise.)
+
 ```bml
 fn crc_table() -> [u8; 4] {
     var t: [u8; 4] = [0u8; 4];
@@ -152,8 +165,13 @@ than a surprise at runtime.
 
 > **From C:** this is the table-generation `.py`/`.pl` script you keep next to a
 > Makefile, except it is the same language, type-checked, and has no separate
-> build artifact. **From Rust:** like a `const fn` that builds and returns an
-> array, evaluated in a `const` context.
+> build artifact.
+>
+> **From Rust:** like a `const fn`, but BML does *not* require the `const fn`
+> marker -- any function is callable at compile time (Zig-style). The trade-off is
+> that comptime-ness is not part of the signature: a function that stops being
+> foldable (you add an `asm` block, say) surfaces as an `E343` at the *call site*
+> in the `const`, not as an error at the definition.
 
 ## Put it together and run it
 
