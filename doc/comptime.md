@@ -1,13 +1,13 @@
 # comptime
 
-Status: Phases 1-2 COMMITTED; Phase 3 Slice 1 on the working tree. Phase 1
-(binding-keyed engine refactor) is a verified no-op; Phase 2 adds `comptime`
-value params (monomorphization + E410); Phase 3 Slice 1 adds `comptime if` and
-`comptime match` over module consts (conditional compilation + E411). 619
-integration + 55 exec + 83 core unit green; clippy + fmt clean. Phase 3 Slice 2
-(param-driven folding +
-unroll) and Phase 4 PLANNED. Scope = the minimal orthogonal core (rungs 1-3,
-value-level); `comptime T: type` (rung 4) and `inline for` are DEFERRED.
+Status: Phases 1-2 + Phase 3 Slice 1 COMMITTED; Slice 2a on the working tree.
+Phase 1 (binding-keyed engine refactor) is a verified no-op; Phase 2 adds
+`comptime` value params (monomorphization + E410); Phase 3 Slice 1 adds
+`comptime if` / `comptime match` over module consts (+ E411); Slice 2a folds them
+over comptime PARAMS per specialization. 621 integration + 56 exec + 83 core
+green; clippy + fmt clean. Phase 3 Slice 2b (recursion-unroll) and Phase 4
+PLANNED. Scope = the minimal orthogonal core (rungs 1-3, value-level);
+`comptime T: type` (rung 4) and `inline for` are DEFERRED.
 
 ## Problem
 
@@ -145,8 +145,9 @@ only the taken branch / selected arm.
 - `checker.rs` (E411): the condition / match scrutinee must be comptime-shaped --
   a structural test (`is_comptime_shaped`): literals, named `const`s, and pure
   operators. Vals-free (no threading of the const map into the body walk), so it
-  stays conservative; comptime PARAMS are not yet accepted here, and ENUM
-  scrutinees (`Enum@Variant`, not comptime-shaped) are rejected -- both are slice 2.
+  stays conservative. (Slice 2a since extended `is_comptime_shaped` to accept the
+  enclosing fn's comptime params via `fn_name`; ENUM scrutinees -- `Enum@Variant`,
+  not comptime-shaped -- are still rejected, slice 2b.)
 - `ir.rs`: folded at the emit sites (`Stmt::If`, `Stmt::Match`, `Expr::Match`), NOT
   in `constfold.rs`. `eval_bool`/`eval_int` over the cached `const_vals`
   (`IrConstEnv`) selects the branch/arm via `comptime_match_arm` (Int eq / Range
@@ -169,20 +170,37 @@ only the taken branch / selected arm.
   (E411), `exec/comptime_if.bml` + `exec/comptime_match.bml` (QEMU: else-if chain
   and a range arm fold).
 
-#### Slice 2 -- comptime-param-driven folding + unroll -- PLANNED
+#### Slice 2a -- comptime-param-driven folding -- DONE
+
+`comptime if`/`comptime match` now fold over a `comptime` PARAMETER, per
+specialization: `fn classify(comptime mode: u32){ comptime if mode==0 {..} else {..} }`
+-> `classify$0` emits only the `0` branch, `classify$1` only the else branch.
+- `checker.rs`: `is_comptime_shaped` gained a `fn_name` arg and accepts the
+  enclosing fn's comptime params (`is_enclosing_comptime_param`, resolved via the
+  `FnSymbol.comptime` vector -- no scope/VarInfo plumbing; `fn_name` was already
+  threaded everywhere).
+- `ir.rs`: `spec_consts()` returns the module consts PLUS the active comptime-param
+  `ConstInt` bindings; the three fold sites eval over it, so `mode` is bound when
+  the condition folds. The param is also materialized as a local (Phase 2), so a
+  non-foldable condition still has a valid runtime value to fall through to.
+- Tests: `comptime_param_if_ok.bml` (IR: each `classify$N` folds to one branch, no
+  `icmp`), `exec/comptime_param_if.bml` (QEMU: classify(0)->100, classify(1)->200).
+
+#### Slice 2b -- recursion-unroll -- PLANNED
 
 Headline: unrolling via comptime-param recursion,
 `fn f(comptime i: u32){ comptime if i<N {..; f(i+1)} }` -> `f$0..f$N`, the comptime
-`if` folding the base case so it terminates. PREREQUISITES discovered while
-building Phase 2:
-- A `comptime` value param's value must be available to const-eval DURING
-  specialization. Provide a `consteval::Env` whose `const_int` also reads the
-  active `handle_subst` `ConstInt` bindings (keyed on the current `self.current_fn_name`).
-  This is the keystone -- it lets both `comptime if (i<N)` and the arg `f(i+1)` fold.
-- The checker must accept comptime-param expressions: `is_comptime_const_arg` /
-  `is_comptime_shaped` need to know the ENCLOSING fn's comptime params (the Phase 2
-  MVP only accepts literal / named const). That means threading the current fn's
-  comptime-param set into the body walk -- the plumbing Phase 2 deliberately avoided.
+`if` folding the base case so it terminates. Remaining work on top of 2a:
+- Accept comptime-param expressions as comptime ARGS: broaden `is_comptime_const_arg`
+  (currently literal / named const only) to comptime-shaped, so `f(i+1)` is allowed,
+  and switch `emit_handle_call`'s arg-eval env from `const_vals` to `spec_consts`.
+- OPEN DESIGN QUESTION: the arg-eval site CANNOT fall through (monomorphization needs
+  the value) and the IR has no diagnostics channel, so a non-evaluable param-dependent
+  arg (div-by-zero, overflow) would `.expect()`-panic. A clean error needs either
+  eval-at-check (the `vals` map threaded into the body walk) or an IR-stage diagnostic
+  sink -- decide before broadening the arg checker.
+- An instantiation cap (mirror the parser's E113 depth guard) so a missing base case
+  fails loudly rather than instantiating forever.
 - An instantiation cap (mirror the parser's E113 depth guard) so runaway recursion
   fails loudly rather than instantiating forever.
 - `match` folding on a comptime-known scrutinee, same engine.

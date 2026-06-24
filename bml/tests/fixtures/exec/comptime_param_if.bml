@@ -1,0 +1,18 @@
+// `comptime if` over a `comptime` parameter executes correctly: each call is
+// monomorphized and the condition folds with the param bound, so classify(0)
+// runs only the `0` branch and classify(1) only the else branch.
+import harness.semihost;
+
+fn classify(comptime mode: u32) -> u32 {
+    comptime if mode == 0 {
+        return 100;
+    } else {
+        return 200;
+    }
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(classify(0), 100);
+    semihost.expect_u32(classify(1), 200);
+    semihost.done();
+}

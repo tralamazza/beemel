@@ -462,6 +462,10 @@ assert_exec!(exec_comptime_if, "comptime_if.bml");
 // matches 1..5, so classify() returns 20
 assert_exec!(exec_comptime_match, "comptime_match.bml");
 
+// ─── comptime if over a comptime PARAMETER (slice 2a): folds with the param
+// bound per specialization; classify(0)->100, classify(1)->200
+assert_exec!(exec_comptime_param_if, "comptime_param_if.bml");
+
 // ─── if- and block-expressions yield values (language.md §11) ────────────────
 assert_exec!(exec_if_block_expr, "if_block_expr.bml");
 

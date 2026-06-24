@@ -460,6 +460,20 @@ impl IrEmitter {
         }
     }
 
+    /// Const values visible during the current specialization: the module consts
+    /// plus the active `comptime`-param bindings, so `comptime if (i < N)` folds
+    /// with `i` bound. With an empty subst (a non-specialized function) this is
+    /// just the module consts.
+    fn spec_consts(&self) -> HashMap<String, ConstVal> {
+        let mut m = self.const_vals.clone();
+        for (name, binding) in &self.handle_subst {
+            if let Binding::ConstInt(v) = binding {
+                m.insert(name.clone(), ConstVal::Int(*v));
+            }
+        }
+        m
+    }
+
     /// For `P.REG` naming an array register, return `(reg_base_addr, stride)`
     /// where `reg_base_addr = peripheral base + reg offset`. `P.REG[i]` then
     /// addresses `reg_base_addr + stride*i`. `None` for a non-array register.
@@ -2133,9 +2147,10 @@ impl IrEmitter {
                 // Slice 2 eval plumbing (see doc/comptime.md).
                 if if_stmt.comptime {
                     let folded = {
+                        let consts = self.spec_consts();
                         let env = IrConstEnv {
                             symbols,
-                            consts: &self.const_vals,
+                            consts: &consts,
                         };
                         consteval::eval_bool(&if_stmt.cond, &env)
                     };
@@ -2458,9 +2473,10 @@ impl IrEmitter {
                 // `comptime if` note above; doc/comptime.md).
                 if match_stmt.comptime {
                     let folded = {
+                        let consts = self.spec_consts();
                         let env = IrConstEnv {
                             symbols,
-                            consts: &self.const_vals,
+                            consts: &consts,
                         };
                         consteval::eval_int(&match_stmt.scrutinee, &env)
                     };
@@ -3798,9 +3814,10 @@ impl IrEmitter {
                 // lowering (see the `comptime if` note; doc/comptime.md).
                 if match_expr.comptime {
                     let folded = {
+                        let consts = self.spec_consts();
                         let env = IrConstEnv {
                             symbols,
-                            consts: &self.const_vals,
+                            consts: &consts,
                         };
                         consteval::eval_int(&match_expr.scrutinee, &env)
                     };

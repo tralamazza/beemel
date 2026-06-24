@@ -493,6 +493,32 @@ assert_pass!(
     "comptime_if_nonconst.bml"
 );
 
+// `comptime if` over a `comptime` PARAMETER (Phase 3 slice 2a): the value is
+// bound per specialization, so each `classify$N` folds to one branch only --
+// no runtime comparison, and the other branch's value is dropped.
+#[test]
+fn test_comptime_param_if_folds() {
+    let ir = bml_ir("comptime_param_if_ok.bml");
+    let body = |spec: &str| -> String {
+        let start = ir
+            .find(&format!("define internal i32 {spec}"))
+            .unwrap_or_else(|| panic!("missing specialization {spec}\n--- IR ---\n{ir}"));
+        let rest = &ir[start..];
+        let end = rest.find("\n}").map_or(rest.len(), |e| e + 2);
+        rest[..end].to_string()
+    };
+    let b0 = body("@classify$0(");
+    assert!(
+        b0.contains("100") && !b0.contains("200") && !b0.contains("icmp"),
+        "classify$0 must fold to the `0` branch (100), no comparison\n{b0}"
+    );
+    let b1 = body("@classify$1(");
+    assert!(
+        b1.contains("200") && !b1.contains("100") && !b1.contains("icmp"),
+        "classify$1 must fold to the else branch (200), no comparison\n{b1}"
+    );
+}
+
 // Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
 assert_pass!(test_reg_array_ok, "reg_array_ok.bml");
 // Accessing the array register without an index (E337), a constant index past

@@ -1305,7 +1305,7 @@ fn check_block(
                 if cond_ty != Type::B1 {
                     diags.error("if condition must be b1", "E302", if_stmt.cond.span());
                 }
-                if if_stmt.comptime && !is_comptime_shaped(&if_stmt.cond, symbols) {
+                if if_stmt.comptime && !is_comptime_shaped(&if_stmt.cond, symbols, fn_name) {
                     diags.error(
                         "`comptime if` condition must be a compile-time constant (literals, `const`s, and pure operators)",
                         "E411",
@@ -1582,7 +1582,9 @@ fn check_block(
                     expected_ret,
                     diags,
                 );
-                if match_stmt.comptime && !is_comptime_shaped(&match_stmt.scrutinee, symbols) {
+                if match_stmt.comptime
+                    && !is_comptime_shaped(&match_stmt.scrutinee, symbols, fn_name)
+                {
                     diags.error(
                         "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
                         "E411",
@@ -2376,16 +2378,32 @@ fn is_comptime_const_arg(arg: &Expr, symbols: &SymbolTable) -> bool {
     }
 }
 
-/// Structural test that `expr` will const-fold: literals, named `const`s, and
-/// pure operators over such operands. Validates a `comptime if` condition up
-/// front (E411) so codegen can always fold it. (Comptime params are not yet
-/// accepted here -- that arrives with the param-driven slice; see doc/comptime.md.)
-fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable) -> bool {
+/// Whether `name` is a `comptime` value parameter of the enclosing function
+/// `fn_name`. Its value is bound per specialization, so it const-folds there.
+fn is_enclosing_comptime_param(name: &str, fn_name: &str, symbols: &SymbolTable) -> bool {
+    symbols.functions.get(fn_name).is_some_and(|s| {
+        s.params
+            .iter()
+            .position(|(n, _)| n == name)
+            .is_some_and(|i| s.comptime.get(i).copied().unwrap_or(false))
+    })
+}
+
+/// Structural test that `expr` will const-fold: literals, named `const`s, the
+/// enclosing function's `comptime` params, and pure operators over such operands.
+/// Validates a `comptime if`/`match` condition up front (E411). A module-const
+/// expr folds globally; a comptime-param expr folds once the param is bound, per
+/// specialization.
+fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable, fn_name: &str) -> bool {
     match expr {
         Expr::IntLiteral(..) | Expr::BoolLiteral(..) => true,
-        Expr::Ident((name, _)) => symbols.consts.contains_key(name),
-        Expr::Group(inner) | Expr::Unary(_, inner) => is_comptime_shaped(inner, symbols),
-        Expr::Binary(l, _, r) => is_comptime_shaped(l, symbols) && is_comptime_shaped(r, symbols),
+        Expr::Ident((name, _)) => {
+            symbols.consts.contains_key(name) || is_enclosing_comptime_param(name, fn_name, symbols)
+        }
+        Expr::Group(inner) | Expr::Unary(_, inner) => is_comptime_shaped(inner, symbols, fn_name),
+        Expr::Binary(l, _, r) => {
+            is_comptime_shaped(l, symbols, fn_name) && is_comptime_shaped(r, symbols, fn_name)
+        }
         _ => false,
     }
 }
@@ -3510,7 +3528,7 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
-            if match_expr.comptime && !is_comptime_shaped(&match_expr.scrutinee, symbols) {
+            if match_expr.comptime && !is_comptime_shaped(&match_expr.scrutinee, symbols, fn_name) {
                 diags.error(
                     "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
                     "E411",
