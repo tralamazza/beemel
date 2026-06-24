@@ -9,7 +9,8 @@ adds eval-at-check (clean E411 for non-evaluable conditions/args) + an
 instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
 patterns by discriminant). 623 integration + 58 exec + 83 core green; clippy + fmt
 clean. Phase 4 (comptime functions) PLANNED. Scope = the minimal orthogonal core
-(rungs 1-3, value-level); `comptime T: type` (rung 4) and `inline for` are DEFERRED.
+(rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
+`comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
 ## Problem
 
@@ -58,7 +59,7 @@ One modifier, several positions, increasing cost:
   comptime-param recursion, NOT a dedicated loop.
 - Rung 3 -- comptime functions: evaluate an ordinary function at compile time to
   produce a value/table (`const CRC = crc32_table();`).
-- Rung 4 -- comptime types (`comptime T: type`). DEFERRED.
+- Rung 4 -- comptime types (`comptime T: type`). OUT OF SCOPE (decided against).
 
 Everything through rung 3 is comptime VALUE evaluation: it reuses `consteval`/
 `constfold` and never substitutes into the type system. Only rung 4 forces
@@ -75,8 +76,8 @@ Today (peripheral-specific):
   (`ir.rs:1330-1350`).
 
 Generalize to:
-- A `Binding` enum: `PeripheralInstance(String) | ConstInt(i128)` (and later
-  `Type(Type)` for rung 4). Specialization key = `Vec<Binding>`.
+- A `Binding` enum: `PeripheralInstance(String) | ConstInt(i128)`. Specialization
+  key = `Vec<Binding>`.
 - The worklist, mangling, dedup, and ABI-erasure stay as-is, keyed on `Vec<Binding>`.
 - Per-kind code, the ONLY parts that differ:
   1. the bound-check at the call site (peripheral keeps its precise E308/E309 from
@@ -257,29 +258,21 @@ A multi-agent review found edge defects, all fixed + regression-tested (see the
 - `export`/`@isr` on a comptime-parameter fn is E412 (was a silent missing symbol).
 - `[T; comptime_param]` is E414 (was a confusing `Array(_,0)` / E300).
 
-## Deferred
+## Out of scope (decided against)
 
-- `comptime_assert` -> `comptime assert` rename. NOT a rename: `comptime_assert`
-  is a top-level Item (module scope, no runtime code; `ast.rs:39`), while
-  `assert`/`assume` are in-body Stmts (`ast.rs:146-147`). A statement-level
-  `comptime assert` would be a NEW thing (a build-time-discharged assert vs the
-  runtime trap), and unifying it with the top-level item needs item-position
-  asserts. Cosmetic and entangled with grammar positions -- revisit once the
-  `comptime` modifier exists (Phase 2), not before.
-- Rung 4 -- `comptime T: type`. Justified ONLY by user-defined generic containers,
-  and the need is unconfirmed (built-in views cover most container needs). It is
-  the one rung that forces substitution INTO the checker and, for runtime-length
-  containers, runs into the view verification contract (assume emission + by-value
-  descriptor SSA-transparency). Revisit when users keep hand-rolling
-  `FooU8`/`FooU16` containers.
-- `inline for` -- a bounded comptime loop over a literal list. Pure sugar over
-  Phase 3's recursion + comptime-if. Worth adding for ergonomics and
-  guaranteed termination/flattening (recursion-as-unroll is the indirection bml
-  usually avoids), but not a primitive. Decide after Phase 3 lands.
-- comptime struct FIELDS. Redundant with `const` unless they drive layout (= rung
-  4) or carry a per-instance comptime value with a runtime pointer (a constant-len
-  descriptor that largely duplicates a constant-length view). Let them fall out as
-  the spelling of generic structs IF rung 4 happens.
+Considered and rejected -- NOT backlog. The value-level core (rungs 0-3) is the
+whole feature.
+- `comptime_assert` -> `comptime assert` rename. Cosmetic, and entangled with
+  grammar positions (`comptime_assert` is a top-level item; `assert`/`assume` are
+  in-body statements). `comptime_assert` stays as-is.
+- Rung 4 -- `comptime T: type`. Justified only by user-defined generic containers,
+  a need the built-in views (`view`/`ring`/`bits`) already cover; it is also the
+  one rung that would force type substitution into the checker and collide with
+  the view verification contract. Not pursuing.
+- `inline for`. Pure sugar over the comptime-param recursion that already works
+  (rung 2); a second loop construct is not worth it.
+- comptime struct FIELDS. Redundant with `const` unless they drive layout -- which
+  is rung 4 (dropped). Not pursuing.
 
 ## Open questions / tradeoffs
 
@@ -288,6 +281,7 @@ A multi-agent review found edge defects, all fixed + regression-tested (see the
    engine beneath them.
 2. Flattening guarantee: comptime-param recursion only flattens if the inliner +
    const-folder cooperate. If not, you get N real calls (correct, not flattened).
-   If that bites, `inline for` becomes the answer.
+   If that bites, revisit the flattening strategy (e.g. force-inlining the
+   specializations) -- `inline for` is out of scope.
 3. Instantiation cap: pick the depth/count limit and the error code for runaway
    comptime recursion before Phase 3.
