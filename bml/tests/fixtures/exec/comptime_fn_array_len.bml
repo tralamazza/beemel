@@ -1,0 +1,25 @@
+// A comptime function sizes arrays (Phase 4 / T1): `round_up(40, 16)` folds to 48
+// at build time and sizes both a constant array and a loop-filled local, which
+// the runtime reads back.
+import harness.semihost;
+
+fn round_up(n: u32, to: u32) -> u32 {
+    return ((n + to - 1u32) / to) * to;
+}
+
+const BUFSZ: u32 = round_up(40u32, 16u32); // 48
+const ZEROS: [u8; BUFSZ] = [0u8; BUFSZ];
+
+fn main() @context(thread) {
+    semihost.expect_u32(BUFSZ, 48);       // the comptime value
+    semihost.expect_u32(ZEROS[0] as u32, 0);
+
+    // a comptime-sized local, filled by a loop over the same constant, read back
+    var t: [u32; BUFSZ] = [0u32; BUFSZ];
+    for i: u32 in 0 upto BUFSZ {
+        t[i] = i * 2;
+    }
+    semihost.expect_u32(t[47], 94);
+
+    semihost.done();
+}

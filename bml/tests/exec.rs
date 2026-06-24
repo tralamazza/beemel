@@ -291,6 +291,10 @@ assert_exec!(exec_array_repeat, "array_repeat.bml");
 // time (loops, indexed read+write, compound assignment) fold to constant globals.
 assert_exec!(exec_comptime_table, "comptime_table.bml");
 
+// A comptime function sizes arrays: `round_up(40,16)`->48 folds in constfold and
+// sizes a constant array and a loop-filled local, read back at runtime.
+assert_exec!(exec_comptime_fn_array_len, "comptime_fn_array_len.bml");
+
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
 

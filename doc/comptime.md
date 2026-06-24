@@ -15,10 +15,12 @@ result to a literal (`const FACT5 = factorial(5)`); a post-commit adversarial
 review hardened it (signed-result fold, recursion-depth cap, LSP parity). Phase 4
 slice 2a adds the `[value; count]` repeat-init array literal (the prerequisite for
 loop-built tables) and slice 2b extends the comptime interpreter to ARRAY values
-so a function can build and return a table (`const CRC = build_crc();`). 638
-integration + 60 exec + 84 core green; clippy + fmt clean. Phase 4 is COMPLETE
-(comptime functions return scalars and arrays); the remaining backlog is the
-"Out of scope" list only. Scope = the minimal orthogonal core
+so a function can build and return a table (`const CRC = build_crc();`). Slice 3
+(T1) lets a comptime function bound to a module `const` size arrays. 640
+integration + 61 exec + 84 core green; clippy + fmt clean. Phase 4 is COMPLETE
+(comptime functions return scalars and arrays, and can size arrays via a module
+`const`); the remaining backlog is the "Out of scope" list plus T2 (plain
+`sizeof` lengths). Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -305,6 +307,29 @@ Unrolling via comptime-param recursion:
   runtime).
 - Win delivered: compile-time tables (CRC, sine, gamma) computed in-language into
   flash, replacing build scripts / macros.
+
+#### Slice 3 -- comptime functions can size arrays (T1) -- DONE
+
+- `fold_const_calls` (Slice 1) runs AFTER resolution, so its results are not
+  available to array sizing, which `constfold` resolves BEFORE resolution
+  (`resolve_type_expr` reads only an `IntLiteral` length). Result: `const N = f();
+  var a: [u8; N]` failed (length 0 -> E414/E348) -- the same gap that makes plain
+  `sizeof` lengths fail.
+- Fix: `comptime::eval_scalar` -- a pre-resolution, symbol-free entry to the
+  interpreter (empty `SymbolTable`, so `sizeof`/enum/`len` yield `None`; only
+  literal/const/arithmetic functions fold). `constfold::const_int_values` calls it
+  as an `.or_else` fallback when `consteval` can't fold a (call-bearing) `const`,
+  so a comptime function's scalar result enters the const map. The module const
+  map propagates into function scopes (`fold_block` clones it), so `[u8; N]` and
+  `[0; N]` fold anywhere `N` is visible -- type position and repeat-init.
+- In scope: a comptime function bound to a **module `const`** sizing arrays /
+  repeat-init counts. Out of scope (clean `E414`/`E348`, documented): a call
+  written directly in a length (`[u8; f()]`), a function-*local* `const`, and a
+  comptime function that needs `sizeof`/`len` (no symbols pre-resolution). Plain
+  `sizeof` lengths remain a separate, related gap (T2).
+- Tests: `comptime_fn_array_len_ok.bml` (IR: `round_up(40,16)` sizes `[48 x i8]` +
+  local `[48 x i32]`), `exec/comptime_fn_array_len.bml` (QEMU: const + loop-filled
+  local round-trip).
 
 ## Verification
 

@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Block, Expr, IntSuffix, Item, Program, Stmt, TypeExpr};
+use crate::ast::{Block, Expr, FnDef, IntSuffix, Item, Program, Stmt, TypeExpr};
 use crate::consteval::{self, Env};
 
 /// Upper bound on a repeat-init count we expand inline, to bound AST growth. A
@@ -43,7 +43,18 @@ fn is_duplicable(expr: &Expr) -> bool {
 
 /// Rewrite const-valued array lengths in `program` into integer literals.
 pub fn fold_array_lengths(program: &mut Program) {
-    let consts = const_int_values(&program.items);
+    // A module function may compute a `const` used as an array length
+    // (`const N = f(); [u8; N]`); collect the functions so `const_int_values` can
+    // run them at compile time.
+    let fns: HashMap<String, &FnDef> = program
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Item::FnDef(f) => Some((f.name.0.clone(), f)),
+            _ => None,
+        })
+        .collect();
+    let consts = const_int_values(&program.items, &fns);
     let array_lens = array_len_values(&program.items, &consts);
     for item in &mut program.items {
         fold_item(item, &consts, &array_lens);
@@ -52,7 +63,11 @@ pub fn fold_array_lengths(program: &mut Program) {
 
 /// Evaluate every const whose initializer is a constant integer expression.
 /// Iterates to a fixpoint so a const may reference an earlier-or-later const.
-fn const_int_values(items: &[Item]) -> HashMap<String, i128> {
+/// A call-bearing initializer (`const N = f()`) that `consteval` cannot fold is
+/// handed to the comptime interpreter, so a comptime function's scalar result is
+/// available to the length machinery -- it runs pre-resolution, so only
+/// literal/const/arithmetic functions fold (no `sizeof`/enum/`len`).
+fn const_int_values(items: &[Item], fns: &HashMap<String, &FnDef>) -> HashMap<String, i128> {
     let mut map = HashMap::new();
     loop {
         let mut changed = false;
@@ -61,6 +76,7 @@ fn const_int_values(items: &[Item]) -> HashMap<String, i128> {
             if let Item::ConstDef(c) = item
                 && !map.contains_key(&c.name.0)
                 && let Some(v) = fold_const_int(&c.value, &map, &array_lens)
+                    .or_else(|| crate::comptime::eval_scalar(&c.value, fns, &map))
             {
                 map.insert(c.name.0.clone(), v);
                 changed = true;

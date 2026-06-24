@@ -134,11 +134,21 @@ code. The same `crc_table` below works both ways. This is BML's "usage dictates
 declaration" principle -- the call site decides, so a function is never split into
 a comptime copy and a runtime copy.
 
-(The `const` initializer is the one place a function is evaluated this way.
-Sizing an array directly with a call -- `[u8; sz()]` -- is *not* supported: array
-sizes are resolved in an earlier pass than function evaluation, so a length must
-be an integer literal or a `const` of literal/`const` arithmetic, `E414`
-otherwise.)
+A comptime function's result can also **size an array**, as long as it is bound to
+a module `const` first:
+
+```bml
+fn round_up(n: u32, to: u32) -> u32 { return ((n + to - 1) / to) * to; }
+const BUFSZ: u32 = round_up(40, 16);          // 48, computed at build time
+const SCRATCH: [u8; BUFSZ] = [0u8; BUFSZ];    // sizes the array and the repeat-init
+```
+
+The `const` is folded before array sizes are resolved, so `BUFSZ` is a plain `48`
+by the time `[u8; BUFSZ]` is laid out. What is *not* (yet) supported: a call
+written directly in the length (`[u8; round_up(40,16)]`), the same via a
+function-*local* `const`, or a comptime function that needs `sizeof`/`len` to
+compute the size -- those resolve too early or lack a symbol table, and report
+`E414`/`E348`. Bind the size to a module `const`.
 
 ```bml
 fn crc_table() -> [u8; 4] {

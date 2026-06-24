@@ -95,6 +95,38 @@ fn eval_to_val(
     interp.eval(expr, &HashMap::new())
 }
 
+/// Evaluate `expr` to a scalar integer at compile time, PRE-RESOLUTION. The
+/// interpreter runs with no symbol table, so a function that needs `sizeof`,
+/// enum discriminants, or `len` of a named global yields `None` -- only
+/// literal/const/arithmetic comptime functions fold. `consts` supplies the values
+/// of already-known module consts (as `i128`). `constfold` uses this so a comptime
+/// function can compute an array length / repeat count (`const N = f(); [u8; N]`).
+/// Returns `None` for a call-free `expr` (consteval already handles those).
+#[must_use]
+#[allow(clippy::implicit_hasher)]
+pub fn eval_scalar(
+    expr: &Expr,
+    fns: &HashMap<String, &ast::FnDef>,
+    consts: &HashMap<String, i128>,
+) -> Option<i128> {
+    if !expr_has_fn_call(expr) {
+        return None;
+    }
+    let symbols = SymbolTable::default();
+    let const_vals: HashMap<String, Val> = consts
+        .iter()
+        .map(|(k, v)| (k.clone(), Val::Scalar(ConstVal::Int(*v))))
+        .collect();
+    let mut interp = Interp {
+        fns,
+        consts: &const_vals,
+        symbols: &symbols,
+        steps: 0,
+        depth: 0,
+    };
+    interp.eval(expr, &HashMap::new())?.int()
+}
+
 /// Rewrite every `const` whose initializer required the comptime interpreter (an
 /// ordinary function call) into a literal of its computed value, in place. Runs
 /// after resolution and before the checker, so downstream passes see literals.

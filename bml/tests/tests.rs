@@ -656,6 +656,22 @@ fn test_comptime_fn_table_folds() {
     );
 }
 
+// Phase 4 / T1: a comptime function computes a module `const` that sizes an
+// array (and its repeat-init). `round_up(40,16)` folds to 48 in constfold, so
+// `[u8; BUFSZ]` becomes `[48 x i8]` and the local `[u32; BUFSZ]` an `[48 x i32]`.
+#[test]
+fn test_comptime_fn_array_len_folds() {
+    let ir = bml_ir("comptime_fn_array_len_ok.bml");
+    assert!(
+        ir.contains("@ZEROS = constant [48 x i8]"),
+        "a comptime-computed const must size the constant array\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("[48 x i32]"),
+        "the comptime-computed const must size the local array too\n--- IR ---\n{ir}"
+    );
+}
+
 // Phase 4 regression: a NEGATIVE comptime result folds into a signed const as
 // `-(magnitude)`, not the u64 two's-complement bit pattern (which would default
 // to u32 and false-reject with E300).

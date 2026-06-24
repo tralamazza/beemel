@@ -1,0 +1,16 @@
+// Phase 4 / T1: a comptime function computes a module `const` that is then used
+// as an array LENGTH and a repeat-init COUNT. `round_up(40, 16)` folds to 48 at
+// compile time (in constfold, pre-resolution), sizing both the constant array
+// global and a local array.
+fn round_up(n: u32, to: u32) -> u32 {
+    return ((n + to - 1u32) / to) * to;
+}
+
+const BUFSZ: u32 = round_up(40u32, 16u32);
+const ZEROS: [u8; BUFSZ] = [0u8; BUFSZ];
+
+export fn main() @context(thread) {
+    var local: [u32; BUFSZ] = [0u32; BUFSZ];
+    var x: u8 = ZEROS[47];
+    var y: u32 = local[0];
+}
