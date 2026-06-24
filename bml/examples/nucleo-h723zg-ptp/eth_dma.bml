@@ -19,7 +19,7 @@ const HEARTBEAT_ETHERTYPE: u32 = 0x88B5;
 // Constant header bytes of every heartbeat: a locally administered source MAC,
 // the broadcast destination, and the "BMLPTP" payload magic.
 const SRC_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x72, 0x3A];
-const BROADCAST: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+const BROADCAST: [u8; 6] = [0xFF; 6];
 const MAGIC: [u8; 6] = [0x42, 0x4D, 0x4C, 0x50, 0x54, 0x50];
 
 // This module owns the ETH DMA: its handoff registers (the descriptor base and
@@ -970,7 +970,7 @@ export fn eth_send_ptp(msg_type: u32, seq: u32, ts_s: u32, ts_ns: u32, event: b1
 const SRC_MAC_CLOCK_ID: [u8; 8] = [0x02, 0x00, 0x00, 0xFF, 0xFE, 0x00, 0x72, 0x3A];
 // Typed const: a bare [0,...] literal in a struct-field position infers
 // i32 elements and trips opt (recorded compiler nit).
-const ZERO_PORT: [u8; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const ZERO_PORT: [u8; 10] = [0; 10];
 
 // Collect the egress timestamp of the event frame just sent: spin (volatile
 // agent-pointer reads, bounded by wire speed) for the descriptor write-back,
