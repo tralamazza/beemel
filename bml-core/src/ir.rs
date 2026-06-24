@@ -44,15 +44,19 @@ pub struct IrEmitter {
     agent_ptr_locals: std::collections::HashSet<String>,
     /// While emitting a monomorphized function (a driver specialized for a
     /// concrete instance), maps each `peripheral_type` handle parameter name to
-    /// that instance, so `u.REG` lowers as `INSTANCE.REG`. Empty otherwise
-    /// (slice 2).
-    handle_subst: HashMap<String, String>,
+    /// its comptime `Binding` (a peripheral instance), so `u.REG` lowers as
+    /// `INSTANCE.REG`. Empty otherwise (slice 2).
+    handle_subst: HashMap<String, Binding>,
     /// Monomorphization worklist: handle-parameter functions still to emit, as
-    /// (fn name, one concrete instance per handle parameter, in order). Pushed
-    /// when a call to a handle fn is lowered; drained after the ordinary
-    /// functions. `handle_spec_done` guards against re-emitting one (slice 2).
-    handle_spec_queue: Vec<(String, Vec<String>)>,
-    handle_spec_done: std::collections::HashSet<(String, Vec<String>)>,
+    /// (fn name, one `Binding` per handle parameter, in order). Pushed when a
+    /// call to a handle fn is lowered; drained after the ordinary functions.
+    /// `handle_spec_done` guards against re-emitting one (slice 2).
+    handle_spec_queue: Vec<(String, Vec<Binding>)>,
+    handle_spec_done: std::collections::HashSet<(String, Vec<Binding>)>,
+    /// Resolved `const` values (the `const_values` fixpoint), populated once at
+    /// the start of emission so call lowering can const-evaluate `comptime`
+    /// value arguments. See `IrConstEnv`.
+    const_vals: HashMap<String, ConstVal>,
     /// Spans of COMPILER-generated arithmetic that wraps by design, recorded
     /// in verify mode only: the ring view's `head + i` (bounded by the
     /// subsequent `% cap` regardless of wrap) and the bit view's
@@ -336,50 +340,92 @@ fn block_has_calls(block: &ast::Block) -> bool {
 
 // --- peripheral_type monomorphization (slice 2) ---
 
+/// A comptime binding: the concrete compile-time value a monomorphized function
+/// was specialized for -- one per comptime parameter, in declaration order.
+/// Today the only kind is a peripheral instance (whose comptime value is its
+/// base address); a `ConstInt` kind arrives with explicit `comptime` value
+/// parameters (rung 1). The specialization key and name mangling are keyed on a
+/// `Vec<Binding>`, so adding a kind is local to this enum, `mangle`, and the
+/// substitution sites.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Binding {
+    /// A concrete peripheral instance, e.g. `USART1`; `u.REG` in the body lowers
+    /// through this instance's base address (see `subst_periph`).
+    PeripheralInstance(String),
+    /// A `comptime` integer value parameter bound to a concrete constant; the
+    /// specialized body materializes it as a local literal (see the param
+    /// alloca loop in `emit_function`).
+    ConstInt(i128),
+}
+
+impl Binding {
+    /// The name-mangling component: `usart_init$USART1` or `delay$1000`.
+    fn mangle(&self) -> String {
+        match self {
+            Binding::PeripheralInstance(inst) => inst.clone(),
+            // `-` is not a legal unquoted LLVM identifier char, so mangle a
+            // negative value as `nN`.
+            Binding::ConstInt(v) if *v < 0 => format!("n{}", v.unsigned_abs()),
+            Binding::ConstInt(v) => v.to_string(),
+        }
+    }
+}
+
 /// Whether a parameter names a `peripheral_type` (a handle parameter).
 fn is_handle_param(param: &ast::Param, symbols: &SymbolTable) -> bool {
     matches!(&param.ty, ast::TypeExpr::Named((n, _)) if symbols.peripheral_types.contains_key(n))
 }
 
-fn fn_has_handle_params(fn_def: &ast::FnDef, symbols: &SymbolTable) -> bool {
-    fn_def.params.iter().any(|p| is_handle_param(p, symbols))
+/// Whether a parameter is comptime -- erased from the runtime ABI: a
+/// `peripheral_type` handle, or an explicit `comptime` value parameter.
+fn is_comptime_param(param: &ast::Param, symbols: &SymbolTable) -> bool {
+    is_handle_param(param, symbols) || param.comptime
 }
 
-/// Positions of a function's `peripheral_type` (handle) parameters, from its
-/// resolved signature.
-fn handle_param_positions(fname: &str, symbols: &SymbolTable) -> Vec<usize> {
+fn fn_has_comptime_params(fn_def: &ast::FnDef, symbols: &SymbolTable) -> bool {
+    fn_def.params.iter().any(|p| is_comptime_param(p, symbols))
+}
+
+/// Positions of a function's comptime parameters (a `peripheral_type` handle or
+/// a `comptime` value), from its resolved signature. These are dropped from the
+/// runtime ABI and resolved per specialization.
+fn comptime_param_positions(fname: &str, symbols: &SymbolTable) -> Vec<usize> {
     symbols.functions.get(fname).map_or_else(Vec::new, |s| {
         s.params
             .iter()
             .enumerate()
-            .filter_map(|(i, (_, t))| matches!(t, Type::PeripheralHandle(_)).then_some(i))
+            .filter(|(i, (_, t))| {
+                matches!(t, Type::PeripheralHandle(_))
+                    || s.comptime.get(*i).copied().unwrap_or(false)
+            })
+            .map(|(i, _)| i)
             .collect()
     })
 }
 
-/// Mangled name of a monomorphized function: `fn$INST0$INST1...`.
-fn mangle_spec(name: &str, instances: &[String]) -> String {
+/// Mangled name of a monomorphized function: `fn$BIND0$BIND1...`.
+fn mangle_spec(name: &str, bindings: &[Binding]) -> String {
     let mut s = name.to_string();
-    for inst in instances {
+    for b in bindings {
         s.push('$');
-        s.push_str(inst);
+        s.push_str(&b.mangle());
     }
     s
 }
 
-/// Map each handle parameter name to its concrete instance for a specialization.
+/// Map each handle parameter name to its concrete binding for a specialization.
 fn build_handle_subst(
     fn_def: &ast::FnDef,
-    instances: &[String],
+    bindings: &[Binding],
     symbols: &SymbolTable,
-) -> HashMap<String, String> {
+) -> HashMap<String, Binding> {
     let mut m = HashMap::new();
-    let mut insts = instances.iter();
+    let mut it = bindings.iter();
     for p in &fn_def.params {
-        if is_handle_param(p, symbols)
-            && let Some(inst) = insts.next()
+        if is_comptime_param(p, symbols)
+            && let Some(b) = it.next()
         {
-            m.insert(p.name.0.clone(), inst.clone());
+            m.insert(p.name.0.clone(), b.clone());
         }
     }
     m
@@ -392,21 +438,18 @@ impl IrEmitter {
     /// so the result does not extend a `&self` borrow into a `&mut self` body
     /// inside a let-chain.
     fn subst_periph(&self, name: &str) -> String {
-        self.handle_subst
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| name.to_string())
+        match self.handle_subst.get(name) {
+            Some(Binding::PeripheralInstance(inst)) => inst.clone(),
+            // A `comptime` int param is a value, not a peripheral; leave the
+            // name unchanged (it is materialized as a local).
+            Some(Binding::ConstInt(_)) | None => name.to_string(),
+        }
     }
 
     /// For `P.REG` naming an array register, return `(reg_base_addr, stride)`
     /// where `reg_base_addr = peripheral base + reg offset`. `P.REG[i]` then
     /// addresses `reg_base_addr + stride*i`. `None` for a non-array register.
-    fn array_reg_addr(
-        &self,
-        periph: &str,
-        reg: &str,
-        symbols: &SymbolTable,
-    ) -> Option<(u64, u64)> {
+    fn array_reg_addr(&self, periph: &str, reg: &str, symbols: &SymbolTable) -> Option<(u64, u64)> {
         let p = symbols.peripherals.get(&self.subst_periph(periph))?;
         let r = p.regs.get(reg)?;
         let (_len, stride) = r.array?;
@@ -522,39 +565,59 @@ impl IrEmitter {
         &mut self,
         callee: &str,
         args: &[Expr],
-        handle_positions: &[usize],
+        comptime_positions: &[usize],
         symbols: &SymbolTable,
         fn_name: &str,
         dbg_sfx: &str,
     ) -> String {
-        let instances: Vec<String> = handle_positions
+        let param_tys: Vec<Type> = symbols.functions.get(callee).map_or_else(Vec::new, |s| {
+            s.params.iter().map(|(_, t)| t.clone()).collect()
+        });
+        // One binding per comptime parameter: a peripheral instance (resolved
+        // from the argument identifier, applying any active pass-through subst)
+        // or a `comptime` int (const-evaluated from the argument).
+        let bindings: Vec<Binding> = comptime_positions
             .iter()
-            .map(|&i| match &args[i] {
-                Expr::Ident((name, _)) => self
-                    .handle_subst
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.clone()),
-                // The checker rejects a non-identifier handle argument (E308) and
-                // codegen only runs on error-free programs, so this is dead.
-                other => unreachable!(
-                    "non-identifier peripheral handle argument reached codegen: {other:?}"
-                ),
+            .map(|&i| {
+                if let Some(Type::PeripheralHandle(_)) = param_tys.get(i) {
+                    // The checker rejects a non-identifier handle argument (E308)
+                    // and codegen only runs on error-free programs, so the else
+                    // arm is dead.
+                    if let Expr::Ident((name, _)) = &args[i] {
+                        self.handle_subst
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| Binding::PeripheralInstance(name.clone()))
+                    } else {
+                        unreachable!(
+                            "non-identifier peripheral handle argument reached codegen: {:?}",
+                            &args[i]
+                        )
+                    }
+                } else {
+                    // A `comptime` int parameter: const-evaluate the argument
+                    // (the checker guarantees it is const-evaluable, E410).
+                    let env = IrConstEnv {
+                        symbols,
+                        consts: &self.const_vals,
+                    };
+                    let v = consteval::eval_int(&args[i], &env).expect(
+                        "comptime argument not const-evaluable; checker (E410) should reject it",
+                    );
+                    Binding::ConstInt(v)
+                }
             })
             .collect();
-        let mangled = mangle_spec(callee, &instances);
-        let key = (callee.to_string(), instances);
+        let mangled = mangle_spec(callee, &bindings);
+        let key = (callee.to_string(), bindings);
         if self.handle_spec_done.insert(key.clone()) {
             self.handle_spec_queue.push(key);
         }
 
-        let param_tys: Vec<Type> = symbols.functions.get(callee).map_or_else(Vec::new, |s| {
-            s.params.iter().map(|(_, t)| t.clone()).collect()
-        });
         let mut arg_parts = Vec::new();
         for (i, arg) in args.iter().enumerate() {
-            if handle_positions.contains(&i) {
-                continue; // handle args carry no runtime value
+            if comptime_positions.contains(&i) {
+                continue; // comptime args carry no runtime value
             }
             let reg = self.emit_expr(arg, symbols, fn_name);
             let ty = self.expr_type(arg, symbols);
@@ -621,6 +684,7 @@ impl IrEmitter {
             handle_subst: HashMap::new(),
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
+            const_vals: HashMap::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -685,6 +749,7 @@ impl IrEmitter {
             handle_subst: HashMap::new(),
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
+            const_vals: HashMap::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -937,6 +1002,9 @@ impl IrEmitter {
         // Resolve every `const`'s integer value once; the fixpoint scans all
         // items, so recomputing it per declaration would be quadratic.
         let consts = const_values(&program.items, symbols);
+        // Cache the resolved const values so `comptime` value arguments can be
+        // const-evaluated during call lowering (see `IrConstEnv`).
+        self.const_vals.clone_from(&consts);
         // Map each `const` to its resolved type and initializer so an
         // initializer that names another `const` (e.g. `var s = LUT;` or
         // `const Y: f32 = X;`) can be inlined to that const's value.
@@ -1330,20 +1398,20 @@ impl IrEmitter {
         // a per-instance specialization (slice 2).
         for item in &program.items {
             if let ast::Item::FnDef(fn_def) = item
-                && !fn_has_handle_params(fn_def, symbols)
+                && !fn_has_comptime_params(fn_def, symbols)
             {
                 self.emit_function(fn_def, symbols, None);
             }
         }
         // Drain the monomorphization worklist; a specialization's own body may
         // queue further specializations (transitive: `a(u){ b(u) }`).
-        while let Some((fname, instances)) = self.handle_spec_queue.pop() {
+        while let Some((fname, bindings)) = self.handle_spec_queue.pop() {
             if let Some(fn_def) = program.items.iter().find_map(|it| match it {
                 ast::Item::FnDef(f) if f.name.0 == fname => Some(f),
                 _ => None,
             }) {
-                let mangled = mangle_spec(&fname, &instances);
-                self.handle_subst = build_handle_subst(fn_def, &instances, symbols);
+                let mangled = mangle_spec(&fname, &bindings);
+                self.handle_subst = build_handle_subst(fn_def, &bindings, symbols);
                 self.emit_function(fn_def, symbols, Some(&mangled));
                 self.handle_subst.clear();
             }
@@ -1387,7 +1455,7 @@ impl IrEmitter {
         let param_strs: Vec<String> = fn_def
             .params
             .iter()
-            .filter(|p| !is_handle_param(p, symbols))
+            .filter(|p| !is_comptime_param(p, symbols))
             .map(|p| {
                 let pty = crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
                 format!(
@@ -1423,7 +1491,7 @@ impl IrEmitter {
             let param_type_ids: Vec<String> = fn_def
                 .params
                 .iter()
-                .filter(|p| !is_handle_param(p, symbols))
+                .filter(|p| !is_comptime_param(p, symbols))
                 .map(|p| {
                     let bml_ty =
                         crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
@@ -1507,10 +1575,7 @@ impl IrEmitter {
         let internal = if name_override.is_some() {
             !attr_external
         } else {
-            !attr_external
-                && !fn_def.exported
-                && !is_core_entry
-                && name != "reset_handler"
+            !attr_external && !fn_def.exported && !is_core_entry && name != "reset_handler"
         };
         let linkage = if internal { "internal " } else { "" };
         self.line(&format!(
@@ -1542,10 +1607,14 @@ impl IrEmitter {
             let pty = llvm_type(&bml_type);
             let reg = self.alloca(&pty, &param.name.0);
             let dbg_sfx = self.dbg_loc(param.name.1);
-            self.line(&format!(
-                "store {pty} %{}, ptr {reg}{dbg_sfx}",
-                param.name.0
-            ));
+            // A `comptime` value parameter has no incoming SSA argument: it is
+            // materialized from its bound constant, so it reads as an ordinary
+            // local everywhere downstream. (Handle params are filtered out above.)
+            let stored = match self.handle_subst.get(&param.name.0) {
+                Some(Binding::ConstInt(v)) => v.to_string(),
+                _ => format!("%{}", param.name.0),
+            };
+            self.line(&format!("store {pty} {stored}, ptr {reg}{dbg_sfx}"));
             self.dbg_declare(&reg, &param.name.0, &bml_type, param.name.1);
             self.locals.insert(
                 param.name.0.clone(),
@@ -1580,7 +1649,7 @@ impl IrEmitter {
         self.current_fn_params = fn_def
             .params
             .iter()
-            .filter(|p| !is_handle_param(p, symbols))
+            .filter(|p| !is_comptime_param(p, symbols))
             .map(|p| {
                 let bml_type =
                     crate::types::resolve_type_expr(&p.ty, &symbols.structs, &symbols.enums);
@@ -2870,12 +2939,12 @@ impl IrEmitter {
                     // the concrete instance for each handle argument, queue the
                     // specialization, and call the mangled name with the handle
                     // arguments dropped (slice 2).
-                    let handle_positions = handle_param_positions(&direct_name, symbols);
-                    if !handle_positions.is_empty() {
+                    let comptime_positions = comptime_param_positions(&direct_name, symbols);
+                    if !comptime_positions.is_empty() {
                         return self.emit_handle_call(
                             &direct_name,
                             args,
-                            &handle_positions,
+                            &comptime_positions,
                             symbols,
                             fn_name,
                             &dbg_sfx,
@@ -2973,8 +3042,7 @@ impl IrEmitter {
             Expr::FieldAccess(base, field) => {
                 // Indexed array-register field read: `P.REG[i].FIELD` -> volatile
                 // load at base+offset+stride*i, then mask/shift the field out.
-                if let Some((reg_base, stride, idx_expr)) =
-                    self.indexed_array_reg(base, symbols)
+                if let Some((reg_base, stride, idx_expr)) = self.indexed_array_reg(base, symbols)
                     && let Expr::Index(arr, _) = base.as_ref()
                     && let Expr::FieldAccess(p, reg) = arr.as_ref()
                     && let Expr::Ident((pname, _)) = p.as_ref()
@@ -4074,9 +4142,7 @@ impl IrEmitter {
                 // Address-of an indexed array register: &P.REG[i] -> the MMIO
                 // pointer base+offset+stride*i (correct stride, unlike the
                 // generic GEP below which assumes element-size stride).
-                if let Some((reg_base, stride, idx_expr)) =
-                    self.indexed_array_reg(expr, symbols)
-                {
+                if let Some((reg_base, stride, idx_expr)) = self.indexed_array_reg(expr, symbols) {
                     return self.emit_reg_index_ptr(reg_base, stride, idx_expr, symbols, "");
                 }
                 let base_ptr = self.emit_lvalue_ptr(base, symbols);
@@ -4275,9 +4341,8 @@ impl IrEmitter {
                     let bit_spec = field_def.bit_spec.clone();
                     let field_ty = field_def.ty.clone();
                     let ptr = self.emit_reg_index_ptr(reg_base, stride, idx_expr, symbols, fn_name);
-                    return self.emit_field_rmw_at_ptr(
-                        &ptr, &bit_spec, &field_ty, val_reg, val_ty, &dbg,
-                    );
+                    return self
+                        .emit_field_rmw_at_ptr(&ptr, &bit_spec, &field_ty, val_reg, val_ty, &dbg);
                 }
                 // Peripheral register write: GPIOA.ODR = val
                 if let LValue::Name((periph_name, _)) = base.as_ref()

@@ -108,6 +108,10 @@ pub struct ExternFnDef {
 pub struct Param {
     pub name: Ident,
     pub ty: TypeExpr,
+    /// `comptime` modifier: a compile-time value parameter. The function is
+    /// monomorphized per distinct argument value and the parameter is erased
+    /// from the runtime ABI. See `doc/comptime.md`.
+    pub comptime: bool,
 }
 
 #[derive(Debug, Clone)]

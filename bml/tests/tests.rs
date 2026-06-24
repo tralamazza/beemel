@@ -416,6 +416,35 @@ fn test_peripheral_type_param_monomorphizes() {
     );
 }
 
+// `comptime` value parameter (rung 1, doc/comptime.md): a function is
+// monomorphized per distinct argument value, the value is materialized as a
+// local, and the parameter is dropped from the runtime ABI.
+#[test]
+fn test_comptime_param_monomorphizes() {
+    let ir = bml_ir("comptime_param_ok.bml");
+    for spec in ["@scaled$10()", "@scaled$20()"] {
+        assert!(
+            ir.contains(&format!("define internal i32 {spec}")),
+            "expected a no-arg internal specialization `{spec}`\n--- IR ---\n{ir}"
+        );
+    }
+    assert!(
+        !ir.contains("@scaled("),
+        "the generic function must not be emitted\n--- IR ---\n{ir}"
+    );
+    // Each specialization materializes its bound constant as a local.
+    assert!(
+        ir.contains("store i32 10") && ir.contains("store i32 20"),
+        "each specialization must materialize its bound constant\n--- IR ---\n{ir}"
+    );
+}
+// A runtime argument to a `comptime` parameter is rejected.
+assert_error!(
+    test_comptime_param_runtime,
+    "comptime_param_runtime_error.bml",
+    "E410"
+);
+
 // Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
 assert_pass!(test_reg_array_ok, "reg_array_ok.bml");
 // Accessing the array register without an index (E337), a constant index past
@@ -1787,7 +1816,10 @@ assert_ir_contains_target!(
 fn test_isr_priority_overflow_rejected() {
     let (ok, stderr) =
         bml_build_with_target("isr_priority_overflow.bml", Some("vector_labeled.target"));
-    assert!(!ok, "priority exceeding priority_bits must be rejected\n{stderr}");
+    assert!(
+        !ok,
+        "priority exceeding priority_bits must be rejected\n{stderr}"
+    );
     assert!(stderr.contains("error[E406]"), "expected E406:\n{stderr}");
 }
 // E407: two @isr handlers on the same label -- one would be silently dropped.
@@ -1801,7 +1833,8 @@ fn test_isr_duplicate_label_rejected() {
 // the handler would never be wired into the table.
 #[test]
 fn test_isr_unmatched_label_rejected() {
-    let (ok, stderr) = bml_build_with_target("isr_unmatched_label.bml", Some("vector_labeled.target"));
+    let (ok, stderr) =
+        bml_build_with_target("isr_unmatched_label.bml", Some("vector_labeled.target"));
     assert!(!ok, "unmatched @isr label must be rejected\n{stderr}");
     assert!(stderr.contains("error[E409]"), "expected E409:\n{stderr}");
 }
@@ -1810,7 +1843,10 @@ fn test_isr_unmatched_label_rejected() {
 #[test]
 fn test_isr_unmatched_label_no_interrupts_ok() {
     let (ok, stderr) = bml_build_with_target("isr_unmatched_label.bml", None);
-    assert!(ok, "without [interrupts], an unmatched label must not error\n{stderr}");
+    assert!(
+        ok,
+        "without [interrupts], an unmatched label must not error\n{stderr}"
+    );
 }
 
 // Derived ceilings (bare `@shared`, ceiling.rs): the number comes from the

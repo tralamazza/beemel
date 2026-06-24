@@ -1,0 +1,12 @@
+// comptime value parameter (rung 1): one function, two monomorphizations.
+// Codegen specializes `scaled$10` / `scaled$20` with the bound value
+// materialized as a local; the generic `scaled` is never emitted and the
+// parameter is dropped from each specialized signature. See doc/comptime.md.
+fn scaled(comptime n: u32) -> u32 {
+    return n * 2;
+}
+
+export fn main() @context(thread) {
+    var a: u32 = scaled(10);
+    var b: u32 = scaled(20);
+}

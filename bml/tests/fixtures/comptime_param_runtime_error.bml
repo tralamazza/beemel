@@ -1,0 +1,10 @@
+// A `comptime` parameter is monomorphized per value, so its argument must be a
+// compile-time constant. Passing a runtime value is rejected (E410).
+fn scaled(comptime n: u32) -> u32 {
+    return n * 2;
+}
+
+export fn main() @context(thread) {
+    var x: u32 = 5;
+    var a: u32 = scaled(x);
+}

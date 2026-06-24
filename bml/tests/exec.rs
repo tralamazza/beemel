@@ -450,6 +450,10 @@ assert_exec!(exec_arrays, "arrays.bml");
 // ─── match as an expression (language.md §11, §7) ────────────────────────────
 assert_exec!(exec_match_expr, "match_expr.bml");
 
+// ─── comptime value parameter (rung 1, doc/comptime.md): monomorphized per
+// value; scaled(4)->12, scaled(10)->30 prove the value is substituted, not passed
+assert_exec!(exec_comptime_param, "comptime_param.bml");
+
 // ─── if- and block-expressions yield values (language.md §11) ────────────────
 assert_exec!(exec_if_block_expr, "if_block_expr.bml");
 

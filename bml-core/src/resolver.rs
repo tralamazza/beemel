@@ -40,6 +40,10 @@ pub struct SymbolTable {
 pub struct FnSymbol {
     pub context: Context,
     pub params: Vec<(String, crate::types::Type)>,
+    /// Per-parameter `comptime` flag, aligned with `params`. A `peripheral_type`
+    /// handle param is comptime by its type (`Type::PeripheralHandle`), not this
+    /// flag. See `doc/comptime.md`.
+    pub comptime: Vec<bool>,
     pub ret: Option<crate::types::Type>,
     pub isr_label: Option<String>,
     pub naked: bool,
@@ -246,6 +250,7 @@ impl Resolver {
             FnSymbol {
                 context,
                 params,
+                comptime: f.params.iter().map(|p| p.comptime).collect(),
                 ret,
                 isr_label,
                 naked: f.naked,
@@ -293,6 +298,9 @@ impl Resolver {
             FnSymbol {
                 context,
                 params,
+                // extern fns are never monomorphized; `comptime` params are not
+                // meaningful across an external ABI.
+                comptime: vec![false; e.params.len()],
                 ret,
                 isr_label,
                 naked: false,

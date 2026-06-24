@@ -408,11 +408,8 @@ impl<'a> Parser<'a> {
             Ok(a) => a,
             Err(errors) => {
                 for e in errors {
-                    self.diags.error(
-                        format!("in pio program `{name}`: {}", e.msg),
-                        "E117",
-                        span,
-                    );
+                    self.diags
+                        .error(format!("in pio program `{name}`: {}", e.msg), "E117", span);
                 }
                 return None;
             }
@@ -425,8 +422,7 @@ impl<'a> Parser<'a> {
         // dedups items by their definition span (`push_unique`/`item_def_span`,
         // for diamond imports), so consts sharing the block span would collapse
         // to one. Distinct 1-byte spans within the block keep all of them.
-        let name_span =
-            |k: usize| Span::new(span.file, span.start + k, span.start + k + 1);
+        let name_span = |k: usize| Span::new(span.file, span.start + k, span.start + k + 1);
 
         // NAME_PROGRAM: [u16; N] = [w0, w1, ...] -- the instruction words.
         let elems: Vec<Expr> = asm
@@ -572,11 +568,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_param(&mut self) -> Option<Param> {
+        let comptime = self.eat(&TokenKind::Comptime);
         let name = self.parse_ident()?;
         self.expect(&TokenKind::Colon, "expected `:` after parameter name")
             .ok()?;
         let ty = self.parse_type_expr()?;
-        Some(Param { name, ty })
+        Some(Param { name, ty, comptime })
     }
 
     fn parse_fn_annotations(
@@ -2665,7 +2662,10 @@ mod tests {
         let mut diags = DiagnosticBag::new();
         let src = "pio bad { set pins, 99 }"; // SET value out of range 0..31
         let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
-        assert!(diags.has_errors(), "an invalid pio program must report an error");
+        assert!(
+            diags.has_errors(),
+            "an invalid pio program must report an error"
+        );
     }
 
     // A struct LITERAL may carry a trailing comma (`T { a: 1, b: 2, }`), matching
@@ -2676,7 +2676,10 @@ mod tests {
         let src = "struct T { a: u32, b: u32 }\n\
                    fn f() -> T { return T { a: 1, b: 2, }; }";
         let _ = Parser::new(src, FileId::new(), &mut diags).parse_program();
-        assert!(!diags.has_errors(), "trailing comma in a struct literal must parse");
+        assert!(
+            !diags.has_errors(),
+            "trailing comma in a struct literal must parse"
+        );
     }
 
     // The tolerance is exactly one trailing comma: a doubled comma (an empty

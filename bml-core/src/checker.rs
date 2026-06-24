@@ -2351,6 +2351,17 @@ fn check_peripheral_handle_arg(
     );
 }
 
+/// Whether `arg` is acceptable for a `comptime` value parameter: an integer
+/// literal or a named `const`. Const-expression arguments are a follow-up (see
+/// `doc/comptime.md`); the IR evaluates a superset of this, so it stays sound.
+fn is_comptime_const_arg(arg: &Expr, symbols: &SymbolTable) -> bool {
+    match arg {
+        Expr::IntLiteral(..) => true,
+        Expr::Ident((name, _)) => symbols.consts.contains_key(name),
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::only_used_in_recursion)]
 fn check_call_args(
@@ -2365,7 +2376,8 @@ fn check_call_args(
     diags: &mut DiagnosticBag,
 ) {
     if args.len() == fn_sym.params.len() {
-        for (arg, (param_name, param_ty)) in args.iter().zip(fn_sym.params.iter()) {
+        for (i, (arg, (param_name, param_ty))) in args.iter().zip(fn_sym.params.iter()).enumerate()
+        {
             // A `peripheral_type` parameter (slice 2) is monomorphized, so its
             // argument must be a statically-known peripheral instance of the
             // matching type (or another handle param of that type, for
@@ -2375,6 +2387,19 @@ fn check_call_args(
                 continue;
             }
             let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
+            // A `comptime` value parameter is monomorphized per value, so its
+            // argument must be a compile-time constant.
+            if fn_sym.comptime.get(i).copied().unwrap_or(false)
+                && !is_comptime_const_arg(arg, symbols)
+            {
+                diags.error(
+                    format!(
+                        "argument `{param_name}` of `{name}` is a `comptime` parameter and requires a compile-time constant"
+                    ),
+                    "E410",
+                    arg.span(),
+                );
+            }
             if !types::types_compatible(param_ty, &arg_ty)
                 && !unsuffixed_literal_fits(arg, param_ty)
             {

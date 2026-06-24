@@ -1,0 +1,14 @@
+// comptime value parameter executes correctly under QEMU: each call is
+// monomorphized to a distinct specialization whose body sees `n` as the bound
+// constant (so the result differs per call, proving substitution not passing).
+import harness.semihost;
+
+fn scaled(comptime n: u32) -> u32 {
+    return n * 3;
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(scaled(4), 12);
+    semihost.expect_u32(scaled(10), 30);
+    semihost.done();
+}
