@@ -51,8 +51,9 @@ That axis is what the tutorials keep coming back to.
 | 08 | [Regions and Agents (DMA safety)](08-regions-and-agents.md) | The core differentiator: declaring what a DMA engine or second core may touch, `@dma`/`@external`, why reading agent-shared memory is blocked, and `reclaim` after a completion handshake. |
 | 09 | [Verifying with `bml verify`](09-verifying.md) | The IKOS static analyzer: `assume`/`assert` vs `comptime_assert`, the integer-overflow contract and wrapping operators, proving view bounds across calls, and auditing suppressions. |
 | 10 | [C Interop](10-c-interop.md) | `extern fn`, the ABI-safe subset BML checks at the boundary, passing structs and callbacks, and linking C objects (`--link`, `bml cflags`). |
+| 11 | [Compile-Time Computation](11-comptime.md) | `comptime_assert`, repeat-init `[value; count]`, `comptime` value parameters (monomorphization), `comptime if`/`match`, and `comptime` functions that compute constant tables during `bml build`. |
 
-All ten tutorials are written.
+All eleven tutorials are written.
 
 ## See also
 

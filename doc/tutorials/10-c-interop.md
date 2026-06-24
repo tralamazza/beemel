@@ -189,11 +189,13 @@ goes out in `r0`, `49` comes back in `r0` -- with the compiler having checked th
 
 ## End of the series
 
-That's the tour: from a blinking LED to calling C, by way of the type system,
-peripherals, interrupts, data layout, pointers and views, the regions/agents
-DMA-safety model, and static verification. The [index](README.md) links all ten;
-for complete programs, the [example projects](../../bml/examples) -- blue-pill,
-micro:bit, RP2350, and the NUCLEO-H723ZG PTP demo -- put the whole language to
-work on real hardware. For the exhaustive rules, the
+That's the core tour: from a blinking LED to calling C, by way of the type
+system, peripherals, interrupts, data layout, pointers and views, the
+regions/agents DMA-safety model, and static verification.
+[Tutorial 11](11-comptime.md) is a language-feature deep dive you can take any
+time -- compile-time computation with `comptime`. The [index](README.md) links
+them all; for complete programs, the [example projects](../../bml/examples) --
+blue-pill, micro:bit, RP2350, and the NUCLEO-H723ZG PTP demo -- put the whole
+language to work on real hardware. For the exhaustive rules, the
 [language specification](../language.md) is the reference these tutorials were the
 on-ramp to.
