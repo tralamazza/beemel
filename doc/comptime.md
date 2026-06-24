@@ -327,6 +327,14 @@ Unrolling via comptime-param recursion:
   written directly in a length (`[u8; f()]`), a function-*local* `const`, and a
   comptime function that needs `sizeof`/`len` (no symbols pre-resolution). Plain
   `sizeof` lengths remain a separate, related gap (T2).
+- Independent review caught a silent miscompile: pre-resolution `sizeof([Foo; 4])`
+  resolves to `Array(Unresolved, 4)`, which the SizeOf guard (top-level
+  `Unresolved` only) missed, so `element_size`'s catch-all (4 bytes per unresolved)
+  returned 16 instead of 32 -- an UNDER-sized array (`const N = 32` but `[u8; 16]`).
+  Fix: an `Interp.sizeof_ok` flag, false in `eval_scalar`, so the pre-resolution
+  interpreter never evaluates `sizeof` (it cannot be trusted with an empty symbol
+  table). The sizing is rejected (E414/E348) instead -- consistent with the
+  documented boundary. Test: `comptime_fn_sizeof_size_error.bml`.
 - Tests: `comptime_fn_array_len_ok.bml` (IR: `round_up(40,16)` sizes `[48 x i8]` +
   local `[48 x i32]`), `exec/comptime_fn_array_len.bml` (QEMU: const + loop-filled
   local round-trip).

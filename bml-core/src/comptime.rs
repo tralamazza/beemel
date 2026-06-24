@@ -74,6 +74,9 @@ struct Interp<'a> {
     symbols: &'a SymbolTable,
     steps: u64,
     depth: u32,
+    /// Whether `sizeof` is trustworthy. False pre-resolution (`eval_scalar`),
+    /// where the empty symbol table would mis-size composite types.
+    sizeof_ok: bool,
 }
 
 /// Evaluate a `const` initializer that may call ordinary functions, to a comptime
@@ -91,6 +94,7 @@ fn eval_to_val(
         symbols,
         steps: 0,
         depth: 0,
+        sizeof_ok: true,
     };
     interp.eval(expr, &HashMap::new())
 }
@@ -123,6 +127,7 @@ pub fn eval_scalar(
         symbols: &symbols,
         steps: 0,
         depth: 0,
+        sizeof_ok: false,
     };
     interp.eval(expr, &HashMap::new())?.int()
 }
@@ -463,6 +468,14 @@ impl Interp<'_> {
                     .enum_variant_discriminant(&enum_name.0, &variant.0)?,
             )),
             Expr::SizeOf(ty, _) => {
+                // Pre-resolution (eval_scalar) the symbol table is empty, so a
+                // composite like `[Foo; 4]` resolves to `Array(Unresolved, ..)`,
+                // which `element_size`'s catch-all mis-sizes (4 bytes per
+                // unresolved component) -- a silent array-sizing miscompile. Only
+                // trust `sizeof` once types are resolved.
+                if !self.sizeof_ok {
+                    return None;
+                }
                 let t = types::resolve_type_expr(ty, &self.symbols.structs, &self.symbols.enums);
                 if matches!(t, Type::Unresolved(_)) {
                     return None;

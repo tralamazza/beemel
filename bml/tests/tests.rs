@@ -671,6 +671,14 @@ fn test_comptime_fn_array_len_folds() {
         "the comptime-computed const must size the local array too\n--- IR ---\n{ir}"
     );
 }
+// T1 review regression: a comptime function using `sizeof` of a composite cannot
+// size an array (pre-resolution the layout is unknown, so it would mis-size --
+// rejected with E414, not silently under-sized).
+assert_error!(
+    test_comptime_fn_sizeof_size,
+    "comptime_fn_sizeof_size_error.bml",
+    "E414"
+);
 
 // Phase 4 regression: a NEGATIVE comptime result folds into a signed const as
 // `-(magnitude)`, not the u64 two's-complement bit pattern (which would default
