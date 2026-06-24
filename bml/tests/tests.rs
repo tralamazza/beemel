@@ -738,6 +738,9 @@ assert_error!(
     "reg_array_stride_missing_error.bml",
     "E116"
 );
+// An inline `pio { }` block whose body fails PIO assembly (an unknown
+// instruction) is rejected by the encoder (E117).
+assert_error!(test_pio_asm_error, "pio_asm_error.bml", "E117");
 // `P.MEM[i]` lowers to a volatile MMIO store at `base + offset + stride*i`:
 // FIFO0 base 0x40000000 + MEM offset 0x10 = 0x40000010 = 1073741840, stride 4.
 #[test]

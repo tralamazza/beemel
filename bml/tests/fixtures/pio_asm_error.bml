@@ -1,0 +1,9 @@
+// An inline `pio { }` block whose body fails PIO assembly: `bogus` is not a PIO
+// instruction, so the encoder rejects the program (E117). Exercises the PIO
+// assembly error path (`pio_encode::assemble` -> parser.rs).
+pio oops {
+    set pins, 1
+    bogus x, 31
+}
+
+fn main() @context(thread) {}
