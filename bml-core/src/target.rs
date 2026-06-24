@@ -1632,7 +1632,10 @@ fn parse_endpoint(val: &str, line_num: usize) -> Result<EndpointSpec, String> {
         Some((body, idx)) => {
             let idx = idx.strip_suffix(']').ok_or_else(bad)?.trim();
             let n: u64 = idx.parse().map_err(|_| {
-                format!("line {}: endpoint index `{idx}` is not a number", line_num + 1)
+                format!(
+                    "line {}: endpoint index `{idx}` is not a number",
+                    line_num + 1
+                )
             })?;
             (body.trim(), Some(n))
         }
@@ -1827,10 +1830,8 @@ mod tests {
     fn parse_errors_on_duplicate_interrupt_slot() {
         // Two [interrupts] labels on one NVIC slot (R3b): a config error that
         // would otherwise place both handlers and program the IPR twice.
-        let err = Target::parse(
-            "arch = armv7em\n[interrupts]\nTIM2 = 28\nTIM3 = 28\n",
-        )
-        .unwrap_err();
+        let err =
+            Target::parse("arch = armv7em\n[interrupts]\nTIM2 = 28\nTIM3 = 28\n").unwrap_err();
         assert!(err.contains("slot 28"), "got: {err}");
         assert!(err.contains("TIM2") && err.contains("TIM3"), "got: {err}");
     }

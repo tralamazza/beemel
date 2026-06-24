@@ -755,7 +755,13 @@ fn field_enum_value(
     field: &str,
     variant: &str,
 ) -> Option<u64> {
-    let f = symbols.peripherals.get(periph)?.regs.get(reg)?.fields.get(field)?;
+    let f = symbols
+        .peripherals
+        .get(periph)?
+        .regs
+        .get(reg)?
+        .fields
+        .get(field)?;
     if let crate::types::Type::Enum(_, _, variants) = &f.ty {
         let disc = variants.iter().find(|(n, _)| n == variant)?.1;
         return u64::try_from(disc).ok();
@@ -767,7 +773,12 @@ fn field_enum_value(
 /// endpoint (`dreq = P.R.F = VARIANT`); a program that writes a DIFFERENT value to
 /// that transfer-request field would pace the channel with the wrong request and
 /// over/underrun the FIFO. A channel with no `dreq` is unchecked.
-fn check_dreq(program: &Program, symbols: &SymbolTable, target: &Target, diags: &mut DiagnosticBag) {
+fn check_dreq(
+    program: &Program,
+    symbols: &SymbolTable,
+    target: &Target,
+    diags: &mut DiagnosticBag,
+) {
     let dreqs: Vec<&DreqSpec> = target
         .agents
         .iter()

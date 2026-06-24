@@ -454,7 +454,9 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
         !is_system_exc(label)
             && (labeled.contains_key(label)
                 || symbols.functions.contains_key(label)
-                || symbols.functions.contains_key(&format!("{label}_IRQHandler")))
+                || symbols
+                    .functions
+                    .contains_key(&format!("{label}_IRQHandler")))
     };
     let max_irq = target_interrupts
         .iter()
@@ -482,7 +484,10 @@ pub fn emit_vector_table<S: ::std::hash::BuildHasher>(
             format!("@{fn_name}")
         } else if symbols.functions.contains_key(label) {
             format!("@{label}")
-        } else if symbols.functions.contains_key(&format!("{label}_IRQHandler")) {
+        } else if symbols
+            .functions
+            .contains_key(&format!("{label}_IRQHandler"))
+        {
             format!("@{label}_IRQHandler")
         } else {
             continue;

@@ -135,7 +135,10 @@ impl Assembler {
     }
 
     fn err(&mut self, line: usize, msg: impl Into<String>) {
-        self.errors.push(AsmError { line, msg: msg.into() });
+        self.errors.push(AsmError {
+            line,
+            msg: msg.into(),
+        });
     }
 
     fn run(mut self, src: &str) -> Result<Assembled, Vec<AsmError>> {
@@ -294,7 +297,10 @@ impl Assembler {
         // `count` is data bits; `opt` adds one enable bit. The total must fit the
         // 5-bit [12:8] field, and `opt` needs at least one data bit to be useful.
         if opt && count == 0 {
-            self.err(line, "`.side_set 0 opt` has no data bits; drop `opt` or raise the count");
+            self.err(
+                line,
+                "`.side_set 0 opt` has no data bits; drop `opt` or raise the count",
+            );
             return;
         }
         if count + u8::from(opt) > 5 {
@@ -308,13 +314,20 @@ impl Assembler {
             );
             return;
         }
-        self.side_set = SideSet { count, opt, pindirs };
+        self.side_set = SideSet {
+            count,
+            opt,
+            pindirs,
+        };
     }
 
     fn dir_define(&mut self, body: &str, line: usize) {
         // `.define [PUBLIC] NAME EXPR`
         let rest = body.strip_prefix("define").unwrap_or("").trim_start();
-        let (public, rest) = match rest.strip_prefix("PUBLIC ").or_else(|| rest.strip_prefix("public ")) {
+        let (public, rest) = match rest
+            .strip_prefix("PUBLIC ")
+            .or_else(|| rest.strip_prefix("public "))
+        {
             Some(r) => (true, r.trim_start()),
             None => (false, rest),
         };
@@ -420,7 +433,9 @@ impl Assembler {
                 if ss.opt {
                     0 // optional side-set omitted: enable bit clear, no data
                 } else {
-                    return Err("`.side_set` is not optional; every instruction needs `side`".into());
+                    return Err(
+                        "`.side_set` is not optional; every instruction needs `side`".into(),
+                    );
                 }
             }
         };
@@ -450,9 +465,7 @@ impl Assembler {
         let mut side = None;
         let toks: Vec<&str> = rest.split_whitespace().collect();
         if let Some(p) = toks.iter().position(|&t| t.eq_ignore_ascii_case("side")) {
-            let val = toks
-                .get(p + 1)
-                .ok_or("`side` needs a value")?;
+            let val = toks.get(p + 1).ok_or("`side` needs a value")?;
             side = Some(self.eval(val, 0)?);
             // rebuild `rest` without the `side <val>` pair
             let mut kept: Vec<&str> = Vec::new();
@@ -578,7 +591,11 @@ impl Assembler {
 
     fn eval(&mut self, expr: &str, line: usize) -> Result<i64, String> {
         let toks = lex_expr(expr)?;
-        let mut p = ExprParser { toks: &toks, pos: 0, symbols: &self.symbols };
+        let mut p = ExprParser {
+            toks: &toks,
+            pos: 0,
+            symbols: &self.symbols,
+        };
         let v = p.parse(0)?;
         if p.pos != p.toks.len() {
             return Err(format!("trailing tokens in expression `{expr}`"));
@@ -650,7 +667,11 @@ fn set_dest(d: &str) -> Result<u16, String> {
         "x" => 1,
         "y" => 2,
         "pindirs" => 4,
-        other => return Err(format!("set destination must be pins|x|y|pindirs, got `{other}`")),
+        other => {
+            return Err(format!(
+                "set destination must be pins|x|y|pindirs, got `{other}`"
+            ));
+        }
     })
 }
 
@@ -1071,7 +1092,10 @@ mod tests {
     fn too_many_instructions_is_rejected() {
         let src = "nop\n".repeat(33);
         let err = assemble("big", &src).unwrap_err();
-        assert!(err.iter().any(|e| e.msg.contains("instruction memory holds 32")));
+        assert!(
+            err.iter()
+                .any(|e| e.msg.contains("instruction memory holds 32"))
+        );
     }
 
     // Overflowing arithmetic in an expression returns an AsmError, never panics.
@@ -1112,6 +1136,9 @@ mod tests {
     // `.origin` evaluates a full (spaced) expression, not just its first token.
     #[test]
     fn origin_accepts_expression() {
-        assert_eq!(assemble("o", ".origin 8 + 8\n nop").unwrap().origin, Some(16));
+        assert_eq!(
+            assemble("o", ".origin 8 + 8\n nop").unwrap().origin,
+            Some(16)
+        );
     }
 }
