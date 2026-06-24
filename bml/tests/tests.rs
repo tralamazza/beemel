@@ -584,6 +584,29 @@ fn test_comptime_match_enum_folds() {
     );
 }
 
+// `comptime` FUNCTION (Phase 4, doc/comptime.md): an ordinary function called
+// in a `const` initializer is executed by the comptime interpreter and folded to
+// a literal global -- `factorial(5)` (iterative `while`) to 120, `fib(10)`
+// (recursion) to 55. The const init must carry no residual call.
+#[test]
+fn test_comptime_fn_const_folds() {
+    let ir = bml_ir("comptime_fn_const_ok.bml");
+    assert!(
+        ir.contains("@FACT5 = constant i32 120"),
+        "factorial(5) must fold to the literal global 120\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("@FIB10 = constant i32 55"),
+        "fib(10) must fold to the literal global 55\n--- IR ---\n{ir}"
+    );
+    // `main` reads the folded globals; it must not call the comptime functions.
+    let main = extract_fn_body(&ir, "@main");
+    assert!(
+        !main.contains("call i32 @factorial") && !main.contains("call i32 @fib"),
+        "the folded const must not leave a residual call in `main`\n{main}"
+    );
+}
+
 // --- comptime soundness regression tests (review findings A-G) ---
 // D: comptime args accept all const-foldable forms (sizeof / cast / const arith / len).
 assert_pass!(

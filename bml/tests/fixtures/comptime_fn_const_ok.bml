@@ -1,0 +1,29 @@
+// Phase 4 (comptime functions): an ordinary function called in a `const`
+// initializer is executed by the comptime interpreter and its result folded to
+// a literal global. `factorial` exercises an iterative `while` loop with a
+// mutable accumulator; `fib` exercises recursion. Neither residual call may
+// survive into the IR. See doc/comptime.md.
+fn factorial(n: u32) -> u32 {
+    var acc: u32 = 1;
+    var i: u32 = 1;
+    while i <= n {
+        acc = acc * i;
+        i = i + 1;
+    }
+    return acc;
+}
+
+fn fib(n: u32) -> u32 {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+const FACT5: u32 = factorial(5);
+const FIB10: u32 = fib(10);
+
+export fn main() @context(thread) {
+    var a: u32 = FACT5;
+    var b: u32 = FIB10;
+}

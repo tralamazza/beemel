@@ -106,6 +106,31 @@ pub fn eval(expr: &Expr, env: &dyn Env) -> Option<ConstVal> {
     })
 }
 
+/// Apply a binary operator to two already-evaluated constant values (ints or
+/// bools), or `None` if the combination is not foldable. Shared with the comptime
+/// interpreter ([`crate::comptime`]).
+#[must_use]
+pub fn binop(op: B, lv: ConstVal, rv: ConstVal) -> Option<ConstVal> {
+    match (lv, rv) {
+        (ConstVal::Int(x), ConstVal::Int(y)) => eval_int_binop(op, x, y),
+        (ConstVal::Bool(x), ConstVal::Bool(y)) => Some(match op {
+            B::And => ConstVal::Bool(x && y),
+            B::Or => ConstVal::Bool(x || y),
+            B::Eq => ConstVal::Bool(x == y),
+            B::NotEq => ConstVal::Bool(x != y),
+            _ => return None,
+        }),
+        _ => None,
+    }
+}
+
+/// Cast a constant value to `ty` (integer targets truncate to width). Shared with
+/// the comptime interpreter.
+#[must_use]
+pub fn cast(val: ConstVal, ty: &TypeExpr) -> ConstVal {
+    apply_cast(val, ty)
+}
+
 /// Evaluate `expr` as a constant integer (a `bool` result yields `None`).
 pub fn eval_int(expr: &Expr, env: &dyn Env) -> Option<i128> {
     match eval(expr, env)? {

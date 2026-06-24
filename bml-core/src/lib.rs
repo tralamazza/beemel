@@ -5,6 +5,7 @@ pub mod ast;
 pub mod borrow;
 pub mod ceiling;
 pub mod checker;
+pub mod comptime;
 pub mod consteval;
 pub mod constfold;
 pub mod context;

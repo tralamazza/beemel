@@ -435,7 +435,7 @@ fn check_file(path: &Path, stack_analysis: bool, lib_roots: &[PathBuf]) {
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
     import_resolver.lib_roots = lib_roots.to_vec();
-    let program = import_resolver.resolve(program, path);
+    let mut program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -456,6 +456,9 @@ fn check_file(path: &Path, stack_analysis: bool, lib_roots: &[PathBuf]) {
     }
 
     // Phase 2b -- Type checking
+    // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
+    // checker and codegen see plain constants.
+    bml_core::comptime::fold_const_calls(&mut program, &symbols);
     Checker::check(&program, &symbols, &mut diags);
 
     if diags.has_errors() {
@@ -590,7 +593,7 @@ fn build_file(
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
     import_resolver.lib_roots = lib_roots.to_vec();
-    let program = import_resolver.resolve(program, path);
+    let mut program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -619,6 +622,9 @@ fn build_file(
     // `Type::AgentShared`, so the E326 read restriction applies without a
     // hand-written `@dma`. Runs on clean resolution, right before the checker.
     region::apply_derived_move(&program, target, &mut symbols);
+    // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
+    // checker and codegen see plain constants.
+    bml_core::comptime::fold_const_calls(&mut program, &symbols);
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
@@ -879,7 +885,7 @@ fn verify_file(
     let mut import_resolver = ImportResolver::new();
     import_resolver.source_map = source_map;
     import_resolver.lib_roots = lib_roots.to_vec();
-    let program = import_resolver.resolve(program, path);
+    let mut program = import_resolver.resolve(program, path);
     let source_map = import_resolver.source_map;
     diags.merge(import_resolver.diags);
 
@@ -908,6 +914,9 @@ fn verify_file(
     // `Type::AgentShared`, so the E326 read restriction applies without a
     // hand-written `@dma`. Runs on clean resolution, right before the checker.
     region::apply_derived_move(&program, target, &mut symbols);
+    // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
+    // checker and codegen see plain constants.
+    bml_core::comptime::fold_const_calls(&mut program, &symbols);
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);

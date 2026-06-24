@@ -1,15 +1,19 @@
 # comptime
 
 Status: Phases 1-2 + Phase 3 (slices 1-2b) + enum-scrutinee `comptime match` +
-the adversarial-review soundness hardening -- all COMMITTED; working tree clean.
+the adversarial-review soundness hardening + Phase 4 slice 1 (scalar comptime
+functions) -- all COMMITTED; working tree clean.
 Phase 1 (binding-keyed engine refactor) is a
 verified no-op; Phase 2 adds `comptime` value params (monomorphization + E410);
 Phase 3 Slice 1 adds `comptime if` / `comptime match` over module consts (+ E411);
 Slice 2a folds them over comptime PARAMS; Slice 2b unrolls comptime recursion and
 adds eval-at-check (clean E411 for non-evaluable conditions/args) + an
 instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
-patterns by discriminant). 631 integration + 58 exec + 83 core green; clippy + fmt
-clean. Phase 4 (comptime functions) PLANNED. Scope = the minimal orthogonal core
+patterns by discriminant). Phase 4 slice 1 adds a scalar comptime interpreter
+that executes an ordinary function called in a `const` initializer and folds the
+result to a literal (`const FACT5 = factorial(5)`). 632 integration + 58 exec + 83
+core green; clippy + fmt clean. Phase 4 slice 2 (array/table results) is the next
+step. Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -220,8 +224,31 @@ Unrolling via comptime-param recursion:
 
 ### Phase 4 -- comptime functions (rung 3)
 
-- Extend `consteval.rs` (`ConstVal`/`Env`, `19-44`) to evaluate calls to ordinary
-  functions at comptime, producing values/arrays.
+#### Slice 1 -- scalar comptime functions -- DONE
+
+- A new tree-walking interpreter (`comptime.rs`) executes an ordinary function
+  body when it is called from a `const` initializer, reusing `consteval::binop`
+  / `consteval::cast` for the leaf arithmetic so the two passes cannot drift.
+- `comptime::fold_const_calls` runs as a pre-pass before the checker (driver,
+  three flows): phase 1 takes an immutable borrow and iterates to a fixpoint,
+  computing each `const`'s value where the initializer is a call the interpreter
+  can evaluate; phase 2 takes a mutable borrow and rewrites those initializers to
+  `IntLiteral`/`BoolLiteral`. A call the interpreter cannot reduce (e.g. it
+  contains `asm`, a match, or a non-scalar) is LEFT as a call, so the existing
+  E343 ("const initializer must be a compile-time constant expression") still
+  fires -- see `const_nonconst_init_error.bml` (an `asm`-bearing fn).
+- The interpreter is scalar-only (`ConstVal` = `Int(i128)`/`Bool(bool)`): it
+  executes VarDecl/Assign/CompoundAssign/If/While/Loop/For/Return/Break/Continue/
+  Block and folds calls recursively; a `STEP_LIMIT` bounds runaway loops/recursion
+  to `None` (the const stays a call -> E343) rather than hanging the compiler.
+- Tests: `comptime_fn_const_ok.bml` (IR: `@FACT5 = constant i32 120` from an
+  iterative `while`, `@FIB10 = constant i32 55` from recursion, no residual call
+  in `@main`); the repurposed `const_nonconst_init_error.bml` (E343 still fires
+  for a non-evaluable initializer).
+
+#### Slice 2 -- array/table results -- PLANNED
+
+- Extend the interpreter to produce ARRAYS, so a function can compute a table.
 - Win: compile-time tables (CRC, sine, gamma) computed in-language into flash,
   replacing build scripts / macros.
 

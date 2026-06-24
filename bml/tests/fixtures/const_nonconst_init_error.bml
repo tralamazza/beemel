@@ -1,7 +1,12 @@
-fn id(x: u32) -> u32 {
-    return x;
+// A const initialized by a function that is NOT comptime-evaluable (it contains
+// inline asm) must still be rejected as a non-compile-time initializer (E343).
+// A comptime-EVALUABLE call like `id(1)` is now folded to a literal and accepted
+// -- see the comptime-function tests.
+fn not_const() -> u32 {
+    asm { nop }
+    return 5u32;
 }
 
-const BAD: u32 = id(1u32);
+const BAD: u32 = not_const();
 
 fn main() @context(thread) { }
