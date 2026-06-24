@@ -1,0 +1,6 @@
+// A comptime argument that divides by a (named-const) zero fails to evaluate at
+// the specialization -- a clean E410, not a codegen panic.
+const ZERO: u32 = 0;
+fn w(comptime k: u32) -> u32 { return k; }
+fn run(comptime i: u32) -> u32 { return w(i / ZERO); }
+export fn main() @context(thread) { var a: u32 = run(1); }

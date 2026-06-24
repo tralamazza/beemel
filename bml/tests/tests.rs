@@ -232,6 +232,25 @@ macro_rules! assert_error {
     };
 }
 
+/// Like `assert_error!` but compiles via `bml build` (full codegen). Used for
+/// errors that only fire at specialization time -- a `comptime` arg/condition/
+/// scrutinee that fails to evaluate or overflows its type -- which `bml check`
+/// (no codegen) does not reach.
+macro_rules! assert_build_error {
+    ($name:ident, $fixture:expr, $code:expr) => {
+        #[test]
+        fn $name() {
+            let (ok, output) = bml_build_with_target($fixture, None);
+            let code = $code;
+            assert!(!ok, "expected build error {code}, got success:\n{output}");
+            assert!(
+                output.contains(&format!("error[{code}]")),
+                "expected error {code} in build output:\n{output}"
+            );
+        }
+    };
+}
+
 macro_rules! assert_warn {
     ($name:ident, $fixture:expr, $code:expr) => {
         #[test]
@@ -564,6 +583,51 @@ fn test_comptime_match_enum_folds() {
         "descr$1 (F103) must fold to the F103 arm (103)\n{b1}"
     );
 }
+
+// --- comptime soundness regression tests (review findings A-G) ---
+// D: comptime args accept all const-foldable forms (sizeof / cast / const arith / len).
+assert_pass!(
+    test_comptime_arg_const_exprs,
+    "comptime_arg_const_expr_ok.bml"
+);
+// B: a non-foldable wrapping op in a comptime arg is rejected at check, not a panic.
+assert_error!(
+    test_comptime_arg_wrapping,
+    "comptime_arg_wrapping_error.bml",
+    "E410"
+);
+// B: a comptime arg dividing by a (named-const) zero is a clean error at specialization.
+assert_build_error!(
+    test_comptime_arg_div0,
+    "comptime_arg_div0_error.bml",
+    "E410"
+);
+// A: a comptime match scrutinee that overflows its type is rejected (no silent miscompile).
+assert_build_error!(
+    test_comptime_match_overflow,
+    "comptime_match_overflow_error.bml",
+    "E411"
+);
+// C: a param-dependent comptime if condition that fails to evaluate is a clean error.
+assert_build_error!(
+    test_comptime_if_param_div0,
+    "comptime_if_param_div0_error.bml",
+    "E411"
+);
+// E: a comptime parameter cannot size an array.
+assert_error!(
+    test_comptime_array_param,
+    "comptime_array_param_error.bml",
+    "E414"
+);
+// F: `export` on a comptime-parameter function is rejected.
+assert_error!(test_comptime_export, "comptime_export_error.bml", "E412");
+// G: a comptime recursion with no base case is capped, not hung/panicked.
+assert_build_error!(
+    test_comptime_recursion_runaway,
+    "comptime_recursion_runaway_error.bml",
+    "E413"
+);
 
 // Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
 assert_pass!(test_reg_array_ok, "reg_array_ok.bml");

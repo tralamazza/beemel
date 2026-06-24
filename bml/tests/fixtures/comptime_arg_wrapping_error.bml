@@ -1,0 +1,5 @@
+// A wrapping op (`+%`) in a comptime argument is not const-foldable, so it is
+// rejected at check (E410) rather than reaching -- and panicking -- codegen.
+fn w(comptime k: u32) -> u32 { return k; }
+fn run(comptime i: u32) -> u32 { return w(i +% 1); }
+export fn main() @context(thread) { var a: u32 = run(0); }

@@ -36,9 +36,13 @@ monomorphization into a binding-keyed engine, so value-level metaprogramming
   against the template ("bound"), specialize at emit, drop the param from the ABI.
   Generalizing means making the bound, the binding, and the substitution pluggable
   -- the worklist/mangling/erasure are reuse.
-- Verification stays cheap for the value rungs: a comptime-known size keeps the
+- Verification stays cheap for the value rungs: a MODULE-CONST size keeps the
   backing `[T; N]` statically sized, so IKOS's native `boa` proves indexing with
-  no descriptor `assume` (unlike runtime-length views). No new IKOS obligations
+  no descriptor `assume` (unlike runtime-length views). (NB: a `comptime`
+  PARAMETER cannot size an array -- array lengths are folded before type
+  resolution, with no per-specialization binding; `[T; comptime_param]` is
+  rejected with E414. Per-specialization array sizing is a possible follow-up.)
+  No new IKOS obligations
   are needed for rungs 1-4.
 
 ## The rung ladder (what `comptime` is)
@@ -228,6 +232,30 @@ Unrolling via comptime-param recursion:
   recognized `assume` + SSA-transparent descriptor of the view types). comptime
   does not touch it.
 - Each phase: add a QEMU exec fixture; run `cargo test --test exec`.
+
+## Soundness hardening (adversarial review fixes)
+
+A multi-agent review found edge defects, all fixed + regression-tested (see the
+`comptime_*_error.bml` / `comptime_arg_const_expr_ok.bml` fixtures):
+- ROOT CAUSE: the structural `is_comptime_shaped` checker and `consteval::eval`
+  had drifted apart -- too broad (accepted wrapping `+%`/`-%`/`*%`, which
+  `consteval` cannot fold -> IR `.expect()` PANIC) AND too narrow (rejected
+  `sizeof`/`as`-cast/`len`, which it CAN fold -> false E410/E411). Fix:
+  `is_comptime_shaped` now mirrors `consteval` exactly via an op allowlist.
+- A non-evaluable PARAM-DEPENDENT comptime expr cannot be caught at check (its
+  value is unknown until specialization). The IR now records such failures as
+  diagnostics (`IrEmitter::comptime_errors`, drained by the driver) instead of
+  panicking (`.expect()`) or silently falling through to runtime:
+  - a param-dependent divisor-of-0 / overflow in a comptime arg -> E410;
+  - same in a `comptime if` condition / `comptime match` scrutinee -> E411.
+  These are BUILD-time errors (codegen/specialization), like a Rust
+  monomorphization error -- `bml check` (no codegen) does not surface them.
+- A comptime value (eval'd in i128) is range-checked against its declared type
+  (`comptime_value_fits`), so `comptime match k*k` over a u32 that overflows is a
+  clean E411, not a silent fold of the wider i128 value (a miscompile).
+- The instantiation cap is a clean E413 (was an `assert!` panic).
+- `export`/`@isr` on a comptime-parameter fn is E412 (was a silent missing symbol).
+- `[T; comptime_param]` is E414 (was a confusing `Array(_,0)` / E300).
 
 ## Deferred
 

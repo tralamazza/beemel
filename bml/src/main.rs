@@ -657,7 +657,7 @@ fn build_file(
         target.interrupts.clone(),
         target.has_bitband,
         debug,
-        Some(source_map),
+        Some(source_map.clone()),
     );
     emitter.set_startup_init(target.startup_init.clone());
     emitter.set_ecc_scrub_blocks(target.ecc_scrub_blocks());
@@ -685,6 +685,16 @@ fn build_file(
     emitter.set_priority_bits(target.priority_bits);
     emitter.set_region_alignments(target.region_alignments());
     let llvm_ir = emitter.emit(&program, &symbols);
+
+    // A `comptime` arg/condition/scrutinee may fail to evaluate, or overflow its
+    // declared type, only at a specialization (codegen) -- surface those as errors.
+    for (msg, code, span) in emitter.comptime_errors() {
+        diags.error(msg.clone(), code.clone(), *span);
+    }
+    if diags.has_errors() {
+        diags.emit(&source_map);
+        process::exit(1);
+    }
 
     // Artifact basename. With `--out-dir`, the source filename is relocated into
     // that directory (created if needed); the `.with_extension` calls below then

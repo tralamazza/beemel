@@ -1,0 +1,4 @@
+// A `comptime` parameter cannot size an array (E414) -- clear error instead of
+// silently resolving to length 0.
+fn fill(comptime n: u32) -> u32 { var buf: [u32; n] = [0, 0]; return buf[0]; }
+export fn main() @context(thread) { var a: u32 = fill(2); }

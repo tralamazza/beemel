@@ -1,0 +1,4 @@
+// A comptime recursion with no base case is capped (E413) instead of hanging /
+// panicking the compiler.
+fn r(comptime i: u32) -> u32 { return r(i + 1); }
+export fn main() @context(thread) { var a: u32 = r(0); }

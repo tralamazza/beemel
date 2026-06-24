@@ -1,0 +1,4 @@
+// `export` on a comptime-parameter function is rejected (E412): it has no
+// concrete ABI, so it would emit no symbol.
+export fn pub_scaled(comptime n: u32) -> u32 { return n * 2; }
+export fn main() @context(thread) { var a: u32 = 1; }

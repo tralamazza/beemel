@@ -1,0 +1,5 @@
+// A comptime match scrutinee whose value overflows its declared type is rejected
+// (E411) -- comptime arithmetic must not silently use a wider (i128) value than
+// runtime semantics allow.
+fn c(comptime k: u32) -> u32 { comptime match k * k { 0 { return 1; } _ { return 2; } } }
+export fn main() @context(thread) { var a: u32 = c(100000); }

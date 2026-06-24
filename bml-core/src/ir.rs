@@ -57,6 +57,11 @@ pub struct IrEmitter {
     /// the start of emission so call lowering can const-evaluate `comptime`
     /// value arguments. See `IrConstEnv`.
     const_vals: HashMap<String, ConstVal>,
+    /// Errors found during codegen: a `comptime` arg/condition/scrutinee that fails
+    /// to evaluate, or overflows its declared type, at a specialization (the checker
+    /// can only check param-dependent exprs structurally). `(message, code, span)`,
+    /// drained by the driver after `emit`; codegen output is discarded if non-empty.
+    comptime_errors: Vec<(String, String, crate::source::Span)>,
     /// Spans of COMPILER-generated arithmetic that wraps by design, recorded
     /// in verify mode only: the ring view's `head + i` (bounded by the
     /// subsequent `% cap` regardless of wrap) and the bit view's
@@ -352,6 +357,38 @@ fn block_has_calls(block: &ast::Block) -> bool {
 /// below this.
 const COMPTIME_SPEC_LIMIT: usize = 4096;
 
+/// `(bits, signed)` for an integer (or int-backed enum) type, else `None`.
+fn int_bits_signed(ty: &Type) -> Option<(u32, bool)> {
+    Some(match ty {
+        Type::U8 => (8, false),
+        Type::U16 => (16, false),
+        Type::U32 => (32, false),
+        Type::U64 => (64, false),
+        Type::I8 => (8, true),
+        Type::I16 => (16, true),
+        Type::I32 => (32, true),
+        Type::I64 => (64, true),
+        Type::B1 => (1, false),
+        Type::B8 => (8, false),
+        Type::Enum(_, backing, _) => return int_bits_signed(backing),
+        _ => return None,
+    })
+}
+
+/// Whether `v` is representable in integer type `ty`, so a `comptime` value (eval'd
+/// in i128) does not silently overflow its declared width at codegen.
+fn comptime_value_fits(v: i128, ty: &Type) -> bool {
+    match int_bits_signed(ty) {
+        None => true,
+        Some((bits, true)) => {
+            let max = (1i128 << (bits - 1)) - 1;
+            let min = -(1i128 << (bits - 1));
+            v >= min && v <= max
+        }
+        Some((bits, false)) => v >= 0 && v < (1i128 << bits),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Binding {
     /// A concrete peripheral instance, e.g. `USART1`; `u.REG` in the body lowers
@@ -612,53 +649,82 @@ impl IrEmitter {
         let param_tys: Vec<Type> = symbols.functions.get(callee).map_or_else(Vec::new, |s| {
             s.params.iter().map(|(_, t)| t.clone()).collect()
         });
-        // One binding per comptime parameter: a peripheral instance (resolved
-        // from the argument identifier, applying any active pass-through subst)
-        // or a `comptime` int (const-evaluated from the argument).
-        let bindings: Vec<Binding> = comptime_positions
-            .iter()
-            .map(|&i| {
-                if let Some(Type::PeripheralHandle(_)) = param_tys.get(i) {
-                    // The checker rejects a non-identifier handle argument (E308)
-                    // and codegen only runs on error-free programs, so the else
-                    // arm is dead.
-                    if let Expr::Ident((name, _)) = &args[i] {
-                        self.handle_subst
-                            .get(name)
-                            .cloned()
-                            .unwrap_or_else(|| Binding::PeripheralInstance(name.clone()))
-                    } else {
-                        unreachable!(
-                            "non-identifier peripheral handle argument reached codegen: {:?}",
-                            &args[i]
-                        )
-                    }
+        // One binding per comptime parameter: a peripheral instance (resolved from
+        // the argument identifier, applying any active pass-through subst) or a
+        // `comptime` int (const-evaluated from the argument). A for-loop (not `.map`)
+        // so an eval failure / out-of-range value can be recorded as an error.
+        let mut bindings: Vec<Binding> = Vec::with_capacity(comptime_positions.len());
+        for &i in comptime_positions {
+            if let Some(Type::PeripheralHandle(_)) = param_tys.get(i) {
+                // The checker rejects a non-identifier handle argument (E308) and
+                // codegen only runs on error-free programs, so the else is dead.
+                let b = if let Expr::Ident((name, _)) = &args[i] {
+                    self.handle_subst
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| Binding::PeripheralInstance(name.clone()))
                 } else {
-                    // A `comptime` int parameter: const-evaluate the argument over
-                    // `spec_consts`, so an expression over the enclosing fn's
-                    // comptime params (e.g. `f(i + 1)`) folds with `i` bound.
+                    unreachable!(
+                        "non-identifier peripheral handle argument reached codegen: {:?}",
+                        &args[i]
+                    )
+                };
+                bindings.push(b);
+            } else {
+                // A `comptime` int parameter: const-evaluate the argument over
+                // `spec_consts`, so an expression over the enclosing fn's comptime
+                // params (e.g. `f(i + 1)`) folds with `i` bound.
+                let evaluated = {
                     let consts = self.spec_consts();
                     let env = IrConstEnv {
                         symbols,
                         consts: &consts,
                     };
-                    let v = consteval::eval_int(&args[i], &env).expect(
-                        "comptime argument did not evaluate during specialization \
-                         (overflow?); the checker (E410) rejects non-evaluable args",
-                    );
-                    Binding::ConstInt(v)
+                    consteval::eval_int(&args[i], &env)
+                };
+                let v = if let Some(v) = evaluated {
+                    v
+                } else {
+                    // The checker accepts a param-dependent expr structurally; it
+                    // can still fail to evaluate here (a param-dependent divisor of
+                    // 0, or overflow during specialization).
+                    self.comptime_errors.push((
+                        "comptime argument does not evaluate to a constant (division by zero or overflow during specialization)".to_string(),
+                        "E410".to_string(),
+                        args[i].span(),
+                    ));
+                    0
+                };
+                // Fix A: the value must fit the parameter's declared type, else the
+                // fold would use a wider (i128) value than runtime semantics allow.
+                if let Some(pty) = param_tys.get(i)
+                    && !comptime_value_fits(v, pty)
+                {
+                    self.comptime_errors.push((
+                        format!(
+                            "comptime argument value {v} does not fit parameter type `{pty:?}`"
+                        ),
+                        "E410".to_string(),
+                        args[i].span(),
+                    ));
                 }
-            })
-            .collect();
+                bindings.push(Binding::ConstInt(v));
+            }
+        }
         let mangled = mangle_spec(callee, &bindings);
         let key = (callee.to_string(), bindings);
         if self.handle_spec_done.insert(key.clone()) {
-            assert!(
-                self.handle_spec_done.len() <= COMPTIME_SPEC_LIMIT,
-                "comptime specialization limit ({COMPTIME_SPEC_LIMIT}) exceeded -- a \
-                 `comptime` recursion is likely missing a base case (in `{callee}`)"
-            );
-            self.handle_spec_queue.push(key);
+            if self.handle_spec_done.len() > COMPTIME_SPEC_LIMIT {
+                self.comptime_errors.push((
+                    format!(
+                        "comptime specialization limit ({COMPTIME_SPEC_LIMIT}) exceeded -- a `comptime` recursion is likely missing a base case (in `{callee}`)"
+                    ),
+                    "E413".to_string(),
+                    args[comptime_positions[0]].span(),
+                ));
+            } else {
+                self.handle_spec_queue.push(key);
+            }
         }
 
         let mut arg_parts = Vec::new();
@@ -732,6 +798,7 @@ impl IrEmitter {
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
             const_vals: HashMap::new(),
+            comptime_errors: Vec::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -797,6 +864,7 @@ impl IrEmitter {
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
             const_vals: HashMap::new(),
+            comptime_errors: Vec::new(),
             generated_wrap_spans: Vec::new(),
             ecc_scrub_blocks: Vec::new(),
             preempt: None,
@@ -988,6 +1056,14 @@ impl IrEmitter {
         self.line(&format!(
             "call void @__ikos_assert(i32 {zext}, i32 {value_reg}){dbg}"
         ));
+    }
+
+    /// Errors recorded during codegen: a `comptime` arg/condition/scrutinee that
+    /// failed to evaluate, or overflowed its declared type, at a specialization.
+    /// The driver drains these after `emit` and discards the output if any exist.
+    #[must_use]
+    pub fn comptime_errors(&self) -> &[(String, String, crate::source::Span)] {
+        &self.comptime_errors
     }
 
     #[must_use]
@@ -2193,6 +2269,13 @@ impl IrEmitter {
                         }
                         return (None, false);
                     }
+                    // Comptime-shaped but did not evaluate at this specialization
+                    // (a param-dependent divisor of 0, or overflow).
+                    self.comptime_errors.push((
+                        "comptime if condition does not evaluate to a constant (division by zero or overflow during specialization)".to_string(),
+                        "E411".to_string(),
+                        if_stmt.cond.span(),
+                    ));
                 }
                 let then_lbl = self.new_label("then");
                 let else_lbl = self.new_label("else");
@@ -2499,16 +2582,30 @@ impl IrEmitter {
                         };
                         consteval::eval_int(&match_stmt.scrutinee, &env)
                     };
-                    if let Some(scrut) = folded
-                        && let Some(arm) = comptime_match_arm(scrut, &match_stmt.arms, symbols)
-                    {
-                        return self.emit_block(
-                            &arm.body,
-                            symbols,
-                            fn_name,
-                            break_label,
-                            continue_label,
-                        );
+                    if let Some(scrut) = folded {
+                        let sty = self.expr_type(&match_stmt.scrutinee, symbols);
+                        if !comptime_value_fits(scrut, &sty) {
+                            self.comptime_errors.push((
+                                format!("comptime match scrutinee value {scrut} does not fit type `{sty:?}`"),
+                                "E411".to_string(),
+                                match_stmt.scrutinee.span(),
+                            ));
+                        }
+                        if let Some(arm) = comptime_match_arm(scrut, &match_stmt.arms, symbols) {
+                            return self.emit_block(
+                                &arm.body,
+                                symbols,
+                                fn_name,
+                                break_label,
+                                continue_label,
+                            );
+                        }
+                    } else {
+                        self.comptime_errors.push((
+                            "comptime match scrutinee does not evaluate to a constant (division by zero or overflow during specialization)".to_string(),
+                            "E411".to_string(),
+                            match_stmt.scrutinee.span(),
+                        ));
                     }
                 }
                 let Some(MatchDispatch {
@@ -3840,24 +3937,37 @@ impl IrEmitter {
                         };
                         consteval::eval_int(&match_expr.scrutinee, &env)
                     };
-                    if let Some(scrut) = folded
-                        && let Some(arm) = comptime_match_arm(scrut, &match_expr.arms, symbols)
-                    {
-                        // Emit the arm body's statements, then its trailing value
-                        // expression (mirrors the `Expr::Block` value path).
-                        let (_, term) = self.emit_block(&arm.body, symbols, fn_name, None, None);
-                        if term {
-                            return default_value_literal(&self.expr_type(expr, symbols));
-                        }
-                        return if let Some(ref trailing) = arm.body.trailing {
-                            self.emit_expr(trailing, symbols, fn_name)
-                        } else {
-                            let reg = self.new_reg();
-                            self.line(&format!(
-                                "{reg} = add i32 0, 0  ; comptime match (no value)"
+                    if let Some(scrut) = folded {
+                        let sty = self.expr_type(&match_expr.scrutinee, symbols);
+                        if !comptime_value_fits(scrut, &sty) {
+                            self.comptime_errors.push((
+                                format!("comptime match scrutinee value {scrut} does not fit type `{sty:?}`"),
+                                "E411".to_string(),
+                                match_expr.scrutinee.span(),
                             ));
-                            reg
-                        };
+                        }
+                        if let Some(arm) = comptime_match_arm(scrut, &match_expr.arms, symbols) {
+                            // Emit the arm body's statements, then its trailing value
+                            // expression (mirrors the `Expr::Block` value path).
+                            let (_, term) =
+                                self.emit_block(&arm.body, symbols, fn_name, None, None);
+                            if term {
+                                return default_value_literal(&self.expr_type(expr, symbols));
+                            }
+                            return if let Some(ref trailing) = arm.body.trailing {
+                                self.emit_expr(trailing, symbols, fn_name)
+                            } else {
+                                // No trailing value (a diverging arm); yield a
+                                // correctly-typed default rather than a hardcoded i32 0.
+                                default_value_literal(&self.expr_type(expr, symbols))
+                            };
+                        }
+                    } else {
+                        self.comptime_errors.push((
+                            "comptime match scrutinee does not evaluate to a constant (division by zero or overflow during specialization)".to_string(),
+                            "E411".to_string(),
+                            match_expr.scrutinee.span(),
+                        ));
                     }
                 }
                 let Some(MatchDispatch {

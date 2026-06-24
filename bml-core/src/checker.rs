@@ -878,11 +878,24 @@ fn validate_type_ann(ty: &ast::TypeExpr, diags: &mut DiagnosticBag) {
             }
             validate_type_ann(inner, diags);
         }
+        ast::TypeExpr::Array(inner, size) => {
+            // The length must be a compile-time constant. `constfold` folds a
+            // module-`const` size to a literal, so anything else here (a runtime
+            // expression, or a `comptime` parameter -- which cannot size an array)
+            // is invalid; reject it cleanly instead of silently resolving to 0.
+            if !matches!(size.as_ref(), ast::Expr::IntLiteral(..)) {
+                diags.error(
+                    "array length must be a compile-time constant (an integer literal or a `const`); a `comptime` parameter cannot size an array",
+                    "E414",
+                    size.span(),
+                );
+            }
+            validate_type_ann(inner, diags);
+        }
         ast::TypeExpr::View(inner, _)
         | ast::TypeExpr::Ring(inner, _)
         | ast::TypeExpr::Ptr(inner)
-        | ast::TypeExpr::ConstPtr(inner)
-        | ast::TypeExpr::Array(inner, _) => validate_type_ann(inner, diags),
+        | ast::TypeExpr::ConstPtr(inner) => validate_type_ann(inner, diags),
         ast::TypeExpr::Fn(params, ret) => {
             for p in params {
                 validate_type_ann(p, diags);
@@ -1137,6 +1150,26 @@ fn check_fn(
     vals: &HashMap<String, ConstVal>,
 ) -> LocalTypes {
     let mut scope = ScopeStack::new(vals.clone());
+    // A `comptime`-parameter function is monomorphization-only -- it has no concrete
+    // ABI, so `export`/`@isr` cannot be satisfied (no symbol/handler is emitted
+    // unless a concrete call specializes it). Reject loudly instead of silently
+    // emitting nothing.
+    if fn_def.params.iter().any(|p| p.comptime) {
+        if fn_def.exported {
+            diags.error(
+                "`export` on a function with `comptime` parameters: it has no concrete ABI (monomorphization-only); export a non-comptime wrapper instead",
+                "E412",
+                fn_def.name.1,
+            );
+        }
+        if fn_def.isr.is_some() {
+            diags.error(
+                "`@isr` on a function with `comptime` parameters is not supported (no concrete handler is emitted)",
+                "E412",
+                fn_def.name.1,
+            );
+        }
+    }
     let expected_ret = fn_def
         .ret
         .as_ref()
@@ -2468,24 +2501,56 @@ fn is_enclosing_comptime_param(name: &str, fn_name: &str, symbols: &SymbolTable)
 /// expr folds globally; a comptime-param expr folds once the param is bound, per
 /// specialization.
 fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable, fn_name: &str) -> bool {
+    use ast::BinaryOp as B;
     match expr {
-        Expr::IntLiteral(..) | Expr::BoolLiteral(..) => true,
+        Expr::IntLiteral(..) | Expr::BoolLiteral(..) | Expr::SizeOf(..) => true,
         // `Enum@Variant` is a compile-time discriminant constant.
         Expr::EnumVariant { .. } => true,
         Expr::Ident((name, _)) => {
             symbols.consts.contains_key(name) || is_enclosing_comptime_param(name, fn_name, symbols)
         }
-        Expr::Group(inner) | Expr::Unary(_, inner) => is_comptime_shaped(inner, symbols, fn_name),
+        // `len(arr)` folds to the array's static length.
+        Expr::Call(callee, args) => consteval::is_len_call(callee) && args.len() == 1,
+        Expr::Group(inner) | Expr::Cast(inner, _) => is_comptime_shaped(inner, symbols, fn_name),
+        Expr::Unary(op, inner) => {
+            matches!(
+                op,
+                ast::UnaryOp::Neg | ast::UnaryOp::BitNot | ast::UnaryOp::Not
+            ) && is_comptime_shaped(inner, symbols, fn_name)
+        }
         Expr::Binary(l, op, r) => {
             // A literal-zero divisor never evaluates; reject it structurally so it
-            // is a clean E411 even when the dividend is a `comptime` param (which
-            // is otherwise not eval-checked here).
-            if matches!(op, ast::BinaryOp::Div | ast::BinaryOp::Mod)
-                && matches!(r.as_ref(), Expr::IntLiteral(0, _, _))
-            {
+            // is a clean E411 even when the dividend is a `comptime` param.
+            if matches!(op, B::Div | B::Mod) && matches!(r.as_ref(), Expr::IntLiteral(0, _, _)) {
                 return false;
             }
-            is_comptime_shaped(l, symbols, fn_name) && is_comptime_shaped(r, symbols, fn_name)
+            // ONLY operators that `consteval::eval_int_binop` (and the bool path)
+            // can fold. Wrapping ops (`+%`/`-%`/`*%`) and anything else are NOT
+            // foldable, so they are not comptime-shaped. Keeping this allowlist in
+            // lockstep with the evaluator is what makes the checker and `consteval`
+            // agree -- no false accept (-> no IR panic) and no false reject.
+            matches!(
+                op,
+                B::Add
+                    | B::Sub
+                    | B::Mul
+                    | B::Div
+                    | B::Mod
+                    | B::BitAnd
+                    | B::BitOr
+                    | B::BitXor
+                    | B::Shl
+                    | B::Shr
+                    | B::Eq
+                    | B::NotEq
+                    | B::Lt
+                    | B::Gt
+                    | B::LtEq
+                    | B::GtEq
+                    | B::And
+                    | B::Or
+            ) && is_comptime_shaped(l, symbols, fn_name)
+                && is_comptime_shaped(r, symbols, fn_name)
         }
         _ => false,
     }

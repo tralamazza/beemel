@@ -1,0 +1,4 @@
+// A param-dependent comptime if condition that divides by zero at the
+// specialization is a clean E411, not a silent runtime branch.
+fn f(comptime i: u32) -> u32 { comptime if 100 / (i - 3) > 0 { return 1; } return 0; }
+export fn main() @context(thread) { var a: u32 = f(3); }

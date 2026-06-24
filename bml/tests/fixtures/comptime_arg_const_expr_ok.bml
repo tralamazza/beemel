@@ -1,0 +1,11 @@
+// Comptime arguments accept the full set of const-foldable forms: `sizeof`,
+// `as`-cast, const arithmetic, and `len(...)`.
+const TBL: [u32; 4] = [0, 0, 0, 0];
+const N: u32 = 8;
+fn scaled(comptime n: u32) -> u32 { return n * 2; }
+export fn main() @context(thread) {
+    var a: u32 = scaled(sizeof(u32));
+    var b: u32 = scaled(5 as u32);
+    var c: u32 = scaled(N / 2);
+    var d: u32 = scaled(len(TBL));
+}
