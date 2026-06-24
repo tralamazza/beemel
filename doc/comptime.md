@@ -1,13 +1,14 @@
 # comptime
 
-Status: Phases 1-2 + Phase 3 (slices 1-2b) COMMITTED; enum-scrutinee
-`comptime match` on the working tree. Phase 1 (binding-keyed engine refactor) is a
+Status: Phases 1-2 + Phase 3 (slices 1-2b) + enum-scrutinee `comptime match` +
+the adversarial-review soundness hardening -- all COMMITTED; working tree clean.
+Phase 1 (binding-keyed engine refactor) is a
 verified no-op; Phase 2 adds `comptime` value params (monomorphization + E410);
 Phase 3 Slice 1 adds `comptime if` / `comptime match` over module consts (+ E411);
 Slice 2a folds them over comptime PARAMS; Slice 2b unrolls comptime recursion and
 adds eval-at-check (clean E411 for non-evaluable conditions/args) + an
 instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
-patterns by discriminant). 623 integration + 58 exec + 83 core green; clippy + fmt
+patterns by discriminant). 631 integration + 58 exec + 83 core green; clippy + fmt
 clean. Phase 4 (comptime functions) PLANNED. Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
@@ -69,20 +70,18 @@ checker-time type substitution.
 
 Today (peripheral-specific):
 - key = `Vec<instance_name: String>`; worklist `handle_spec_queue`; mangling
-  `mangle_spec` (`ir.rs:361-368`); subst map built by `build_handle_subst`
-  (`ir.rs:371-386`); body rewrite by `subst_periph` (name->address,
-  `ir.rs:394-399`); generic body never emitted; handle params dropped from the
-  signature (`ir.rs:1390`); worklist drained in `emit_function_bodies`
-  (`ir.rs:1330-1350`).
+  `mangle_spec`; subst map built by `build_handle_subst`; body rewrite by
+  `subst_periph` (name->address); generic body never emitted; handle params
+  dropped from the signature; worklist drained in `emit_function_bodies`. (All in
+  `ir.rs`; references here are by name, not line, since the file drifts.)
 
 Generalize to:
 - A `Binding` enum: `PeripheralInstance(String) | ConstInt(i128)`. Specialization
   key = `Vec<Binding>`.
 - The worklist, mangling, dedup, and ABI-erasure stay as-is, keyed on `Vec<Binding>`.
 - Per-kind code, the ONLY parts that differ:
-  1. the bound-check at the call site (peripheral keeps its precise E308/E309 from
-     `check_peripheral_handle_arg`, `checker.rs:2303`; const adds "is a `u32`
-     constant"),
+  1. the bound-check at the call site (peripheral keeps its precise E308 from
+     `check_peripheral_handle_arg`; const adds "is a `u32` constant"),
   2. the substitution arm (`subst_periph` becomes the `PeripheralInstance` arm; a
      `ConstInt` arm substitutes a literal).
 - Erasure rule generalizes from "always drop handle params" to "drop a comptime
@@ -121,11 +120,11 @@ each with the value materialized, the param dropped from the ABI):
   via `is_handle_param`; the flag carries the int kind. `FnSymbol.comptime: Vec<bool>`
   (extern fns force all-false -- never monomorphized).
 - `parser.rs`: `parse_param` eats a leading `comptime`.
-- `checker.rs` (E410): a comptime arg must be a compile-time constant. MVP accepts
-  an int literal or a named `const` (`is_comptime_const_arg`); const-EXPRESSION
-  arguments (e.g. `N/2`) are a follow-up. The IR evaluates a superset, so the
-  checker staying stricter is sound (no codegen panic). The peripheral
-  `check_peripheral_handle_arg` (E308/E309) is untouched.
+- `checker.rs` (E410): a comptime arg must be a compile-time constant. (Phase 2
+  MVP accepted only an int literal / named `const`; Slice 2b replaced that check
+  with `check_comptime_expr`, which also accepts const-expressions like `N/2` and
+  expressions over the enclosing fn's comptime params. `is_comptime_const_arg` no
+  longer exists.) The peripheral `check_peripheral_handle_arg` (E308) is untouched.
 - `ir.rs`: `Binding::ConstInt(i128)`; the engine, ABI-erasure, and dispatch are
   generalized from "handle" to "comptime" (`comptime_param_positions`,
   `is_comptime_param`). The value is const-evaluated once at the call site
@@ -153,8 +152,9 @@ only the taken branch / selected arm.
   a structural test (`is_comptime_shaped`): literals, named `const`s, and pure
   operators. Vals-free (no threading of the const map into the body walk), so it
   stays conservative. (Slice 2a since extended `is_comptime_shaped` to accept the
-  enclosing fn's comptime params via `fn_name`; ENUM scrutinees -- `Enum@Variant`,
-  not comptime-shaped -- are still rejected, slice 2b.)
+  enclosing fn's comptime params via `fn_name`; ENUM scrutinees -- `Enum@Variant`
+  -- were added later, so they are now comptime-shaped and fold; see limitation
+  (b) below.)
 - `ir.rs`: folded at the emit sites (`Stmt::If`, `Stmt::Match`, `Expr::Match`), NOT
   in `constfold.rs`. `eval_bool`/`eval_int` over the cached `const_vals`
   (`IrConstEnv`) selects the branch/arm via `comptime_match_arm` (Int eq / Range
@@ -277,8 +277,8 @@ whole feature.
 ## Open questions / tradeoffs
 
 1. Diagnostics: generalizing the call-site bound check must NOT dilute the precise
-   peripheral E308/E309 messages -- keep per-kind bound-checkers, share only the
-   engine beneath them.
+   peripheral E308 message -- keep per-kind bound-checkers, share only the engine
+   beneath them.
 2. Flattening guarantee: comptime-param recursion only flattens if the inliner +
    const-folder cooperate. If not, you get N real calls (correct, not flattened).
    If that bites, revisit the flattening strategy (e.g. force-inlining the

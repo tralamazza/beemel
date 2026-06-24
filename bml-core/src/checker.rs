@@ -2424,9 +2424,6 @@ fn check_peripheral_handle_arg(
     );
 }
 
-/// Whether `arg` is acceptable for a `comptime` value parameter: an integer
-/// literal or a named `const`. Const-expression arguments are a follow-up (see
-/// `doc/comptime.md`); the IR evaluates a superset of this, so it stays sound.
 /// Whether `expr` references a `comptime` parameter of the enclosing function
 /// (its value is unknown until specialization, so it cannot be eval-checked here).
 fn expr_uses_comptime_param(expr: &Expr, fn_name: &str, symbols: &SymbolTable) -> bool {
