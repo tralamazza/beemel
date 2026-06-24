@@ -1,0 +1,15 @@
+// comptime recursion unrolls and runs: accumulate(0) = 0+1+2+3 = 6, via
+// specializations accumulate$0..$4 whose comptime if folds the base case.
+import harness.semihost;
+
+fn accumulate(comptime i: u32) -> u32 {
+    comptime if i < 4 {
+        return i + accumulate(i + 1);
+    }
+    return 0;
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(accumulate(0), 6);
+    semihost.done();
+}

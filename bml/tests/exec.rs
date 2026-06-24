@@ -466,6 +466,10 @@ assert_exec!(exec_comptime_match, "comptime_match.bml");
 // bound per specialization; classify(0)->100, classify(1)->200
 assert_exec!(exec_comptime_param_if, "comptime_param_if.bml");
 
+// ─── comptime recursion unroll (slice 2b): accumulate(0)=0+1+2+3=6 via
+// accumulate$0..$4, the comptime if folding the base case
+assert_exec!(exec_comptime_recursion, "comptime_recursion.bml");
+
 // ─── if- and block-expressions yield values (language.md §11) ────────────────
 assert_exec!(exec_if_block_expr, "if_block_expr.bml");
 

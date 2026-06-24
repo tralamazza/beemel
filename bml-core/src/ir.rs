@@ -347,6 +347,11 @@ fn block_has_calls(block: &ast::Block) -> bool {
 /// parameters (rung 1). The specialization key and name mangling are keyed on a
 /// `Vec<Binding>`, so adding a kind is local to this enum, `mangle`, and the
 /// substitution sites.
+/// Backstop against runaway `comptime` recursion (a missing base case): the total
+/// number of monomorphized specializations is capped. Reasonable unrolls are far
+/// below this.
+const COMPTIME_SPEC_LIMIT: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Binding {
     /// A concrete peripheral instance, e.g. `USART1`; `u.REG` in the body lowers
@@ -623,14 +628,17 @@ impl IrEmitter {
                         )
                     }
                 } else {
-                    // A `comptime` int parameter: const-evaluate the argument
-                    // (the checker guarantees it is const-evaluable, E410).
+                    // A `comptime` int parameter: const-evaluate the argument over
+                    // `spec_consts`, so an expression over the enclosing fn's
+                    // comptime params (e.g. `f(i + 1)`) folds with `i` bound.
+                    let consts = self.spec_consts();
                     let env = IrConstEnv {
                         symbols,
-                        consts: &self.const_vals,
+                        consts: &consts,
                     };
                     let v = consteval::eval_int(&args[i], &env).expect(
-                        "comptime argument not const-evaluable; checker (E410) should reject it",
+                        "comptime argument did not evaluate during specialization \
+                         (overflow?); the checker (E410) rejects non-evaluable args",
                     );
                     Binding::ConstInt(v)
                 }
@@ -639,6 +647,11 @@ impl IrEmitter {
         let mangled = mangle_spec(callee, &bindings);
         let key = (callee.to_string(), bindings);
         if self.handle_spec_done.insert(key.clone()) {
+            assert!(
+                self.handle_spec_done.len() <= COMPTIME_SPEC_LIMIT,
+                "comptime specialization limit ({COMPTIME_SPEC_LIMIT}) exceeded -- a \
+                 `comptime` recursion is likely missing a base case (in `{callee}`)"
+            );
             self.handle_spec_queue.push(key);
         }
 

@@ -1,12 +1,13 @@
 # comptime
 
-Status: Phases 1-2 + Phase 3 Slice 1 COMMITTED; Slice 2a on the working tree.
+Status: Phases 1-2 + Phase 3 Slices 1-2a COMMITTED; Slice 2b on the working tree.
 Phase 1 (binding-keyed engine refactor) is a verified no-op; Phase 2 adds
 `comptime` value params (monomorphization + E410); Phase 3 Slice 1 adds
 `comptime if` / `comptime match` over module consts (+ E411); Slice 2a folds them
-over comptime PARAMS per specialization. 621 integration + 56 exec + 83 core
-green; clippy + fmt clean. Phase 3 Slice 2b (recursion-unroll) and Phase 4
-PLANNED. Scope = the minimal orthogonal core (rungs 1-3, value-level);
+over comptime PARAMS; Slice 2b unrolls comptime recursion and adds eval-at-check
+(clean E411 for non-evaluable conditions/args) + an instantiation cap. 622
+integration + 57 exec + 83 core green; clippy + fmt clean. Phase 4 (comptime
+functions) PLANNED. Scope = the minimal orthogonal core (rungs 1-3, value-level);
 `comptime T: type` (rung 4) and `inline for` are DEFERRED.
 
 ## Problem
@@ -158,13 +159,10 @@ only the taken branch / selected arm.
 - KNOWN LIMITATIONS: (a) only codegen drops the untaken branch/arms -- other AST
   walkers (region, ceiling, verify) still analyze ALL of them, so they must
   type-check and obey ownership; "untaken branch is invisible" is a later change.
-  (b) `comptime match` is int-scrutinee only for now; enum scrutinees are slice 2
-  (needs `Expr::EnumVariant` const-eval). (c) E411 is STRUCTURAL, so a
-  structurally-const but non-evaluable condition (div-by-zero, overflow) is NOT
-  caught -- the IR folds only when `eval` succeeds and otherwise FALLS THROUGH to
-  the runtime lowering (identical to a plain `if`/`match`), so the compiler never
-  panics. A clean E411 for that edge needs eval-at-check (the `vals` map threaded
-  into the body walk) and lands with Slice 2.
+  (b) `comptime match` is int-scrutinee only; enum scrutinees are a FOLLOW-UP
+  (need `Expr::EnumVariant` const-eval). (c) RETIRED by slice 2b: a
+  structurally-const but non-evaluable condition (div-by-zero, overflow) is now a
+  clean E411 at check time (eval-at-check), not a runtime fall-through.
 - Tests: `comptime_if_ok.bml` / `comptime_match_ok.bml` (IR: only the selected
   branch/arm emitted, both match forms), `comptime_{if,match}_runtime_error.bml`
   (E411), `exec/comptime_if.bml` + `exec/comptime_match.bml` (QEMU: else-if chain
@@ -186,24 +184,31 @@ specialization: `fn classify(comptime mode: u32){ comptime if mode==0 {..} else 
 - Tests: `comptime_param_if_ok.bml` (IR: each `classify$N` folds to one branch, no
   `icmp`), `exec/comptime_param_if.bml` (QEMU: classify(0)->100, classify(1)->200).
 
-#### Slice 2b -- recursion-unroll -- PLANNED
+#### Slice 2b -- recursion-unroll + eval-at-check -- DONE
 
-Headline: unrolling via comptime-param recursion,
-`fn f(comptime i: u32){ comptime if i<N {..; f(i+1)} }` -> `f$0..f$N`, the comptime
-`if` folding the base case so it terminates. Remaining work on top of 2a:
-- Accept comptime-param expressions as comptime ARGS: broaden `is_comptime_const_arg`
-  (currently literal / named const only) to comptime-shaped, so `f(i+1)` is allowed,
-  and switch `emit_handle_call`'s arg-eval env from `const_vals` to `spec_consts`.
-- OPEN DESIGN QUESTION: the arg-eval site CANNOT fall through (monomorphization needs
-  the value) and the IR has no diagnostics channel, so a non-evaluable param-dependent
-  arg (div-by-zero, overflow) would `.expect()`-panic. A clean error needs either
-  eval-at-check (the `vals` map threaded into the body walk) or an IR-stage diagnostic
-  sink -- decide before broadening the arg checker.
-- An instantiation cap (mirror the parser's E113 depth guard) so a missing base case
-  fails loudly rather than instantiating forever.
-- An instantiation cap (mirror the parser's E113 depth guard) so runaway recursion
-  fails loudly rather than instantiating forever.
-- `match` folding on a comptime-known scrutinee, same engine.
+Unrolling via comptime-param recursion:
+`fn accumulate(comptime i: u32){ comptime if i<4 { return i + accumulate(i+1); } return 0; }`
+-> `accumulate$0..$4`, the comptime `if` folding each base case so it terminates;
+`accumulate(0)` runs to 6.
+- Eval-at-check (the chosen option 1): the const `vals` map is now carried on
+  `ScopeStack` (no per-`check_*` threading -- `scope` is already everywhere), and
+  `check_comptime_expr` validates every `comptime` condition/scrutinee/arg: it must
+  be comptime-shaped AND, when fully module-const, must actually EVALUATE -- so
+  division-by-zero / overflow are a clean E411 at check time. The Slice 1 div-by-zero
+  FALL-THROUGH is now a clean E411 (limitation (c) retired). A param-dependent expr
+  is structural-only (its value is unknown until specialization); a literal-zero
+  divisor (`i / 0`) is still caught structurally.
+- ARGS broadened: `check_comptime_expr` replaces the literal/const-only arg check, so
+  `f(i + 1)` (and `f(N / 2)`, lifting the Phase 2 limit) is accepted. `emit_handle_call`
+  evals the arg over `spec_consts`, so `i + 1` folds with `i` bound.
+- Instantiation cap: `COMPTIME_SPEC_LIMIT` (4096) -- a missing base case aborts with
+  an actionable message instead of hanging. (A compiler abort, like C++ template depth;
+  the only residual `.expect()` is param-dependent overflow, which a base case bounds.)
+- `match` folding over a comptime-param scrutinee already works via `spec_consts`
+  (slice 2a) + the broadened arg/condition checker.
+- Tests: `comptime_recursion_ok.bml` (IR: `accumulate$0..$4`, no `$5`),
+  `exec/comptime_recursion.bml` (QEMU: `accumulate(0)==6`),
+  `comptime_if_nonconst.bml` (now E411, not fall-through).
 
 ### Phase 4 -- comptime functions (rung 3)
 

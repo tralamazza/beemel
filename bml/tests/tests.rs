@@ -487,10 +487,12 @@ assert_error!(
     "E411"
 );
 // A structurally-const but non-evaluable `comptime if` condition (div-by-zero)
-// must not panic the compiler -- it falls through to runtime lowering.
-assert_pass!(
-    test_comptime_if_nonconst_falls_through,
-    "comptime_if_nonconst.bml"
+// is rejected cleanly at check time (E411) via eval-at-check / the literal-zero
+// divisor guard -- no codegen panic, no silent fall-through.
+assert_error!(
+    test_comptime_if_nonconst_rejected,
+    "comptime_if_nonconst.bml",
+    "E411"
 );
 
 // `comptime if` over a `comptime` PARAMETER (Phase 3 slice 2a): the value is
@@ -516,6 +518,24 @@ fn test_comptime_param_if_folds() {
     assert!(
         b1.contains("200") && !b1.contains("100") && !b1.contains("icmp"),
         "classify$1 must fold to the else branch (200), no comparison\n{b1}"
+    );
+}
+
+// comptime recursion unroll (Phase 3 slice 2b): `accumulate(0)` specializes
+// accumulate$0..$4; the comptime if folds the base case (`i < 4` false at i==4)
+// so the chain terminates -- no accumulate$5 is emitted.
+#[test]
+fn test_comptime_recursion_unrolls() {
+    let ir = bml_ir("comptime_recursion_ok.bml");
+    for spec in ["@accumulate$0(", "@accumulate$1(", "@accumulate$4("] {
+        assert!(
+            ir.contains(spec),
+            "missing specialization {spec}\n--- IR ---\n{ir}"
+        );
+    }
+    assert!(
+        !ir.contains("@accumulate$5"),
+        "the comptime if base case must stop the recursion at i==4\n--- IR ---\n{ir}"
     );
 }
 

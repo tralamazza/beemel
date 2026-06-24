@@ -1,7 +1,7 @@
-// Regression: a structurally-const but NON-evaluable `comptime if` condition
-// (here a div-by-zero) must not panic the compiler. It falls through to the
-// runtime lowering -- identical to a plain `if` on the same expression. A clean
-// E411 for this edge is a Slice 2 follow-up. See doc/comptime.md.
+// A `comptime if` condition that is structurally const but does NOT evaluate
+// (here a division by zero) is rejected cleanly at check time (E411) -- via the
+// literal-zero-divisor guard / eval-at-check -- rather than panicking codegen or
+// silently falling through. See doc/comptime.md.
 fn pick() -> u32 {
     comptime if 5 / 0 == 1 {
         return 1;

@@ -33,14 +33,23 @@ struct ScopeStack {
     /// `snapshot`/`restore`, and the loop-body fixpoint -- a re-checked `var`
     /// just overwrites its entry with the same type. Drained by `check_fn`.
     local_types: LocalTypes,
+    /// Resolved module-`const` values, for eval-at-check of `comptime`
+    /// conditions/scrutinees/args. Carried here so the body walk can reach it
+    /// without threading a separate parameter through every `check_*`.
+    const_vals: HashMap<String, ConstVal>,
 }
 
 impl ScopeStack {
-    fn new() -> Self {
+    fn new(const_vals: HashMap<String, ConstVal>) -> Self {
         ScopeStack {
             scopes: vec![HashMap::new()],
             local_types: LocalTypes::new(),
+            const_vals,
         }
+    }
+
+    fn const_vals(&self) -> &HashMap<String, ConstVal> {
+        &self.const_vals
     }
 
     /// Record a local's resolved type for tooling. `Type::Error` is dropped so
@@ -130,6 +139,7 @@ impl Checker {
         diags: &mut DiagnosticBag,
     ) -> LocalTypes {
         let mut local_types = LocalTypes::new();
+        let vals = collect_const_values(program, symbols);
         validate_type_annotations(program, symbols, diags);
         validate_struct_layouts(program, symbols, diags);
         validate_extern_abi(program, symbols, diags);
@@ -153,7 +163,7 @@ impl Checker {
             }
             if let ast::Item::FnDef(fn_def) = item {
                 check_shadowing(fn_def, symbols, diags);
-                local_types.extend(check_fn(fn_def, symbols, diags));
+                local_types.extend(check_fn(fn_def, symbols, diags, &vals));
                 check_agent_ptr_escape(fn_def, symbols, diags);
             }
         }
@@ -896,7 +906,7 @@ fn check_global_initializers(program: &Program, symbols: &SymbolTable, diags: &m
                 if let Some(init) = &s.init {
                     let expected =
                         types::resolve_type_expr(&s.ty, &symbols.structs, &symbols.enums);
-                    let mut scope = ScopeStack::new();
+                    let mut scope = ScopeStack::new(consts.clone());
                     let actual = check_expr(init, symbols, &mut scope, "<global>", None, diags);
                     if !types::types_compatible(&expected, &actual)
                         && !unsuffixed_literal_fits(init, &expected)
@@ -913,7 +923,7 @@ fn check_global_initializers(program: &Program, symbols: &SymbolTable, diags: &m
             }
             ast::Item::ConstDef(c) => {
                 let expected = types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
-                let mut scope = ScopeStack::new();
+                let mut scope = ScopeStack::new(consts.clone());
                 let actual = check_expr(&c.value, symbols, &mut scope, "<global>", None, diags);
                 if !types::types_compatible(&expected, &actual)
                     && !unsuffixed_literal_fits(&c.value, &expected)
@@ -1117,8 +1127,13 @@ fn check_comptime_asserts(program: &Program, symbols: &SymbolTable, diags: &mut 
 
 /// Type-check one function, returning the resolved types of its locals (keyed
 /// by name span) for tooling.
-fn check_fn(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) -> LocalTypes {
-    let mut scope = ScopeStack::new();
+fn check_fn(
+    fn_def: &ast::FnDef,
+    symbols: &SymbolTable,
+    diags: &mut DiagnosticBag,
+    vals: &HashMap<String, ConstVal>,
+) -> LocalTypes {
+    let mut scope = ScopeStack::new(vals.clone());
     let expected_ret = fn_def
         .ret
         .as_ref()
@@ -1305,11 +1320,15 @@ fn check_block(
                 if cond_ty != Type::B1 {
                     diags.error("if condition must be b1", "E302", if_stmt.cond.span());
                 }
-                if if_stmt.comptime && !is_comptime_shaped(&if_stmt.cond, symbols, fn_name) {
-                    diags.error(
-                        "`comptime if` condition must be a compile-time constant (literals, `const`s, and pure operators)",
+                if if_stmt.comptime {
+                    check_comptime_expr(
+                        &if_stmt.cond,
+                        "`comptime if` condition",
                         "E411",
-                        if_stmt.cond.span(),
+                        symbols,
+                        scope,
+                        fn_name,
+                        diags,
                     );
                 }
                 // Analyze each branch from the same pre-branch move-state, then
@@ -1582,13 +1601,15 @@ fn check_block(
                     expected_ret,
                     diags,
                 );
-                if match_stmt.comptime
-                    && !is_comptime_shaped(&match_stmt.scrutinee, symbols, fn_name)
-                {
-                    diags.error(
-                        "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
+                if match_stmt.comptime {
+                    check_comptime_expr(
+                        &match_stmt.scrutinee,
+                        "`comptime match` scrutinee",
                         "E411",
-                        match_stmt.scrutinee.span(),
+                        symbols,
+                        scope,
+                        fn_name,
+                        diags,
                     );
                 }
                 check_match_coverage(&scrutinee_ty, &match_stmt.arms, match_stmt.span, diags);
@@ -2370,11 +2391,60 @@ fn check_peripheral_handle_arg(
 /// Whether `arg` is acceptable for a `comptime` value parameter: an integer
 /// literal or a named `const`. Const-expression arguments are a follow-up (see
 /// `doc/comptime.md`); the IR evaluates a superset of this, so it stays sound.
-fn is_comptime_const_arg(arg: &Expr, symbols: &SymbolTable) -> bool {
-    match arg {
-        Expr::IntLiteral(..) => true,
-        Expr::Ident((name, _)) => symbols.consts.contains_key(name),
+/// Whether `expr` references a `comptime` parameter of the enclosing function
+/// (its value is unknown until specialization, so it cannot be eval-checked here).
+fn expr_uses_comptime_param(expr: &Expr, fn_name: &str, symbols: &SymbolTable) -> bool {
+    match expr {
+        Expr::Ident((name, _)) => is_enclosing_comptime_param(name, fn_name, symbols),
+        Expr::Group(inner) | Expr::Unary(_, inner) => {
+            expr_uses_comptime_param(inner, fn_name, symbols)
+        }
+        Expr::Binary(l, _, r) => {
+            expr_uses_comptime_param(l, fn_name, symbols)
+                || expr_uses_comptime_param(r, fn_name, symbols)
+        }
         _ => false,
+    }
+}
+
+/// Validate a `comptime` condition / scrutinee / argument `expr`. It must be
+/// comptime-shaped, and -- when it uses no comptime params (fully module-const) --
+/// it must actually evaluate, catching division-by-zero / overflow at check time
+/// instead of letting codegen mishandle it. A param-dependent expr is checked
+/// structurally only; it folds per specialization. `code` is the error code
+/// (E411 for conditions, E410 for arguments).
+fn check_comptime_expr(
+    expr: &Expr,
+    what: &str,
+    code: &str,
+    symbols: &SymbolTable,
+    scope: &ScopeStack,
+    fn_name: &str,
+    diags: &mut DiagnosticBag,
+) {
+    if !is_comptime_shaped(expr, symbols, fn_name) {
+        diags.error(
+            format!(
+                "{what} must be a compile-time constant (literals, `const`s, `comptime` params, and pure operators)"
+            ),
+            code,
+            expr.span(),
+        );
+    } else if !expr_uses_comptime_param(expr, fn_name, symbols)
+        && consteval::eval(
+            expr,
+            &CheckEnv {
+                symbols,
+                vals: scope.const_vals(),
+            },
+        )
+        .is_none()
+    {
+        diags.error(
+            format!("{what} does not evaluate to a constant (division by zero or overflow?)"),
+            code,
+            expr.span(),
+        );
     }
 }
 
@@ -2401,7 +2471,15 @@ fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable, fn_name: &str) -> bool
             symbols.consts.contains_key(name) || is_enclosing_comptime_param(name, fn_name, symbols)
         }
         Expr::Group(inner) | Expr::Unary(_, inner) => is_comptime_shaped(inner, symbols, fn_name),
-        Expr::Binary(l, _, r) => {
+        Expr::Binary(l, op, r) => {
+            // A literal-zero divisor never evaluates; reject it structurally so it
+            // is a clean E411 even when the dividend is a `comptime` param (which
+            // is otherwise not eval-checked here).
+            if matches!(op, ast::BinaryOp::Div | ast::BinaryOp::Mod)
+                && matches!(r.as_ref(), Expr::IntLiteral(0, _, _))
+            {
+                return false;
+            }
             is_comptime_shaped(l, symbols, fn_name) && is_comptime_shaped(r, symbols, fn_name)
         }
         _ => false,
@@ -2434,16 +2512,18 @@ fn check_call_args(
             }
             let arg_ty = check_expr(arg, symbols, scope, fn_name, expected_ret, diags);
             // A `comptime` value parameter is monomorphized per value, so its
-            // argument must be a compile-time constant.
-            if fn_sym.comptime.get(i).copied().unwrap_or(false)
-                && !is_comptime_const_arg(arg, symbols)
-            {
-                diags.error(
-                    format!(
-                        "argument `{param_name}` of `{name}` is a `comptime` parameter and requires a compile-time constant"
-                    ),
+            // argument must be a compile-time constant -- or an expression over the
+            // enclosing fn's comptime params (e.g. `f(i + 1)`), which folds at
+            // specialization.
+            if fn_sym.comptime.get(i).copied().unwrap_or(false) {
+                check_comptime_expr(
+                    arg,
+                    &format!("argument `{param_name}` of `{name}`"),
                     "E410",
-                    arg.span(),
+                    symbols,
+                    scope,
+                    fn_name,
+                    diags,
                 );
             }
             if !types::types_compatible(param_ty, &arg_ty)
@@ -3528,11 +3608,15 @@ fn check_expr(
                 expected_ret,
                 diags,
             );
-            if match_expr.comptime && !is_comptime_shaped(&match_expr.scrutinee, symbols, fn_name) {
-                diags.error(
-                    "`comptime match` scrutinee must be a compile-time integer constant (literals, `const`s, and pure operators)",
+            if match_expr.comptime {
+                check_comptime_expr(
+                    &match_expr.scrutinee,
+                    "`comptime match` scrutinee",
                     "E411",
-                    match_expr.scrutinee.span(),
+                    symbols,
+                    scope,
+                    fn_name,
+                    diags,
                 );
             }
             check_match_coverage(&scrutinee_ty, &match_expr.arms, match_expr.span, diags);
