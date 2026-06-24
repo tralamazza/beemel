@@ -379,13 +379,19 @@ impl Binding {
 /// Select the match arm whose pattern matches a comptime-known integer scrutinee,
 /// for folding a `comptime match`. (Enum/variant scrutinees are not yet
 /// comptime-folded; the checker (E411) rejects them.)
-fn comptime_match_arm(scrut: i128, arms: &[ast::MatchArm]) -> Option<&ast::MatchArm> {
+fn comptime_match_arm<'a>(
+    scrut: i128,
+    arms: &'a [ast::MatchArm],
+    symbols: &SymbolTable,
+) -> Option<&'a ast::MatchArm> {
     arms.iter().find(|arm| {
         arm.patterns.iter().any(|p| match p {
             ast::MatchPattern::Int(v, _) => *v == scrut,
             ast::MatchPattern::Range(lo, hi, _) => *lo <= scrut && scrut <= *hi,
             ast::MatchPattern::Wildcard(_) => true,
-            ast::MatchPattern::Variant(..) => false,
+            ast::MatchPattern::Variant(enum_name, variant) => {
+                symbols.enum_variant_discriminant(&enum_name.0, &variant.0) == Some(scrut)
+            }
         })
     })
 }
@@ -2494,7 +2500,7 @@ impl IrEmitter {
                         consteval::eval_int(&match_stmt.scrutinee, &env)
                     };
                     if let Some(scrut) = folded
-                        && let Some(arm) = comptime_match_arm(scrut, &match_stmt.arms)
+                        && let Some(arm) = comptime_match_arm(scrut, &match_stmt.arms, symbols)
                     {
                         return self.emit_block(
                             &arm.body,
@@ -3835,7 +3841,7 @@ impl IrEmitter {
                         consteval::eval_int(&match_expr.scrutinee, &env)
                     };
                     if let Some(scrut) = folded
-                        && let Some(arm) = comptime_match_arm(scrut, &match_expr.arms)
+                        && let Some(arm) = comptime_match_arm(scrut, &match_expr.arms, symbols)
                     {
                         // Emit the arm body's statements, then its trailing value
                         // expression (mirrors the `Expr::Block` value path).
@@ -6346,6 +6352,9 @@ impl consteval::Env for IrConstEnv<'_> {
             Some(ConstVal::Bool(b)) => Some(*b),
             _ => None,
         }
+    }
+    fn enum_variant(&self, enum_name: &str, variant: &str) -> Option<i128> {
+        self.symbols.enum_variant_discriminant(enum_name, variant)
     }
     fn array_len(&self, name: &str) -> Option<i128> {
         self.symbols

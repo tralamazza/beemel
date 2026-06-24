@@ -539,6 +539,32 @@ fn test_comptime_recursion_unrolls() {
     );
 }
 
+// `comptime match` over an ENUM scrutinee: a variant pattern matches by
+// discriminant, so each specialization folds to one arm -- descr$0 (H723) -> 723,
+// descr$1 (F103) -> 103, each dropping the other arm.
+#[test]
+fn test_comptime_match_enum_folds() {
+    let ir = bml_ir("comptime_match_enum_ok.bml");
+    let body = |spec: &str| -> String {
+        let start = ir
+            .find(&format!("define internal i32 {spec}"))
+            .unwrap_or_else(|| panic!("missing specialization {spec}\n--- IR ---\n{ir}"));
+        let rest = &ir[start..];
+        let end = rest.find("\n}").map_or(rest.len(), |e| e + 2);
+        rest[..end].to_string()
+    };
+    let b0 = body("@descr$0(");
+    assert!(
+        b0.contains("723") && !b0.contains("103"),
+        "descr$0 (H723) must fold to the H723 arm (723)\n{b0}"
+    );
+    let b1 = body("@descr$1(");
+    assert!(
+        b1.contains("103") && !b1.contains("723"),
+        "descr$1 (F103) must fold to the F103 arm (103)\n{b1}"
+    );
+}
+
 // Register arrays (M6): `reg NAME[N] offset O stride S` reached as `P.NAME[i]`.
 assert_pass!(test_reg_array_ok, "reg_array_ok.bml");
 // Accessing the array register without an index (E337), a constant index past

@@ -970,6 +970,9 @@ impl consteval::Env for CheckEnv<'_> {
             _ => None,
         }
     }
+    fn enum_variant(&self, enum_name: &str, variant: &str) -> Option<i128> {
+        self.symbols.enum_variant_discriminant(enum_name, variant)
+    }
     fn array_len(&self, name: &str) -> Option<i128> {
         global_array_len(self.symbols, name)
     }
@@ -2467,6 +2470,8 @@ fn is_enclosing_comptime_param(name: &str, fn_name: &str, symbols: &SymbolTable)
 fn is_comptime_shaped(expr: &Expr, symbols: &SymbolTable, fn_name: &str) -> bool {
     match expr {
         Expr::IntLiteral(..) | Expr::BoolLiteral(..) => true,
+        // `Enum@Variant` is a compile-time discriminant constant.
+        Expr::EnumVariant { .. } => true,
         Expr::Ident((name, _)) => {
             symbols.consts.contains_key(name) || is_enclosing_comptime_param(name, fn_name, symbols)
         }

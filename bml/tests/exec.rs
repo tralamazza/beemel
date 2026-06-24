@@ -470,6 +470,10 @@ assert_exec!(exec_comptime_param_if, "comptime_param_if.bml");
 // accumulate$0..$4, the comptime if folding the base case
 assert_exec!(exec_comptime_recursion, "comptime_recursion.bml");
 
+// ─── comptime match over an enum scrutinee (variant patterns by discriminant):
+// descr(H723)->723, descr(F103)->103
+assert_exec!(exec_comptime_match_enum, "comptime_match_enum.bml");
+
 // ─── if- and block-expressions yield values (language.md §11) ────────────────
 assert_exec!(exec_if_block_expr, "if_block_expr.bml");
 

@@ -1,14 +1,15 @@
 # comptime
 
-Status: Phases 1-2 + Phase 3 Slices 1-2a COMMITTED; Slice 2b on the working tree.
-Phase 1 (binding-keyed engine refactor) is a verified no-op; Phase 2 adds
-`comptime` value params (monomorphization + E410); Phase 3 Slice 1 adds
-`comptime if` / `comptime match` over module consts (+ E411); Slice 2a folds them
-over comptime PARAMS; Slice 2b unrolls comptime recursion and adds eval-at-check
-(clean E411 for non-evaluable conditions/args) + an instantiation cap. 622
-integration + 57 exec + 83 core green; clippy + fmt clean. Phase 4 (comptime
-functions) PLANNED. Scope = the minimal orthogonal core (rungs 1-3, value-level);
-`comptime T: type` (rung 4) and `inline for` are DEFERRED.
+Status: Phases 1-2 + Phase 3 (slices 1-2b) COMMITTED; enum-scrutinee
+`comptime match` on the working tree. Phase 1 (binding-keyed engine refactor) is a
+verified no-op; Phase 2 adds `comptime` value params (monomorphization + E410);
+Phase 3 Slice 1 adds `comptime if` / `comptime match` over module consts (+ E411);
+Slice 2a folds them over comptime PARAMS; Slice 2b unrolls comptime recursion and
+adds eval-at-check (clean E411 for non-evaluable conditions/args) + an
+instantiation cap; `comptime match` now also takes ENUM scrutinees (variant
+patterns by discriminant). 623 integration + 58 exec + 83 core green; clippy + fmt
+clean. Phase 4 (comptime functions) PLANNED. Scope = the minimal orthogonal core
+(rungs 1-3, value-level); `comptime T: type` (rung 4) and `inline for` are DEFERRED.
 
 ## Problem
 
@@ -159,8 +160,10 @@ only the taken branch / selected arm.
 - KNOWN LIMITATIONS: (a) only codegen drops the untaken branch/arms -- other AST
   walkers (region, ceiling, verify) still analyze ALL of them, so they must
   type-check and obey ownership; "untaken branch is invisible" is a later change.
-  (b) `comptime match` is int-scrutinee only; enum scrutinees are a FOLLOW-UP
-  (need `Expr::EnumVariant` const-eval). (c) RETIRED by slice 2b: a
+  (b) RETIRED: `comptime match` now supports int AND enum scrutinees -- a variant
+  pattern matches by discriminant, via `Env::enum_variant` /
+  `SymbolTable::enum_variant_discriminant`; works for an enum `const`, an
+  `Enum@Variant` literal, and a `comptime` param of enum type. (c) RETIRED by slice 2b: a
   structurally-const but non-evaluable condition (div-by-zero, overflow) is now a
   clean E411 at check time (eval-at-check), not a runtime fall-through.
 - Tests: `comptime_if_ok.bml` / `comptime_match_ok.bml` (IR: only the selected

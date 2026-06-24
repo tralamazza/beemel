@@ -1,0 +1,19 @@
+// `comptime match` over an enum scrutinee runs correctly: each call specializes
+// by the variant discriminant and folds to one arm. descr(H723)->723,
+// descr(F103)->103.
+import harness.semihost;
+
+enum Chip: u32 { H723, F103 }
+
+fn descr(comptime c: Chip) -> u32 {
+    comptime match c {
+        Chip@H723 { return 723; }
+        Chip@F103 { return 103; }
+    }
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(descr(Chip@H723), 723);
+    semihost.expect_u32(descr(Chip@F103), 103);
+    semihost.done();
+}

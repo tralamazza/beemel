@@ -59,6 +59,17 @@ pub struct FnSymbol {
 }
 
 impl SymbolTable {
+    /// Discriminant of `Enum@Variant`, or `None` if the enum/variant is unknown.
+    #[must_use]
+    pub fn enum_variant_discriminant(&self, enum_name: &str, variant: &str) -> Option<i128> {
+        self.enums.get(enum_name).and_then(|(_, variants)| {
+            variants
+                .iter()
+                .find(|(v, _)| v == variant)
+                .map(|(_, d)| i128::from(*d))
+        })
+    }
+
     /// A copy with `name`'s `Shared` type wrapper stripped -- the view of the
     /// world inside a `claim name { ... }` window. The checker and the IR
     /// emitter recurse into the claim body with this table, so the static is

@@ -1,0 +1,16 @@
+// `comptime match` over an enum scrutinee (a `comptime` param of enum type):
+// each call specializes by the variant's discriminant and folds to one arm.
+// descr$0 (H723) -> 723, descr$1 (F103) -> 103. See doc/comptime.md.
+enum Chip: u32 { H723, F103 }
+
+fn descr(comptime c: Chip) -> u32 {
+    comptime match c {
+        Chip@H723 { return 723; }
+        Chip@F103 { return 103; }
+    }
+}
+
+export fn main() @context(thread) {
+    var a: u32 = descr(Chip@H723);
+    var b: u32 = descr(Chip@F103);
+}

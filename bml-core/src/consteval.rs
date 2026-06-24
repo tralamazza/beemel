@@ -41,6 +41,12 @@ pub trait Env {
     /// Size in bytes of a `sizeof` operand. Returns `None` when types are not yet
     /// resolved (the `constfold` pass), which simply leaves `sizeof` unevaluated.
     fn sizeof(&self, ty: &TypeExpr) -> Option<i128>;
+
+    /// Discriminant of `Enum@Variant`, or `None` if the enum/variant is unknown.
+    /// Defaults to `None` for passes that do not track enums (e.g. `constfold`).
+    fn enum_variant(&self, _enum_name: &str, _variant: &str) -> Option<i128> {
+        None
+    }
 }
 
 /// `true` if `expr` names the `len` builtin (its only spelling is a bare ident).
@@ -62,6 +68,9 @@ pub fn eval(expr: &Expr, env: &dyn Env) -> Option<ConstVal> {
             Some(v) => ConstVal::Int(v),
             None => ConstVal::Bool(env.const_bool(name)?),
         },
+        Expr::EnumVariant {
+            enum_name, variant, ..
+        } => ConstVal::Int(env.enum_variant(&enum_name.0, &variant.0)?),
         Expr::Call(callee, args) if is_len_call(callee) && args.len() == 1 => {
             ConstVal::Int(eval_len(&args[0], env)?)
         }
