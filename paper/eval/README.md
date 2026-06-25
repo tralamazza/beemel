@@ -39,3 +39,16 @@ Sources for each hazard are cited in the paper (AN4839, the Nordic EasyDMA
 product spec, Zephyr issue #36471, NuttX CONFIG_STM32_CCMEXCLUDE, embassy's
 BufferNotInRAM, the stm32-eth #16 and nrf-hal #37 issues, and ST community
 threads).
+
+## Cost measurement (Evaluation section, S7.5)
+
+Generated-MPU code size, isolated by toggling `has_mpu` on the same program
+(everything else identical, so the `.text` delta is exactly the MPU setup):
+
+    bml build --out-dir /tmp --target cost_mpu.target   cost.bml   # has_mpu = true
+    bml build --out-dir /tmp --target cost_nompu.target cost.bml   # has_mpu = false
+    llvm-size /tmp/... # .text: 198 (MPU) vs 134 (no MPU) -> 64 bytes, once at reset
+
+Annotation burden is content-line-counted on the example drivers (e.g.
+eth_dma.bml: 26 model annotations / 701 SLOC = 3.7%); chip physics is the shipped
+lib/stm32h723/stm32h723.target (51 lines of physics, amortized per chip).

@@ -1,0 +1,26 @@
+has_mpu = false
+arch = armv7em
+cpu = cortex-m7
+data_block = sram1
+[mem.flash]
+base = 0x08000000
+size = 1M
+[mem.sram1]
+base = 0x24000000
+size = 256K
+[mem.dma_pool]
+base = 0x30000000
+size = 4K
+cacheable = false
+[agent.cpu]
+kind = cpu
+reach = *
+cached = true
+[agent.eth]
+kind = dma
+reach = dma_pool
+cached = false
+handoff = Eth.DMATDLAR
+[region.dma_shared]
+mem = dma_pool
+agents = eth

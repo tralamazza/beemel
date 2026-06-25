@@ -453,7 +453,8 @@ with; a controlled counterfactual reproduced on hardware
 (\S\ref{sec:eval-counterfactual}); and end-to-end bring-ups on three boards
 (\S\ref{sec:eval-boards}). The first two directly address the central threat to
 an experience paper --- that the checks were exercised only on the programs they
-were built against.
+were built against. \S\ref{sec:eval-cost} then measures what the checks cost ---
+annotations and generated code.
 
 \subsection{Documented hazards caught at compile time}
 \label{sec:eval-catalog}
@@ -576,6 +577,46 @@ windows with no observed in-window invariant violation.
 end to end through the full chain --- handoff, fixed-size extent, guarded reclaim
 --- passing on first flash, with the ARMv6-M word-composed interrupt-priority path
 exercised.
+
+\subsection{Cost: annotations and code size}
+\label{sec:eval-cost}
+
+All three measurements come from running the compiler; none needs hardware.
+
+\paragraph{Annotation burden.} A program declares chip physics once per chip ---
+the shipped \texttt{stm32h723.target} is 51 lines of declared physics, reused by
+every H723 program --- and adds a small project policy (the H723 example: an
+\texttt{include} plus three \texttt{[region.*]} blocks). In source, the model's
+annotations
+(\texttt{owns}, \texttt{in}, \texttt{@shared}, \texttt{addr in}, \texttt{@extent})
+are a small fraction of the code: 26 of 701 lines (3.7\%) in the Ethernet driver,
+and 4--10 lines in the smaller examples (the 51-line MDMA demo is denser at
+${\sim}20\%$, being almost entirely DMA orchestration).
+
+\paragraph{Generated code.} The compile-time checks --- reach, ownership,
+completion guard --- emit \emph{no} code; they are analysis. The runtime additions
+are \emph{derived} and small. The non-cacheable MPU region costs 64 bytes of
+\texttt{.text} (198 vs.\ 134 with the region toggled on and off, isolating the
+five PMSAv7 register writes), programmed once at reset. Each handoff adds one
+\texttt{dsb}; each \texttt{claim} window a \texttt{BASEPRI} raise and restore.
+These are the instructions a \emph{correct} hand-written driver must already emit
+--- BML's overhead relative to correct code is essentially zero; relative to the
+buggy code of \S\ref{sec:eval-catalog} it is the cost of being correct.
+
+\paragraph{Mechanization.} BML generates that 64-byte non-cacheable region, and
+the cache-line alignment of buffers placed in it, from a single declaration
+(\texttt{cacheable = false}). The hand-written equivalent --- the pattern in ST's
+examples, Zephyr, and \texttt{stm32-eth} --- is an MPU configuration routine (the
+CMSIS \texttt{MPU\_Config} idiom, ${\sim}20$ lines per region~\cite{an4839}), a
+dedicated linker section, per-buffer alignment attributes, and, unless the region
+is non-cacheable, explicit cache maintenance at every transfer. One declaration
+replaces all of it.
+
+\paragraph{Caveats.} The annotation figures are raw content-line counts, crude by
+nature and reported as-is rather than as a spun ratio; the mechanization
+comparison's manual-side figure is a representative count for the CMSIS idiom, not
+a measurement of one driver. ``Zero overhead versus correct code'' compares to a
+correctly-written driver, not to no driver at all.
 
 \section{Related work}
 \label{sec:related}
