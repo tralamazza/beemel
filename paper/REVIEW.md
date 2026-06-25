@@ -59,20 +59,28 @@ plausible but skews more formal. arXiv now.
 - [x] Move the AI-provenance disclosure out of threats-to-validity to a
   de-apologized first-page footnote.
 
-### P2 / open -- not done
-- [ ] **Affiliation** still says "Independent."
-- [ ] **The evaluation gap (the one real reviewer vulnerability).** The paper
-  evidences runnability + one counterfactual, not the unification. Cheap,
-  high-value additions, all using the boards already in hand:
-  - false-positive count on the three existing bring-ups;
-  - annotation-burden table (target + region/owns/claim lines vs. driver SLOC);
-  - code-size / cycle overhead of the generated MPU regions and the
-    volatile-vs-non-volatile-in-window lowering.
-  The bigger one (the LCTES gate): a seeded or third-party bug-finding study
-  showing the derived checks reject the four founding bug classes while a
-  plain-C / embedded-Rust baseline compiles them clean.
+### Evaluation -- documented-hazard catalog added (S7.1)
+- [x] **Affiliation** confirmed as "Independent" (correct as-is).
+- [x] **Documented-hazard catalog** (the cheap, high-value external evaluation
+  that breaks the co-design objection). Four independently-documented,
+  multi-vendor Cortex-M DMA hazards reconstructed in BML and rejected by the
+  real compiler (verified by running it; reconstructions in `paper/eval/`):
+  - ST H7 DMA-in-DTCM, ST F4 DMA-in-CCM, nRF EasyDMA-in-flash -> one Layer-2
+    reach check rejects all three across three bus architectures;
+  - ST H7 / SAME70 cacheable-buffer-with-D-cache -> coherence reject, and the
+    `cacheable=false` fix auto-generates the non-cacheable MPU region.
+  Each cited to a vendor app note / product spec / issue tracker. The "caught
+  today by" column (runtime fault / silent corruption / manual config) is the
+  comparison axis.
+
+### Still open
+- [ ] **Third-party driver bug-finding study** (the LCTES gate): take a real
+  vendor HAL DMA driver BML never saw, transcribe it, report bugs found. Days
+  of work; the catalog above is the cheaper step that already moves the needle.
+- [ ] Optional quantitative axes from the boards in hand: annotation-burden
+  table, generated-code size/overhead numbers.
 
 ## Build status
 
-`region-ownership.pdf` rebuilds clean with Tectonic (7 pages, two-column; only
-cosmetic hbox warnings, no errors; no undefined references; 19 bib entries).
+`region-ownership.pdf` rebuilds clean with Tectonic (8 pages, two-column; only
+cosmetic hbox warnings, no errors; no undefined references; 22 bib entries).

@@ -1,0 +1,28 @@
+# STM32H7 / SAME70 hazard: DMA buffers in cacheable RAM with D-cache on ->
+# CPU and DMA see different data (silent corruption; the "heisenbug" that works
+# with cache off). Sources: AN4839; Zephyr #36471; SAME70 ethernet driver.
+arch = armv7em
+cpu = cortex-m7
+data_block = sram1
+has_mpu = true
+[mem.flash]
+base = 0x08000000
+size = 1M
+[mem.sram1]
+base = 0x30000000
+size = 64K
+[mem.dma_pool]
+base = 0x30010000
+size = 4K
+[agent.cpu]
+kind = cpu
+reach = *
+cached = true
+[agent.eth]
+kind = dma
+reach = dma_pool
+cached = false
+handoff = Eth.DMATDLAR
+[region.tx_buf]
+mem = dma_pool
+agents = eth

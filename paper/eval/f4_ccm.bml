@@ -1,0 +1,8 @@
+peripheral Dma2 at 0x40026400 {
+    reg M0AR offset 0x10 { field PTR: u32 bit[0..31] }
+}
+var ADC_BUF: [u8; 64] in adc_buf;
+owns Dma2;
+fn main() @context(thread) {
+    Dma2.M0AR = &ADC_BUF as u32;
+}

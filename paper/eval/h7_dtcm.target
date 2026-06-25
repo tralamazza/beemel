@@ -1,0 +1,25 @@
+# Reconstruction of a documented STM32H7 hazard: the CubeMX-default DMA buffer
+# placement in DTCM, which the Ethernet DMA cannot reach over the bus matrix.
+# Sources: ST community "DMA is not working on STM32H7 devices"; AN4839.
+arch = armv7em
+cpu = cortex-m7
+data_block = sram1
+[mem.flash]
+base = 0x08000000
+size = 1M
+[mem.dtcm]
+base = 0x20000000
+size = 128K
+[mem.sram1]
+base = 0x30000000
+size = 16K
+[agent.cpu]
+kind = cpu
+reach = *
+[agent.eth]
+kind = dma
+reach = sram1
+handoff = Eth.DMATDLAR
+[region.tx_buf]
+mem = dtcm
+agents = eth

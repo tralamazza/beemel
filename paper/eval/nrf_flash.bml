@@ -1,0 +1,8 @@
+peripheral Uarte at 0x40002000 {
+    reg TXD_PTR offset 0x544 { field PTR: u32 bit[0..31] }
+}
+var TX: [u8; 64] in tx_buf;
+owns Uarte;
+fn main() @context(thread) {
+    Uarte.TXD_PTR = &TX as u32;
+}

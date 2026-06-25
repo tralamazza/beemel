@@ -446,20 +446,81 @@ by the analyzer.
 \section{Evaluation}
 \label{sec:eval}
 
-Our evaluation is empirical and hardware-grounded rather than a benchmark suite:
-the model's value is whether it catches real bugs and runs on real silicon. We
-report validation on three boards spanning the three DMA architectures of
-\S\ref{sec:agents}.
+We offer three kinds of evidence: that BML's checks reject hazards
+\emph{independently documented} for chips it was not co-designed with
+(\S\ref{sec:eval-catalog}); a controlled counterfactual reproduced on hardware
+(\S\ref{sec:eval-counterfactual}); and end-to-end bring-ups on three boards
+(\S\ref{sec:eval-boards}). The first directly addresses the central threat to an
+experience paper --- that the checks were exercised only on the programs they
+were built against.
 
-\paragraph{Falsified both ways (the clearest result).} The
-volatility-by-provenance check of \S\ref{sec:checks} is the one controlled
-counterfactual. Under a plain (non-volatile) load, the Ethernet controller's
-ownership-bit poll froze at transmit frame~5 --- the optimizer had hoisted the
-load out of the spin loop into a branch-to-self. Under the agent-derived volatile
-lowering, the identical program runs indefinitely. The bug and its fix were each
-reproduced on the board, not only in the IR. The three bring-ups below are
-existence proofs that the model is self-consistent and runs; they do not, on
-their own, isolate the unification claim (\S\ref{sec:limits}).
+\subsection{Documented hazards caught at compile time}
+\label{sec:eval-catalog}
+
+\begin{table*}[t]
+\centering\footnotesize
+\begin{tabular}{@{}p{3.0cm}p{2.7cm}p{3.4cm}p{5.9cm}@{}}
+\toprule
+Documented hazard (chip) & Attested by & Caught today by & BML, at compile time \\
+\midrule
+DMA buffer in DTCM (STM32H7) & AN4839~\cite{an4839}; ST community & nothing: board silently never transmits & rejected at target load: \emph{``region in mem \texttt{dtcm}, which agent \texttt{eth} cannot reach''} \\
+DMA buffer in CCM RAM (STM32F4) & ST community; NuttX \texttt{CCMEXCLUDE} & runtime AHB / hard fault & rejected: \emph{``mem \texttt{ccm} \ldots agent \texttt{dma2} cannot reach''} \\
+EasyDMA buffer in flash (nRF52) & Nordic spec~\cite{easydma}; \texttt{nrf-hal} \#37 & hard fault or silent; embassy's run-time \texttt{BufferNotInRAM} & rejected: \emph{``mem \texttt{flash} \ldots agent \texttt{easydma} cannot reach''} \\
+Cacheable DMA buffer, D-cache on (STM32H7, SAME70) & AN4839~\cite{an4839}; Zephyr \#36471~\cite{zephyrdma} & silent corruption (``works with cache off'') & rejected: \emph{``cache views diverge''}; the fix \texttt{cacheable=false} auto-generates the non-cacheable MPU region \\
+\bottomrule
+\end{tabular}
+\caption{Independently-documented, multi-vendor DMA hazards, each reconstructed
+in BML and rejected by the compiler. One Layer-2 reach check (rows 1--3) catches
+the same bug class across three bus architectures; the cache check (row 4) both
+rejects the program and generates the vendor-prescribed fix. Reconstructions and
+verbatim compiler output are in the artifact.}
+\label{tab:hazards}
+\end{table*}
+
+Cortex-M firmware has a small family of notorious DMA bugs that vendors document
+in application notes and that recur for years in forums and issue trackers. We
+took four, spanning three vendors, and reconstructed each minimally in BML --- the
+documented memory-sharing structure, not the original C, which BML cannot
+ingest. In every case the compiler rejects the program;
+Table~\ref{tab:hazards} summarizes, and the moved-to-reachable-memory
+counterpart of each builds clean.
+
+Two observations. First, a single check --- the Layer-2 reach test --- catches the
+same bug class (a buffer the engine cannot address) across three structurally
+different bus arrangements (ST's DTCM, ST's CCM, Nordic's flash exclusion): the
+agent/reach model's generality made concrete rather than asserted. Second, the
+``caught today by'' column is the point. These hazards are presently caught at
+\emph{runtime} (a hard fault), \emph{not at all} (silent corruption), or by
+\emph{manual} configuration one can omit; BML moves them to compile time, and for
+the cache hazard it \emph{generates} the non-cacheable MPU region that ST's
+examples write by hand.
+
+\paragraph{Honest scope.} These are reconstructions, not analyses of the upstream
+drivers: we re-expressed each documented hazard's placement and sharing in BML
+and confirmed the diagnostic by running the compiler. The reach test is only as
+good as the transcribed bus matrix, which lives in the shipped chip target
+(\S\ref{sec:checks}); a mis-transcribed reach window would mask the bug. The model
+also does not capture every subtlety --- the Cortex-M7 write-through-cache erratum
+and speculative-read concerns of AN4839~\cite{an4839} are outside it. The claim is
+narrower and concrete: the common, high-frequency form of each hazard becomes a
+compile error.
+
+\subsection{Falsified both ways}
+\label{sec:eval-counterfactual}
+
+The volatility-by-provenance check of \S\ref{sec:checks} is a controlled
+counterfactual on hardware. Under a plain (non-volatile) load, the Ethernet
+controller's ownership-bit poll froze at transmit frame~5 --- the optimizer had
+hoisted the load out of the spin loop into a branch-to-self. Under the
+agent-derived volatile lowering, the identical program runs indefinitely. The bug
+and its fix were each reproduced on the board, not only in the IR.
+
+\subsection{Hardware bring-ups}
+\label{sec:eval-boards}
+
+Three boards span the three DMA architectures of \S\ref{sec:agents}. These are
+existence proofs that the model is self-consistent and runs end to end; they do
+not, on their own, isolate the unification claim (\S\ref{sec:limits}).
 
 \paragraph{NUCLEO-H723ZG (Cortex-M7).} Ethernet transmit and receive with typed
 descriptors, D-cache \emph{enabled} under the generated MPU region. An MDMA copy
@@ -697,6 +758,18 @@ N.~Krishnaswami.
 \newblock \emph{Concurrent and Real-Time Programming in Ada} (the Ravenscar
 profile).
 \newblock Cambridge University Press, 2007.
+
+\bibitem{an4839} STMicroelectronics.
+\newblock AN4839: Level 1 cache on STM32F7 and STM32H7 series.
+\newblock Application note.
+
+\bibitem{easydma} Nordic Semiconductor.
+\newblock nRF52832 Product Specification --- EasyDMA (``EasyDMA is not able to
+access the Flash'').
+
+\bibitem{zephyrdma} Zephyr Project.
+\newblock DMA and data cache coherency on Arm M7 devices.
+\newblock GitHub issue zephyrproject-rtos/zephyr \#36471.
 
 \end{thebibliography}
 

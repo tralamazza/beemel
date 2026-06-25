@@ -1,0 +1,8 @@
+peripheral Eth at 0x40028000 {
+    reg DMATDLAR offset 0x00 { field PTR: u32 bit[0..31] }
+}
+var TX: [u8; 64] in tx_buf;
+owns Eth;
+fn main() @context(thread) {
+    Eth.DMATDLAR = &TX as u32;
+}

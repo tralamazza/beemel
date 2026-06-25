@@ -1,0 +1,24 @@
+# STM32F4 hazard: DMA buffer in CCM RAM (0x10000000), which is core-coupled and
+# not on the bus matrix -> DMA cannot reach it (AHB error at runtime today).
+arch = armv7em
+cpu = cortex-m4
+data_block = sram
+[mem.flash]
+base = 0x08000000
+size = 512K
+[mem.ccm]
+base = 0x10000000
+size = 64K
+[mem.sram]
+base = 0x20000000
+size = 128K
+[agent.cpu]
+kind = cpu
+reach = *
+[agent.dma2]
+kind = dma
+reach = sram
+handoff = Dma2.M0AR
+[region.adc_buf]
+mem = ccm
+agents = dma2
