@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use crate::ast::{Block, Expr, FnDef, IntSuffix, Item, Program, Stmt, TypeExpr};
 use crate::consteval::{self, Env};
 use crate::resolver::SymbolTable;
-use crate::types::{self, Type};
+use crate::types;
 
 /// Upper bound on a repeat-init count we expand inline, to bound AST growth. A
 /// larger (or non-constant) count is left as an `ArrayRepeat` for the checker to
@@ -157,10 +157,11 @@ impl Env for FoldEnv<'_> {
     fn sizeof(&self, ty: &TypeExpr) -> Option<i128> {
         let symbols = self.symbols?;
         let t = types::resolve_type_expr(ty, &symbols.structs, &symbols.enums);
-        // Post-resolution structs/enums are real, so a fully-resolved type sizes
-        // correctly. A still-`Unresolved` name is a typo (reported elsewhere);
-        // don't hand it to `element_size`, whose catch-all would guess a size.
-        if matches!(t, Type::Unresolved(_)) {
+        // A fully-resolved type sizes correctly post-resolution. If any component
+        // is still unresolved (a typo, e.g. `sizeof([Nonexistent; 4])`), refuse:
+        // `element_size`'s catch-all would otherwise guess a size and silently
+        // mis-size the array (top-level-only checks miss `Array(Unresolved, ..)`).
+        if types::type_has_unresolved(&t) {
             return None;
         }
         Some(i128::from(types::element_size(&t)))

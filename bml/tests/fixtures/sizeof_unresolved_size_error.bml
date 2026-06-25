@@ -1,0 +1,10 @@
+// T2 review regression: `sizeof` of a type with an unresolved component (the
+// typo'd `Nonexistent`) must NOT silently size an array. The post-resolution
+// length fold refuses it (`type_has_unresolved`) instead of letting
+// `element_size`'s catch-all guess 4 bytes per unresolved component (which would
+// silently size this to `[u8; 16]`). The length stays unfolded -> E414.
+const A: [u8; sizeof([Nonexistent; 4])] = [0u8; sizeof([Nonexistent; 4])];
+
+fn main() @context(thread) {
+    var x: u8 = A[0];
+}

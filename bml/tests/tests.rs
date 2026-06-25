@@ -690,6 +690,15 @@ fn test_sizeof_array_len_folds() {
     );
 }
 
+// T2 review regression: `sizeof` of an unresolved (typo'd) type must not silently
+// size an array -- the length fold refuses it, so it is rejected (E414) rather
+// than guessing a size from `element_size`'s catch-all.
+assert_error!(
+    test_sizeof_unresolved_size,
+    "sizeof_unresolved_size_error.bml",
+    "E414"
+);
+
 // T2: a comptime function using `sizeof([Foo; 4])` to size an array now works --
 // folded with the real symbol table to 32 (4 * 8). Also the T1-miscompile
 // regression: if the pre-resolution `sizeof` gate broke, the array would be

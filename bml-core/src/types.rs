@@ -561,6 +561,52 @@ pub fn checked_element_size(ty: &Type) -> Option<u32> {
     }
 }
 
+/// Whether `ty` contains an `Unresolved` (unknown-named) or `Error` component in a
+/// position that affects its size -- i.e. its layout is not fully known. Mirrors
+/// `checked_element_size`'s recursion (only `Array`/`Struct`/`Enum` consult an
+/// inner type; pointers/views/wrappers are fixed-size, so an unresolved inner
+/// there does not change the size, and not recursing avoids looping on a
+/// self-referential struct). Used to refuse `sizeof`-based array sizing on a type
+/// that did not fully resolve, instead of letting `element_size`'s `_ => 4`
+/// fallback silently guess a size. The match is exhaustive on purpose: a new
+/// `Type` variant must be classified here, not slip through a wildcard.
+#[must_use]
+pub fn type_has_unresolved(ty: &Type) -> bool {
+    match ty {
+        Type::Unresolved(_) | Type::Error(_) => true,
+        Type::Array(inner, _) | Type::Enum(_, inner, _) => type_has_unresolved(inner),
+        Type::Struct(_, _, fields) => fields.iter().any(|(_, ft)| type_has_unresolved(ft)),
+        Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::F16
+        | Type::F32
+        | Type::F64
+        | Type::B1
+        | Type::B8
+        | Type::Void
+        | Type::Null
+        | Type::Ptr(_)
+        | Type::ConstPtr(_)
+        | Type::Fn(..)
+        | Type::LinearView(..)
+        | Type::StridedView(..)
+        | Type::RingView(..)
+        | Type::BitView(_)
+        | Type::Exclusive(_)
+        | Type::Shared(..)
+        | Type::Mmio(_)
+        | Type::AgentShared(_)
+        | Type::Addr(_)
+        | Type::PeripheralHandle(_) => false,
+    }
+}
+
 #[must_use]
 pub fn align_of(ty: &Type) -> u32 {
     match ty.inner() {

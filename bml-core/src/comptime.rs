@@ -477,7 +477,9 @@ impl Interp<'_> {
                     return None;
                 }
                 let t = types::resolve_type_expr(ty, &self.symbols.structs, &self.symbols.enums);
-                if matches!(t, Type::Unresolved(_)) {
+                // Any unresolved component (e.g. `sizeof([Nonexistent; 4])`) would
+                // be mis-sized by `element_size`'s catch-all -- refuse it.
+                if types::type_has_unresolved(&t) {
                     return None;
                 }
                 Val::Scalar(ConstVal::Int(i128::from(types::element_size(&t))))
