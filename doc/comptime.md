@@ -320,7 +320,9 @@ Unrolling via comptime-param recursion:
   interpreter (empty `SymbolTable`, so `sizeof`/enum/`len` yield `None`; only
   literal/const/arithmetic functions fold). `constfold::const_int_values` calls it
   as an `.or_else` fallback when `consteval` can't fold a (call-bearing) `const`,
-  so a comptime function's scalar result enters the const map. The module const
+  so a comptime function's scalar result enters the const map. It is skipped for an
+  array-typed `const` (`eval_scalar` only yields a scalar, so it would build the
+  whole array and discard it -- `fold_const_calls` builds it for real). The module const
   map propagates into function scopes (`fold_block` clones it), so `[u8; N]` and
   `[0; N]` fold anywhere `N` is visible -- type position and repeat-init.
 - In scope: a comptime function bound to a **module `const`** sizing arrays /
