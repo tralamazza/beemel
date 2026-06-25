@@ -34,7 +34,7 @@ development history and test suite are public.}\\
 \small Independent\\
 \small \texttt{tralamazza@gmail.com}}
 
-\date{\textbf{Working draft} --- \today}
+\date{\today}
 
 \begin{document}
 \maketitle
@@ -110,9 +110,11 @@ extent, and volatility-by-provenance, each derived from placement and use rather
 than annotated.
 
 \item \textbf{An empirical, failure-driven evaluation}
-(\S\ref{sec:eval}): every check is traced to a concrete bug provoked on
-hardware, and the model is validated on three boards. We report the
-abstract-interpretation encodings that were required to discharge the DMA
+(\S\ref{sec:eval}): every check is traced to a concrete bug provoked on hardware;
+the checks are corroborated against independently-documented vendor hazards and
+third-party driver bugs the language was not co-designed with; the model is
+validated on three boards; and we report the cost (annotations and generated
+code) and the abstract-interpretation encodings required to discharge the DMA
 obligations in a non-relational domain.
 \end{itemize}
 
@@ -303,8 +305,8 @@ write. \emph{Reclaim} is an explicit \lstinline!reclaim(BUF)! that yields a
 bounds-checked view and is legal only once the channel's completion flag has been
 observed. The completion guard is checked by lexical containment: the
 \lstinline!reclaim! must sit within the guard span of an observation of the
-channel's own \texttt{completes\_by} flag (a conservative, non-flow-sensitive
-check) (Table~\ref{tab:target}). A plain view over
+channel's own \texttt{completes\_by} flag (Table~\ref{tab:target}) --- a
+conservative, non-flow-sensitive check. A plain view over
 move-typed memory, without the handshake, is rejected and the diagnostic points
 at \lstinline!reclaim!.
 
@@ -369,7 +371,7 @@ handoff      = MDMA.MDMA_C0SAR
 mem    = dma_pool
 agents = mdma           # CPU always implicit
 \end{lstlisting}
-\caption{A target-file fragment (Layer 1, physics). No key takes a raw address:
+\caption{A target-file fragment (the physics layer). No key takes a raw address:
 every register is an SVD path, so a stray literal fails at resolution rather than
 silently configuring hardware.}
 \label{tab:target}
@@ -473,7 +475,7 @@ Cacheable DMA buffer, D-cache on (STM32H7, SAME70) & AN4839~\cite{an4839}; Zephy
 \bottomrule
 \end{tabular}
 \caption{Independently-documented, multi-vendor DMA hazards, each reconstructed
-in BML and rejected by the compiler. One Layer-2 reach check (rows 1--3) catches
+in BML and rejected by the compiler. One region reach check (rows 1--3) catches
 the same bug class across three bus architectures; the cache check (row 4) both
 rejects the program and generates the vendor-prescribed fix. Reconstructions and
 verbatim compiler output are in the artifact.}
@@ -488,7 +490,7 @@ ingest. In every case the compiler rejects the program;
 Table~\ref{tab:hazards} summarizes, and the moved-to-reachable-memory
 counterpart of each builds clean.
 
-Two observations. First, a single check --- the Layer-2 reach test --- catches the
+Two observations. First, a single check --- the region reach test --- catches the
 same bug class (a buffer the engine cannot address) across three structurally
 different bus arrangements (ST's DTCM, ST's CCM, Nordic's flash exclusion): the
 agent/reach model's generality made concrete rather than asserted. Second, the
@@ -538,9 +540,7 @@ physical fault, moved from run time to compile time, with no copy.
 The pattern is the point: independent projects converged on BML's constraint and
 enforced it the only ways a library can --- a runtime check, a defensive copy, or
 a documented assertion --- where BML makes it a property the compiler checks once.
-The honest scope of \S\ref{sec:eval-catalog} carries over: these reconstruct the
-documented memory-sharing structure, not the upstream source, which BML cannot
-ingest.
+The honest scope of \S\ref{sec:eval-catalog} carries over here too.
 
 \subsection{Falsified both ways}
 \label{sec:eval-counterfactual}
@@ -556,8 +556,10 @@ and its fix were each reproduced on the board, not only in the IR.
 \label{sec:eval-boards}
 
 Three boards span the three DMA architectures of \S\ref{sec:agents}. These are
-existence proofs that the model is self-consistent and runs end to end; they do
-not, on their own, isolate the unification claim (\S\ref{sec:limits}).
+existence proofs that the model is self-consistent and runs end to end; on their
+own they do not isolate the \emph{value} of the unification over two separate
+mechanisms (\S\ref{sec:limits}) --- though the H723 bring-up below does exercise
+the full claim/reclaim composition of \S\ref{sec:ownership} on silicon.
 
 \paragraph{NUCLEO-H723ZG (Cortex-M7).} Ethernet transmit and receive with typed
 descriptors, D-cache \emph{enabled} under the generated MPU region. An MDMA copy
@@ -588,8 +590,8 @@ the shipped \texttt{stm32h723.target} is 51 lines of declared physics, reused by
 every H723 program --- and adds a small project policy (the H723 example: an
 \texttt{include} plus three \texttt{[region.*]} blocks). In source, the model's
 annotations
-(\texttt{owns}, \texttt{in}, \texttt{@shared}, \texttt{addr in}, \texttt{@extent})
-are a small fraction of the code: 26 of 701 lines (3.7\%) in the Ethernet driver,
+(\texttt{owns}, \texttt{in}, \texttt{@shared}, plus the descriptor-level
+\texttt{addr in} and \texttt{@extent}) are a small fraction of the code: 26 of 701 lines (3.7\%) in the Ethernet driver,
 and 4--10 lines in the smaller examples (the 51-line MDMA demo is denser at
 ${\sim}20\%$, being almost entirely DMA orchestration).
 
@@ -692,10 +694,12 @@ to DMA-controller registers; enforcement is at run time by the monitor, not a
 compile-time property of the program text.
 
 \paragraph{Safe-language operating systems.} Singularity~\cite{singularity} made
-device interfaces type-safe but explicitly placed DMA outside its safe model,
-identifying it as the one inherently unsafe part of the driver/device interface.
+device interfaces type-safe but excluded DMA from that safety: ``the only unsafe
+aspect of the driver-device interface is DMA,'' since a misbehaving driver ``can
+program a DMA-capable device to overwrite any part of memory.''
 Ivory and Tower~\cite{ivory} give a memory-safe embedded DSL whose ``regions''
-are allocation/effect regions in the Tofte--Talpin sense, not hardware-shared
+are allocation/effect regions in the Tofte--Talpin sense~\cite{toftetalpin}, not
+hardware-shared
 memory; Tock~\cite{tock} isolates untrusted capsules and processes with the MPU
 at run time. None unifies a CPU ceiling protocol with a DMA handshake.
 
@@ -777,7 +781,8 @@ and T.~Roscoe.
 \newblock Rust Embedded Working Group.
 \newblock \url{https://docs.rust-embedded.org/embedonomicon/dma.html}.
 
-\bibitem{pancake} Verifying device drivers with Pancake.
+\bibitem{pancake} J.~Zhao et al.
+\newblock Verifying device drivers with Pancake.
 \newblock arXiv:2501.08249, 2025.
 
 \bibitem{haglund2022} J.~Haglund and R.~Guanciale.
@@ -790,16 +795,20 @@ study.
 \newblock In \emph{Proc. EMSOFT}, pages 30--36, 2007.
 
 \bibitem{pistis2022} M.~Grisafi, M.~Ammar, M.~Roveri, and B.~Crispo.
-\newblock PISTIS: Trusted computing for low-end embedded systems.
-\newblock In \emph{Proc. USENIX Security Symposium}, 2022.
+\newblock PISTIS: Trusted computing architecture for low-end embedded systems.
+\newblock In \emph{Proc. USENIX Security Symposium}, pages 3843--3860, 2022.
 
-\bibitem{singularity} G.~Hunt and J.~Larus.
-\newblock Singularity: Rethinking the software stack.
-\newblock \emph{ACM SIGOPS Operating Systems Review}, 41(2), 2007.
+\bibitem{singularity} G.~Hunt et al.
+\newblock An overview of the Singularity project.
+\newblock Microsoft Research Technical Report MSR-TR-2005-135, 2005.
 
 \bibitem{ivory} P.~C. Hickey, L.~Pike, T.~Elliott, J.~Bielman, and J.~Launchbury.
 \newblock Building embedded systems with embedded DSLs.
 \newblock In \emph{Proc. ICFP}, 2014.
+
+\bibitem{toftetalpin} M.~Tofte and J.-P. Talpin.
+\newblock Region-based memory management.
+\newblock \emph{Information and Computation}, 132(2):109--176, 1997.
 
 \bibitem{tock} A.~Levy, B.~Campbell, B.~Ghena, et al.
 \newblock Multiprogramming a 64\,kB computer safely and efficiently.
