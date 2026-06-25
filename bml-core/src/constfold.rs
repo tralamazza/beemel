@@ -86,16 +86,17 @@ fn const_int_values(
         for item in items {
             if let Item::ConstDef(c) = item
                 && !map.contains_key(&c.name.0)
-                && let Some(v) = fold_const_int(&c.value, &map, &array_lens, symbols).or_else(|| {
-                    // Skip the comptime interpreter for an array-typed const: it
-                    // can only yield a scalar, so for an array-returning builder it
-                    // would construct the whole array and then discard it
-                    // (`fold_const_calls` builds it for real). Scalar-typed consts
-                    // -- the ones usable as a length -- still fold here.
-                    (!matches!(c.ty, TypeExpr::Array(..)))
-                        .then(|| crate::comptime::eval_scalar(&c.value, fns, &map))
-                        .flatten()
-                })
+                && let Some(v) =
+                    fold_const_int(&c.value, &map, &array_lens, symbols).or_else(|| {
+                        // Skip the comptime interpreter for an array-typed const: it
+                        // can only yield a scalar, so for an array-returning builder it
+                        // would construct the whole array and then discard it
+                        // (`fold_const_calls` builds it for real). Scalar-typed consts
+                        // -- the ones usable as a length -- still fold here.
+                        (!matches!(c.ty, TypeExpr::Array(..)))
+                            .then(|| crate::comptime::eval_scalar(&c.value, fns, &map))
+                            .flatten()
+                    })
             {
                 map.insert(c.name.0.clone(), v);
                 changed = true;
