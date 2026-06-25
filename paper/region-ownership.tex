@@ -447,11 +447,12 @@ by the analyzer.
 \label{sec:eval}
 
 We offer three kinds of evidence: that BML's checks reject hazards
-\emph{independently documented} for chips it was not co-designed with
-(\S\ref{sec:eval-catalog}); a controlled counterfactual reproduced on hardware
+\emph{independently documented} for chips (\S\ref{sec:eval-catalog}) and
+\emph{third-party drivers} (\S\ref{sec:eval-thirdparty}) it was not co-designed
+with; a controlled counterfactual reproduced on hardware
 (\S\ref{sec:eval-counterfactual}); and end-to-end bring-ups on three boards
-(\S\ref{sec:eval-boards}). The first directly addresses the central threat to an
-experience paper --- that the checks were exercised only on the programs they
+(\S\ref{sec:eval-boards}). The first two directly address the central threat to
+an experience paper --- that the checks were exercised only on the programs they
 were built against.
 
 \subsection{Documented hazards caught at compile time}
@@ -504,6 +505,40 @@ also does not capture every subtlety --- the Cortex-M7 write-through-cache errat
 and speculative-read concerns of AN4839~\cite{an4839} are outside it. The claim is
 narrower and concrete: the common, high-frequency form of each hazard becomes a
 compile error.
+
+\subsection{Third-party drivers: the same constraint, by hand}
+\label{sec:eval-thirdparty}
+
+The catalog cites vendor application notes; the same hazards recur in
+\emph{third-party} drivers BML never saw, where named maintainers hit them and
+added a guard --- weaker and later than a compile error. Two cases, each
+reconstructed in BML and anchored to the project's own issue:
+
+\paragraph{\texttt{stm32-rs/stm32-eth} (Rust), issue \#16~\cite{stm32eth}.} The
+driver's maintainers documented that descriptors and buffers in a
+D-cache-enabled region ``would need cleaning \ldots and invalidating,'' and
+proposed to \emph{require} that they not be placed in such a region.
+Reconstructing a cacheable TX descriptor ring handed to the ETH DMA, BML rejects
+it at target load (\emph{``region \texttt{eth\_ring} \ldots cache views
+diverge''}) and, with \texttt{cacheable = false}, generates the non-cacheable
+MPU region that otherwise has to be arranged by hand (a dedicated linker section
+plus a compile-time placement assertion --- the standard defensive pattern).
+
+\paragraph{\texttt{nrf-rs/nrf-hal} and embassy (Rust), issue \#37~\cite{nrfhal}.}
+``EasyDMA doesn't read from Flash'': a flash-resident \texttt{\&'static} buffer
+handed to a UARTE transmit failed \emph{silently}. The fix was a \emph{run-time}
+check returning \texttt{BufferNotInRAM} (embassy additionally offers a variant
+that copies the data into a RAM scratch buffer). Reconstructing the same
+delivery, BML rejects it at target load (\emph{``region \texttt{tx\_buf} in mem
+\texttt{flash} \ldots agent \texttt{easydma} cannot reach''}) --- the same
+physical fault, moved from run time to compile time, with no copy.
+
+The pattern is the point: independent projects converged on BML's constraint and
+enforced it the only ways a library can --- a runtime check, a defensive copy, or
+a documented assertion --- where BML makes it a property the compiler checks once.
+The honest scope of \S\ref{sec:eval-catalog} carries over: these reconstruct the
+documented memory-sharing structure, not the upstream source, which BML cannot
+ingest.
 
 \subsection{Falsified both ways}
 \label{sec:eval-counterfactual}
@@ -770,6 +805,14 @@ access the Flash'').
 \bibitem{zephyrdma} Zephyr Project.
 \newblock DMA and data cache coherency on Arm M7 devices.
 \newblock GitHub issue zephyrproject-rtos/zephyr \#36471.
+
+\bibitem{stm32eth} stm32-rs/stm32-eth.
+\newblock Document possible problems when placing buffers on a cacheable region.
+\newblock GitHub issue stm32-rs/stm32-eth \#16.
+
+\bibitem{nrfhal} nrf-rs/nrf-hal.
+\newblock EasyDMA doesn't read from Flash.
+\newblock GitHub issue nrf-rs/nrf-hal \#37.
 
 \end{thebibliography}
 

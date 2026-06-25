@@ -22,6 +22,20 @@ For the cache case, adding `cacheable = false` to the shared block makes the
 build succeed AND emit a non-cacheable MPU region in the generated reset handler
 (PMSAv7 RNR/RBAR/RASR stores into 0xE000EDxx).
 
+## Third-party drivers (Evaluation section, S7.2)
+
+Reconstructions anchored to named third-party driver issues (drivers BML never
+saw), each rejected by the compiler:
+
+    bml build --target stm32eth_issue16.target stm32eth_issue16.bml
+    # stm32-rs/stm32-eth #16: cacheable ETH descriptor ring -> "cache views diverge"
+    # (their fix: documented placement requirement + linker section)
+
+    bml build --target nrf_flash.target nrf_flash.bml
+    # nrf-rs/nrf-hal #37: EasyDMA/UARTE TX buffer in flash -> reach reject
+    # (their fix: a run-time BufferNotInRAM check, or a copy into RAM)
+
 Sources for each hazard are cited in the paper (AN4839, the Nordic EasyDMA
 product spec, Zephyr issue #36471, NuttX CONFIG_STM32_CCMEXCLUDE, embassy's
-BufferNotInRAM, and the ST community threads).
+BufferNotInRAM, the stm32-eth #16 and nrf-hal #37 issues, and ST community
+threads).

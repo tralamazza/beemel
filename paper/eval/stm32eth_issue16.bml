@@ -1,0 +1,14 @@
+peripheral Eth at 0x40028000 {
+    reg DMATDLAR offset 0x20 { field TDLA: u32 bit[0..31] }
+}
+struct TxDesc @repr(packed) {
+    stat: u32,
+    ctrl: u32,
+    buf:  u32,
+    next: u32,
+}
+var TX_DESC: [TxDesc; 4] in eth_ring;
+owns Eth;
+fn main() @context(thread) {
+    Eth.DMATDLAR = &TX_DESC as u32;   // hand the ring to the ETH DMA
+}
