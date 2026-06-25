@@ -123,6 +123,9 @@ editor support).
 - [Tutorials](doc/tutorials)
 - [Language specification](doc/language.md)
 - [Regions and agents](doc/regions-agents.md) — memory model, DMA, multi-core
+- [Paper: Region Ownership](paper/region-ownership.pdf) — working-draft experience
+  paper on unifying the CPU priority-ceiling protocol with DMA handshakes (source
+  in [paper/](paper))
 - [Target library](lib/README.md) — shipped chip targets and peripherals, and how `bml` finds them
 - [Verification](doc/verify.md)
 - [C interop](doc/c-interop.md), [STM32/CMSIS workflow](doc/stm32-cmsis.md),

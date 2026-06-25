@@ -460,14 +460,15 @@ were built against.
 
 \begin{table*}[t]
 \centering\footnotesize
-\begin{tabular}{@{}p{3.0cm}p{2.7cm}p{3.4cm}p{5.9cm}@{}}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{}p{3.1cm}p{2.7cm}p{3.1cm}p{5.9cm}@{}}
 \toprule
-Documented hazard (chip) & Attested by & Caught today by & BML, at compile time \\
+\textbf{Documented hazard (chip)} & \textbf{Attested by} & \textbf{Caught today by} & \textbf{BML, at compile time} \\
 \midrule
-DMA buffer in DTCM (STM32H7) & AN4839~\cite{an4839}; ST community & nothing: board silently never transmits & rejected at target load: \emph{``region in mem \texttt{dtcm}, which agent \texttt{eth} cannot reach''} \\
-DMA buffer in CCM RAM (STM32F4) & ST community; NuttX \texttt{CCMEXCLUDE} & runtime AHB / hard fault & rejected: \emph{``mem \texttt{ccm} \ldots agent \texttt{dma2} cannot reach''} \\
-EasyDMA buffer in flash (nRF52) & Nordic spec~\cite{easydma}; \texttt{nrf-hal} \#37 & hard fault or silent; embassy's run-time \texttt{BufferNotInRAM} & rejected: \emph{``mem \texttt{flash} \ldots agent \texttt{easydma} cannot reach''} \\
-Cacheable DMA buffer, D-cache on (STM32H7, SAME70) & AN4839~\cite{an4839}; Zephyr \#36471~\cite{zephyrdma} & silent corruption (``works with cache off'') & rejected: \emph{``cache views diverge''}; the fix \texttt{cacheable=false} auto-generates the non-cacheable MPU region \\
+DMA buffer in DTCM (STM32H7) & AN4839~\cite{an4839}; ST community & nothing --- the board silently never transmits & rejected: \emph{``\ldots mem \texttt{dtcm} \ldots agent \texttt{eth} cannot reach''} \\[6pt]
+DMA buffer in CCM RAM (STM32F4) & ST community; NuttX \texttt{CCMEXCLUDE} & runtime AHB / hard fault & rejected: \emph{``\ldots mem \texttt{ccm} \ldots agent \texttt{dma2} cannot reach''} \\[6pt]
+EasyDMA buffer in flash (nRF52) & Nordic spec~\cite{easydma}; \texttt{nrf-hal}~\#37 & hard fault or silent; embassy's run-time \texttt{BufferNotInRAM} & rejected: \emph{``\ldots mem \texttt{flash} \ldots agent \texttt{easydma} cannot reach''} \\[6pt]
+Cacheable DMA buffer, D-cache on (STM32H7, SAME70) & AN4839~\cite{an4839}; Zephyr~\#36471~\cite{zephyrdma} & silent corruption (``works with cache off'') & rejected: \emph{``\ldots cache views diverge''}; \texttt{cacheable=false} then generates the non-cacheable MPU region \\
 \bottomrule
 \end{tabular}
 \caption{Independently-documented, multi-vendor DMA hazards, each reconstructed
