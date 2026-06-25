@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use beemel or BML, please cite the paper below."
+title: beemel
+abstract: >-
+  Compiler for BML, a language for whole-system memory correctness on bare-metal
+  ARM Cortex-M firmware.
+type: software
+authors:
+  - family-names: Tralamazza
+    given-names: Daniel
+repository-code: "https://github.com/tralamazza/beemel"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "Region Ownership: Unifying the Priority-Ceiling Protocol and DMA Handshakes in a Bare-Metal Language"
+  authors:
+    - family-names: Tralamazza
+      given-names: Daniel
+  year: 2026
+  month: 6
+  publisher:
+    name: Zenodo
+  doi: "10.5281/zenodo.20878733"
+  url: "https://doi.org/10.5281/zenodo.20878733"

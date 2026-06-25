@@ -3,6 +3,8 @@
 `beemel` is the compiler for **BML**, a language for bare-metal ARM Cortex-M
 firmware.
 
+[![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20878733.svg)](https://doi.org/10.5281/zenodo.20878733)
+
 > **Status: alpha; exploratory.** Syntax, semantics, and the CLI change without
 > notice. There is no stability guarantee, and the implementation has not been
 > audited. Not intended for production use.
@@ -123,9 +125,9 @@ editor support).
 - [Tutorials](doc/tutorials)
 - [Language specification](doc/language.md)
 - [Regions and agents](doc/regions-agents.md) — memory model, DMA, multi-core
-- [Paper: Region Ownership](paper/region-ownership.pdf) — working-draft experience
-  paper on unifying the CPU priority-ceiling protocol with DMA handshakes (source
-  in [paper/](paper))
+- [Paper: Region Ownership](paper/region-ownership.pdf) — preprint on unifying the
+  CPU priority-ceiling protocol with DMA handshakes
+  ([DOI](https://doi.org/10.5281/zenodo.20878733), source in [paper/](paper))
 - [Target library](lib/README.md) — shipped chip targets and peripherals, and how `bml` finds them
 - [Verification](doc/verify.md)
 - [C interop](doc/c-interop.md), [STM32/CMSIS workflow](doc/stm32-cmsis.md),
