@@ -1,0 +1,9 @@
+// `sizeof` of an unresolved (typo'd) type used as a VALUE must be rejected, not
+// silently folded to a guessed size. The checker's `sizeof` env refuses an
+// unresolved type (`type_has_unresolved`), so the const is not a compile-time
+// constant -> E343. (Companion to the array-length case, which is E414.)
+const N: u32 = sizeof([Nonexistent; 4]);
+
+fn main() @context(thread) {
+    var x: u32 = N;
+}

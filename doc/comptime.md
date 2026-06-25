@@ -363,6 +363,16 @@ Unrolling via comptime-param recursion:
   function), and any `const`-bound comptime value. Still rejected (E414): a
   comptime *function* called directly in a length (`[u8; f()]` -- bind to a
   `const`), a runtime `var`, a `comptime` parameter.
+- Independent review caught a silent miscompile (the T1 class, again): `sizeof` of
+  a type with an unresolved component (`sizeof([Nonexistent; 4])`) slipped past the
+  TOP-LEVEL `Unresolved` guard into `element_size`'s `_ => 4` catch-all -> a guessed
+  size (16) that silently sized an array. Fix: `types::type_has_unresolved`, a
+  recursive, EXHAUSTIVE classifier (no wildcard; mirrors `element_size`'s
+  recursion; does not recurse into pointers, so it is safe on self-referential
+  structs). All four `sizeof` sites (constfold, the comptime interpreter, the
+  checker's and the IR's `consteval` env) now refuse an unresolved type -> E414 as
+  a length / E343 as a value, never a guessed size. Tests:
+  `sizeof_unresolved_size_error.bml` (E414), `sizeof_unresolved_value_error.bml` (E343).
 - Tests: `sizeof_array_len_ok.bml` (IR: direct + named-const + module `var` +
   local), `exec/sizeof_array_len.bml` (QEMU round-trip), `comptime_fn_sizeof_size_ok.bml`.
 

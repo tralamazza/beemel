@@ -6489,7 +6489,9 @@ impl consteval::Env for IrConstEnv<'_> {
     }
     fn sizeof(&self, ty: &ast::TypeExpr) -> Option<i128> {
         let t = crate::types::resolve_type_expr(ty, &self.symbols.structs, &self.symbols.enums);
-        if matches!(t, Type::Unresolved(_)) {
+        // Refuse a type with any unresolved component (a typo inside `sizeof`)
+        // rather than let `element_size`'s catch-all guess a size.
+        if crate::types::type_has_unresolved(&t) {
             return None;
         }
         Some(i128::from(crate::types::element_size(&t)))

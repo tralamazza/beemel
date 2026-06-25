@@ -698,6 +698,13 @@ assert_error!(
     "sizeof_unresolved_size_error.bml",
     "E414"
 );
+// The same, but `sizeof` of an unresolved type used as a VALUE: rejected as not a
+// compile-time constant (E343) instead of silently folding a guessed size.
+assert_error!(
+    test_sizeof_unresolved_value,
+    "sizeof_unresolved_value_error.bml",
+    "E343"
+);
 
 // T2: a comptime function using `sizeof([Foo; 4])` to size an array now works --
 // folded with the real symbol table to 32 (4 * 8). Also the T1-miscompile
