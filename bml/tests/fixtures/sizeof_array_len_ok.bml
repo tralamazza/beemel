@@ -1,0 +1,20 @@
+// T2: `sizeof` sizes an array, in both the direct form (`[u8; sizeof(Foo)]`) and
+// the named-const form (`const SZ = sizeof(Foo); [u8; SZ]`). The post-resolution
+// length-fold pass evaluates `sizeof` (8 here) and rewrites the lengths to
+// literals, so both fold to `[8 x i8]`. A local and a module `var` are sized too.
+struct Foo @repr(C) {
+    a: u32,
+    b: u32,
+}
+
+const SZ: u32 = sizeof(Foo);
+const NAMED: [u8; SZ] = [0u8; SZ];
+const DIRECT: [u8; sizeof(Foo)] = [0u8; sizeof(Foo)];
+var GLOBAL: [u8; sizeof(Foo)] = [0u8; sizeof(Foo)];
+
+export fn main() @context(thread) {
+    var local: [u8; sizeof(Foo)] = [0u8; sizeof(Foo)];
+    var a: u8 = NAMED[7];
+    var b: u8 = DIRECT[7];
+    GLOBAL[7] = local[7];
+}

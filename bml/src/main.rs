@@ -459,6 +459,11 @@ fn check_file(path: &Path, stack_analysis: bool, lib_roots: &[PathBuf]) {
     // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
     // checker and codegen see plain constants.
     bml_core::comptime::fold_const_calls(&mut program, &symbols);
+    // T2: a second array-length fold, now WITH the symbol table, so a `sizeof`
+    // (or `sizeof`-valued `const`) can size an array -- `resolve_type_expr` only
+    // reads literal lengths, and `sizeof` was not computable in the pre-resolution
+    // first pass. Folds to literals before the checker validates lengths (E414).
+    bml_core::constfold::fold_array_lengths(&mut program, Some(&symbols));
     Checker::check(&program, &symbols, &mut diags);
 
     if diags.has_errors() {
@@ -625,6 +630,11 @@ fn build_file(
     // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
     // checker and codegen see plain constants.
     bml_core::comptime::fold_const_calls(&mut program, &symbols);
+    // T2: a second array-length fold, now WITH the symbol table, so a `sizeof`
+    // (or `sizeof`-valued `const`) can size an array -- `resolve_type_expr` only
+    // reads literal lengths, and `sizeof` was not computable in the pre-resolution
+    // first pass. Folds to literals before the checker validates lengths (E414).
+    bml_core::constfold::fold_array_lengths(&mut program, Some(&symbols));
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);
@@ -917,6 +927,11 @@ fn verify_file(
     // Phase 4: fold `const X = f(...)` (comptime function calls) to literals so the
     // checker and codegen see plain constants.
     bml_core::comptime::fold_const_calls(&mut program, &symbols);
+    // T2: a second array-length fold, now WITH the symbol table, so a `sizeof`
+    // (or `sizeof`-valued `const`) can size an array -- `resolve_type_expr` only
+    // reads literal lengths, and `sizeof` was not computable in the pre-resolution
+    // first pass. Folds to literals before the checker validates lengths (E414).
+    bml_core::constfold::fold_array_lengths(&mut program, Some(&symbols));
     Checker::check(&program, &symbols, &mut diags);
     if diags.has_errors() {
         diags.emit(&source_map);

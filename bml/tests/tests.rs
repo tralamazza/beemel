@@ -671,14 +671,41 @@ fn test_comptime_fn_array_len_folds() {
         "the comptime-computed const must size the local array too\n--- IR ---\n{ir}"
     );
 }
-// T1 review regression: a comptime function using `sizeof` of a composite cannot
-// size an array (pre-resolution the layout is unknown, so it would mis-size --
-// rejected with E414, not silently under-sized).
-assert_error!(
-    test_comptime_fn_sizeof_size,
-    "comptime_fn_sizeof_size_error.bml",
-    "E414"
-);
+// T2: `sizeof` sizes arrays -- direct `[u8; sizeof(Foo)]` and named-const
+// `const SZ = sizeof(Foo); [u8; SZ]` both fold to `[8 x i8]` (Foo is 8 bytes),
+// for module consts, a module `var`, and a local.
+#[test]
+fn test_sizeof_array_len_folds() {
+    let ir = bml_ir("sizeof_array_len_ok.bml");
+    for g in ["@NAMED = constant [8 x i8]", "@DIRECT = constant [8 x i8]"] {
+        assert!(ir.contains(g), "expected `{g}`\n--- IR ---\n{ir}");
+    }
+    assert!(
+        ir.contains("@GLOBAL = global [8 x i8]"),
+        "a module `var` sized by sizeof must reserve 8 bytes\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("alloca [8 x i8]"),
+        "a local sized by sizeof must allocate 8 bytes\n--- IR ---\n{ir}"
+    );
+}
+
+// T2: a comptime function using `sizeof([Foo; 4])` to size an array now works --
+// folded with the real symbol table to 32 (4 * 8). Also the T1-miscompile
+// regression: if the pre-resolution `sizeof` gate broke, the array would be
+// `[16 x i8]` (under-sized) while `@N` is 32. Assert the correct 32.
+#[test]
+fn test_comptime_fn_sizeof_size() {
+    let ir = bml_ir("comptime_fn_sizeof_size_ok.bml");
+    assert!(
+        ir.contains("@N = constant i32 32"),
+        "sizeof([Foo;4]) must fold to 32\n--- IR ---\n{ir}"
+    );
+    assert!(
+        ir.contains("@A = constant [32 x i8]"),
+        "the array must be sized 32 (not the pre-resolution mis-size 16)\n--- IR ---\n{ir}"
+    );
+}
 
 // Phase 4 regression: a NEGATIVE comptime result folds into a signed const as
 // `-(magnitude)`, not the u64 two's-complement bit pattern (which would default

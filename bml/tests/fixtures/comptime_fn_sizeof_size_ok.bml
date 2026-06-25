@@ -1,0 +1,25 @@
+// T2: a comptime function that uses `sizeof` to compute a size CAN size an array.
+// `fold_const_calls` evaluates `elems()` with the real symbol table, so
+// `sizeof([Foo; 4])` = 4 * 8 = 32 (correct), and the post-resolution length-fold
+// pass uses that value to size `[u8; N]` to 32.
+//
+// It is also the T1-miscompile regression: the PRE-resolution interpreter
+// (`eval_scalar`) gates `sizeof` off, so the first fold cannot bake the wrong 16
+// (`element_size`'s catch-all charges 4 bytes per unresolved component). If that
+// gate regressed, `@A` would be `[16 x i8]` while `@N` is 32 -- an under-sized
+// array. Asserting the array is `[32 x i8]` catches the regression.
+struct Foo @repr(C) {
+    a: u32,
+    b: u32,
+}
+
+fn elems() -> u32 {
+    return sizeof([Foo; 4]);
+}
+
+const N: u32 = elems();
+const A: [u8; N] = [0u8; N];
+
+export fn main() @context(thread) {
+    var x: u8 = A[0];
+}

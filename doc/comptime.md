@@ -16,11 +16,12 @@ review hardened it (signed-result fold, recursion-depth cap, LSP parity). Phase 
 slice 2a adds the `[value; count]` repeat-init array literal (the prerequisite for
 loop-built tables) and slice 2b extends the comptime interpreter to ARRAY values
 so a function can build and return a table (`const CRC = build_crc();`). Slice 3
-(T1) lets a comptime function bound to a module `const` size arrays. 640
-integration + 61 exec + 84 core green; clippy + fmt clean. Phase 4 is COMPLETE
-(comptime functions return scalars and arrays, and can size arrays via a module
-`const`); the remaining backlog is the "Out of scope" list plus T2 (plain
-`sizeof` lengths). Scope = the minimal orthogonal core
+(T1) lets a comptime function bound to a `const` size arrays; slice 4 (T2) adds a
+post-resolution length-fold so `sizeof` sizes arrays too (direct or via a
+`const`). 642 integration + 62 exec + 84 core green; clippy + fmt clean. Phase 4
+is COMPLETE (comptime functions return scalars and arrays, and comptime values /
+`sizeof` can size arrays); the remaining backlog is the "Out of scope" list only.
+Scope = the minimal orthogonal core
 (rungs 1-3, value-level); `comptime T: type` (rung 4), `inline for`, comptime struct fields, and the
 `comptime assert` rename are OUT OF SCOPE -- decided against (see end).
 
@@ -333,11 +334,37 @@ Unrolling via comptime-param recursion:
   returned 16 instead of 32 -- an UNDER-sized array (`const N = 32` but `[u8; 16]`).
   Fix: an `Interp.sizeof_ok` flag, false in `eval_scalar`, so the pre-resolution
   interpreter never evaluates `sizeof` (it cannot be trusted with an empty symbol
-  table). The sizing is rejected (E414/E348) instead -- consistent with the
-  documented boundary. Test: `comptime_fn_sizeof_size_error.bml`.
+  table). The pre-resolution fold is skipped; the post-resolution pass (Slice 4)
+  then sizes it correctly (32, with real layouts). Test:
+  `comptime_fn_sizeof_size_ok.bml` (asserts `[32 x i8]`, catching a regression to
+  the `16` mis-size).
 - Tests: `comptime_fn_array_len_ok.bml` (IR: `round_up(40,16)` sizes `[48 x i8]` +
   local `[48 x i32]`), `exec/comptime_fn_array_len.bml` (QEMU: const + loop-filled
   local round-trip).
+
+#### Slice 4 -- `sizeof` (and comptime-fn-with-sizeof) can size arrays (T2) -- DONE
+
+- `resolve_type_expr` reads only a literal array length, and `constfold` runs
+  pre-resolution where `sizeof` has no struct/enum layouts -- so `[u8; sizeof(Foo)]`
+  and `const N = sizeof(Foo); [u8; N]` both resolved to length 0 (E414). The same
+  ordering gap as T1, but for `sizeof`.
+- Fix: `fold_array_lengths` now takes `symbols: Option<&SymbolTable>` and runs
+  TWICE -- the existing pre-resolution call (`None`, unchanged) plus a new
+  post-resolution call (`Some`, after `fold_const_calls`). `FoldEnv::sizeof`
+  evaluates `sizeof` via `resolve_type_expr` + `element_size` when symbols are
+  present (real layouts, so composites like `sizeof([Foo; 4])` are correct -- the
+  T1 nested-`Unresolved` hazard does not apply post-resolution). The second pass
+  rewrites the lengths to literals, so the checker's E414 naturally fires only for
+  genuinely non-constant lengths (no checker change). No re-resolve is needed: the
+  checker and IR re-resolve types from the rewritten AST (verified: globals,
+  locals, struct fields, fn params/returns, nested + forward-ref structs, and a
+  QEMU round-trip all size correctly).
+- In scope: `sizeof` in any form (direct, module/local `const`, inside a comptime
+  function), and any `const`-bound comptime value. Still rejected (E414): a
+  comptime *function* called directly in a length (`[u8; f()]` -- bind to a
+  `const`), a runtime `var`, a `comptime` parameter.
+- Tests: `sizeof_array_len_ok.bml` (IR: direct + named-const + module `var` +
+  local), `exec/sizeof_array_len.bml` (QEMU round-trip), `comptime_fn_sizeof_size_ok.bml`.
 
 ## Verification
 

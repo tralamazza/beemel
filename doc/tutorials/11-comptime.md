@@ -134,21 +134,24 @@ code. The same `crc_table` below works both ways. This is BML's "usage dictates
 declaration" principle -- the call site decides, so a function is never split into
 a comptime copy and a runtime copy.
 
-A comptime function's result can also **size an array**, as long as it is bound to
-a module `const` first:
+Comptime values can also **size an array**. `sizeof` sizes one directly, and a
+comptime function does too when bound to a `const`:
 
 ```bml
+struct Header @repr(C) { kind: u32, len: u32 }     // 8 bytes
+var frame: [u8; sizeof(Header)] = [0u8; sizeof(Header)];   // sizeof sizes it directly
+
 fn round_up(n: u32, to: u32) -> u32 { return ((n + to - 1) / to) * to; }
 const BUFSZ: u32 = round_up(40, 16);          // 48, computed at build time
-const SCRATCH: [u8; BUFSZ] = [0u8; BUFSZ];    // sizes the array and the repeat-init
+const SCRATCH: [u8; BUFSZ] = [0u8; BUFSZ];    // a comptime function sizes it via a const
 ```
 
-The `const` is folded before array sizes are resolved, so `BUFSZ` is a plain `48`
-by the time `[u8; BUFSZ]` is laid out. What is *not* (yet) supported: a call
-written directly in the length (`[u8; round_up(40,16)]`), the same via a
-function-*local* `const`, or a comptime function that needs `sizeof`/`len` to
-compute the size -- those resolve too early or lack a symbol table, and report
-`E414`/`E348`. Bind the size to a module `const`.
+Array sizes are folded to literals before layout: once before type resolution
+(for literal / `const` / comptime-function lengths) and once after (so `sizeof`,
+which needs struct layouts, is known). The one thing *not* supported is a comptime
+*function* called directly in the length (`[u8; round_up(40,16)]`) -- bind it to a
+`const` first. A genuinely non-constant length (a runtime `var`, a `comptime`
+parameter) is `E414`.
 
 ```bml
 fn crc_table() -> [u8; 4] {

@@ -1,0 +1,31 @@
+// T2 (QEMU): `sizeof` sizes a buffer; the compiler computes the size (12 here)
+// and the runtime fills and reads back the buffer, confirming the storage really
+// is `sizeof(Pkt)` bytes (a stale-size bug would mis-allocate or mis-bound it).
+import harness.semihost;
+
+struct Pkt @repr(C) {
+    hdr: u32,
+    len: u32,
+    crc: u32,
+} // 12 bytes
+
+const SZ: u32 = sizeof(Pkt);
+
+fn main() @context(thread) {
+    semihost.expect_u32(SZ, 12);
+
+    // direct sizeof length on a local, filled over the whole range and read back
+    var buf: [u8; sizeof(Pkt)] = [0u8; sizeof(Pkt)];
+    for i: u32 in 0 upto sizeof(Pkt) {
+        buf[i] = (i + 1) as u8;
+    }
+    semihost.expect_u32(buf[0] as u32, 1);
+    semihost.expect_u32(buf[11] as u32, 12); // last byte of a 12-byte buffer
+
+    // named-const sizeof length
+    var b2: [u8; SZ] = [0u8; SZ];
+    b2[SZ - 1] = 99u8;
+    semihost.expect_u32(b2[11] as u32, 99);
+
+    semihost.done();
+}

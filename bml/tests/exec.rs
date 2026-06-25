@@ -295,6 +295,10 @@ assert_exec!(exec_comptime_table, "comptime_table.bml");
 // sizes a constant array and a loop-filled local, read back at runtime.
 assert_exec!(exec_comptime_fn_array_len, "comptime_fn_array_len.bml");
 
+// `sizeof` sizes a buffer (T2): the compiler computes `sizeof(Pkt)`=12 and the
+// runtime fills + reads back the whole buffer, confirming the storage size.
+assert_exec!(exec_sizeof_array_len, "sizeof_array_len.bml");
+
 // ─── struct semantics (language.md §6) ───────────────────────────────────────
 assert_exec!(exec_structs, "structs.bml");
 

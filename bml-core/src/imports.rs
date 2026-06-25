@@ -69,7 +69,9 @@ impl ImportResolver {
         let mut program = self.resolve_imports(root_program, &parent_dir, "");
         // With all modules flattened in, fold const-valued array lengths
         // (e.g. `[u8; N]`) into literals so type resolution sees a concrete size.
-        crate::constfold::fold_array_lengths(&mut program);
+        // `None`: pre-resolution, so `sizeof` lengths are deferred to the second
+        // pass the driver runs after resolution.
+        crate::constfold::fold_array_lengths(&mut program, None);
         // Materialize `peripheral_type` instances now that every module is
         // merged -- a template may be declared in one file and instantiated in
         // another. After this the program holds only ordinary `PeripheralDef`s.
