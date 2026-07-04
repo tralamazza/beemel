@@ -43,7 +43,7 @@ later withdrawn), so this step is deliberately manual.
 
 ## Build status
 
-`region-ownership.pdf` builds clean with Tectonic (6 pages, two-column). Only a
+`region-ownership.pdf` builds clean with Tectonic (9 pages, two-column). Only a
 cosmetic underfull-hbox warning, no errors.
 
 ## Open decisions before submitting

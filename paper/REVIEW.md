@@ -82,5 +82,5 @@ plausible but skews more formal. arXiv now.
 
 ## Build status
 
-`region-ownership.pdf` rebuilds clean with Tectonic (8 pages, two-column; only
+`region-ownership.pdf` rebuilds clean with Tectonic (9 pages, two-column; only
 cosmetic hbox warnings, no errors; no undefined references; 22 bib entries).

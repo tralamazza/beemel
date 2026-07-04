@@ -943,6 +943,14 @@ var back: State = raw as State;
   even if they share the same discriminants
 - Variant names are scoped to their enum; conflicts with other namespaces
   are caught as E200 (duplicate name)
+- Match exhaustiveness (E325) is checked over the *declared* variants only. An
+  `as` cast (`raw as State`) or a hardware register read can put an
+  **undeclared** discriminant into an enum value; a wildcard-free `match` that
+  covers every named variant does **not** handle such a value -- it takes the
+  default path (a no-op for the statement form, the value type's zero for the
+  expression form). If a scrutinee may hold an out-of-range discriminant (any
+  value that came through an `as` cast or MMIO), add a `_` arm to handle it
+  explicitly.
 
 ### LLVM lowering
 
