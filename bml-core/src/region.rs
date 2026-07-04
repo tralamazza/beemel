@@ -2910,6 +2910,25 @@ fn collect_addr_fields(ty: &Type, prefix: String, out: &mut Vec<(String, String)
 use crate::ast;
 use std::collections::HashSet as TaintSet;
 
+/// Per-function agent-pointer taint. Two colours are tracked because they have
+/// different consequences:
+///
+/// - `ptrs`: locals holding an agent *pointer*. Accesses through them lower
+///   `volatile` and E620 forbids them escaping the deriving function.
+/// - `addr_ints`: locals holding an *integer* that carries an agent-static
+///   address (`&X as u32`, propagated through integer `+`/`-`). An integer is
+///   never dereferenced and is the handoff-delivery currency (written to a
+///   register, returned, passed), so it must NOT trigger `volatile` or E620 on
+///   its own. But casting it back to a pointer (`as *T`) reconstructs an agent
+///   pointer -- previously this laundered the taint away (a documented hole:
+///   an OWN-bit spin through such a pointer was hoisted into an infinite loop).
+///   We re-taint at that cast so the reconstructed pointer is covered again.
+#[derive(Default)]
+pub struct AgentTaint {
+    pub ptrs: TaintSet<String>,
+    pub addr_ints: TaintSet<String>,
+}
+
 /// True when the static's type carries `AgentShared` in its storage wrapping.
 #[must_use]
 pub fn static_is_agent_shared(name: &str, symbols: &SymbolTable) -> bool {
@@ -2927,34 +2946,84 @@ pub fn static_is_agent_shared(name: &str, symbols: &SymbolTable) -> bool {
     symbols.statics.get(name).is_some_and(|s| ty_has(&s.ty))
 }
 
-/// Classifier: does this expression evaluate to an agent pointer? Either a
-/// tainted local, or a (possibly cast-wrapped) address-of of an agent-shared
-/// static (including `&X[i]` / `&X.f`). Classifier, so the catch-all is fine.
-#[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn is_agent_ptr_expr(e: &ast::Expr, locals: &TaintSet<String>, symbols: &SymbolTable) -> bool {
+/// The agent provenance an expression carries. `Ptr` and `AddrInt` name the
+/// same underlying address; they differ only in the static *kind* (pointer vs
+/// integer) and therefore in the consequence -- see [`AgentTaint`]. A local is
+/// in at most one of `ptrs`/`addr_ints` because its declared type is fixed, so
+/// this three-way classification is exact.
+enum Prov {
+    /// An agent *pointer*: derefs lower `volatile`, and E620 forbids it escaping.
+    Ptr,
+    /// An *integer* holding an agent-static address: delivery currency (allowed
+    /// to escape), which re-taints a pointer when cast back with `as *T`.
+    AddrInt,
+    /// No agent provenance.
+    None,
+}
+
+/// One-pass agent-provenance classifier. Visits each node once (the public
+/// predicates are thin views), so it stays linear even on deeply nested casts.
+/// `Ptr`/`AddrInt` are two faces of one address value: a cast flips between them
+/// by the target kind, which is exactly what lets `(&X as u32 + off) as *T`
+/// round-trip back to a tracked pointer and close the integer-laundering hole.
+fn classify(e: &ast::Expr, taint: &AgentTaint, symbols: &SymbolTable) -> Prov {
     match e {
-        ast::Expr::Ident((n, _)) => locals.contains(n),
-        ast::Expr::Group(i) => is_agent_ptr_expr(i, locals, symbols),
-        // Only pointer-typed casts stay in the taint: `&BUF as u32` is the
-        // handoff delivery idiom (an integer, checked by the handoff
-        // machinery), and integer casts deliberately exit the taint -- the
-        // documented laundering limit.
-        ast::Expr::Cast(i, ty_expr) => {
-            let target = crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
-            crate::types::is_ptr(&target) && is_agent_ptr_expr(i, locals, symbols)
+        ast::Expr::Ident((n, _)) => {
+            if taint.ptrs.contains(n) {
+                Prov::Ptr
+            } else if taint.addr_ints.contains(n) {
+                Prov::AddrInt
+            } else {
+                Prov::None
+            }
         }
+        ast::Expr::Group(i) => classify(i, taint, symbols),
+        // A cast preserves the address and re-labels it by the target kind:
+        // to a pointer -> `Ptr`, to an integer -> `AddrInt`. Provenance-free
+        // operands stay `None` (short-circuits before resolving the type).
+        ast::Expr::Cast(i, ty_expr) => match classify(i, taint, symbols) {
+            Prov::None => Prov::None,
+            Prov::Ptr | Prov::AddrInt => {
+                let target =
+                    crate::types::resolve_type_expr(ty_expr, &symbols.structs, &symbols.enums);
+                if crate::types::is_ptr(&target) {
+                    Prov::Ptr
+                } else {
+                    Prov::AddrInt
+                }
+            }
+        },
         ast::Expr::Unary(ast::UnaryOp::AddrOf | ast::UnaryOp::AddrOfMut, inner) => {
-            match inner.as_ref() {
+            let is_agent = match inner.as_ref() {
                 ast::Expr::Ident((n, _)) => static_is_agent_shared(n, symbols),
                 ast::Expr::Index(b, _) | ast::Expr::FieldAccess(b, _) => {
                     matches!(b.as_ref(), ast::Expr::Ident((n, _)) if static_is_agent_shared(n, symbols))
                 }
                 _ => false,
+            };
+            if is_agent { Prov::Ptr } else { Prov::None }
+        }
+        // Address arithmetic (`base +/- off`) keeps the address, as an integer
+        // value, when either operand carries provenance.
+        ast::Expr::Binary(l, ast::BinaryOp::Add | ast::BinaryOp::Sub, r) => {
+            if matches!(classify(l, taint, symbols), Prov::None)
+                && matches!(classify(r, taint, symbols), Prov::None)
+            {
+                Prov::None
+            } else {
+                Prov::AddrInt
             }
         }
-        _ => false,
+        _ => Prov::None,
     }
+}
+
+/// True when `e` evaluates to an agent pointer: a tainted local, an address-of
+/// an agent-shared static, or a pointer reconstructed from an agent address.
+/// Drives `volatile` lowering (ir.rs) and the E620 escape check (checker.rs).
+#[must_use]
+pub fn is_agent_ptr_expr(e: &ast::Expr, taint: &AgentTaint, symbols: &SymbolTable) -> bool {
+    matches!(classify(e, taint, symbols), Prov::Ptr)
 }
 
 /// The set of locals in `body` holding agent pointers: seeded by
@@ -2963,92 +3032,111 @@ pub fn is_agent_ptr_expr(e: &ast::Expr, locals: &TaintSet<String>, symbols: &Sym
 /// textual order inside loops). Monotone -- once tainted, always tainted;
 /// over-tainting only costs an extra `volatile`.
 #[must_use]
-pub fn agent_ptr_locals(body: &ast::Block, symbols: &SymbolTable) -> TaintSet<String> {
-    let mut set = TaintSet::new();
+pub fn agent_ptr_locals(body: &ast::Block, symbols: &SymbolTable) -> AgentTaint {
+    let mut taint = AgentTaint::default();
     loop {
-        let before = set.len();
-        apl_block(body, symbols, &mut set);
-        if set.len() == before {
-            return set;
+        let before = taint.ptrs.len() + taint.addr_ints.len();
+        apl_block(body, symbols, &mut taint);
+        if taint.ptrs.len() + taint.addr_ints.len() == before {
+            return taint;
         }
     }
 }
 
-fn apl_block(b: &ast::Block, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+fn apl_block(b: &ast::Block, symbols: &SymbolTable, taint: &mut AgentTaint) {
     for stmt in &b.stmts {
-        apl_stmt(stmt, symbols, set);
+        apl_stmt(stmt, symbols, taint);
     }
     if let Some(t) = &b.trailing {
-        apl_expr(t, symbols, set);
+        apl_expr(t, symbols, taint);
+    }
+}
+
+/// Seed the matching taint colour from a `name = value` binding. Monotone: a
+/// local already tapped stays tapped, so `+=`-style accumulation is covered by
+/// re-binding on the new value (the old value's provenance already put `name`
+/// in a set).
+fn apl_bind(name: &str, value: &ast::Expr, symbols: &SymbolTable, taint: &mut AgentTaint) {
+    match classify(value, taint, symbols) {
+        Prov::Ptr => {
+            taint.ptrs.insert(name.to_string());
+        }
+        Prov::AddrInt => {
+            taint.addr_ints.insert(name.to_string());
+        }
+        Prov::None => {}
     }
 }
 
 // Exhaustive Stmt walker (no catch-all; see hacking.md Code conventions).
-fn apl_stmt(stmt: &ast::Stmt, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+fn apl_stmt(stmt: &ast::Stmt, symbols: &SymbolTable, taint: &mut AgentTaint) {
     match stmt {
         ast::Stmt::VarDecl(v) => {
-            apl_expr(&v.init, symbols, set);
-            if is_agent_ptr_expr(&v.init, set, symbols) {
-                set.insert(v.name.0.clone());
-            }
+            apl_expr(&v.init, symbols, taint);
+            apl_bind(&v.name.0, &v.init, symbols, taint);
         }
         ast::Stmt::Assign(a) => {
-            apl_expr(&a.value, symbols, set);
-            if let ast::LValue::Name((n, _)) = &a.target
-                && is_agent_ptr_expr(&a.value, set, symbols)
-            {
-                set.insert(n.clone());
+            apl_expr(&a.value, symbols, taint);
+            if let ast::LValue::Name((n, _)) = &a.target {
+                apl_bind(n, &a.value, symbols, taint);
             }
         }
-        ast::Stmt::CompoundAssign(c) => apl_expr(&c.value, symbols, set),
-        ast::Stmt::Expr(e) => apl_expr(e, symbols, set),
+        ast::Stmt::CompoundAssign(c) => {
+            apl_expr(&c.value, symbols, taint);
+            // `a += <agent address>` accumulates an address into `a`; seed it
+            // like a plain assignment so a later `a as *T` stays tracked.
+            if let ast::LValue::Name((n, _)) = &c.target {
+                apl_bind(n, &c.value, symbols, taint);
+            }
+        }
+        ast::Stmt::Expr(e) => apl_expr(e, symbols, taint),
         ast::Stmt::If(i) => {
-            apl_expr(&i.cond, symbols, set);
-            apl_block(&i.then_block, symbols, set);
+            apl_expr(&i.cond, symbols, taint);
+            apl_block(&i.then_block, symbols, taint);
             if let Some(e) = &i.else_branch {
-                apl_stmt(e, symbols, set);
+                apl_stmt(e, symbols, taint);
             }
         }
-        ast::Stmt::Loop(l) => apl_block(&l.body, symbols, set),
+        ast::Stmt::Loop(l) => apl_block(&l.body, symbols, taint),
         ast::Stmt::While(w) => {
-            apl_expr(&w.cond, symbols, set);
-            apl_block(&w.body, symbols, set);
+            apl_expr(&w.cond, symbols, taint);
+            apl_block(&w.body, symbols, taint);
         }
         ast::Stmt::For(f) => {
-            apl_expr(&f.start, symbols, set);
-            apl_expr(&f.end, symbols, set);
+            apl_expr(&f.start, symbols, taint);
+            apl_expr(&f.end, symbols, taint);
             if let Some(st) = &f.step {
-                apl_expr(st, symbols, set);
+                apl_expr(st, symbols, taint);
             }
-            apl_block(&f.body, symbols, set);
+            apl_block(&f.body, symbols, taint);
         }
         ast::Stmt::Return(r) => {
             if let Some(v) = &r.value {
-                apl_expr(v, symbols, set);
+                apl_expr(v, symbols, taint);
             }
         }
         ast::Stmt::Break(_) | ast::Stmt::Continue(_) => {}
-        ast::Stmt::Block(b) => apl_block(b, symbols, set),
+        ast::Stmt::Block(b) => apl_block(b, symbols, taint),
         ast::Stmt::Match(m) => {
-            apl_expr(&m.scrutinee, symbols, set);
+            apl_expr(&m.scrutinee, symbols, taint);
             for arm in &m.arms {
-                apl_block(&arm.body, symbols, set);
+                apl_block(&arm.body, symbols, taint);
             }
         }
         ast::Stmt::Asm(a) => {
             for (_, e) in &a.inputs {
-                apl_expr(e, symbols, set);
+                apl_expr(e, symbols, taint);
             }
         }
-        ast::Stmt::Assume(a) => apl_expr(&a.cond, symbols, set),
-        ast::Stmt::Assert(a) => apl_expr(&a.cond, symbols, set),
-        ast::Stmt::Claim(c) => apl_block(&c.body, symbols, set),
+        ast::Stmt::Assume(a) => apl_expr(&a.cond, symbols, taint),
+        ast::Stmt::Assert(a) => apl_expr(&a.cond, symbols, taint),
+        ast::Stmt::Claim(c) => apl_block(&c.body, symbols, taint),
     }
 }
 
 // Exhaustive Expr walker: only block-bearing expressions can declare locals,
 // but every arm recurses so nested block expressions are reached anywhere.
-fn apl_expr(e: &ast::Expr, symbols: &SymbolTable, set: &mut TaintSet<String>) {
+fn apl_expr(e: &ast::Expr, symbols: &SymbolTable, set: &mut AgentTaint) {
     match e {
         ast::Expr::IntLiteral(..)
         | ast::Expr::FloatLiteral(..)

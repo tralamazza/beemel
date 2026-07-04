@@ -18,10 +18,17 @@ jobs:
       # `opt`/`llc` from PATH. The runner has no LLVM by default, so without this
       # those tests fail with "Failed to run opt: No such file or directory".
       # Project targets LLVM 18; `.ll` is version-stable (doc/design-decisions.md).
-      - name: Install LLVM
+      #
+      # qemu-system-arm + gcc-arm-none-eabi make the end-to-end execution layer
+      # (tests/exec.rs) actually RUN in CI instead of skipping: without them a
+      # regression in behavioral codegen (wrapping, agent-pointer volatile) or a
+      # miscompiled fixture passes CI green. (IKOS/`bml verify` tests still skip
+      # in CI -- they need the ikos submodule built; run them locally with
+      # BML_IKOS_BIN. See doc/review-2026-07.md T1.)
+      - name: Install LLVM + embedded toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-18
+          sudo apt-get install -y llvm-18 qemu-system-arm gcc-arm-none-eabi
           echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets

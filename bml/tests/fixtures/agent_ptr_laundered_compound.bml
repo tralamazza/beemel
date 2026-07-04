@@ -1,0 +1,18 @@
+// Regression for the taint completeness gap found while self-reviewing the F2
+// fix (review 2026-07): an agent-static address accumulated into an integer via
+// `+=` must still re-taint the pointer reconstructed from it, so the OWN-bit
+// poll stays `volatile`. Guards the `CompoundAssign` seeding path in
+// region::apl_stmt specifically. Pairs with reclaim_guard.target.
+
+var DESC: [u32; 4] in pool;
+var SINK: u32;
+
+fn main() @context(thread) {
+    var a: u32 = 0;
+    a += &DESC as u32;
+    var p: *u32 = a as *u32;
+    p[0] = 123;
+    while (p[3] & 0x80000000) != 0 {
+    }
+    SINK = p[1];
+}

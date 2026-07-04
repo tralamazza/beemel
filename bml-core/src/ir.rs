@@ -41,7 +41,7 @@ pub struct IrEmitter {
     /// memory (`region::agent_ptr_locals`). Accesses through them are lowered
     /// volatile: the agent is a concurrent writer the optimizer cannot see
     /// (a hoisted OWN-bit spin became an infinite branch on the H723).
-    agent_ptr_locals: std::collections::HashSet<String>,
+    agent_taint: crate::region::AgentTaint,
     /// While emitting a monomorphized function (a driver specialized for a
     /// concrete instance), maps each `peripheral_type` handle parameter name to
     /// its comptime `Binding` (a peripheral instance), so `u.REG` lowers as
@@ -794,7 +794,7 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: false,
             current_fn_name: String::new(),
-            agent_ptr_locals: std::collections::HashSet::new(),
+            agent_taint: crate::region::AgentTaint::default(),
             handle_subst: HashMap::new(),
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
@@ -860,7 +860,7 @@ impl IrEmitter {
             alloca_counter: 0,
             verify_mode: true,
             current_fn_name: String::new(),
-            agent_ptr_locals: std::collections::HashSet::new(),
+            agent_taint: crate::region::AgentTaint::default(),
             handle_subst: HashMap::new(),
             handle_spec_queue: Vec::new(),
             handle_spec_done: std::collections::HashSet::new(),
@@ -1558,7 +1558,7 @@ impl IrEmitter {
         // keyed on it. The mangled name is used only for the emitted symbol.
         self.current_fn_name.clone_from(&fn_def.name.0);
         let emit_name = name_override.unwrap_or(&fn_def.name.0);
-        self.agent_ptr_locals = crate::region::agent_ptr_locals(&fn_def.body, symbols);
+        self.agent_taint = crate::region::agent_ptr_locals(&fn_def.body, symbols);
         let fn_sym = symbols.functions.get(&fn_def.name.0);
         let is_isr = fn_sym.is_some_and(|s| s.context.is_isr());
         let is_naked = fn_sym.is_some_and(|s| s.naked);
@@ -5109,7 +5109,7 @@ impl IrEmitter {
     /// mutates the pointee concurrently, so the access must not be hoisted,
     /// merged, or eliminated.
     fn vol_expr(&self, e: &ast::Expr, symbols: &SymbolTable) -> &'static str {
-        if crate::region::is_agent_ptr_expr(e, &self.agent_ptr_locals, symbols) {
+        if crate::region::is_agent_ptr_expr(e, &self.agent_taint, symbols) {
             " volatile"
         } else {
             ""
@@ -5117,7 +5117,7 @@ impl IrEmitter {
     }
 
     fn vol_lvalue(&self, lv: &ast::LValue) -> &'static str {
-        if matches!(lv, ast::LValue::Name((n, _)) if self.agent_ptr_locals.contains(n)) {
+        if matches!(lv, ast::LValue::Name((n, _)) if self.agent_taint.ptrs.contains(n)) {
             " volatile"
         } else {
             ""
@@ -6008,12 +6008,18 @@ impl IrEmitter {
                 _ => self.expr_type(inner, symbols),
             },
             Expr::Match(match_expr) => {
-                let scrutinee_ty = self.expr_type(&match_expr.scrutinee, symbols);
-                if let Type::Enum(_, inner_ty, _) = &scrutinee_ty {
-                    *inner_ty.clone()
-                } else {
-                    Type::U32
-                }
+                // The match's value type is the arm *result* type, not the
+                // scrutinee type -- an enum/integer scrutinee routinely feeds
+                // wider arms (e.g. a `u8` enum into `u32` arms). Returning the
+                // scrutinee type mistypes the result phi and the default block,
+                // yielding a malformed `phi` that llc rejects. Mirror the
+                // `Expr::Block`/`Expr::If` cases: take the type of the first
+                // non-diverging arm's trailing value.
+                match_expr
+                    .arms
+                    .iter()
+                    .find_map(|arm| arm.body.trailing.as_ref())
+                    .map_or(Type::U32, |trailing| self.expr_type(trailing, symbols))
             }
             Expr::Block(block_expr) => {
                 if let Some(ref trailing) = block_expr.block.trailing {

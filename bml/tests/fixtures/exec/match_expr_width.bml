@@ -1,0 +1,39 @@
+// Regression for the match-EXPRESSION result-type bug (review 2026-07, S1):
+// the value type of a `match` used as an expression is the arm *result* type,
+// not the scrutinee type. Before the fix `expr_type(Match)` returned the enum's
+// inner type (or a hardcoded u32 for integer scrutinees), so the result phi and
+// default block were mistyped and llc rejected the module whenever the arms were
+// wider than the scrutinee. These cases all have arms wider than the scrutinee.
+import harness.semihost;
+
+enum Color: u8 { Red = 0, Green = 1, Blue = 2 }
+
+// Enum scrutinee (u8 inner) into unsuffixed u32 arms. This is the exact case
+// that emitted `phi i8` against `i32` arm values.
+fn from_enum(c: Color) -> u32 {
+    var r: u32 = match c {
+        Color@Red { 100 }
+        Color@Green { 200 }
+        Color@Blue { 300 }
+    };
+    return r;
+}
+
+// Integer scrutinee (u32) into u64 arms: emitted `phi i32` against `i64` arms.
+fn to_u64(n: u32, a: u64, b: u64, c: u64) -> u64 {
+    return match n {
+        1 { a }
+        2 { b }
+        _ { c }
+    };
+}
+
+fn main() @context(thread) {
+    semihost.expect_u32(from_enum(Color@Red), 100);
+    semihost.expect_u32(from_enum(Color@Green), 200);
+    semihost.expect_u32(from_enum(Color@Blue), 300);
+    semihost.expect_u64(to_u64(1, 0x1_0000_0000, 0x2_0000_0000, 0x3_0000_0000), 0x1_0000_0000);
+    semihost.expect_u64(to_u64(2, 0x1_0000_0000, 0x2_0000_0000, 0x3_0000_0000), 0x2_0000_0000);
+    semihost.expect_u64(to_u64(9, 0x1_0000_0000, 0x2_0000_0000, 0x3_0000_0000), 0x3_0000_0000);
+    semihost.done();
+}

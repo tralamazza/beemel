@@ -4874,6 +4874,38 @@ fn test_agent_ptr_volatile_lowering() {
     );
 }
 
+// Review 2026-07 (F2): an agent pointer reconstructed from an integer address
+// (`(&DESC as u32 + off) as *u32`) must lower `volatile` just like the direct
+// cast -- the integer laundering used to strip the taint and let the OWN-bit
+// spin hoist into an infinite loop at -O2.
+#[test]
+fn test_agent_ptr_laundered_volatile_lowering() {
+    let ir = bml_ir_with_target("agent_ptr_laundered.bml", Some("reclaim_guard.target"));
+    assert!(
+        ir.contains("store volatile i32 %"),
+        "store through a laundered agent pointer must be volatile:\n{ir}"
+    );
+    assert!(
+        ir.contains("load volatile i32, ptr %"),
+        "loads through a laundered agent pointer (the OWN spin) must be volatile:\n{ir}"
+    );
+}
+
+// Review 2026-07 self-review: an address accumulated via `+=` (the
+// `CompoundAssign` seeding path) must also re-taint the reconstructed pointer.
+#[test]
+fn test_agent_ptr_laundered_compound_volatile_lowering() {
+    let ir = bml_ir_with_target(
+        "agent_ptr_laundered_compound.bml",
+        Some("reclaim_guard.target"),
+    );
+    assert!(
+        ir.contains("store volatile i32 %") && ir.contains("load volatile i32, ptr %"),
+        "accesses through a pointer reconstructed from a `+=`-accumulated agent \
+         address must be volatile:\n{ir}"
+    );
+}
+
 #[test]
 fn test_plain_ptr_stays_nonvolatile() {
     let ir = bml_ir("plain_ptr_no_volatile.bml");

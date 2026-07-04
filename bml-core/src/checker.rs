@@ -4807,6 +4807,9 @@ fn unsuffixed_literal_fits(expr: &Expr, target_ty: &Type) -> bool {
 /// view/ring/bits descriptor capture (agent views go through `reclaim`).
 fn check_agent_ptr_escape(fn_def: &ast::FnDef, symbols: &SymbolTable, diags: &mut DiagnosticBag) {
     let taint = crate::region::agent_ptr_locals(&fn_def.body, symbols);
+    // E620 keys on the pointer taint only: an agent *pointer* escaping loses the
+    // volatile lowering. A delivery *integer* (`&BUF as u32`) is meant to escape
+    // (into a handoff register), so it is deliberately not flagged here.
     let ape = |e: &ast::Expr| crate::region::is_agent_ptr_expr(e, &taint, symbols);
     ape_block(&fn_def.body, &ape, symbols, diags, fn_def.ret.is_some());
 }

@@ -1,0 +1,19 @@
+// Regression for the integer-laundering volatile hole (review 2026-07, F2):
+// reconstructing an agent pointer from an integer address --
+// `(&DESC as u32 + off) as *u32` -- must still lower `volatile`. Before the fix
+// the integer cast stripped the agent-pointer taint, so the OWN-bit spin below
+// was hoisted at -O2 into an infinite `b .` (the H723 hang). Pairs with
+// reclaim_guard.target (region `pool`, DMA agent). See agent_ptr_volatile.bml
+// for the direct-cast form.
+
+var DESC: [u32; 4] in pool;
+var SINK: u32;
+
+fn main() @context(thread) {
+    var base: u32 = &DESC as u32;
+    var p: *u32 = (base + 0) as *u32;
+    p[0] = 123;
+    while (p[3] & 0x80000000) != 0 {
+    }
+    SINK = p[1];
+}
