@@ -93,8 +93,8 @@ beemel, models the second actor. Our contributions are:
 \item \textbf{The agent abstraction} (\S\ref{sec:agents}): a uniform treatment
 of CPU cores, DMA engines, debug probes, and external firmware as
 \emph{agents} --- bus masters with a declared reach, cache view, and
-permissions --- with an admission schema that survived cross-vendor falsification
-(no seventh question emerged across three DMA architectures).
+permissions --- under a compact declaration schema that held up unchanged
+against three structurally different DMA architectures.
 
 \item \textbf{Region ownership} (\S\ref{sec:ownership}): the central
 contribution. We show that the priority-ceiling protocol (CPU/CPU mutual
@@ -154,8 +154,8 @@ fn copy() {
 }
 \end{lstlisting}
 \caption{A complete BML fragment, condensed from the H723 MDMA example.
-\texttt{DST} is shared by the thread, an ISR, and the MDMA engine, so its carrier
-is \texttt{Shared(AgentShared([u8;64]))} and every access outside the window is
+\texttt{DST} is shared by the thread, an ISR, and the MDMA engine --- both by CPU
+contexts and by an agent --- so every access outside the window is
 rejected: dropping the \lstinline!claim! makes \lstinline!reclaim! an error (the
 ISR could race), dropping the flag test is a missing-handshake error, and an
 index-read of \texttt{DST} elsewhere is rejected because the engine may still own
@@ -243,8 +243,8 @@ by reviewing and instantiating three structurally different DMA architectures:
 ST's central crossbar with software-selected master ports (H723 Ethernet and
 MDMA), Raspberry Pi's per-channel controller (RP2350), and Nordic's
 per-peripheral fixed-block engines (nRF51, where every capable peripheral is its
-own bus master). No seventh question emerged across the three; the schema is
-closed only modulo the acknowledged future refinements of \S\ref{sec:limits}
+own bus master). None of the three forced a seventh question into the contract; the
+schema is closed only modulo the acknowledged future refinements of \S\ref{sec:limits}
 (e.g. scatter-gather descriptor chains), not proven minimal.
 
 \section{Region ownership}
@@ -358,8 +358,8 @@ cacheable = false       # -> generated MPU region
 [agent.mdma]
 kind        = dma
 reach       = dma_pool, dtcm   # checked vs. bus
-bus         = axi: 0x08000000..0x08100000,
-              ahbs: 0x00000000..0x00040000
+bus         = axi: 0x30000000..0x30008000,   # covers dma_pool
+              ahbs: 0x20000000..0x20020000    # covers dtcm
 enabled_by  = RCC.C1_AHB3ENR.MDMAEN
 
 [agent.mdma.ch0]
