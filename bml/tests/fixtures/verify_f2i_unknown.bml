@@ -1,0 +1,17 @@
+// f2i possible overflow -> V210 (warning). `n` is a preempted @shared u32
+// (TOP), so `x = n as f64` is a tracked float in [0, 4.29e9]. Part of that
+// range exceeds i32::MAX, so the cast is a "may overflow" warning, not a
+// definite error. The default gate (--fail-on error) passes it; a
+// --fail-on warning run catches it.
+var N: u32 @shared(ceiling = 1) = 0;
+
+fn producer() @isr(priority = 1) {
+    N = 5u32;
+}
+
+fn main() @context(thread) {
+    var n: u32 = N;
+    var x: f64 = n as f64;
+    var y: i32 = x as i32;
+    var keep = y;
+}

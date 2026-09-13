@@ -37,6 +37,12 @@ impl Default for VerifyConfig {
             // initialization, so the only V160 sources are IKOS modeling
             // artifacts (entry-point parameters, havoc'd shared reads). Opt
             // back in with `--checks ...,uva`.
+            // `fpz` is intentionally omitted: FP exceptions only trap when the
+            // target unmasks the FPSCR/MXCSR class, which the analyzer cannot
+            // see, so its findings are always conditional. Opt in with
+            // `--checks ...,fpz`. `f2i` IS on: an unguarded float->int cast
+            // is a real defect class and the fork's definite/warning tiers are
+            // not noisy.
             checks: vec![
                 "boa".into(),
                 "nullity".into(),
@@ -46,6 +52,7 @@ impl Default for VerifyConfig {
                 "shc".into(),
                 "poa".into(),
                 "upa".into(),
+                "f2i".into(),
                 "dca".into(),
                 "dfa".into(),
                 "fca".into(),
@@ -368,6 +375,8 @@ const CHECK_KINDS: &[(i64, &str)] = &[
     (36, "unknown-function-call-pointer"),
     (37, "function-call"),
     (39, "free"),
+    (40, "float-to-int-overflow"),
+    (41, "float-point-exception"),
 ];
 
 /// Region-placed static name -> `[lo, hi)` range the static's BASE address can
@@ -549,6 +558,8 @@ fn check_to_bml_code(check: &str, status: Status) -> (String, String) {
         ("pointer-comparison" | "invalid-pointer-comparison", _) => "V115",
         ("ignored-store", _) => "V116",
         ("assert", _) => "V200",
+        ("float-to-int-overflow", _) => "V210",
+        ("float-point-exception", _) => "V220",
         _ => "V999",
     };
     let severity = match status {

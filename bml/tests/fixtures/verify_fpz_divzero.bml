@@ -1,0 +1,10 @@
+// fpz divide-by-zero -> V220 (error), OPT-IN. `b` is definitely 0.0, so the
+// fdiv raises the divide-by-zero FP exception class. Only a defect on a target
+// with that FPSCR/MXCSR class unmasked, so fpz is not in the default set;
+// the test passes `--checks ...,fpz` explicitly.
+fn main() @context(thread) {
+    var a: f64 = 5.0d;
+    var b: f64 = 0.0d;
+    var c: f64 = a / b;
+    var keep = c;
+}

@@ -3015,6 +3015,98 @@ fn test_verify_dbz() {
 }
 assert_verify_fail!(test_verify_uio, "verify_uio.bml");
 
+// ─── verify: floating point (requires the FP-capable ikos fork) ────────
+
+// f2i definite overflow -> V210 error: a float provably outside the target
+// integer range fails the default gate.
+#[test]
+fn test_verify_f2i_definite() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_f2i_overflow.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V210]") && output.contains("float-to-int-overflow"),
+        "expected V210 float-to-int-overflow finding, got:\n{output}"
+    );
+}
+
+// f2i possible overflow -> V210 warning. A `uitofp` of a havoc'd shared u32
+// is a tracked float straddling the i32 range. The warning does NOT fail the
+// default gate (--fail-on error) but DOES fail --fail-on warning.
+#[test]
+fn test_verify_f2i_unknown_is_warning() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_f2i_unknown.bml");
+    assert!(
+        output.contains("[V210]"),
+        "expected a V210 float-to-int-overflow finding, got:\n{output}"
+    );
+    assert!(
+        output.contains("[warning]"),
+        "expected the f2i finding to be warning-level, got:\n{output}"
+    );
+    assert!(
+        ok,
+        "expected the warning to pass the default error gate, got:\n{output}"
+    );
+
+    let (ok_warn, _, _) = bml_verify_args("verify_f2i_unknown.bml", &["--fail-on", "warning"]);
+    assert!(
+        !ok_warn,
+        "expected --fail-on warning to reject the possible f2i overflow"
+    );
+}
+
+// f2i in-range -> no finding: a provably-safe cast emits no check.
+assert_verify_pass!(test_verify_f2i_safe, "verify_f2i_safe.bml");
+
+// fpz is opt-in: divide-by-zero is silent under the default set...
+assert_verify_pass!(test_verify_fpz_not_default, "verify_fpz_divzero.bml");
+// ...and fires V220 when fpz is requested explicitly.
+#[test]
+fn test_verify_fpz_divzero() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args(
+        "verify_fpz_divzero.bml",
+        &[
+            "--checks",
+            "boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,fpz,dca,dfa,fca,prover",
+        ],
+    );
+    let output = format!("{stdout}{stderr}");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V220]") && output.contains("float-point-exception"),
+        "expected V220 float-point-exception finding, got:\n{output}"
+    );
+}
+
+// IEEE rounding, not real arithmetic: 0.1 + 0.2 != 0.3, so the assert is
+// violated (V200). A float-as-reals model would wrongly prove it and stay
+// silent -- the refutation is what proves the FP reasoning is live.
+#[test]
+fn test_verify_fp_rounding() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_fp_rounding.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[V200]"),
+        "expected V200 assert violation from IEEE rounding, got:\n{output}"
+    );
+}
+
 // `&&`/`||` lower short-circuit: branch around the RHS, i1 phi at the join,
 // no eager `and i1`/`or i1` of both operands (the eager form read MMIO in
 // the RHS even when the LHS decided -- a read-to-clear hazard).

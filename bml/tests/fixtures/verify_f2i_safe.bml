@@ -1,0 +1,7 @@
+// f2i in-range -> no finding. 100.0 converts cleanly to i32, so the checker
+// proves the cast is safe and emits no check at all.
+fn main() @context(thread) {
+    var x: f64 = 100.0d;
+    var y: i32 = x as i32;
+    var keep = y;
+}

@@ -1,0 +1,9 @@
+// IEEE-754 rounding, not real arithmetic -> V200 (assert violated).
+// 0.1 + 0.2 is not 0.3 in binary floating point; the prover refutes the
+// equality, so the assert fails. This is the FP analogue of "the prover
+// actually says something": a model that treated floats as reals would
+// wrongly prove it and stay silent.
+fn main() @context(thread) {
+    var x: f64 = 0.1d + 0.2d;
+    assert(x == 0.3d);
+}

@@ -30,4 +30,6 @@ broader check.
 | V191 | —         | Recursive function call                          |
 | V192 | —         | Call through inline asm                          |
 | V200 | prover    | User `assert` statement violated                 |
+| V210 | f2i       | Float-to-integer conversion overflow: the float value cannot be represented in the target integer type. Undefined behaviour in C, so a **definite** overflow is an error; a **possible** one (bounds not tight enough to rule it out) is a warning; provably in-range is silent. On by default. |
+| V220 | fpz       | Floating-point exception class: `fdiv` by a definitely-zero divisor, `0/0` / `inf-inf` / `inf*0` (invalid), `frem` by zero, `sqrt`/`log*` of a definitely-negative operand. Only a defect where the target runs with that FPSCR/MXCSR class **unmasked**, which the analyzer cannot see -- every message is conditional ("traps only on a target with the class unmasked"). **Opt-in** (`--checks ...,fpz`); kept out of `dbz` so integer semantics stay clean. |
 | V999 | —         | Other IKOS finding (catch-all for unmapped kinds)|

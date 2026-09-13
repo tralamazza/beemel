@@ -21,11 +21,13 @@ overflow.
 | dca          | Dead code (unreachable after assert/assume failure)    | Warning  |
 | dfa          | Dangling function pointer call                         | Error    |
 | fca          | Function called with wrong argument count or type      | Error    |
+| f2i          | Float-to-integer conversion overflow                 | Error/Warning |
 | prover       | User-provided `assert` statements                      | Error    |
 
-All of the above run by default; the full set is
-`boa,nullity,sio,uio,dbz,shc,poa,upa,dca,dfa,fca,prover`. `uva`
-(uninitialized variable) is opt-in; see the note below for why.
+All of the above run by default; the full default set is
+`boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,dca,dfa,fca,prover`. `uva`
+(uninitialized variable) and `fpz` (floating-point exceptions) are
+opt-in; see the notes below for why.
 
 `upa` requires a domain that tracks congruences. The default domain is
 `interval-congruence` for that reason; pairing `upa` with the plain
@@ -73,6 +75,26 @@ the post-forget filter needs IKOS-side cooperation or a different shim
 emission strategy. Neither has been done yet because the surface area
 of bugs `uva` would catch in real BML code looks small.
 
+### Why `fpz` is opt-in
+
+`fpz` reports floating-point operations that raise a hardware FP exception
+class: `fdiv` by a definitely-zero divisor, `0/0` / `inf-inf` / `inf*0`
+(invalid), `frem` by zero, and `sqrt`/`log*` of a definitely-negative
+operand. IEEE-754's default is to substitute a special value and carry on,
+so on a target that *masks* the class these are not defects. They only trap
+when the target runs with that FPSCR/MXCSR class unmasked -- and the
+exception mask is set outside the analyzed code, invisible to the analyzer.
+Every `fpz` message is therefore conditional ("traps only on a target
+with the class unmasked"), never an unconditional crash claim. That is why
+it is opt-in rather than part of the default set, and why it is kept out of
+`dbz` (integer divide-by-zero semantics stay clean).
+
+`f2i` (float-to-integer conversion overflow) *is* on by default: an
+unguarded `x as i32` from an out-of-range float is undefined behaviour in
+C and a real defect class regardless of any exception mask. The fork
+reports a definite overflow as an error and a possible one as a warning;
+provably in-range casts are silent.
+
 ### Diagnostic codes
 
 Findings surface as BML V-series diagnostics (V100–V999). The full list is in
@@ -105,6 +127,16 @@ a definite V100.
   deferred.
 - Liveness or termination.
 - Overflow in `for` loop induction variables.
+- FP overflow to infinity. The fork deliberately does not report it: it is
+  provable in only a small fraction of real cases, so it would sit silent
+  exactly when it matters and let the output read as clean.
+- Relational FP proofs (constraints *between* float variables). These need
+  APRON octagons, which are unavailable in `ikos-static` builds -- the same
+  APRON limitation as before. Non-relational FP reasoning (rounding,
+  ranges, NaN, `f2i`, `fpz`) is IKOS-native and works in the static build.
+- Math-library intrinsics (`sqrt`, `log`, `fma`, ...). The fork models
+  them, but BML has no math builtins yet, so those paths are not reachable
+  from BML source.
 
 ## Soundness
 

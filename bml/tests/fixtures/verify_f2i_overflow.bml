@@ -1,0 +1,8 @@
+// f2i definite overflow -> V210 (error). A float provably outside the
+// target integer range: 1e12 exceeds i32::MAX (~2.1e9), so every value
+// overflows and the checker claims a definite error (may_nan is false here).
+fn main() @context(thread) {
+    var x: f64 = 1e12d;
+    var y: i32 = x as i32;
+    var keep = y;
+}
