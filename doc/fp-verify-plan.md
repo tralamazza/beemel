@@ -188,15 +188,35 @@ Two things the plan did not anticipate:
    `if (NOT IKOS_DISABLE_APRON)`. A no-APRON build now needs neither
    apron nor ppl installed. This is a fork change on the `beemel` branch.
 
-2. **`@shared f64` is a poor float source; `uitofp`-derived floats work.**
-   A float loaded from a `__ikos_forget_mem`'d `@shared f64` is NOT
-   registered as a tracked `floating_point_var`, so `f2i` skips it (and the
-   f64 static also emits `align 4`, tripping a spurious V150). The
-   realistic tracked path is a float derived via `uitofp`/`sitofp` from a
-   tracked integer -- that flows a real `float_iv` and `f2i` fires. The
-   `verify_f2i_unknown` fixture uses that path. Worth a follow-up: the f64
-   static alignment and the forgotten-float tracking are BML emitter issues,
-   not FP-model issues.
+2. **`__ikos_forget_mem` does not havoc the FP interval domain (proven).**
+   My first guess -- that a forgotten `@shared f64` load isn't a tracked
+   `floating_point_var` -- was WRONG. Instrumenting the `f2i` checker
+   showed the operand IS a `fp_var`; the cast is reached but with
+   `flow_bottom=1` (unreachable). The real cause is in the invariant:
+   after `__ikos_forget_mem(@FX)`, the FP interval is
+   `float_iv: {@FX -> [5, 5]}` for a `= 5.0d` initializer (and `[0, 0]`
+   for `= 0.0d`) -- it tracks the last concrete value, NOT top. So
+   `__ikos_forget_mem` invalidates the machine-int / uninit / pointer
+   domains but leaves `float_iv` untouched. The guard `x >= 1e10` is then
+   evaluated against the stale `[5,5]`, is false, and the cast branch is
+   unreachable -- f2i never sees a reachable cast.
+
+   This is a **soundness-adjacent gap**, not just a precision loss: the FP
+   analysis reasons about a stale interval for memory that a higher-
+   priority ISR could have changed to anything. A `@shared f64` the FP
+   domain believes is `[5,5]` may in fact be any value at runtime, so an
+   f2i/fpz "safe" verdict on such a value is not sound.
+
+   Fix (IKOS-side, follow-up): the `forget_memory` handling must also reset
+   `float_iv` for the forgotten byte range to top, the way it already
+   resets the machine-int/uninit domains. Until then, `@shared f64` is not
+   a sound source for FP reasoning.
+
+   The tracked-and-sound path is a float derived via `uitofp`/`sitofp`
+   from a tracked integer: `verify_f2i_unknown` uses it and f2i fires
+   correctly. (Separately, the `@shared f64` static also emits `align 4`
+   instead of 8 -- a BML emitter bug that trips a spurious V150 -- but
+   that is orthogonal to the FP-interval gap above.)
 
 Empirically confirmed through the `bml verify` pipeline (no-APRON build):
 - `1e12 as i32` -> V210 error (definite).

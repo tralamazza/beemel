@@ -137,6 +137,13 @@ a definite V100.
 - Math-library intrinsics (`sqrt`, `log`, `fma`, ...). The fork models
   them, but BML has no math builtins yet, so those paths are not reachable
   from BML source.
+- FP reasoning over `@shared` floats. `__ikos_forget_mem` invalidates the
+  machine-int / uninit / pointer domains but does **not** reset the FP
+  interval (`float_iv`), so a preempted `@shared f64` read keeps its last
+  concrete interval instead of becoming top. FP findings (V210/V220) on
+  such a value reason about a stale range and are **not sound**. Use
+  floats derived via `uitofp`/`sitofp` from tracked integers for sound FP
+  reasoning until the fork's forget handling is extended to `float_iv`.
 
 ## Soundness
 
