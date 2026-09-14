@@ -1,0 +1,10 @@
+// fpz: inf - inf -> V220 (error), invalid-operation. `big` overflows to
+// +inf via the multiply; subtracting it from itself is the canonical
+// invalid operation that CREATES a NaN from two non-NaN operands. The checker
+// must flag NaN-creation but NOT quiet NaN propagation, so this pins the
+// positive side of that distinction.
+fn main() @context(thread) {
+    var big: f64 = 1e300d * 1e300d;
+    var c: f64 = big - big;
+    var keep = c;
+}

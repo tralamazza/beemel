@@ -3216,6 +3216,35 @@ fn test_verify_fpz_may_divzero_is_warning() {
     );
 }
 
+// inf - inf creates a NaN from two non-NaN operands -> V220 error,
+// invalid-operation. `big` overflows to +inf via the multiply (the analyzer
+// tracks the overflow), then big - big is the canonical NaN-creating
+// operation. This pins the positive side of the checker's NaN rule: it flags
+// NaN *creation* (both operands ordered) while leaving quiet NaN propagation
+// unreported.
+#[test]
+fn test_verify_fpz_inf_minus_inf_is_invalid() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args(
+        "verify_fpz_inf_minus_inf.bml",
+        &[
+            "--checks",
+            "boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,fpz,dca,dfa,fca,prover",
+        ],
+    );
+    let output = format!("{stdout}{stderr}");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[error]")
+            && output.contains("[V220]")
+            && output.contains("invalid-operation"),
+        "expected a V220 invalid-operation error for inf-inf, got:\n{output}"
+    );
+}
+
 // IEEE rounding, not real arithmetic: 0.1 + 0.2 != 0.3, so the assert is
 // violated (V200). A float-as-reals model would wrongly prove it and stay
 // silent -- the refutation is what proves the FP reasoning is live.
