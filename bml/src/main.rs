@@ -747,7 +747,7 @@ fn build_file(
 
     if opt_level == "0" {
         // ── no optimization: llc only ──
-        let llc_status = process::Command::new("llc")
+        let llc_status = process::Command::new(llvm_tool("llc"))
             .args([
                 "-O0",
                 &format!("-mtriple={triple}"),
@@ -764,7 +764,7 @@ fn build_file(
         // ── file mode: opt → file.opt.ll → llc ──
         let llc_opt = llc_opt_level(opt_level);
         let opt_ll_path = out_base.with_extension("opt.ll");
-        let opt_status = process::Command::new("opt")
+        let opt_status = process::Command::new(llvm_tool("opt"))
             .args([
                 &format!("--O{opt_level}"),
                 "-S",
@@ -788,7 +788,7 @@ fn build_file(
                 process::exit(1);
             }
         }
-        let llc_status = process::Command::new("llc")
+        let llc_status = process::Command::new(llvm_tool("llc"))
             .args([
                 &format!("-O{llc_opt}"),
                 &format!("-mtriple={triple}"),
@@ -804,7 +804,7 @@ fn build_file(
     } else {
         // ── pipe mode (default): opt → stdout → llc stdin ──
         let llc_opt = llc_opt_level(opt_level);
-        let mut opt_child = match process::Command::new("opt")
+        let mut opt_child = match process::Command::new(llvm_tool("opt"))
             .args([
                 &format!("--O{opt_level}"),
                 "-S",
@@ -826,7 +826,7 @@ fn build_file(
         };
 
         let opt_stdout = opt_child.stdout.take().unwrap();
-        let llc_status = process::Command::new("llc")
+        let llc_status = process::Command::new(llvm_tool("llc"))
             .args([
                 &format!("-O{llc_opt}"),
                 &format!("-mtriple={triple}"),
@@ -1139,6 +1139,46 @@ fn llc_opt_level(level: &str) -> &str {
     }
 }
 
+/// Known LLVM 18 install directories (Homebrew / Linuxbrew), checked in order
+/// by `llvm_tool` when `BML_LLVM_BIN` is unset.
+const LLVM18_DIRS: &[&str] = &[
+    "/opt/homebrew/opt/llvm@18/bin",
+    "/usr/local/opt/llvm@18/bin",
+    "/usr/lib/llvm-18/bin",
+];
+
+/// Resolve an LLVM tool (`opt`, `llc`) to the LLVM 18 the project targets,
+/// mirroring `find_llvm_config` in bml-core/build.rs. The build/check path
+/// must use the same LLVM 18 as the verify path: LLVM 23 removed `-Os`, so
+/// a PATH tool that is too new breaks the default size-optimized pipeline.
+///
+/// Resolution order:
+///   1. `BML_LLVM_BIN` env var (explicit override) -> that dir.
+///   2. Known LLVM 18 install dirs (Homebrew / Linuxbrew).
+///   3. A PATH dir containing the versioned name `<tool>-18`.
+///   4. Fallback: the bare tool name on PATH.
+fn llvm_tool(name: &str) -> PathBuf {
+    if let Some(dir) = std::env::var_os("BML_LLVM_BIN") {
+        let p = Path::new(&dir).join(name);
+        if p.exists() {
+            return p;
+        }
+    }
+    for dir in LLVM18_DIRS {
+        let p = Path::new(dir).join(name);
+        if p.exists() {
+            return p;
+        }
+    }
+    let versioned = format!("{name}-18");
+    for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
+        if dir.join(&versioned).exists() {
+            return dir.join(&versioned);
+        }
+    }
+    PathBuf::from(name)
+}
+
 fn codegen_result(
     llc_status: std::io::Result<process::ExitStatus>,
     path: &Path,
@@ -1208,5 +1248,31 @@ fn codegen_result(
                 ll_path.display()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The build/check path must resolve opt/llc to the LLVM 18 the project
+    // targets (LLVM 23 removed -Os). This pins the BML_LLVM_BIN override
+    // contract. It is the only test in this binary, so the process env it
+    // mutates is not raced by parallel test threads.
+    #[test]
+    fn llvm_tool_honors_bml_llvm_bin_override() {
+        let dir = std::env::temp_dir().join("bml-llvm-tool-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("opt");
+        std::fs::write(&fake, "#!/bin/sh\n").unwrap();
+
+        // SAFETY: sole test in this binary; no concurrent env access.
+        unsafe { std::env::set_var("BML_LLVM_BIN", &dir) };
+        let resolved = llvm_tool("opt");
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("BML_LLVM_BIN") };
+
+        assert_eq!(resolved, fake);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
