@@ -1,0 +1,13 @@
+// Natural alignment of wide statics. f64/i64/u64 are 8-byte aligned under the
+// ARM AAPCS; a 4-byte `double` makes `&x` trip a spurious V150. i32 keeps the
+// 4-byte default.
+var F: f64 = 1.0d;
+var G: i64 = 2;
+var H: u64 = 3;
+var N: i32 = 4;
+fn main() @context(thread) {
+    F = 2.0d;
+    G = 5;
+    H = 6;
+    N = 7;
+}

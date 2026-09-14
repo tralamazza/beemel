@@ -1188,7 +1188,13 @@ impl IrEmitter {
                         .and_then(|(r, _)| self.region_alignments.get(r))
                         .copied()
                         .unwrap_or(0);
-                    let align = explicit.unwrap_or(4).max(region_floor);
+                    // Never emit a static below its type's natural alignment:
+                    // f64/i64/u64 are 8-byte aligned under the ARM AAPCS, and
+                    // a 4-byte `double` makes `&x` trip a spurious V150. The
+                    // 4-byte default is kept for types whose natural alignment
+                    // is <= 4, so i8/i32 are unchanged.
+                    let natural = crate::types::align_of(&resolved_ty);
+                    let align = explicit.unwrap_or(4).max(region_floor).max(natural);
                     self.line(&format!(
                         "@{} = global {} {}{section_attr}, align {align}",
                         s.name.0, llvm_ty, init_val
@@ -1199,8 +1205,12 @@ impl IrEmitter {
                         crate::types::resolve_type_expr(&c.ty, &symbols.structs, &symbols.enums);
                     let llvm_ty = llvm_type(&resolved_ty);
                     let val = const_init(&resolved_ty, &c.value, symbols, &consts, &const_defs);
+                    // Same natural-alignment floor as statics: a const f64/i64
+                    // must not be emitted at align 4.
+                    let natural = crate::types::align_of(&resolved_ty);
+                    let align = 4u32.max(natural);
                     self.line(&format!(
-                        "@{} = constant {} {}, align 4",
+                        "@{} = constant {} {}, align {align}",
                         c.name.0, llvm_ty, val
                     ));
                 }

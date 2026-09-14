@@ -4443,6 +4443,30 @@ fn test_region_alignment_derived_in_ir() {
     );
 }
 
+// Wide statics (f64/i64/u64) are emitted at their natural 8-byte alignment
+// (ARM AAPCS), not the 4-byte default. A 4-byte `double` makes `&x` trip a
+// spurious V150 unaligned-pointer. i32 keeps the 4-byte default.
+#[test]
+fn test_wide_static_natural_alignment() {
+    let ir = bml_ir("align_f64.bml");
+    assert!(
+        ir.contains("@F = global double 0x3FF0000000000000, align 8"),
+        "f64 static should be align 8; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("@G = global i64 2, align 8"),
+        "i64 static should be align 8; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("@H = global i64 3, align 8"),
+        "u64 static should be align 8; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("@N = global i32 4, align 4"),
+        "i32 static should keep align 4; ir:\n{ir}"
+    );
+}
+
 // ─── @dma read protection, derived from agent-shared placement ─────────────
 
 // @dma's load-bearing property: a @dma array may be index-assigned but its
