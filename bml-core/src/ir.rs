@@ -1173,11 +1173,14 @@ impl IrEmitter {
                             })
                             .unwrap_or_default()
                     };
-                    // `@align(N)` overrides the default 4-byte alignment; a
-                    // static placed `in R` is floored at the region's derived
-                    // alignment (cache-line physics), so the source need not
-                    // hand-write the `@align`. An explicit `@align` can still
-                    // raise it above the floor.
+                    // The emitted alignment is the max of three floors: an
+                    // explicit `@align(N)`, the region's derived alignment
+                    // (cache-line physics for a static placed `in R`), and the
+                    // type's natural alignment. The natural floor matters for
+                    // f64/i64/u64: under the ARM AAPCS they are 8-byte
+                    // aligned, and a 4-byte `double` makes `&x` trip a spurious
+                    // V150. Types whose natural alignment is <= 4 keep the
+                    // 4-byte default, so i8/i32 are unchanged.
                     let explicit = s.storage.iter().find_map(|a| match a {
                         ast::StorageAnnotation::Align(n) => Some(*n),
                         _ => None,
@@ -1188,11 +1191,6 @@ impl IrEmitter {
                         .and_then(|(r, _)| self.region_alignments.get(r))
                         .copied()
                         .unwrap_or(0);
-                    // Never emit a static below its type's natural alignment:
-                    // f64/i64/u64 are 8-byte aligned under the ARM AAPCS, and
-                    // a 4-byte `double` makes `&x` trip a spurious V150. The
-                    // 4-byte default is kept for types whose natural alignment
-                    // is <= 4, so i8/i32 are unchanged.
                     let natural = crate::types::align_of(&resolved_ty);
                     let align = explicit.unwrap_or(4).max(region_floor).max(natural);
                     self.line(&format!(
