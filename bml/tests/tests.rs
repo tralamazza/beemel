@@ -3066,6 +3066,52 @@ fn test_verify_f2i_unknown_is_warning() {
 // f2i in-range -> no finding: a provably-safe cast emits no check.
 assert_verify_pass!(test_verify_f2i_safe, "verify_f2i_safe.bml");
 
+// f2i on a FORGOTTEN @shared f64 -> V210 warning. BML-level regression for
+// the IKOS dynamic_forget float-reset fix (fork c97d52c). The @shared read
+// goes through the preempt/ISR havoc shim, which must top the float interval;
+// a forgotten f64 that kept its stale [5,5] would cast silently. Verified
+// load-bearing: reverting the fork fix makes this warning disappear.
+#[test]
+fn test_verify_f2i_shared_forget_is_warning() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_f2i_shared_forget.bml");
+    assert!(
+        output.contains("[V210]") && output.contains("float-to-int-overflow"),
+        "expected V210 float-to-int-overflow on the forgotten @shared f64, got:\n{output}"
+    );
+    assert!(
+        output.contains("[warning]"),
+        "expected the forgotten-float f2i finding to be warning-level, got:\n{output}"
+    );
+    assert!(
+        ok,
+        "expected the warning to pass the default error gate, got:\n{output}"
+    );
+}
+
+// f2i definite overflow on an unsigned target -> V210 error. -1.0 as u32
+// (fptoui of a negative float) is always out of range, so the checker claims
+// a definite error that fails the default gate. Covers the signed-source ->
+// unsigned-target path the f64->i32 cases do not.
+#[test]
+fn test_verify_f2i_neg_to_unsigned_is_error() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, output) = bml_verify("verify_f2i_neg_to_unsigned.bml");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[error]")
+            && output.contains("[V210]")
+            && output.contains("float-to-int-overflow"),
+        "expected a definite V210 error on the negative->unsigned cast, got:\n{output}"
+    );
+}
+
 // fpz is opt-in: divide-by-zero is silent under the default set...
 assert_verify_pass!(test_verify_fpz_not_default, "verify_fpz_divzero.bml");
 // ...and fires V220 when fpz is requested explicitly.

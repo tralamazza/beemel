@@ -1,0 +1,22 @@
+// f2i on a FORGOTTEN @shared f64 -> V210 (warning). BML-level regression
+// for the IKOS dynamic_forget float-reset fix (fork c97d52c).
+//
+// G starts at 5.0, which fits i32. An ISR can write it, so reading it in a
+// thread context goes through the preempt/ISR havoc shim (__ikos_forget_mem),
+// which must make the value TOP in every domain that tracks it -- including
+// the float interval.
+//
+// Before the fork fix, the forgotten double kept its stale [5,5], so the
+// cast to i32 was silently accepted (5 fits, no check emitted). After the
+// fix the forgotten f64 is top, so the cast may overflow -> V210 warning.
+var G: f64 @shared(ceiling = 1) = 5.0d;
+
+fn producer() @isr(priority = 1) {
+    G = 7.0d;
+}
+
+fn main() @context(thread) {
+    var g: f64 = G;          // @shared read -> forget -> top
+    var y: i32 = g as i32;   // fptosi of top f64 -> may overflow -> V210
+    var keep = y;
+}

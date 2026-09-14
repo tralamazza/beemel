@@ -1,0 +1,10 @@
+// f2i definite overflow on an UNSIGNED target -> V210 (error). A negative
+// float converted with fptoui is always out of range: -1.0 has no valid u32
+// result, so the checker claims a definite error rather than a warning.
+// Complements the f64->i32 cases (definite-positive / unknown / safe) by
+// covering the signed-source-to-unsigned-target path.
+fn main() @context(thread) {
+    var x: f64 = -1.0d;
+    var y: u32 = x as u32;
+    var keep = y;
+}
