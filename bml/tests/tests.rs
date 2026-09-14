@@ -3136,6 +3136,86 @@ fn test_verify_fpz_divzero() {
     );
 }
 
+// 0.0 / 0.0 is an invalid operation, NOT divide-by-zero. The checker must
+// report the invalid-operation class so the reader is pointed at the right
+// FPSCR/MXCSR bit; the message surfaces the exception class.
+#[test]
+fn test_verify_fpz_zero_over_zero_is_invalid() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args(
+        "verify_fpz_zero_over_zero.bml",
+        &[
+            "--checks",
+            "boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,fpz,dca,dfa,fca,prover",
+        ],
+    );
+    let output = format!("{stdout}{stderr}");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[error]")
+            && output.contains("[V220]")
+            && output.contains("invalid-operation"),
+        "expected a V220 invalid-operation error for 0/0, got:\n{output}"
+    );
+}
+
+// Floating-point remainder by zero (frem) is invalid, not divide-by-zero.
+// BML's `%` on floats lowers to frem, exercising the checker's FRem branch.
+#[test]
+fn test_verify_fpz_rem_by_zero_is_invalid() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args(
+        "verify_fpz_rem_by_zero.bml",
+        &[
+            "--checks",
+            "boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,fpz,dca,dfa,fca,prover",
+        ],
+    );
+    let output = format!("{stdout}{stderr}");
+    assert!(!ok, "expected verify to fail, got success:\n{output}");
+    assert!(
+        output.contains("[error]")
+            && output.contains("[V220]")
+            && output.contains("invalid-operation"),
+        "expected a V220 invalid-operation error for frem-by-zero, got:\n{output}"
+    );
+}
+
+// A @shared f64 divisor that an ISR can zero makes the divide MAY trap: the
+// may-be-zero path emits a warning (not the definite error), which passes the
+// default gate but fails --fail-on warning.
+#[test]
+fn test_verify_fpz_may_divzero_is_warning() {
+    if std::env::var("BML_IKOS_BIN").is_err() {
+        eprintln!("skipping verify test (set BML_IKOS_BIN)");
+        return;
+    }
+    let (ok, stdout, stderr) = bml_verify_args(
+        "verify_fpz_may_divzero.bml",
+        &[
+            "--checks",
+            "boa,nullity,sio,uio,dbz,shc,poa,upa,f2i,fpz,dca,dfa,fca,prover",
+        ],
+    );
+    let output = format!("{stdout}{stderr}");
+    assert!(
+        output.contains("[warning]")
+            && output.contains("[V220]")
+            && output.contains("divide-by-zero"),
+        "expected a V220 divide-by-zero warning for a possibly-zero divisor, got:\n{output}"
+    );
+    assert!(
+        ok,
+        "expected the may-trap warning to pass the default error gate, got:\n{output}"
+    );
+}
+
 // IEEE rounding, not real arithmetic: 0.1 + 0.2 != 0.3, so the assert is
 // violated (V200). A float-as-reals model would wrongly prove it and stay
 // silent -- the refutation is what proves the FP reasoning is live.

@@ -312,8 +312,10 @@ fn render_info(info: Option<&str>, code: &str) -> Option<String> {
     let obj = val.as_object()?;
     let mut parts: Vec<String> = Vec::new();
 
-    // Native-check fields: top-level intervals, plus scalar ints like
-    // `array_element_size`. Nested/array fields (e.g. `points_to`) are skipped.
+    // Native-check fields: top-level intervals, scalar ints like
+    // `array_element_size`, and string tags like the fp checker's
+    // `exception` class (divide-by-zero vs invalid-operation). Nested/array
+    // fields (e.g. `points_to`) are skipped.
     for (key, v) in obj {
         if key == "witness" {
             continue;
@@ -322,6 +324,8 @@ fn render_info(info: Option<&str>, code: &str) -> Option<String> {
             parts.push(format!("{key} {interval}"));
         } else if let Some(n) = v.as_i64() {
             parts.push(format!("{key} {n}"));
+        } else if let Some(s) = v.as_str() {
+            parts.push(format!("{key} {s}"));
         }
     }
 

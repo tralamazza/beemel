@@ -1,0 +1,10 @@
+// fpz: floating-point remainder by zero -> V220 (error), invalid-operation.
+// IEEE remainder (frem) is undefined for a zero divisor and raises the
+// invalid-operation flag, not divide-by-zero. BML's `%` on floats lowers to
+// frem, so this exercises the FRem branch of the checker.
+fn main() @context(thread) {
+    var a: f64 = 5.0d;
+    var b: f64 = 0.0d;
+    var c: f64 = a % b;
+    var keep = c;
+}

@@ -1,0 +1,10 @@
+// fpz: 0.0 / 0.0 -> V220 (error), invalid-operation. Distinct from the
+// divide-by-zero class: IEEE says 0/0 raises the invalid-operation flag, not
+// the divide-by-zero flag. Reporting the weaker class would point the reader
+// at the wrong FPSCR/MXCSR bit.
+fn main() @context(thread) {
+    var a: f64 = 0.0d;
+    var b: f64 = 0.0d;
+    var c: f64 = a / b;
+    var keep = c;
+}

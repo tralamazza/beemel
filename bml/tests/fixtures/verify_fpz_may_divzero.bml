@@ -1,0 +1,17 @@
+// fpz: divisor might be zero -> V220 (warning). The divisor is a @shared f64
+// that an ISR can set to 0.0, so after the preempt/ISR havoc the divide's
+// divisor may (but need not) be zero. This is the may-be-zero warning path,
+// distinct from the definite-divisor-is-zero error. The warning passes the
+// default error gate; --fail-on warning catches it.
+var D: f64 @shared(ceiling = 1) = 1.0d;
+
+fn producer() @isr(priority = 1) {
+    D = 0.0d;
+}
+
+fn main() @context(thread) {
+    var a: f64 = 5.0d;
+    var d: f64 = D;
+    var c: f64 = a / d;
+    var keep = c;
+}
